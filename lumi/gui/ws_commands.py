@@ -2126,21 +2126,23 @@ async def _cmd_mission_dispatch_roadmap(ctx: CommandContext) -> None:
     # intent_service (not just the refined-intent paragraph —
     # that was a Tier-1 bug from the first iteration), and
     # let the existing intent flow take over.
+    async def refuse(message: str) -> None:
+        # Tagged so the page puts back the Build button it marked as
+        # dispatched when it was clicked (autonomous_view.js).
+        await ctx.send({"event": "error", "message": message, "source": "mission_dispatch"})
+
     if not ctx.state.project.current_session:
-        await ctx.send({"event": "error",
-                            "message": "No active mission to dispatch"})
+        await refuse("No active mission to dispatch")
         return
     ms = ctx.state.project.current_session.mission_state or {}
     if ms.get("phase") != "drafting":
-        await ctx.send({"event": "error",
-                            "message": f"Mission phase is {ms.get('phase','?')}, expected drafting"})
+        await refuse(f"Mission phase is {ms.get('phase','?')}, expected drafting")
         return
 
     spec_md = (ctx.msg.get("spec_markdown") or "").strip()
     refined = (ctx.msg.get("refined_intent") or "").strip()
     if not spec_md and not refined:
-        await ctx.send({"event": "error",
-                            "message": "No spec to dispatch"})
+        await refuse("No spec to dispatch")
         return
 
     # Tier-1 fix #1: pass the full spec block as the intent
@@ -2158,10 +2160,14 @@ async def _cmd_mission_dispatch_roadmap(ctx: CommandContext) -> None:
     intent_service = ctx.state.get_intent_service(on_event=_emit_intent)
     try:
         intent_id = intent_service.start_intent(intent_text)
+    except ValueError as exc:
+        # Refused, for example by the organization's policy (lumi/policy.py):
+        # nothing started and the mission stays in drafting.
+        await refuse(f"Roadmap dispatch failed: {exc}")
+        return
     except Exception as exc:
         logger.exception("mission_dispatch_roadmap failed")
-        await ctx.send({"event": "error",
-                            "message": f"Roadmap dispatch failed: {exc}"})
+        await refuse(f"Roadmap dispatch failed: {exc}")
         return
 
     ctx.state.project.current_session.advance_mission_phase(

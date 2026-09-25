@@ -2998,18 +2998,22 @@ async def websocket_endpoint(ws: WebSocket):
                 #
                 # See docs/long-running-agents-phase-2-implementation.md
                 # for the full architecture.
+                #
+                # Errors carry source "mission_dispatch", so the page puts
+                # back the card it collapsed into a "dispatched" chip when
+                # it was clicked (autonomous_view.js).
                 if not state.project.current_session:
-                    await ws.send_json({"event": "error",
+                    await ws.send_json({"event": "error", "source": "mission_dispatch",
                                         "message": "No active mission to dispatch"})
                     continue
                 ms = state.project.current_session.mission_state or {}
                 if ms.get("phase") != "drafting":
-                    await ws.send_json({"event": "error",
+                    await ws.send_json({"event": "error", "source": "mission_dispatch",
                                         "message": f"Mission phase is {ms.get('phase','?')}, expected drafting"})
                     continue
                 spec_md = (msg.get("spec_markdown") or "").strip()
                 if not spec_md:
-                    await ws.send_json({"event": "error",
+                    await ws.send_json({"event": "error", "source": "mission_dispatch",
                                         "message": "spec_markdown required for autonomous dispatch"})
                     continue
                 feature = (
@@ -3066,13 +3070,14 @@ async def websocket_endpoint(ws: WebSocket):
                     )
                 except ValueError as exc:
                     # Misconfigured spec (no typed criteria / no Final
-                    # spec block). Surface to the user.
-                    await ws.send_json({"event": "error",
+                    # spec block), or an organization policy that doesn't
+                    # allow Full-auto (lumi/policy.py). Surface to the user.
+                    await ws.send_json({"event": "error", "source": "mission_dispatch",
                                         "message": f"Autonomous dispatch failed: {exc}"})
                     continue
                 except Exception as exc:
                     logger.exception("mission_dispatch_autonomous failed")
-                    await ws.send_json({"event": "error",
+                    await ws.send_json({"event": "error", "source": "mission_dispatch",
                                         "message": f"Autonomous dispatch failed: {exc}"})
                     continue
 

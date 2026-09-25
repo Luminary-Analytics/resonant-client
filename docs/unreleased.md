@@ -8,6 +8,131 @@ The heartbeat remains paused. Documentation maintenance does not resume work,
 spending or grants, and changes no native implementation or installed bundle.
 The dated September 15/18 records below are historical.
 
+## September 25 specialists get a chat's exclusions, project trust and allowed modes — source only, not released
+
+**Missions and autonomous sessions skipped part of a chat's setup.** Their
+specialists (`lumi/orchestration/runner.py`, one Session per plan node):
+
+- read files the user or the organization excluded;
+- in an untrusted project, got its notes and instructions and started its
+  language servers;
+- took screenshots with computer use turned off;
+- ran in Full-auto where the organization doesn't allow it.
+
+Now each specialist gets the setup a chat in the project gets:
+
+- **File exclusions** (`engine/exclusions.py`). Specialists get the app's rules:
+  Settings' `privacy.excluded_paths`, the project's `.lumiignore` and the
+  organization's `files.exclude`. Patterns are anchored at the project root,
+  also for a specialist working in a subfolder. The file tools refuse an
+  excluded file, and searches, listings and git output leave it out.
+- **Project trust** (`gui/workspace_trust.py`). In a project the user hasn't
+  trusted, a specialist gets none of these:
+  - the repository's notes (`.lumi/memory.json`);
+  - its codebase index summary;
+  - its instructions;
+  - `code_intel`'s language servers, which don't start.
+- **Computer use** follows the Settings switch, which a policy can lock.
+- **The organization's allowed modes.** Specialists run in Full-auto, since
+  nobody can answer their approval prompts. Where `permissions.allowed_modes`
+  leaves out `bypass`:
+  - **Build this roadmap**, and starting or resuming an autonomous session,
+    are refused with "Acme's policy doesn't allow Full-auto, which missions
+    and autonomous sessions run in." Nothing is saved, and the mission stays
+    in drafting.
+  - If such a policy arrives mid-run, each later specialist is refused
+    before its first model request, and its plan node is blocked with that
+    reason.
+  - An autonomous session then stops, paused as **not allowed by policy**
+    (`mode_not_allowed`), before its next iteration. It also stops before the
+    reflect pass, whose `[bash]` checks the loop runs itself.
+  - One function gives the reason everywhere (`policy.full_auto_refusal`).
+- **A refused Build no longer looks dispatched.** The page marks **Build this
+  roadmap** as dispatched, and collapses **Build autonomously**'s card into a
+  "dispatched" chip, as soon as it's clicked.
+  - The server now tags dispatch errors `source: "mission_dispatch"`
+    (`gui/ws_commands.py`, `gui/app.py`).
+  - The page then puts the button or the card back (`autonomous_view.js`).
+- The runner sets all of this up as each specialist starts, from the project
+  root, with the execution policy (see "specialists follow the organization's
+  and the project's rules" below).
+- Docs: [agent runtime](modern-agent-runtime.md#orchestration-specialists),
+  [organization policy](enterprise-policy.md),
+  [autonomous sessions](autonomous-sessions.md#your-files-trust-and-your-organizations-policy).
+
+Validation on September 25, 2026:
+
+- The full `pytest` run passes (4369 passed, 5 skipped). `ruff check .` is
+  clean, the 63 Node tests in AGENTS.md pass, and `git diff --check` is
+  clean.
+- `tests/test_specialist_exclusions_trust_modes.py` (19 tests) runs
+  `LocalSpecialistRunner` with a scripted model and the real `Session`, and
+  records every model request:
+  - An excluded file's contents reach neither a tool result nor the model,
+    from each of the three sources. The same holds for a pattern anchored at
+    the root while the specialist works in `web/`. With no rule, the same
+    reads return them.
+  - An untrusted project's notes and instructions reach no request, and
+    `code_intel` starts no server (`tests/fake_lsp_server.py`). In a trusted
+    project, both happen.
+  - With computer use off, a screenshot is refused. The screenshot function
+    is stubbed.
+  - Without `bypass`:
+    - the specialist makes no request and writes nothing;
+    - `IntentService.start_intent` refuses and saves no plan;
+    - **Build this roadmap**'s handler sends the tagged refusal and leaves
+      the mission in drafting;
+    - starting and resuming an autonomous session refuse and leave its
+      roadmap alone;
+    - a policy that arrives during an iteration stops the loop with
+      `mode_not_allowed` before its `[bash]` check. Without the policy, the
+      check runs.
+- Against `main`, 13 of the 19 fail: every exclusion, untrusted,
+  computer-use-off and mode case. The 6 controls pass.
+- `tests/autonomous_view.test.cjs` covers the new stop reason's words and the
+  button being put back (2 tests).
+- In the browser pane, from isolated homes with the scripted Ollama stub and an
+  organization policy for "Acme" (`LUMI_POLICY_FILE`):
+  - **Exclusions and trust.** The policy had `files.exclude: ["secrets/**"]`,
+    and the project was untrusted and had a note.
+    - A Mission's **Build this roadmap** ran the planner and an implement
+      specialist.
+    - Its `file_read` of `secrets/api.txt` showed "excluded by 'secrets/**'
+      (organization policy)".
+    - Its `grep` returned only `config.txt`'s line, plus "1 match in
+      excluded files not shown".
+    - The stub checked every request: none held the file's contents or the
+      note.
+    - After **Trust this project**, the next mission's planner and specialist
+      requests carried the note, and the file still stayed out.
+  - **Allowed modes.** The policy had `allowed_modes: ["ask", "auto-edit"]`,
+    and the mode menu hid Full-auto and Plan.
+    - **Build this roadmap** showed "Roadmap dispatch failed: Acme's policy
+      doesn't allow Full-auto, which missions and autonomous sessions run
+      in."
+    - The mission stayed in drafting, the plan panel stayed idle, and the
+      model got no planner request.
+    - **Build autonomously** showed "Autonomous dispatch failed: …" and wrote
+      no roadmap.
+  - **The page fix.**
+    - Before it, a refusal left the button reading "Roadmap dispatched", and
+      the autonomous card became an "Autonomous session dispatched … Stop"
+      chip.
+    - After it, the button came back as **Build this roadmap**. Pressing Enter
+      on it was refused the same way.
+    - The autonomous card came back with its 4h budget still selected.
+    - Dispatches the policy allowed kept "Roadmap dispatched" and the chip.
+      That autonomous session finished "satisfied".
+  - **The real home.** The real `~/.resonant` was unchanged afterwards
+    (hashes and listing).
+    - No `~/.lumi` or Lumi credential entries appeared, and the fixtures' own
+      `CODEX_HOME` was never created.
+    - `~/.codex/logs_2.sqlite-wal` and `models_cache.json` changed during the
+      runs, which the user's own Codex writes. Those writes are unattributed.
+
+Not exercised: a packaged build, a live model, a policy arriving mid-run in
+the app (unit tests only), macOS and Linux.
+
 ## September 25 specialists follow the organization's and the project's rules — source only, not released
 
 **A mission could run a command the organization denies.** Orchestration

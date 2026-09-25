@@ -2844,6 +2844,7 @@ class LumiApp {
             this._handleAutonomousStopClick();
         });
         card.parentNode.replaceChild(chip, card);
+        return chip;
     }
 
     /**
@@ -3386,6 +3387,8 @@ class LumiApp {
                     break;
                 }
                 if (event.request_id && event.request_id === this._newSessionRequestId) this._releaseNewSessionGuard();
+                // A refused mission dispatch un-marks its Build button or card (autonomous_view.js).
+                if (event.source === 'mission_dispatch') this._missionDispatchRefused();
                 if (
                     projectSwitchId
                     && projectSwitchId === this._pendingProjectSwitchId

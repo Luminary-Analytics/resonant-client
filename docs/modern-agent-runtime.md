@@ -1,7 +1,7 @@
 # Modern agent runtime
 
 Status: implemented foundation and canonical extension guide
-Last updated: 2026-09-25 (worker transcripts and controls in the conversation)
+Last updated: 2026-09-25 (orchestration specialists get the app's session setup)
 
 This document describes the runtime Resonant uses for long-horizon coding with
 its native provider adapters. The design favors correct, verified
@@ -208,6 +208,39 @@ Auto-edit asks before shell, MCP, browser, desktop, REPL, process and git
 actions, and before any newly added tool, unless a trusted project's `allow`
 rule matches (above). Changing the mode updates the live session's tier and
 policy, including a run in progress.
+
+## Orchestration specialists
+
+A Mission's **Build this roadmap** and autonomous sessions do their work as
+specialists: one Session per plan node, built by `LocalSpecialistRunner`
+(`orchestration/runner.py`). The runner sets each one up as the app sets up a
+chat session in the project (`AppState._wire_session`). It reads everything
+from the project root, also for a specialist working in a subfolder, when
+each specialist starts, so a change applies from the next one:
+
+- the execution policy (see [Tool approvals](#tool-approvals));
+- file exclusions (`engine/exclusions.py`): Settings' `privacy.excluded_paths`,
+  the project's `.lumiignore` and the organization's `files.exclude`. The
+  Settings and policy patterns are read again on every check;
+- project trust (`gui/workspace_trust.py`): the repository's instructions,
+  notes, codebase index summary and language servers reach a specialist only
+  in a trusted project, like its policy's `allow` rules;
+- Settings' computer use switch, which a policy can lock.
+
+Specialists run in Full-auto, since nobody can answer their approval prompts.
+Where the organization's `permissions.allowed_modes` leaves out `bypass`,
+missions and autonomous sessions don't run (`policy.full_auto_refusal`):
+**Build this roadmap** and starting or resuming an autonomous session are
+refused with the reason, before anything is saved. The refusal is an `error`
+event with `source: "mission_dispatch"`, so the page puts back the Build
+button or card it marked as dispatched when clicked. A policy like that which
+arrives mid-run stops the rest:
+
+- each later specialist is refused before its first model request, and its
+  plan node is blocked with the reason;
+- an autonomous session stops, paused with `mode_not_allowed`, before its next
+  iteration and before its reflect pass. The loop runs that pass's `[bash]`
+  acceptance checks itself.
 
 ## Flight recorder and evaluation
 

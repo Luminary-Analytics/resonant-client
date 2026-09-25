@@ -14,7 +14,7 @@ Open **Settings > Model evaluations > Compare models on your tasks**.
 | Project | A git repository with at least one commit. |
 | Models | Two to six models the app knows. |
 | Tasks | Up to 20. Each is a prompt and a one-line check command, such as a test, that passes with exit code 0. |
-| What it may do | The permission mode: **Read only (ask)**, **Edit files (auto-edit)** or **Everything (bypass)**. A task that has to run commands, such as tests, needs **Everything**, or **Edit files** in a trusted project whose `lumi-policy.json` allows those commands ([project trust](desktop-workflow.md#project-trust-and-lumi-policyjson)). |
+| What it may do | The permission mode: **Read only (ask)**, **Edit files (auto-edit)** or **Everything (bypass)**. A task that has to run commands, such as tests, needs **Everything**, or **Edit files** in a trusted project whose `lumi-policy.json` allows those commands ([project trust](desktop-workflow.md#project-trust-and-lumi-policyjson)) or with a `permission_request` [hook](headless.md#hooks) of yours that allows them. |
 | Stop each run after | 1 to 60 minutes (default 10). |
 
 Click **Create comparison**, then **Run**. One comparison runs at a time;
@@ -33,6 +33,12 @@ Every task runs once per model:
    instructions apply only if the project is trusted in the app. So do the
    `allow` rules in its `lumi-policy.json`, and only if the last commit's copy
    is the version you trusted.
+
+   Your own [hooks](headless.md#hooks) run too, in the worktree. Comparisons
+   try models you don't rely on yet, unattended and often with **Everything**,
+   so a guard of yours matters most there. The results also show how each
+   model does with your usual setup. Hooks that act on every session, such as
+   a notification when one ends, act once per run.
 3. The task's check runs in the worktree. Exit code 0 passes. The check is
    your command: it passes the command guardrails and runs in the
    [shell sandbox](shell-sandbox.md) when that's on. It has 10 minutes.

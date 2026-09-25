@@ -158,7 +158,7 @@ def test_prompt_without_a_callback_fails_closed(tmp_path):
 
 def test_explicit_hook_allow_decides_an_unanswerable_prompt(tmp_path):
     hook = _permission_hook(tmp_path, {"decision": "allow"})
-    session = _session(tmp_path, [_write("hook-approved.txt")], tier="suggest", hooks=[hook])
+    session = _session(tmp_path, [_write("hook-approved.txt")], tier="ask", hooks=[hook])
 
     events = list(session.run("write it"))
 
@@ -168,7 +168,7 @@ def test_explicit_hook_allow_decides_an_unanswerable_prompt(tmp_path):
 
 def test_explicit_hook_deny_decides_an_unanswerable_prompt(tmp_path):
     hook = _permission_hook(tmp_path, {"decision": "deny", "reason": "not here"})
-    session = _session(tmp_path, [_write("hook-denied.txt")], tier="suggest", hooks=[hook])
+    session = _session(tmp_path, [_write("hook-denied.txt")], tier="ask", hooks=[hook])
 
     events = list(session.run("write it"))
 
@@ -179,26 +179,104 @@ def test_explicit_hook_deny_decides_an_unanswerable_prompt(tmp_path):
 
 
 def test_structured_hook_without_a_decision_is_not_an_approval(tmp_path):
-    hook = _permission_hook(tmp_path, {"additional_context": "logged"})
-    session = _session(tmp_path, [_write("undecided.txt")], tier="suggest", hooks=[hook])
+    hook = _permission_hook(tmp_path, {"additional_context": "logged"}, marker="hook-ran")
+    session = _session(tmp_path, [_write("undecided.txt")], tier="ask", hooks=[hook])
 
     events = list(session.run("write it"))
 
     assert first_of_kind(events, "tool.result")["denied"] is True
     assert not (tmp_path / "undecided.txt").exists()
+    assert (tmp_path / "hook-ran").exists()
 
 
 def test_legacy_hook_exit_zero_is_not_an_approval(tmp_path):
+    marker = tmp_path / "hook-ran"
     hook = {
         "hook_type": "permission_request",
-        "command": _hook_script(tmp_path, "legacy_hook", "print('observed')\n"),
+        "command": _hook_script(tmp_path, "legacy_hook", f"open({str(marker)!r}, 'w').close()\nprint('observed')\n"),
     }
-    session = _session(tmp_path, [_write("legacy.txt")], tier="suggest", hooks=[hook])
+    session = _session(tmp_path, [_write("legacy.txt")], tier="ask", hooks=[hook])
 
     events = list(session.run("write it"))
 
     assert first_of_kind(events, "tool.result")["denied"] is True
     assert not (tmp_path / "legacy.txt").exists()
+    assert marker.exists()
+
+
+@pytest.mark.parametrize("tier", ["suggest", "not-a-tier"])
+def test_the_read_only_tier_never_asks_a_permission_hook(tmp_path, tier):
+    # `lumi run --mode ask` (and scheduled tasks and comparisons set to Read
+    # only) run the suggest tier, which approves nothing but reads. The
+    # person's hooks now run there, so their permission_request hook must
+    # not turn it into a mode that changes things. An unknown tier fails
+    # closed to it.
+    hook = _permission_hook(tmp_path, {"decision": "allow"}, marker="hook-ran")
+    session = _session(tmp_path, [_write("read-only.txt")], tier=tier, hooks=[hook])
+
+    events = list(session.run("write it"))
+
+    result = first_of_kind(events, "tool.result")
+    assert result["denied"] is True
+    assert "no approval prompt is available" in result["output"]
+    assert not (tmp_path / "read-only.txt").exists()
+    assert not (tmp_path / "hook-ran").exists()
+
+
+def _organization_asks_before(pattern: str) -> None:
+    lumi_policy.set_for_tests(lumi_policy.parse({
+        "schema": "lumi.policy/v1", "organization": "Acme",
+        "shell": {"rules": [{"tool_pattern": "bash", "action": "prompt", "arg_patterns": {"command": pattern},
+                             "reason": "Acme: a person approves this"}]},
+    }, source="test"))
+
+
+def test_an_organizations_prompt_rule_needs_a_person_not_their_hook(tmp_path):
+    # The organization outranks the person's settings, so the person's own
+    # permission_request hook can't answer a question the organization asks.
+    _organization_asks_before("deploy")
+    hook = _permission_hook(tmp_path, {"decision": "allow"}, marker="hook-ran")
+    session = _session(tmp_path, [("bash", {"command": "echo deploy > deployed.txt"})], tier="full-auto",
+                       hooks=[hook])
+    session.execution_policy = project_execution_policy("full-auto", str(tmp_path))
+
+    unanswered = list(session.run("deploy"))
+
+    result = first_of_kind(unanswered, "tool.result")
+    assert result["denied"] is True
+    assert result["output"] == (
+        "The organization's policy requires a person to approve this call (Acme: a person approves this), but no "
+        "approval prompt is available for this run, so bash was not executed. Continue without it.")
+    assert not (tmp_path / "deployed.txt").exists()
+    assert not (tmp_path / "hook-ran").exists()
+
+    # A person can answer it.
+    session.backend = StreamingBackend(scripts=[
+        [tool_call("bash", {"command": "echo deploy > deployed.txt"}, call_id="c9"), done()],
+        [text_delta("Finished."), done()],
+    ])
+    asked: list[str] = []
+    answered = list(session.run("deploy", on_permission=_answering(True, asked)))
+
+    assert asked == ["bash"] and first_of_kind(answered, "tool.result")["denied"] is False
+    assert (tmp_path / "deployed.txt").exists() and not (tmp_path / "hook-ran").exists()
+
+
+def test_a_hook_cannot_rewrite_a_call_into_one_the_organization_asks_about(tmp_path):
+    _organization_asks_before("deploy")
+    hook = _permission_hook(
+        tmp_path, {"decision": "allow", "modified_args": {"command": "echo deploy > rewritten.txt"}},
+    )
+    # Auto-edit asks about commands, so the hook is asked about this one.
+    session = _session(tmp_path, [("bash", {"command": "echo harmless"})], tier="auto-edit", hooks=[hook])
+    session.execution_policy = project_execution_policy("auto-edit", str(tmp_path))
+
+    events = list(session.run("run it"))
+
+    result = first_of_kind(events, "tool.result")
+    assert result["denied"] is True
+    assert result["output"].startswith("The organization's policy requires a person to approve this call")
+    assert not (tmp_path / "rewritten.txt").exists()
 
 
 def test_hook_rewritten_arguments_are_checked_against_the_policy_again(tmp_path):

@@ -11,10 +11,11 @@ days and time (this computer's local time) it runs. Schedules live in
 * **Linux:** a line in this user's crontab, marked with the schedule's id.
 
 A run is ``lumi run`` (lumi/headless.py) with the schedule's settings, so the
-organization policy, budgets, the audit log, file exclusions and the sandboxes
-apply as for any unattended run, and nothing asks a person. Repository
-instructions apply only if the project is trusted in the app; a schedule never
-trusts one itself. A run stops after the schedule's ``max_minutes``, and a
+organization policy, budgets, the audit log, file exclusions, the sandboxes
+and the person's Settings hooks apply as for any unattended run, and nothing
+asks a person. Repository instructions apply only if the project is trusted in
+the app; a schedule never trusts one itself. A run stops after the schedule's
+``max_minutes`` (a hook already running finishes first), and a
 schedule never runs twice at once (``running.json`` names the process). Each
 run's result (the ``lumi run`` JSON summary) is kept under
 ``~/.lumi/schedules/<id>/``, the last ``KEEP_RUNS`` of them.

@@ -159,14 +159,20 @@ Codex and is billed to the API account.
 - **OpenAI-compatible:** a base URL ending in `/v1` (LiteLLM, vLLM, an internal
   gateway), a bearer token, a key in a custom header, or no key; extra headers;
   and models listed by hand or discovered from `/models`.
-- **Azure OpenAI:** `https://NAME.openai.azure.com/openai/v1`, an `api-key`, and
-  your deployment names as models.
+- **Azure OpenAI:** `https://NAME.openai.azure.com/openai/v1`, an `api-key` or
+  Microsoft Entra ID sign-in, and your deployment names as models.
 - **Claude on Amazon Bedrock:** a region and model or inference-profile ids. Lumi
   signs requests with your AWS credentials (environment, profile or SSO through
   botocore when installed) or uses a Bedrock API key.
 - **Claude on Google Vertex AI:** a project, region and model ids, using Google
   Application Default Credentials (google-auth or the gcloud CLI).
 - **Anthropic or OpenAI Responses proxies:** the same APIs at another URL.
+
+Instead of a key, a connection can sign in with OAuth client credentials (a
+gateway behind Okta, Auth0, Keycloak or Entra ID) or, for Azure OpenAI, with
+Microsoft Entra ID: an app registration, or this computer's `az login`. Gateways
+that require mutual TLS take a client certificate. See
+[Signing in to enterprise model endpoints](docs/connection-sign-in.md).
 
 **Test connection** checks credentials and lists models before saving. Each
 connection appears in **Models** under its own name. Connection keys are kept

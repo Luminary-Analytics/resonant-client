@@ -12,7 +12,8 @@ custom connections supply models to Lumi's engine loop. `anthropic_api.py` (Mess
 API, direct/Bedrock/Vertex) and `openai_api.py` (Responses API, OpenAI/Azure) render
 history with the shared Chat Completions converter, then translate it, so tool-call
 repair behaves the same everywhere. `connections.py` validates user-defined
-connections and builds their backends. Codex and Claude Code adapters instead run installed
+connections and builds their backends; `auth_tokens.py` supplies their OAuth
+and Entra ID tokens and client-certificate TLS contexts. Codex and Claude Code adapters instead run installed
 CLIs, whose native tool execution remains inside those CLIs.
 
 The GUI owns interaction and rendering. Runtime construction owns provider,

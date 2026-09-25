@@ -8,6 +8,70 @@ The heartbeat remains paused. Documentation maintenance does not resume work,
 spending or grants, and changes no native implementation or installed bundle.
 The dated September 15/18 records below are historical.
 
+## September 25 enterprise sign-in for connections — source only, not released
+
+- **Sign-in instead of a key** ([guide](connection-sign-in.md),
+  `lumi/auth_tokens.py`), chosen under a custom connection's
+  **Authentication**:
+  - **OAuth client credentials** for OpenAI-compatible gateways, OpenAI and
+    Anthropic proxies and Azure OpenAI: a token URL, client id, optional scope
+    and audience, and the client secret, kept in the credential store. The
+    secret goes only to the token endpoint; the model endpoint gets the access
+    token, fetched again a minute before it expires.
+  - **Microsoft Entra ID** for Azure OpenAI: an app registration (tenant,
+    client id and secret), or, without a client id, this computer's sign-in
+    through `azure-identity` when installed, else the Azure CLI. A client id
+    without its secret is refused rather than falling back to the computer's
+    identity. The Azure CLI is found on Windows (`az.cmd`), runs without a
+    console window, and gets only plain tenant and resource arguments.
+  - **Client certificates** for gateways that require mutual TLS, alongside
+    any sign-in, verified against the same trust store. A key protected by a
+    passphrase is refused with a message instead of a hidden prompt.
+- **Test connection** signs in first, so it reports the identity provider's
+  reason (for example *Sign-in was refused: invalid client*) instead of
+  "listed no models".
+- Model listing for Anthropic and OpenAI proxies uses the sign-in token and
+  certificate too.
+
+Validation on September 25, 2026:
+
+- 19 tests in `test_signin.py`, against simulated endpoints:
+  - token exchange, caching and refresh; a refusal that doesn't echo the
+    secret;
+  - Entra ID through an app registration and through a simulated Azure CLI,
+    including a missing CLI, a failed `az login`, a client id without a
+    secret, and tenant or scope values that could be interpreted by cmd.exe;
+  - certificates generated in the test: loading, a bad file, a key with a
+    passphrase;
+  - a real TLS handshake with a local server that requires a client
+    certificate from its CA: models are listed with the certificate, and
+    the same trust without it is turned away;
+  - connection validation for the new fields;
+  - a gateway, an Anthropic proxy and an OpenAI proxy that receive the token
+    and never the secret;
+  - Azure OpenAI with Entra ID and a certificate, including its health check;
+  - Test connection reporting a refused sign-in.
+- Full `pytest`: 3,773 passed, 2 skipped.
+- In the browser pane, with an isolated home, a simulated identity provider
+  and a local HTTPS gateway that requires a client certificate:
+  - a connection with OAuth client credentials and a certificate was added
+    through the form. **Test connection** with a wrong secret showed "Sign-in
+    was refused: Invalid client secret"; with the right one, "Connected · 1
+    model available: gateway-coder";
+  - after saving, the row read "secret stored", the secret was absent from
+    the saved connection, and editing showed every sign-in field with
+    "Stored client secret — leave blank to keep it";
+  - a turn with `gateway-coder` read `app.py` and finished. All five gateway
+    requests carried the token and the client certificate and none carried
+    the secret; one token request served them all;
+  - on Azure OpenAI with Entra ID, the client secret field appeared while a
+    client id was typed and hid when it was cleared; Tab moved on to Scope.
+  - This check found two form bugs, now fixed: the sign-in fields broke the
+    form's rendering, and re-rendering on leaving the client id field lost
+    keyboard focus.
+- Not yet tried against a real identity provider, Entra tenant or mTLS
+  gateway.
+
 ## September 25 fallback models, roles and capability overrides — source only, not released
 
 - **Fallback models** ([guide](models.md)): **Settings > General > If the

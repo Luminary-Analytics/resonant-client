@@ -146,9 +146,13 @@ Settings follows the app theme: dark, light or match system.
    or set `ANTHROPIC_API_KEY` / `OPENAI_API_KEY`, then check the connection to
    list the models the key can use.
 2. **Custom connections** adds a gateway, Azure OpenAI, or Claude on Bedrock or
-   Vertex AI. The form shows only the fields the chosen type needs. **Test
-   connection** checks credentials and lists models; saving (the button or Enter)
-   closes the form and puts the models in **Models** under the connection's name.
+   Vertex AI. The form shows only the fields the chosen type and
+   **Authentication** need; OAuth client credentials, Microsoft Entra ID and
+   client certificates are described in
+   [Signing in to enterprise model endpoints](connection-sign-in.md). **Test
+   connection** signs in, checks credentials and lists models; saving (the
+   button or Enter) closes the form and puts the models in **Models** under the
+   connection's name.
 3. A connection that is in use by a running turn cannot be edited or removed
    until the run finishes or stops. Removing a connection also deletes its key.
 

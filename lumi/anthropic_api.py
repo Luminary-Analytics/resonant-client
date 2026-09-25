@@ -446,7 +446,13 @@ class AnthropicBackend(KimiBackend):
         transport=None,
         credentials: Callable[[], tuple[str, str, str]] | None = None,
         access_token: Callable[[], str] | None = None,
+        token_provider: Callable[[], str] | None = None,
+        tls=None,
     ):
+        # OAuth sign-in to a gateway (lumi/auth_tokens.py): a fresh bearer
+        # token per request instead of a key.
+        self._token_provider = token_provider
+        self._tls = tls
         if platform not in PLATFORMS:
             raise ValueError(f"Unknown Claude platform {platform!r}.")
         self.platform = platform
@@ -454,7 +460,7 @@ class AnthropicBackend(KimiBackend):
         if not self.model:
             raise ValueError("Choose a Claude model first.")
         self.api_key = str(api_key or "").strip()
-        if platform == "direct" and not self.api_key and auth_header != "none":
+        if platform == "direct" and not self.api_key and auth_header != "none" and token_provider is None:
             raise ValueError(
                 "Add your Anthropic API key in Settings → API keys, or set ANTHROPIC_API_KEY."
             )
@@ -517,16 +523,19 @@ class AnthropicBackend(KimiBackend):
         base_url: str = DEFAULT_BASE_URL,
         timeout: float = 5.0,
         transport=None,
+        token: str = "",
+        verify=None,
     ) -> list[str]:
-        """Claude models this key can use, or the documented defaults."""
-        if not str(api_key or "").strip():
+        """Claude models this key (or a gateway's sign-in token) can use, or the documented defaults."""
+        if not str(api_key or token or "").strip():
             return []
+        credential = {"Authorization": f"Bearer {token}"} if token else {"x-api-key": api_key}
         try:
-            with httpx.Client(**net.client_options(timeout=timeout, transport=transport)) as client:
+            with httpx.Client(**net.client_options(timeout=timeout, transport=transport, verify=verify)) as client:
                 response = client.get(
                     f"{str(base_url or DEFAULT_BASE_URL).rstrip('/')}/v1/models",
                     params={"limit": 100},
-                    headers={"x-api-key": api_key, "anthropic-version": API_VERSION},
+                    headers={**credential, "anthropic-version": API_VERSION},
                 )
                 response.raise_for_status()
                 rows = response.json().get("data") or []
@@ -539,7 +548,7 @@ class AnthropicBackend(KimiBackend):
         if self.platform != "direct":
             self._auth_headers(b"{}", self._endpoint())  # proves credentials resolve
             return {"status": "ready", "backend": self.name, "models": [self.model]}
-        with httpx.Client(**net.client_options(timeout=10.0, transport=self._transport)) as client:
+        with httpx.Client(**net.client_options(timeout=10.0, transport=self._transport, verify=self._tls)) as client:
             response = client.get(f"{self.base_url}/v1/models", params={"limit": 100},
                                   headers=self._request_headers())
         if response.status_code >= 400:
@@ -568,7 +577,9 @@ class AnthropicBackend(KimiBackend):
             return {"content-type": "application/json", "accept": "text/event-stream", **self.extra_headers}
         headers = {"content-type": "application/json", "accept": "text/event-stream",
                    "anthropic-version": API_VERSION, **self.extra_headers}
-        if self.auth_header != "none" and self.api_key:
+        if self._token_provider is not None:
+            headers["authorization"] = f"Bearer {self._token_provider()}"
+        elif self.auth_header != "none" and self.api_key:
             if self.auth_header.lower() == "authorization":
                 headers["authorization"] = f"Bearer {self.api_key}"
             else:
@@ -764,7 +775,8 @@ class AnthropicBackend(KimiBackend):
         emitted_text = False
         last_status = 0.0
         try:
-            with httpx.Client(**net.client_options(timeout=self._timeout, transport=self._transport)) as client:
+            with httpx.Client(**net.client_options(timeout=self._timeout, transport=self._transport,
+                                                   verify=self._tls)) as client:
                 attempt = 0
                 while True:
                     if cancel_event is not None and cancel_event.is_set():

@@ -362,21 +362,23 @@ class LumiSettingsView {
 
     _connectionAuthOptions(type) {
         const byType = {
-            'openai-compatible': ['bearer', 'header', 'none'],
-            'openai': ['bearer', 'header', 'none'],
-            'azure-openai': ['header', 'bearer'],
-            'anthropic': ['header', 'bearer', 'none'],
+            'openai-compatible': ['bearer', 'header', 'oauth', 'none'],
+            'openai': ['bearer', 'header', 'oauth', 'none'],
+            'azure-openai': ['header', 'bearer', 'entra', 'oauth'],
+            'anthropic': ['header', 'bearer', 'oauth', 'none'],
             'anthropic-bedrock': ['aws', 'bearer'],
             'anthropic-vertex': ['google'],
         };
-        const labels = { bearer: 'Bearer token', header: 'Key in a header', none: 'No key', aws: 'AWS credentials', google: 'Google credentials' };
+        const labels = { bearer: 'Bearer token', header: 'Key in a header', none: 'No key', aws: 'AWS credentials', google: 'Google credentials',
+                         entra: 'Microsoft Entra ID', oauth: 'OAuth client credentials' };
         return (byType[type] || ['bearer']).map(value => ({ value, label: labels[value] }));
     }
 
     _blankConnectionDraft() {
         return { name: '', type: 'openai-compatible', base_url: '', auth: 'bearer', auth_header: '', models: '',
                  region: '', project: '', api_version: '', aws_profile: '', context_window: '', vision: false,
-                 headers: '', max_tokens_param: 'max_tokens', reasoning_effort: '', api_key: '' };
+                 headers: '', max_tokens_param: 'max_tokens', reasoning_effort: '', api_key: '',
+                 tenant_id: '', client_id: '', token_url: '', scope: '', audience: '', client_cert: '', client_key: '' };
     }
 
     _connectionDraftFrom(item) {
@@ -384,6 +386,13 @@ class LumiSettingsView {
                  models: (item.models || []).join(', '),
                  headers: Object.entries(item.headers || {}).map(([k, v]) => `${k}: ${v}`).join('\n'),
                  context_window: item.context_window || '', vision: Boolean(item.vision), api_key: '' };
+    }
+
+    _connectionSecret(draft) {
+        // Entra ID without a client id signs in as this computer; a secret
+        // typed before the id was cleared isn't sent or stored.
+        if (draft.auth === 'entra' && !String(draft.client_id || '').trim()) return undefined;
+        return draft.api_key || undefined;
     }
 
     _connectionPayload(draft) {
@@ -396,7 +405,9 @@ class LumiSettingsView {
                           auth_header: draft.auth_header, models: draft.models, headers,
                           region: draft.region, project: draft.project, api_version: draft.api_version,
                           aws_profile: draft.aws_profile, max_tokens_param: draft.max_tokens_param,
-                          reasoning_effort: draft.reasoning_effort };
+                          reasoning_effort: draft.reasoning_effort, tenant_id: draft.tenant_id,
+                          client_id: draft.client_id, token_url: draft.token_url, scope: draft.scope,
+                          audience: draft.audience, client_cert: draft.client_cert, client_key: draft.client_key };
         if (this._connectionEdit?.originalId) payload.id = this._connectionEdit.originalId;
         if (String(draft.context_window || '').trim()) payload.context_window = Number(draft.context_window);
         if (draft.vision) payload.vision = true;
@@ -414,7 +425,7 @@ class LumiSettingsView {
             return `<li class="connection-row">
                 <div class="connection-row-main"><strong>${this.escapeHtml(item.name)}</strong>
                 <span class="connection-meta">${this.escapeHtml(types[item.type] || item.type)}${item.base_url ? ' · ' + this.escapeHtml(item.base_url) : ''}</span>
-                <span class="connection-meta">${item.models?.length ? this.escapeHtml(item.models.slice(0, 4).join(', ')) + (item.models.length > 4 ? ` +${item.models.length - 4}` : '') : 'Models discovered from the endpoint'}${item.auth === 'none' || item.auth === 'aws' || item.auth === 'google' ? '' : item.has_key ? ' · key stored' : ' · no key yet'}</span></div>
+                <span class="connection-meta">${item.models?.length ? this.escapeHtml(item.models.slice(0, 4).join(', ')) + (item.models.length > 4 ? ` +${item.models.length - 4}` : '') : 'Models discovered from the endpoint'}${item.auth === 'none' || item.auth === 'aws' || item.auth === 'google' || (item.auth === 'entra' && !item.client_id) ? '' : item.has_key ? ` · ${['oauth', 'entra'].includes(item.auth) ? 'secret' : 'key'} stored` : ` · no ${['oauth', 'entra'].includes(item.auth) ? 'secret' : 'key'} yet`}</span></div>
                 <div class="connection-row-actions">${confirm
                     ? `<span class="connection-confirm">Remove ${this.escapeHtml(item.name)}?</span><button class="btn-sm" data-conn-action="delete-confirm" data-conn-id="${this.escapeHtml(item.id)}">Remove</button><button class="btn-sm" data-conn-action="delete-cancel">Keep</button>`
                     : `<button class="btn-sm" data-conn-action="edit" data-conn-id="${this.escapeHtml(item.id)}" aria-label="Edit ${this.escapeHtml(item.name)}">Edit</button><button class="btn-sm" data-conn-action="delete" data-conn-id="${this.escapeHtml(item.id)}" aria-label="Remove ${this.escapeHtml(item.name)}">Remove</button>`}</div>
@@ -425,10 +436,25 @@ class LumiSettingsView {
             const d = edit.draft;
             const typeOptions = Object.entries(types).map(([value, label]) => `<option value="${value}" ${d.type === value ? 'selected' : ''}>${this.escapeHtml(label)}</option>`).join('');
             const authOptions = this._connectionAuthOptions(d.type).map(o => `<option value="${o.value}" ${d.auth === o.value ? 'selected' : ''}>${o.label}</option>`).join('');
-            const showKey = !['none', 'aws', 'google'].includes(d.auth) || (d.type === 'anthropic-bedrock' && d.auth === 'bearer');
-            const storedKey = edit.hasKey ? 'Stored key — leave blank to keep it' : 'Enter the key';
-            const field = (id, label, input, hint = '') => `<label class="connection-field" for="conn-f-${id}"><span>${label}</span>${input}${hint ? `<small>${hint}</small>` : ''}</label>`;
+            const field = (id, label, input, hint = '', attrs = '') => `<label class="connection-field" for="conn-f-${id}" ${attrs}><span>${label}</span>${input}${hint ? `<small>${hint}</small>` : ''}</label>`;
             const text = (id, value, attrs = '') => `<input class="settings-input" id="conn-f-${id}" data-conn-field="${id}" value="${this.escapeHtml(String(value ?? ''))}" ${attrs}>`;
+            const showKey = (!['none', 'aws', 'google', 'entra'].includes(d.auth) || (d.auth === 'entra' && String(d.client_id || '').trim()))
+                || (d.type === 'anthropic-bedrock' && d.auth === 'bearer');
+            const secretLabel = ['oauth', 'entra'].includes(d.auth) ? 'Client secret' : 'Key';
+            const signIn = d.auth === 'entra' ? `
+                ${field('tenant_id', 'Tenant id', text('tenant_id', d.tenant_id, 'placeholder="contoso.onmicrosoft.com or a GUID" spellcheck="false"'))}
+                ${field('client_id', 'Client id (optional)', text('client_id', d.client_id, 'spellcheck="false"'), 'Leave blank to use this computer’s Azure sign-in: azure-identity when installed (a managed identity, say), else the Azure CLI (az login). With a client id, enter its client secret below.')}
+                ${field('scope', 'Scope (optional)', text('scope', d.scope, 'placeholder="https://cognitiveservices.azure.com/.default" spellcheck="false"'))}`
+                : d.auth === 'oauth' ? `
+                ${field('token_url', 'Token URL', text('token_url', d.token_url, 'placeholder="https://login.example.com/oauth2/token" spellcheck="false"'))}
+                ${field('client_id', 'Client id', text('client_id', d.client_id, 'spellcheck="false"'))}
+                ${field('scope', 'Scope (optional)', text('scope', d.scope, 'spellcheck="false"'))}
+                ${field('audience', 'Audience (optional)', text('audience', d.audience, 'spellcheck="false"'))}` : '';
+            const clientCert = ['anthropic-bedrock', 'anthropic-vertex'].includes(d.type) ? '' : `
+                ${field('client_cert', 'Client certificate (optional)', text('client_cert', d.client_cert, 'placeholder="Path to a PEM file" spellcheck="false"'), 'For gateways that require mutual TLS. The file stays where it is.')}
+                ${field('client_key', 'Client key (optional)', text('client_key', d.client_key, 'placeholder="Path, if not in the certificate file" spellcheck="false"'))}`;
+            const secretWord = secretLabel === 'Key' ? 'key' : 'client secret';
+            const storedKey = edit.hasKey ? `Stored ${secretWord} — leave blank to keep it` : `Enter the ${secretWord}`;
             form = `<form class="connection-form" id="connection-form" novalidate>
                 <h4>${edit.originalId ? 'Edit connection' : 'Add a connection'}</h4>
                 <div class="connection-grid">
@@ -437,12 +463,14 @@ class LumiSettingsView {
                 ${['anthropic-bedrock', 'anthropic-vertex'].includes(d.type) ? '' : field('base_url', 'Endpoint URL', text('base_url', d.base_url, 'placeholder="https://" autocomplete="off" spellcheck="false"'))}
                 ${field('auth', 'Authentication', `<select class="settings-select" id="conn-f-auth" data-conn-field="auth">${authOptions}</select>`)}
                 ${d.auth === 'header' ? field('auth_header', 'Key header', text('auth_header', d.auth_header, 'placeholder="api-key" spellcheck="false"')) : ''}
-                ${showKey ? field('api_key', 'Key', `<input class="settings-input" type="password" id="conn-f-api_key" data-conn-field="api_key" value="${this.escapeHtml(d.api_key || '')}" placeholder="${storedKey}" autocomplete="off">`, 'Stored locally with your other API keys; never shown again.') : ''}
+                ${signIn}
+                ${showKey || d.auth === 'entra' ? field('api_key', secretLabel, `<input class="settings-input" type="password" id="conn-f-api_key" data-conn-field="api_key" value="${this.escapeHtml(d.api_key || '')}" placeholder="${storedKey}" autocomplete="off">`, 'Stored locally with your other API keys; never shown again.', showKey ? '' : 'hidden') : ''}
                 ${field('models', d.type === 'azure-openai' ? 'Deployments' : 'Models', text('models', d.models, 'placeholder="Comma-separated ids" spellcheck="false"'), d.type === 'openai-compatible' || d.type === 'openai' || d.type === 'anthropic' ? 'Leave blank to list the models the endpoint reports.' : '')}
                 ${['anthropic-bedrock', 'anthropic-vertex'].includes(d.type) ? field('region', 'Region', text('region', d.region, 'placeholder="us-east-1" spellcheck="false"')) : ''}
                 ${d.type === 'anthropic-vertex' ? field('project', 'Google Cloud project', text('project', d.project, 'spellcheck="false"')) : ''}
                 ${d.type === 'anthropic-bedrock' && d.auth === 'aws' ? field('aws_profile', 'AWS profile (optional)', text('aws_profile', d.aws_profile, 'placeholder="default" spellcheck="false"')) : ''}
                 ${d.type === 'azure-openai' ? field('api_version', 'API version (optional)', text('api_version', d.api_version, 'placeholder="Only for pre-v1 endpoints" spellcheck="false"')) : ''}
+                ${clientCert}
                 ${field('context_window', 'Context window (optional)', text('context_window', d.context_window, 'inputmode="numeric" placeholder="Tokens, e.g. 128000"'))}
                 ${d.type === 'openai-compatible' ? field('max_tokens_param', 'Output limit parameter', `<select class="settings-select" id="conn-f-max_tokens_param" data-conn-field="max_tokens_param"><option value="max_tokens" ${d.max_tokens_param !== 'max_completion_tokens' ? 'selected' : ''}>max_tokens</option><option value="max_completion_tokens" ${d.max_tokens_param === 'max_completion_tokens' ? 'selected' : ''}>max_completion_tokens</option></select>`) : ''}
                 ${d.type === 'openai-compatible' ? field('reasoning_effort', 'Reasoning effort', `<select class="settings-select" id="conn-f-reasoning_effort" data-conn-field="reasoning_effort">${['', 'low', 'medium', 'high'].map(v => `<option value="${v}" ${d.reasoning_effort === v ? 'selected' : ''}>${v || 'Don\u2019t send'}</option>`).join('')}</select>`) : ''}
@@ -483,6 +511,14 @@ class LumiSettingsView {
                 }
             });
         });
+        // With Entra ID, a client id needs its client secret. Show that field
+        // as the id is typed; re-rendering here would move focus away and
+        // could swallow a click on the button that took it.
+        const clientId = root.querySelector('[data-conn-field="client_id"]');
+        clientId?.addEventListener('input', () => {
+            const secret = root.querySelector('[data-conn-field="api_key"]')?.closest('label');
+            if (secret && this._connectionEdit?.draft?.auth === 'entra') secret.hidden = !clientId.value.trim();
+        });
         root.querySelectorAll('[data-conn-action]').forEach(btn => btn.addEventListener('click', () => {
             const action = btn.dataset.connAction;
             const id = btn.dataset.connId;
@@ -508,7 +544,7 @@ class LumiSettingsView {
                 const draft = this._connectionEdit.draft;
                 this._connectionStatus = { ok: true, message: 'Testing the connection…' };
                 this.send({ command: 'connection_test', connection: this._connectionPayload(draft),
-                            api_key: draft.api_key || undefined, original_id: this._connectionEdit.originalId || undefined });
+                            api_key: this._connectionSecret(draft), original_id: this._connectionEdit.originalId || undefined });
             }
             this.renderSettingsView();
             if (action === 'add' || action === 'edit') document.getElementById('conn-f-name')?.focus();
@@ -519,7 +555,7 @@ class LumiSettingsView {
             if (!edit) return;
             this._connectionStatus = { ok: true, message: 'Saving…' };
             this.send({ command: 'connection_save', connection: this._connectionPayload(edit.draft),
-                        api_key: edit.draft.api_key || undefined, original_id: edit.originalId || undefined });
+                        api_key: this._connectionSecret(edit.draft), original_id: edit.originalId || undefined });
             this.renderSettingsView();
         });
     }

@@ -52,6 +52,98 @@ Validation on September 25, 2026:
     created, no Lumi credential was stored, and the fixture's `CODEX_HOME`
     stayed empty.
 
+## September 25 gate hooks fail closed — source only, not released
+
+**A guard hook that hung or couldn't start let the tool run.** A gate hook
+(`pre_tool_use`, `pre_tool_batch`, `before_model`, `permission_request`,
+`task_completed`, `subagent_stop`, `validation_complete`) blocks when it exits
+non-zero. One that ran past its `timeout_seconds`, or couldn't be started,
+only recorded an error, and the call went ahead. On Windows the timeout wasn't
+enforced either: Lumi killed the shell, then waited for the program the shell
+had started, so a hung hook held the turn until it finished.
+
+- **Gate hooks fail closed** (`lumi/engine/hooks.py`, `GATE_HOOK_TYPES`). A
+  gate hook that times out or can't be started blocks, and the reason names
+  it: "Blocked by hook: pre_tool_use hook \`slow-guard\` timed out after 2 s;
+  gate hooks block when they give no answer. Raise its timeout_seconds if it
+  needs longer." Other hook types still only log a failure.
+- **The timeout is enforced.** At `timeout_seconds` Lumi stops the hook and
+  everything it started (a job object on Windows, the process group
+  elsewhere), even while writing the event to a hook that never reads it. A
+  program that a hook finishing in time leaves running on purpose keeps
+  running.
+- **The model reads why** (`lumi/engine/session.py`). A blocked call's result
+  carries the hook's reason: a JSON hook's `reason` (a JSON `deny` used to read
+  "Blocked by hook: denied"), its error output, or the timeout. It is the
+  blocking hook's reason, never one an earlier hook gave for allowing. A
+  refused `task_batch` is now recorded in the conversation; before, only the
+  app showed it.
+- **A completion gate that gives no answer ends the turn** with "Completion
+  was not accepted: …" instead of asking the model to try again. The model
+  can't fix the hook, and a rejection doesn't use up a step, so each retry was
+  another model request until a request allowance or a budget stopped the
+  turn; neither is set by default.
+- **Fixed along the way**, since each of these would now block instead of
+  skipping the hook:
+  - A JSON event with text a Windows code page can't encode (an arrow, an
+    emoji, Japanese) couldn't be written, so the hook never ran. The event is
+    ASCII-only JSON now, which JSON readers decode to the same text.
+  - A session without a project ran hooks in "", where nothing can start.
+    They run in Lumi's own folder instead.
+  - A JSON hook no longer gets a copy of arguments larger than 64 KiB in
+    `LUMI_TOOL_ARGS`; it reads them from standard input. On Linux, which allows
+    128 KiB per environment value, the copy kept it from starting.
+  - A JSON answer whose `hookSpecificOutput` wasn't an object raised an error
+    after its `deny` was noted, and the call went ahead.
+
+**If a gate hook is slow,** a run that used to time out without effect now
+blocks. Set its `timeout_seconds` (default 30) above the time its work takes,
+in the hook's entry in `settings.json` (`hooks`) or in its pack's manifest
+([capability packs](packs.md#gate-hooks-fail-closed)). On Linux an `env` hook
+can't start for a call whose arguments exceed 128 KiB, so a gate hook blocks
+that call; `"input_format": "json"` avoids it. The app still shows a refused
+call only as "denied": the reason reaches the model and the turn's events, not
+the tool row.
+
+Validation on September 25, 2026:
+
+- `test_hook_gates.py` (40 tests) runs real hook scripts through a real
+  `HookRunner` and real `Session.run` turns:
+  - a gate hook sleeping past a 1 s timeout blocks well within the limit, for
+    `env` and JSON hooks, including a 100 KB event it never reads. The program
+    it started is gone afterwards, both with the job object and with the
+    `taskkill` fallback;
+  - every gate type blocks, and every other type only logs, when its hook
+    can't start (a missing project folder);
+  - in real turns, a `file_write`, a permission request, a `task_batch` and a
+    completion gate: nothing is written, the reason is in the result and in
+    the conversation, and the completion gate makes one model request;
+  - a program left running by a hook keeps running; a JSON event with an
+    arrow, a check mark, Japanese and an emoji; large arguments on standard
+    input only; the reason precedence; a JSON `deny`'s reason; a
+    `hookSpecificOutput` string; a session without a project.
+- On the unfixed code, 36 of the first 37 new tests failed. The one that
+  passed guards the reason precedence that the session change relies on.
+  Undoing each fix alone (twelve mutations, from the old `subprocess.run`
+  timeout and killing only the shell to the batch refusal left out of the
+  conversation) failed at least one test each.
+- Linux (WSL Ubuntu 20.04, Python 3.13) ran `hooks.py` itself: timeouts
+  returned at 1.0 s with the process group gone, also when `sh` stayed the
+  parent; a 200 KB argument blocked an `env` hook with the advice to use JSON
+  and reached a JSON hook on standard input; a program that left the process
+  group was given up on after the 5 s grace.
+- In the browser pane, from an isolated home with the scripted Ollama stub and
+  a `pre_tool_use` hook in `settings.json` that sleeps past `timeout_seconds:
+  2`: the model's `file_write` came back 2 s later as "Blocked by hook:
+  pre_tool_use hook \`slow-guard\` timed out after 2 s; …", `guarded.txt`
+  wasn't created, the hook's program was gone, and the turn ended as needing
+  attention. The tool row read "denied" without the reason. The real
+  `~/.resonant` and the credential store were untouched.
+- After merging main, full `pytest`: 4,208 passed, 5 skipped. `ruff check .`
+  clean, 46 Node UI tests pass, `git diff --check` clean.
+
+Not exercised: macOS, a packaged build, Codex or Claude Code, a live model.
+
 ## September 25 workers run only the tools they were given — source only, not released
 
 **A read-only worker could start a writing worker.** A delegated worker gets a

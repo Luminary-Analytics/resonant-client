@@ -40,6 +40,7 @@ guide belongs in that navigation; historical records stay out of it.
 - [Comparing models on your own tasks before switching](model-comparisons.md)
 - [Code intelligence: language servers for definitions, references and diagnostics](code-intelligence.md)
 - [Code editors: sending selections and files from VS Code and JetBrains IDEs, and reviewing Lumi's changes there](code-editors.md)
+- [Issue trackers: starting from a Jira, Linear, GitHub or GitLab issue, and commenting on it](issue-trackers.md)
 - [Autonomous sessions (experimental): specs, budgets, spending limits and stop rules](autonomous-sessions.md)
 - [Skills and learning](skills.md)
 - [Writing a capability pack: the manifest, hooks, trust and sharing](packs.md)

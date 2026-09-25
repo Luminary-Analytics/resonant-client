@@ -1282,9 +1282,11 @@ AGENT_TOOLS.extend([
 
 # GitHub pull requests (engine/github_tools.py), loaded through search_tools.
 from .github_tools import GITHUB_TOOLS  # noqa: E402
+from .issue_trackers import ISSUE_TOOLS  # noqa: E402
 from .lsp import CODE_INTEL_TOOLS  # noqa: E402
 
 AGENT_TOOLS.extend(GITHUB_TOOLS)
+AGENT_TOOLS.extend(ISSUE_TOOLS)  # Jira, Linear, GitHub and GitLab issues (engine/issue_trackers.py)
 AGENT_TOOLS.extend(CODE_INTEL_TOOLS)
 
 DIRECTOR_TOOLS = [
@@ -1433,6 +1435,8 @@ TOOL_ICONS = {
     "github_pr_create":    "⇪",
     "github_pr_comment":   "✎",
     "github_pr_update":    "✎",
+    "issue_view":          "◎",
+    "issue_comment":       "✎",
     # REPL tools
     "repl_python_start":   "🐍",
     "repl_python_eval":    "▶",
@@ -1778,6 +1782,10 @@ def execute_tool(
         elif name == "git_log":
             from .git_tools import exec_git_log
             return exec_git_log(arguments, start)
+        elif name in ("issue_view", "issue_comment"):
+            from . import issue_trackers
+
+            return getattr(issue_trackers, f"exec_{name}")(arguments, start)
         # GitHub tools
         elif name.startswith("github_"):
             from . import github_tools

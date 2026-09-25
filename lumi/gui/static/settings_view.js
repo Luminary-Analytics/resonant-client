@@ -1543,6 +1543,7 @@ class LumiSettingsView {
             {id:'pets', title:'Pets', group:'Personal', icon:'pet', description:'A little company while you build.', sections:['general'], fields:['show_companion'], keywords:'Echo companion'},
             {id:'sonn_account', title:'SONN account & credits', group:'Personal', icon:'person', description:'Your authenticated SONN identity and prepaid credit balance.', sections:['sonn_account'], keywords:'billing invitation balance'},
             {id:'cost_tracking', title:'Usage & cost', group:'Personal', icon:'chart', description:'Review tracked model usage and local spending alerts.', sections:['cost_tracking'], keywords:'tokens budget'},
+            {id:'issue_trackers', title:'Issue trackers', group:'Integrations', icon:'book', description:'Read Jira and Linear issues, and comment on them, from a conversation.', sections:['issue_trackers', 'issue_tracker_keys'], keywords:'jira linear atlassian issue ticket story bug github gitlab'},
             {id:'provider_connections', title:'Connections', group:'Integrations', icon:'globe', description:'Connect model providers and manage their endpoints and API keys.', sections:['provider_connections','network','api_keys'], keywords:'ChatGPT Codex OpenRouter SONN login authentication proxy certificates TLS keychain'},
             {id:'code_editors', title:'Code editors', group:'Integrations', icon:'plug', description:'Use Lumi from VS Code and JetBrains IDEs: send the selection, see Lumi’s changes.', sections:['code_editors'], keywords:'vs code vscode cursor windsurf vscodium jetbrains intellij pycharm webstorm rider goland ide extension plugin selection diff'},
             {id:'creative_editors', title:'Creative editors', group:'Integrations', icon:'cube', description:'Work with Blender, Unity, and Unreal Engine 5.', sections:['creative_editors']},
@@ -1851,6 +1852,25 @@ class LumiSettingsView {
                       hint: 'Saved tasks that run unattended at set times (Settings > Scheduled tasks). Off stops them running and stops new ones being added.' },
                     { key: 'editor_bridge', label: 'Code editors', type: 'toggle', default: true,
                       hint: 'Lets the VS Code extension and JetBrains tools on this computer add files to your message and show what Lumi changed (Settings > Code editors).' },
+                ]
+            },
+            {
+                id: 'issue_trackers', title: 'Jira and Linear',
+                note: 'Start from an issue by attaching it, such as @issue:ENG-12, or by asking the agent to read it; it can comment on the issue when you ask. GitHub and GitLab issues use the tokens under Connections.',
+                fields: [
+                    { key: 'jira_url', label: 'Jira site', type: 'text', placeholder: 'https://your-team.atlassian.net',
+                      hint: 'JIRA_URL also works.' },
+                    { key: 'jira_email', label: 'Jira email', type: 'text', placeholder: 'you@example.com',
+                      hint: 'For Jira Cloud, the account the API token belongs to. Leave it empty for Jira Server or Data Center.' },
+                ]
+            },
+            {
+                id: 'issue_tracker_keys', title: 'Issue tracker keys', store: 'api_keys',
+                fields: [
+                    { key: 'jira', label: 'Jira token', type: 'password',
+                      hint: 'An API token (Jira Cloud) or a personal access token (Server or Data Center). JIRA_API_TOKEN also works.' },
+                    { key: 'linear', label: 'Linear API key', type: 'password',
+                      hint: 'A personal API key from Linear’s settings. LINEAR_API_KEY also works.' },
                 ]
             },
             {

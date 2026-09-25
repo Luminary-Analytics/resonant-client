@@ -21,6 +21,7 @@ READ_ONLY_TOOLS = frozenset({
     "git_status", "git_diff", "git_log",
     "code_intel",
     "github_pr_view", "github_check_log",
+    "issue_view",
     "monitors_list", "clipboard_read", "process_list",
     "accessibility_tree", "screen_diff",
 })

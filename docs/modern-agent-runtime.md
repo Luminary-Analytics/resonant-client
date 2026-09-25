@@ -198,6 +198,7 @@ Explicit attachments are inserted in chat with:
 @test-failure:last
 @terminal:last
 @plan:current
+@issue:ENG-12
 ```
 
 `#L10-24` (or `#L10`) attaches only those lines; the [code editor

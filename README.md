@@ -87,6 +87,8 @@ for their context-handoff and verification boundaries.
   chat ([chat gateway](docs/chat-gateway.md))
 - VS Code and JetBrains IDEs: send the selection or files into your message,
   and open Lumi's changes beside your files ([code editors](docs/code-editors.md))
+- Jira, Linear, GitHub and GitLab issues: attach one with `@issue:ENG-12`, and
+  have the agent comment on it ([issue trackers](docs/issue-trackers.md))
 - Built-in browser control (native CDP) and desktop computer use, with an
   on-screen indicator while the agent drives the machine
 - Permission modes and a project-root path sandbox

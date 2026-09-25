@@ -67,7 +67,11 @@ DEFAULTS = {
     },
     # Secrets are masked before settings are sent to the frontend.
     "api_keys": {"anthropic": "", "openai": "", "kimi": "", "openrouter": "", "sonn": "", "telegram_bot": "", "otlp": "",
-                 "github": "", "gitlab": "", "bitbucket": "", "azure_devops": "", "slack_bot": "", "slack_app": ""},
+                 "github": "", "gitlab": "", "bitbucket": "", "azure_devops": "", "jira": "", "linear": "", "slack_bot": "", "slack_app": ""},
+    # Issue trackers (engine/issue_trackers.py). Jira's token is api_keys.jira;
+    # with an email it's a Jira Cloud API token, without one a personal access
+    # token for Jira Server or Data Center. Linear's key is api_keys.linear.
+    "issue_trackers": {"jira_url": "", "jira_email": ""},
     # Custom model connections (gateways, Azure, Bedrock, Vertex); see lumi/connections.py.
     # Each one's key is stored in api_keys as conn_<id>.
     "connections": [],

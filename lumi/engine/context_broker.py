@@ -78,6 +78,7 @@ class ContextBroker:
         self.register("test-failure", self._test_failure)
         self.register("terminal", self._terminal)
         self.register("plan", self._plan)
+        self.register("issue", self._issue)
 
     def register(self, name: str, provider: Provider) -> None:
         self._providers[str(name).strip().lower()] = provider
@@ -265,6 +266,16 @@ class ContextBroker:
             "plan", selector,
             path.read_text(encoding="utf-8", errors="replace"), str(path),
         )
+
+    def _issue(self, selector: str) -> ContextItem | None:
+        """A Jira, Linear, GitHub or GitLab issue (engine/issue_trackers.py); a failure says why."""
+        from .issue_trackers import IssueError, view
+
+        try:
+            text, metadata = view(selector, str(self.project_path))
+        except IssueError as exc:
+            return self._item("issue", selector, f"Couldn't read issue {selector}: {exc}", "error")
+        return self._item("issue", metadata["issue"], text, metadata.get("url") or metadata["tracker"])
 
     @staticmethod
     def _item(provider: str, label: str, content: str, provenance: str) -> ContextItem:

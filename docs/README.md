@@ -38,6 +38,7 @@ guides, historical plans, and dated evidence, with links to current replacements
 
 - [Shared agent/contributor instructions](../AGENTS.md)
 - [Architecture and module ownership](../ARCHITECTURE.md)
+- [Organization policy for administrators](enterprise-policy.md)
 - [Product and engineering priorities](agentic-harness-north-star.md)
 - [Model execution and prompt architecture](model-prompt-architecture.md)
 - [Durable runtime services](modern-agent-runtime.md)

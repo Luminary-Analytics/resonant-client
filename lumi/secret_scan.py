@@ -90,6 +90,12 @@ def configure(settings: Any) -> dict[str, Any]:
     return {"secret_scan": enabled}
 
 
+def reset() -> None:
+    """Back to the defaults: no pattern scan, no known values (tests and shutdown)."""
+    with _lock:
+        _state.update(patterns=False, known=(), generation=secrets.token_hex(4))
+
+
 def secret_values(settings: Any = None, *, min_length: int = MIN_KNOWN_LENGTH) -> set[str]:
     """The credential values Lumi knows: saved keys, sensitive settings and environment keys."""
     found: set[str] = set()

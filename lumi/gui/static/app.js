@@ -4135,6 +4135,11 @@ class LumiApp {
             this.settings = event.settings;
             this._renderAccountMenu();
         }
+        // An organization policy can limit the permission modes (lumi/policy.py).
+        const allowedModes = Array.isArray(event.allowed_permission_modes) ? event.allowed_permission_modes : null;
+        document.querySelectorAll('#permission-menu .perm-option').forEach(option => {
+            option.hidden = Boolean(allowedModes) && !allowedModes.includes(option.dataset.mode);
+        });
         this.setPermissionMode(
             event.permission_mode || this.settings.general?.default_permission_mode || 'bypass',
             false

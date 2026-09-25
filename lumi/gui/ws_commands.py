@@ -619,6 +619,12 @@ async def _set_permission_mode(ctx: CommandContext) -> None:
     if not isinstance(mode, str) or mode not in PERMISSION_MODES:
         await ctx.send_error("Choose a permission mode: ask, auto-edit, plan or bypass.")
         return
+    from ..policy import current as current_policy
+
+    policy = current_policy()
+    if policy and not policy.mode_allowed(mode):
+        await ctx.send_error(f"{policy.organization}'s policy doesn't allow this permission mode.")
+        return
     ctx.state.apply_permission_mode(mode)
 
 
@@ -3076,6 +3082,13 @@ async def _cmd_update_settings(ctx: CommandContext) -> None:
         writes = [(k, _socket_setting_value(section, k, v)) for k, v in writes]
     except ValueError as exc:
         await ctx.send_error(str(exc))
+        return
+    from ..policy import current as current_policy
+
+    policy = current_policy()
+    managed = [k for k, _ in writes if policy and isinstance(section, str) and policy.locked(section, k)]
+    if managed:
+        await ctx.send_error(f"{section}.{managed[0]} is managed by {policy.organization} and can't be changed here.")
         return
     sonn_change = any(
         (section == "api_keys" and k == "sonn") or (section == "network" and k == "sonn_url")

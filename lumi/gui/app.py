@@ -236,7 +236,7 @@ class AppState:
         ])
         self._migrate_stale_defaults()
         self._apply_big_context_preset()
-        self.permission_mode = self.normalize_permission_mode(
+        self.permission_mode = self.policy_permission_mode(
             self.settings.get("general", "default_permission_mode", "bypass")
         )
         self.costs = CostTracker()
@@ -424,7 +424,16 @@ class AppState:
             project_policy = ExecutionPolicy(
                 [rule for rule in project_policy.rules if rule.action != PolicyAction.ALLOW.value]
             )
-        return policy.merge(project_policy) if project_policy else policy
+        merged = policy.merge(project_policy) if project_policy else policy
+        # Organization shell rules (lumi/policy.py) are checked before
+        # everything else: neither a repository nor a tier can loosen them.
+        from ..policy import current as current_policy
+
+        org_policy = current_policy()
+        if org_policy and org_policy.shell_rules:
+            org_rules = ExecutionPolicy.from_rules(list(org_policy.shell_rules)).rules
+            merged = ExecutionPolicy(org_rules + merged.rules)
+        return merged
 
     def cli_adapters_allowed(self) -> bool:
         return self.settings.get("security", "cli_adapters", True) is not False
@@ -436,10 +445,13 @@ class AppState:
         """Files the agent may never read or send in this project (engine/exclusions.py)."""
         from ..engine.exclusions import ExclusionRules
 
-        # A live source: a Settings change applies to every holder at once.
+        from ..policy import current as current_policy
+
+        # Live sources: a Settings or policy change applies to every holder.
         return ExclusionRules.for_project(
             project_path or "",
             settings_patterns=lambda: self.settings.get("privacy", "excluded_paths", []) or [],
+            policy_patterns=lambda: current_policy().exclude if current_policy() else (),
         )
 
     def _trusted_project_instructions(self, project_path: str) -> str | None:
@@ -557,8 +569,19 @@ class AppState:
                 item["content"] = cleaned_text
                 return
 
+    @classmethod
+    def policy_permission_mode(cls, mode: Any) -> str:
+        """A known mode that organization policy allows: the first allowed mode otherwise."""
+        from ..policy import current
+
+        normalized = cls.normalize_permission_mode(mode)
+        policy = current()
+        if policy and not policy.mode_allowed(normalized):
+            return policy.allowed_modes[0]
+        return normalized
+
     def apply_permission_mode(self, mode: str, session: Optional[Session] = None) -> str:
-        self.permission_mode = self.normalize_permission_mode(mode)
+        self.permission_mode = self.policy_permission_mode(mode)
         target = session or self.session
         if target:
             # Takes effect on the live session, including a run in progress:
@@ -1155,6 +1178,11 @@ class AppState:
         model: str | None = None,
         project_path: str | None = None,
     ) -> BackendSpec:
+        from ..policy import current as current_policy
+
+        org_policy = current_policy()
+        if org_policy and model and not org_policy.model_allowed(backend_type, model):
+            raise ValueError(f"{org_policy.organization}'s policy doesn't allow {model} on {backend_type}.")
         if backend_type in self.CLI_WRAPPED_BACKENDS and not self.cli_adapters_allowed():
             raise ValueError(
                 "Codex and Claude Code are turned off (Settings > Privacy & security, "
@@ -2062,11 +2090,18 @@ class AppState:
 
     def get_init_data(self, refresh_only: bool = False) -> dict:
         """Get initial state for the frontend."""
+        from ..policy import current as current_policy
+
+        org_policy = current_policy()
         backends_info = {}
         for key, info in self.available_backends.items():
             entry = {"name": key}
             if "models" in info:
-                entry["models"] = info["models"]
+                # Models the organization's policy blocks aren't offered.
+                entry["models"] = [
+                    model for model in info["models"]
+                    if not org_policy or org_policy.model_allowed(key, str(model))
+                ]
             if "model_labels" in info:
                 entry["model_labels"] = info["model_labels"]
             if "model_details" in info:
@@ -2105,6 +2140,9 @@ class AppState:
             "handles_tools": handles_tools,
             "model_capabilities": model_capabilities,
             "permission_mode": self.permission_mode,
+            "allowed_permission_modes": (
+                list(org_policy.allowed_modes) if org_policy and org_policy.allowed_modes is not None else None
+            ),
             "cwd": self.project.project_path.replace("\\", "/"),
             # Whether a message can actually be sent right now, and why not.
             # `current_backend` above is not a substitute: it reports the

@@ -139,11 +139,35 @@ class SettingsManager:
         self._keychain = self._secrets.available and self._path.parent.name != LEGACY_HOME_DIR_NAME
         self._load()
 
+    @staticmethod
+    def _policy():
+        """The organization policy (lumi/policy.py), or None."""
+        from ..policy import current
+
+        return current()
+
+    def locked_values(self, section: str) -> dict[str, Any]:
+        """Keys of ``section`` an organization policy locks, with their values."""
+        policy = self._policy()
+        if not policy:
+            return {}
+        prefix = section + "."
+        return {name[len(prefix):]: value for name, value in policy.settings.items() if name.startswith(prefix)}
+
     def get(self, section: str, key: str | None = None, default: Any = None) -> Any:
-        """Get a value. get('general', 'theme') or get('hooks')."""
+        """Get a value. get('general', 'theme') or get('hooks').
+
+        Values an organization policy locks win over what is stored; the
+        stored value comes back if the policy stops locking it.
+        """
+        locked = self.locked_values(section)
+        if key is not None and key in locked:
+            return locked[key]
         with self._lock:
             sect = self._data.get(section, DEFAULTS.get(section))
             if key is None:
+                if locked and isinstance(sect, dict):
+                    return {**sect, **locked}
                 return sect
             if isinstance(sect, dict):
                 value = sect.get(key, default)
@@ -168,9 +192,15 @@ class SettingsManager:
             self._save_locked()
 
     def get_all(self) -> dict:
-        """Return the full settings dict (deep copy)."""
+        """Return the full settings dict (deep copy), with policy-locked values applied."""
         with self._lock:
-            return json.loads(json.dumps(self._data))
+            data = json.loads(json.dumps(self._data))
+        policy = self._policy()
+        for name, value in (policy.settings.items() if policy else ()):
+            section, _, key = name.partition(".")
+            if isinstance(data.setdefault(section, {}), dict):
+                data[section][key] = value
+        return data
 
     def update_section(self, section: str, updates: dict) -> None:
         """Merge updates into a section."""
@@ -196,6 +226,18 @@ class SettingsManager:
                 data["api_keys"][key] = ""
             meta["api_keys_present"] = present
         meta["secret_storage"] = self.secret_storage()
+        # What an organization policy manages, for Settings to show and disable.
+        from ..policy import load as load_policy
+
+        state = load_policy()
+        meta["policy"] = {
+            "active": state.policy is not None,
+            "error": state.error,
+            "summary": state.policy.summary() if state.policy else None,
+        }
+        meta["locked"] = (
+            {name: state.policy.organization for name in state.policy.settings} if state.policy else {}
+        )
         # Offered by Settings > Privacy & security; nothing is excluded by default.
         from ..engine.exclusions import COMMON_SECRET_PATTERNS
         meta["common_exclusions"] = list(COMMON_SECRET_PATTERNS)

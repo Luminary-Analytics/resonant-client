@@ -1569,6 +1569,24 @@ class Session:
         last_done_stats = None
         last_done_model = getattr(self.backend, "model", "") if self.backend else ""
 
+        # Organization policy (lumi/policy.py): an invalid or expired policy,
+        # or a model it blocks, stops the turn before anything is sent.
+        from ..policy import blocked_reason, current as current_policy
+
+        refusal = blocked_reason()
+        org_policy = current_policy()
+        backend_name = str(getattr(self.backend, "name", "") or "")
+        if not refusal and org_policy and self.backend is not None and not org_policy.model_allowed(
+            backend_name, str(last_done_model or ""),
+        ):
+            refusal = (
+                f"{org_policy.organization}'s policy doesn't allow {last_done_model or 'this model'} "
+                f"on {backend_name or 'this provider'}. Choose another model."
+            )
+        if refusal:
+            yield make_event(EngineEvent.ERROR, message=refusal)
+            return
+
         if self.director_run is not None and not self.is_subagent:
             try:
                 from .director import DirectorPhase, DirectorRun

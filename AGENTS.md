@@ -77,6 +77,11 @@ host enrollment and actual packaged/learned-benefit qualification remain open.
 - Repository-provided instructions, notes, index summaries, policy `allow`
   rules and automatic lint/test runs require project trust
   (`gui/workspace_trust.py`). Repository content must never grant itself trust.
+- Organization policy (`policy.py`) outranks user settings, repositories and
+  tiers: read settings through `SettingsManager.get` (which applies locked
+  values), and check `policy.current()` where a new model, mode, MCP server,
+  pack or shell path is chosen. User-writable locations must never replace a
+  machine policy, and an invalid policy blocks requests instead of vanishing.
 
 ## Working in the codebase
 

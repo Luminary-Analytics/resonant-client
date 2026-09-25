@@ -300,6 +300,10 @@ There is no automatic cross-provider fallback or role routing in this workflow.
   old sessions, drafts, checkpoints, artifacts and logs automatically.
 - **Tool switches:** turn off Codex and Claude Code, computer use or the chat
   gateway under **Settings > Privacy & security**.
+- **Organization policy:** administrators can lock settings, limit permission
+  modes and models, and allowlist MCP servers and capability packs with Group
+  Policy, a configuration profile or a policy file. See
+  [Organization policy for administrators](docs/enterprise-policy.md).
 
 ## Browser Tools
 

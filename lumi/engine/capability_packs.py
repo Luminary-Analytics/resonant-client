@@ -475,6 +475,12 @@ class CapabilityPackManager:
             digest, pinned_files = "", []
             problem = f"The pack cannot be verified because {exc}."
         configured = self.configured.get(pack_id)
+        from ..policy import current as current_policy
+
+        org_policy = current_policy()
+        if not problem and org_policy and not org_policy.pack_allowed(pack_id):
+            # Blocked whatever the user approved; the approval itself is kept.
+            problem = f"{org_policy.organization}'s policy doesn't allow this pack."
         trusted, enabled, status = self._trust(
             configured if isinstance(configured, dict) else {},
             directory, digest, scope, problem,

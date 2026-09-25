@@ -8,6 +8,56 @@ The heartbeat remains paused. Documentation maintenance does not resume work,
 spending or grants, and changes no native implementation or installed bundle.
 The dated September 15/18 records below are historical.
 
+## September 25 organization policy — source only, not released
+
+- **`lumi.policy/v1`** (`lumi/policy.py`, [administrator guide](enterprise-policy.md)):
+  a machine-wide policy from the registry (Group Policy/Intune), macOS managed
+  preferences (a configuration profile), `ProgramData`, `/Library/Application
+  Support` or `/etc`. `LUMI_POLICY_FILE` applies only when none of those exists,
+  so a user can't replace their organization's policy.
+- **Locked settings:** policy values win over the user's. Settings shows them
+  disabled with "Managed by <organization>", and the app's settings commands
+  refuse changes. This locks the secret scan, retention, the Codex/Claude Code,
+  computer use and gateway switches, the network settings and others.
+- **Enforcement:**
+  - allowed permission modes (others hidden; a saved default outside the list
+    becomes the first allowed mode);
+  - allowed and blocked `provider:model` patterns (removed from the model menu
+    and refused at spec construction and at the start of every turn);
+  - extra file exclusions;
+  - shell rules checked before built-in and repository rules;
+  - MCP server allowlist and a switch for command-based servers;
+  - capability pack allowlist.
+- **Signed policies:** Ed25519 over the policy's canonical JSON, verified against
+  keys only an administrator can set (registry `PolicyKeys`, `policy-keys.json`
+  or the machine policy's `trusted_keys`). A signed policy with `expires_at`
+  stays enforced for `grace_days` offline, then Lumi refuses model requests. An
+  invalid policy also refuses requests instead of silently meaning "no policy".
+- **Administrative templates:** `packaging/policy/lumi.admx` with
+  `en-US/lumi.adml`, a macOS `lumi-policy.mobileconfig` and `example-policy.json`.
+- Settings > Privacy & security starts with an **Organization policy** summary.
+- `cryptography` is a core dependency (for Ed25519), and the release lock was
+  regenerated.
+
+Validation on September 25, 2026:
+
+- 28 new tests: `test_policy.py` (parsing, signatures and tampering, expiry,
+  source precedence, invalid policies, templates) and `test_policy_enforcement.py`
+  (locked settings and socket refusal, modes, models in the UI data, org shell
+  rules, exclusions, MCP, packs, refused turns).
+- Full `pytest`: 3,659 passed, 2 skipped.
+- In the browser pane, against an isolated home with a policy from
+  `LUMI_POLICY_FILE` and a stub offering an allowed and a blocked model:
+  - the permission menu offered only Ask and Auto accept edits (a saved
+    Full-auto default became Ask);
+  - the model list dropped the blocked model;
+  - Privacy & security opened with the policy summary, and locked fields were
+    disabled with "Managed by Example Corp" (the scan showed on although the
+    saved value was off).
+
+Not exercised: a real Group Policy or MDM deployment, signed delivery from Lumi
+Cloud (not built yet), and the packaged app.
+
 ## September 25 client security: file exclusions, project trust, retention and tool switches — source only, not released
 
 - **Files Lumi never reads** (`lumi/engine/exclusions.py`): gitignore-style

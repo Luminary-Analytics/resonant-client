@@ -4059,6 +4059,8 @@ body {
     display: block;
 }
 
+.perm-option[hidden] { display: none; }
+
 .perm-option {
     display: flex;
     align-items: center;
@@ -5826,6 +5828,24 @@ body {
     box-sizing: border-box;
     line-height: 1.5;
     resize: vertical;
+}
+
+/* Fields an organization policy manages (lumi/policy.py). */
+.settings-managed {
+    color: var(--accent);
+    font-weight: 500;
+}
+
+.settings-row.is-managed .settings-row-value {
+    opacity: .75;
+}
+
+.settings-policy-value {
+    max-width: 60%;
+    text-align: right;
+    color: var(--text);
+    font-size: 12px;
+    overflow-wrap: anywhere;
 }
 
 .settings-subheading {

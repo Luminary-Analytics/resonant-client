@@ -281,6 +281,12 @@ host enrollment and actual packaged/learned-benefit qualification remain open.
   Keep the SDK (`sdk/python/lumi_extension`) standard-library only and the
   protocol backward compatible; a breaking change needs a new
   `manifest_version`. Tests start real providers with `sys.executable`.
+- Pack signatures (`engine/pack_signing.py`, `lumi-pack.sig`) are checked
+  whenever a pack loads. They name a pack's publisher and never approve it.
+  An invalid signature makes the pack unverifiable. Only the organization's
+  `extensions.trusted_publishers` satisfy `extensions.require_signed`, never
+  keys a person trusted. `pack_publishers` in settings changes only through
+  the trust and forget commands, never `update_settings`.
 - Model comparisons (`model_evals.py`) run each task as a `lumi run`
   subprocess in a detached git worktree of `HEAD` under the project's state
   folder, never in the user's checkout; the user's check command passes the

@@ -8,6 +8,66 @@ The heartbeat remains paused. Documentation maintenance does not resume work,
 spending or grants, and changes no native implementation or installed bundle.
 The dated September 15/18 records below are historical.
 
+## September 25 signed capability packs — source only, not released
+
+- **Publisher signatures** (`lumi/engine/pack_signing.py`,
+  [guide](extensions.md#signing-a-pack)).
+  - `lumi extension keygen` makes an Ed25519 key, and `lumi extension sign`
+    writes `lumi-pack.sig`. It covers every file in the pack but itself,
+    signed together with the publisher's name and key.
+  - A key's id is the first 16 hex digits of the SHA-256 of the key.
+- **Lumi checks the signature whenever it loads a pack.** Settings >
+  Capability packs shows the result:
+  - **Verified**, under the name you or your organization gave the key;
+  - **Signed with a key you haven't trusted**, which offers to trust it;
+  - **Invalid**: the files changed or the signature is malformed. The pack
+    can't be approved.
+  - **Not signed**.
+  - Trusting a key approves nothing.
+  - **Trusted publishers** lists yours, with **Forget**, and your
+    organization's.
+- **Organization policy.** `extensions.trusted_publishers` names publishers
+  and their keys. `extensions.require_signed` turns off every pack one of
+  them didn't sign. Keys a person trusted don't count, and then no Trust
+  buttons appear. Lumi Cloud's Policy page writes both
+  (Luminary-Analytics/lumi-cloud#25).
+- `lumi extension check` shows a pack's signature too.
+
+Validation on September 25, 2026: `tests/test_pack_signing.py` (13 tests)
+covers:
+
+- signing and checking, and keys that are trusted, unknown, or match only
+  by id;
+- tampering: an edited file, an added file, a changed publisher name, a
+  wrong key id, a new format, unreadable JSON;
+- refusing a missing publisher, a non-key and an RSA key;
+- an invalid signature turning a pack off;
+- an organization requiring its publishers, where a key the person trusted
+  doesn't count, and the policy's validation;
+- trusting and forgetting a publisher through the Settings commands,
+  including refusing one whose files changed;
+- the CLI's keygen (never overwriting a key), sign and check.
+
+In the browser pane, with four personal packs:
+
+- The genuine pack showed "Signed as “Acme” with key 1966 f367 e44a 956b".
+  A look-alike signed "Acme" with another key showed its own key. The
+  unsigned pack showed "Not signed". The tampered pack was off, with its
+  reason shown once and no Approve button.
+- **Trust “Acme”** made only the genuine pack "Signed by Acme · verified",
+  still not approved. **Forget** undid it.
+- With a pilot policy trusting the key as "Acme IT" and requiring
+  signatures:
+  - The genuine pack showed "Signed by Acme IT" and could be approved.
+  - The look-alike and the unsigned pack were off, with "Fixture Org's
+    policy turns off packs that a publisher it trusts didn't sign."
+  - The policy's publisher was listed without Forget.
+  - Two fixes came from this run: the Trust buttons now name their key and
+    pack for screen readers, and they no longer appear under such a policy.
+
+Not yet: signed updates approving themselves, a revocation list, an
+organization registry of packs.
+
 ## September 25 model providers as extensions (Extension SDK v1) — source only, not released
 
 - **Model providers from capability packs** (`lumi/engine/provider_extensions.py`,

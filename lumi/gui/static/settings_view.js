@@ -200,8 +200,15 @@ class LumiSettingsView {
         const intro = '<p class="editor-help">A capability pack can add lifecycle hooks (shell commands), MCP servers, model providers, skills and agents. Nothing in a pack runs until you approve it here; a pack cannot approve itself. An approval covers this pack at this location with exactly the files it has now. If any of them change, the pack turns off until you review it again.</p>'
             + (data.error ? `<p class="editor-error" role="alert">${esc(data.error)}</p>` : '') + install;
         const packs = Array.isArray(data.packs) ? data.packs : [];
+        const keyId = id => esc(String(id || '').replace(/(.{4})(?=.)/g, '$1 '));
+        const publisherRows = (data.publishers || []).map(p => `<li><strong>${esc(p.name)}</strong> · key <code>${keyId(p.key_id)}</code> · ${p.source
+            ? `from ${esc(p.source)}’s policy`
+            : `<button type="button" class="btn-sm" data-pack-action="forget-publisher" data-key-id="${esc(p.key_id)}" aria-label="Stop trusting ${esc(p.name)}">Forget</button>`}</li>`).join('');
+        const publishers = `<h4 class="settings-subheading">Trusted publishers</h4>
+            <p class="editor-help">Packs signed with these keys show who made them. Trusting a publisher approves nothing; you still review each pack.${data.require_signed ? ' Your organization turns off packs its own trusted publishers didn’t sign.' : ''}</p>
+            ${publisherRows ? `<ul class="pack-publishers">${publisherRows}</ul>` : '<p class="editor-help">None yet. A signed pack offers to trust its publisher.</p>'}`;
         if (!packs.length) {
-            return `${intro}<div class="settings-row"><span class="settings-row-label" style="color:var(--dim)">No capability packs in this project's .lumi/packs or in ~/.lumi/packs.</span></div>`;
+            return `${intro}<div class="settings-row"><span class="settings-row-label" style="color:var(--dim)">No capability packs in this project's .lumi/packs or in ~/.lumi/packs.</span></div>${publishers}`;
         }
         const statusText = {
             approved: 'Approved · active',
@@ -231,6 +238,15 @@ class LumiSettingsView {
             }).join('');
             const providerNote = pack.scope === 'project'
                 ? '<p class="editor-help">Lumi uses model providers only from personal packs (in ~/.lumi/packs), so these stay off here.</p>' : '';
+            const signature = pack.signature || {};
+            const signed = {
+                verified: `Signed by ${esc(signature.publisher)} · key <code>${keyId(signature.key_id)}</code> · verified`,
+                unknown_publisher: `Signed as “${esc(signature.claimed)}” with key <code>${keyId(signature.key_id)}</code>, which you haven’t trusted. Compare the key with the one its publisher gives before trusting it.`,
+                invalid: `Its signature is invalid: ${esc(signature.reason)}.`,
+            }[signature.status] || 'Not signed.';
+            // Under a policy that requires its own publishers, a key the person trusts turns nothing on.
+            const trustPublisher = signature.status === 'unknown_publisher' && !data.require_signed
+                ? `<button type="button" class="btn-sm" data-pack-action="trust-publisher" data-pack-id="${esc(pack.id)}" data-pack-path="${esc(pack.path)}" aria-label="Trust “${esc(signature.claimed)}”, key ${keyId(signature.key_id)}, which signed ${esc(pack.name)}">Trust “${esc(signature.claimed)}”</button>` : '';
             const canApprove = Boolean(pack.digest) && ['needs_approval', 'changed', 'disabled'].includes(pack.status);
             const canRevoke = ['approved', 'disabled', 'changed'].includes(pack.status);
             const target = `data-pack-id="${esc(pack.id)}" data-pack-path="${esc(pack.path)}"`;
@@ -238,6 +254,7 @@ class LumiSettingsView {
                 <div class="pack-card-head"><h3>${esc(pack.name)} <small>v${esc(pack.version)}</small></h3><span class="pack-status" role="status">${esc(statusText[pack.status] || pack.status)}</span></div>
                 ${pack.description ? `<p class="editor-help">${esc(pack.description)}</p>` : ''}
                 <p class="pack-meta">${pack.scope === 'project' ? 'From this repository' : 'Personal pack'} · <code>${esc(pack.path)}</code></p>
+                ${signature.status === 'invalid' && pack.problem ? '' : `<p class="pack-meta pack-signature signature-${esc(signature.status || 'unsigned')}">${signed}</p>`}
                 ${pack.source?.type === 'git' ? `<p class="pack-meta">Installed from <code>${esc(pack.source.url)}</code>${pack.source.subdir ? ` (<code>${esc(pack.source.subdir)}</code>)` : ''} at commit <code>${esc(String(pack.source.commit || '').slice(0, 12))}</code></p>` : ''}
                 ${pack.problem ? `<p class="editor-error">${esc(pack.problem)}</p>` : ''}
                 <details ${pack.status === 'approved' ? '' : 'open'}><summary>What this pack would run</summary>
@@ -251,9 +268,10 @@ class LumiSettingsView {
                     ${canApprove ? `<button type="button" class="btn-sm" data-pack-action="approve" ${target} data-pack-digest="${esc(pack.digest)}">Approve and enable</button>` : ''}
                     ${canRevoke ? `<button type="button" class="btn-sm" data-pack-action="revoke" ${target}>Revoke approval</button>` : ''}
                     ${pack.source?.type === 'git' ? `<button type="button" class="btn-sm" data-pack-action="remove" ${target}>Remove</button>` : ''}
+                    ${trustPublisher}
                 </div>
             </article>`;
-        }).join('')}</div>`;
+        }).join('')}</div>${publishers}`;
     }
 
     _renderAuditStatus() {
@@ -2451,6 +2469,14 @@ class LumiSettingsView {
                     this.send({command: 'capability_pack_remove', pack_id: btn.dataset.packId});
                     btn.disabled = true;
                     btn.textContent = 'Removing…';
+                    return;
+                }
+                if (action === 'trust-publisher' || action === 'forget-publisher') {
+                    this.send(action === 'trust-publisher'
+                        ? {command: 'capability_pack_trust_publisher', pack_id: btn.dataset.packId, path: btn.dataset.packPath}
+                        : {command: 'capability_pack_forget_publisher', key_id: btn.dataset.keyId});
+                    btn.disabled = true;
+                    btn.textContent = action === 'trust-publisher' ? 'Trusting…' : 'Forgetting…';
                     return;
                 }
                 const approve = action === 'approve';

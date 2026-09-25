@@ -191,6 +191,48 @@ if (request.method === 'models') say({type: 'models', models: [{id: 'hello'}]});
 else { say({type: 'text', text: 'Hello from Node'}); say({type: 'done', usage: {input_tokens: 0, output_tokens: 3}}); }
 ```
 
+## Signing a pack
+
+A signature tells the people who install your pack that it came from you
+and hasn't changed since. It never approves a pack: each person still
+reviews and approves it.
+
+1. Make a key once, and keep the private key file secret:
+
+   ```sh
+   lumi extension keygen ~/keys/acme-packs.key
+   ```
+
+   It prints your **public key** and its **key id**. Publish both where
+   people can check them, such as your website or README.
+2. Sign the pack after every change, since any change breaks the signature:
+
+   ```sh
+   lumi extension sign ~/work/acme-models --key ~/keys/acme-packs.key --publisher "Acme"
+   ```
+
+   This writes `lumi-pack.sig` into the pack. It covers every file in the
+   pack but itself.
+
+Settings > Capability packs shows what each pack's signature says:
+
+| Shown | Meaning |
+|---|---|
+| Signed by … · verified | The files match the signature, and the key is one you or your organization trust. The name is the one you or your organization gave it. |
+| Signed as "…" with key …, which you haven't trusted | The files match, but nobody has trusted this key yet, so the name is only a claim. Compare the key id with the publisher's before choosing **Trust "…"**. |
+| Its signature is invalid | The files changed after signing, or the signature is malformed. The pack can't be approved. |
+| Not signed | |
+
+**Trusted publishers** at the bottom of that page lists the keys you
+trusted, and any your organization's policy adds. **Forget** removes one of
+yours.
+
+An organization can list its publishers and turn off every pack they didn't
+sign: `extensions.trusted_publishers` and `extensions.require_signed` in its
+[policy](enterprise-policy.md), or Lumi Cloud's Policy page. Only the
+organization's own publishers meet that requirement, not ones a person
+trusted.
+
 ## Trust
 
 - **Approval pins the pack.** Settings > Capability packs shows each
@@ -208,6 +250,10 @@ else { say({type: 'text', text: 'Hello from Node'}); say({type: 'done', usage: {
 - **Organization policy applies.** A policy that limits packs
   (`extensions.allowed_packs`) or models limits providers too. See
   [Organization policy](enterprise-policy.md).
+
+- **Signatures say who made it.** A pack whose signature doesn't match its
+  files can't be approved, and an organization can require its publishers'
+  signatures. See [Signing a pack](#signing-a-pack).
 
 ## What version 1 doesn't do
 

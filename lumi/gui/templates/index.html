@@ -409,6 +409,7 @@
                             <div class="input-footer">
                                 <div class="input-footer-left">
                                     <button class="add-context-btn" id="add-context-btn" title="Add context (paste/drop image, attach file)" aria-label="Add context">+</button>
+                                    <button type="button" class="add-context-btn composer-prompts-btn" id="composer-prompts-btn" title="Team prompts" aria-label="Team prompts" aria-haspopup="dialog" hidden>&#10077;</button>
                                     <button class="mic-btn" id="mic-btn" title="Hold to dictate &mdash; release to insert transcript" aria-label="Voice input (push-to-talk)">
                                         <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
                                             <rect x="6" y="2" width="4" height="7" rx="2" stroke="currentColor" stroke-width="1.4"/>
@@ -633,6 +634,21 @@
     </div>
 
     <!-- ═══ Skill Detail Dialog (v0.6.2a3) ═══ -->
+    <div id="team-prompts-dialog" class="dialog-overlay" style="display:none;" role="dialog" aria-modal="true" aria-labelledby="team-prompts-title">
+        <div class="dialog team-prompts-dialog">
+            <div class="dialog-header">
+                <span id="team-prompts-title">Team prompts</span>
+                <button type="button" id="team-prompts-close" class="dialog-btn-close" aria-label="Close">×</button>
+            </div>
+            <div class="dialog-body">
+                <label class="share-label" for="team-prompts-filter">Find a prompt</label>
+                <input id="team-prompts-filter" class="settings-input" type="search" autocomplete="off" placeholder="Name or words in it" aria-controls="team-prompts-list">
+                <div id="team-prompts-list" class="team-prompts-list" role="list"></div>
+                <p class="share-note">From your organization’s library in Lumi Cloud. A prompt goes into your message; nothing is sent until you send it.</p>
+            </div>
+        </div>
+    </div>
+
     <div id="handoff-dialog" class="dialog-overlay" style="display:none;" role="dialog" aria-modal="true" aria-labelledby="handoff-dialog-title">
         <div class="dialog handoff-dialog">
             <div class="dialog-header">

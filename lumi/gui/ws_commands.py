@@ -3233,7 +3233,33 @@ async def _cmd_cloud_refresh(ctx: CommandContext) -> None:
 
 @command("cloud_sign_out")
 async def _cmd_cloud_sign_out(ctx: CommandContext) -> None:
-    await _cloud_run(ctx, lambda client: client.sign_out())
+    from .. import team_library
+
+    def sign_out(client: Any) -> None:
+        client.sign_out()
+        team_library.clear()  # an organization's library goes with the sign-in
+
+    await _cloud_run(ctx, sign_out)
+
+
+@command("team_library")
+async def _cmd_team_library(ctx: CommandContext) -> None:
+    """The organization's skills and prompts (lumi/team_library.py), synced first when asked or when old."""
+    from .. import team_library
+
+    status = await asyncio.to_thread(ctx.state.cloud.status)
+    signed_in, error = bool(status.get("signed_in")), ""
+    stale = time.time() - (team_library.cached().get("synced_at") or 0) >= team_library.STALE_SECONDS
+    if signed_in and (ctx.msg.get("sync") or stale):
+        try:
+            await asyncio.to_thread(team_library.sync, ctx.state.cloud)
+        except team_library.LibraryError as exc:
+            error = str(exc)
+    prompts = [{key: item[key] for key in ("ref", "name", "description", "body", "version", "organization",
+                                           "updated_by")}
+               for item in team_library.items("prompt")]
+    await ctx.send({"event": "team_library", "signed_in": signed_in, **team_library.summary(), "prompts": prompts,
+                    **({"error": error} if error else {})})
 
 
 @command("cloud_enroll")

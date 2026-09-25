@@ -4018,6 +4018,12 @@ class LumiApp {
             case 'session_share':
                 this._renderShareDialog(event);
                 break;
+            case 'team_library':
+                this.teamLibrary = event;
+                this._updateTeamPromptsButton();
+                this._renderTeamPrompts();
+                this.refreshLumiAccount?.();
+                break;
             case 'session_handoff':
                 this._renderHandoffDialog(event);
                 break;
@@ -4184,6 +4190,7 @@ class LumiApp {
         if (!this._handoffsRequested) {
             this._handoffsRequested = true;
             this.send({ command: 'handoffs_inbox' });
+            this.send({ command: 'team_library' });
         }
         const handoffDraft = this._pendingHandoffDraft;
         if (handoffDraft && cwd && this._projectKey(cwd) === this._projectKey(handoffDraft.project)) {
@@ -10740,6 +10747,93 @@ class LumiApp {
                         visibility: body.querySelector('input[name="share-visibility"]:checked')?.value || 'organization' });
         });
         (body.querySelector('#share-copy') || body.querySelector('#share-create') || body.querySelector('#share-sign-in'))?.focus();
+    }
+
+    /** The composer's Team prompts button: shown once the organization's library has prompts. */
+    _updateTeamPromptsButton() {
+        const button = document.getElementById('composer-prompts-btn');
+        if (!button) return;
+        if (!button.dataset.wired) {
+            button.addEventListener('click', () => this.openTeamPrompts());
+            button.dataset.wired = '1';
+        }
+        button.hidden = !(this.teamLibrary?.prompts || []).length;
+    }
+
+    openTeamPrompts() {
+        const dialog = document.getElementById('team-prompts-dialog');
+        if (!dialog) return;
+        this._teamPromptsReturnFocus = document.activeElement;
+        dialog.style.display = 'flex';
+        this._wireDialog(dialog, 'team-prompts-close', () => this.closeTeamPrompts());
+        const filter = document.getElementById('team-prompts-filter');
+        if (!filter.dataset.wired) {
+            filter.addEventListener('input', () => this._renderTeamPrompts());
+            filter.addEventListener('keydown', event => {
+                if (event.key === 'Enter') {
+                    event.preventDefault();
+                    document.querySelector('#team-prompts-list .team-prompt')?.click();
+                } else if (event.key === 'ArrowDown') {
+                    event.preventDefault();
+                    document.querySelector('#team-prompts-list .team-prompt')?.focus();
+                }
+            });
+            filter.dataset.wired = '1';
+        }
+        filter.value = '';
+        this._renderTeamPrompts();
+        filter.focus();
+    }
+
+    closeTeamPrompts(returnFocus = true) {
+        const dialog = document.getElementById('team-prompts-dialog');
+        if (dialog) dialog.style.display = 'none';
+        if (returnFocus) this._teamPromptsReturnFocus?.focus?.();
+    }
+
+    _renderTeamPrompts() {
+        const dialog = document.getElementById('team-prompts-dialog');
+        const list = document.getElementById('team-prompts-list');
+        if (!dialog || !list || dialog.style.display === 'none') return;
+        const esc = value => this.escapeHtml(String(value ?? ''));
+        const words = (document.getElementById('team-prompts-filter')?.value || '').toLowerCase().split(/\s+/).filter(Boolean);
+        const prompts = (this.teamLibrary?.prompts || []).filter(prompt => {
+            const haystack = `${prompt.name} ${prompt.description} ${prompt.body}`.toLowerCase();
+            return words.every(word => haystack.includes(word));
+        });
+        list.innerHTML = prompts.length ? prompts.map((prompt, index) => `<button type="button" class="team-prompt" role="listitem" data-index="${index}">
+                <span class="team-prompt-name">${esc(prompt.name)}</span>
+                <span class="team-prompt-meta">${esc(prompt.organization?.name || '')} · version ${esc(prompt.version)}${prompt.description ? ` · ${esc(prompt.description)}` : ''}</span>
+            </button>`).join('')
+            : '<p class="share-note">No prompt matches.</p>';
+        list.querySelectorAll('.team-prompt').forEach(button => {
+            const prompt = prompts[Number(button.dataset.index)];
+            button.addEventListener('click', () => this._insertTeamPrompt(prompt));
+            button.addEventListener('keydown', event => {
+                const items = [...list.querySelectorAll('.team-prompt')];
+                const at = items.indexOf(button);
+                if (event.key === 'ArrowDown') { event.preventDefault(); items[Math.min(at + 1, items.length - 1)]?.focus(); }
+                if (event.key === 'ArrowUp') {
+                    event.preventDefault();
+                    (at > 0 ? items[at - 1] : document.getElementById('team-prompts-filter'))?.focus();
+                }
+            });
+        });
+    }
+
+    /** Put a team prompt into the message, after anything already typed; nothing is sent. */
+    _insertTeamPrompt(prompt) {
+        if (!prompt || !this.userInput) return;
+        this.closeTeamPrompts(false);
+        const current = this.userInput.value.replace(/\s+$/, '');
+        this.userInput.value = current ? `${current}\n\n${prompt.body}` : prompt.body;
+        this._markDraftEdited();
+        this._saveDraft();
+        this.userInput.dispatchEvent(new Event('input', { bubbles: true }));
+        this.userInput.focus();
+        const end = this.userInput.value.length;
+        this.userInput.setSelectionRange(end, end);
+        this.showToastMessage(`Added “${prompt.name}” (version ${prompt.version}). Edit it, then send.`);
     }
 
     /** Wire a dialog overlay's close button, Escape and backdrop click, once. */

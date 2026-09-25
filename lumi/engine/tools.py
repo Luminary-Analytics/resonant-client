@@ -1670,6 +1670,10 @@ def execute_tool(
         elif name == "grep":
             return _exec_grep(arguments, start, cancel_event=cancel_event, exclusions=exclusions)
         elif name == "skill_view":
+            if str(arguments.get('skill_id', '')).startswith('team:'):
+                from .. import team_library
+                body = team_library.read_skill(str(arguments['skill_id']))
+                return ToolResult(body, metadata={'skill_id': arguments['skill_id'], 'scope': 'team'})
             if str(arguments.get('skill_id', '')).startswith('pack:'):
                 from .capability_packs import CapabilityPackManager
                 manager = CapabilityPackManager(project_path or os.getcwd(), configured=(settings.get('plugins') or {}) if settings else {})

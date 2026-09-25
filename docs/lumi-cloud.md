@@ -134,6 +134,13 @@ where the work is (repository, branch and commit) to someone in your
 organization. Lumi Cloud emails them, and their Lumi lists it under
 **Hand-offs for you**. See [hand-offs](hand-offs.md).
 
+## Team skills and prompts
+
+Skills and prompts your organization publishes in Lumi Cloud's **Library**
+reach your Lumi: matching skills are offered to the agent, and the **❝**
+button beside the message box inserts prompts. **Team library** on this page
+shows what's synced, with **Sync now**. See [team library](team-library.md).
+
 ## For administrators: enrolling managed computers
 
 To enroll computers without anyone signing in:

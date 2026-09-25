@@ -95,8 +95,8 @@ Validation on September 25, 2026:
   wasn't created, the hook's program was gone, and the turn ended as needing
   attention. The tool row read "denied" without the reason. The real
   `~/.resonant` and the credential store were untouched.
-- Full `pytest`: 4,094 passed, 5 skipped. `ruff check .` clean, 43 Node UI
-  tests pass, `git diff --check` clean.
+- After merging main, full `pytest`: 4,143 passed, 5 skipped. `ruff check .`
+  clean, 46 Node UI tests pass, `git diff --check` clean.
 
 Not exercised: macOS, a packaged build, Codex or Claude Code, a live model.
 

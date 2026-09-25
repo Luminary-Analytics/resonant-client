@@ -8,6 +8,58 @@ The heartbeat remains paused. Documentation maintenance does not resume work,
 spending or grants, and changes no native implementation or installed bundle.
 The dated September 15/18 records below are historical.
 
+## September 25 workers run only the tools they were given — source only, not released
+
+**A read-only worker could start a writing worker.** A delegated worker gets a
+tool list for its type. An `explore` or `plan` worker has no write tools, and
+no worker gets `task` or `task_batch`. The list offered to the model is only a
+hint, and the check that enforces it (`lumi/engine/session.py`) sat after the
+branches that run `task`, `task_batch`, `await_user`, `search_tools` and MCP
+tools themselves, so it never applied to them. An `explore` worker whose model
+called `task` anyway started a `build` worker, which wrote a file. An MCP tool
+ran the same way. It never went past the conversation's permission mode: the
+new worker had the same approvals.
+
+- **The check comes first now**, for every tool, right after a worker's
+  action guard. A tool outside the list is refused (`is_error` and `denied`)
+  before any hook, policy or approval prompt, so Ask doesn't ask about a call
+  that can't run.
+- **Unchanged for the tools a list includes**: orchestration specialists list
+  `await_user` and the MCP tools they may use, and those still run. A harness
+  evaluator's empty list now refuses every tool. SONN workers keep their own
+  file-only guard, checked first.
+- Docs: [agent runtime](modern-agent-runtime.md#tool-approvals) and
+  [Director Mode](director-mode.md).
+
+Validation on September 25, 2026:
+
+- Full `pytest` on the latest `main`: 4,156 passed, 5 skipped. `ruff check .`
+  clean, the UI node tests (`ui_recovery`, `appearance`, `autonomous_view`)
+  46 passed, `git diff --check` clean.
+- `test_worker_tool_list.py` (7 tests) drives `Session.run` with a scripted
+  model that answers as the parent, an `explore` worker or a `build` worker.
+  The `explore` worker's `task`, `task_batch`, MCP tool, `await_user` and
+  `search_tools` calls are refused. No other worker is recorded, the MCP
+  server isn't called and no file is written. In a session that asks before
+  changes, only the parent's own `task` is put to the user. A listed
+  `await_user` still reaches the user.
+- Against the previous `session.py`, 6 of the 7 failed. The listed tool
+  passes on both.
+- In the browser pane, with an isolated home and a scripted
+  Ollama-compatible model, in Ask mode: the parent delegated to an `explore`
+  worker, whose model then called `task` to start a `build` worker that
+  writes `escalated.txt`. After **Allow** for the parent's own task, no other
+  dialog appeared. The worker's `task` row showed **denied**, the model got no
+  request from a `build` worker, and no file was written. On the previous
+  `session.py`, the same run showed a second Command Review for the worker's
+  `task`. **Allow** there started the `build` worker, and **Accept** on its
+  write card created `escalated.txt`. The real `~/.resonant/settings.json`
+  was unchanged, no `~/.lumi` was created, and no Lumi credential was stored.
+
+Not exercised: a live model, a packaged build, orchestration specialists and
+harness evaluators in the app (their existing tests pass), and Codex or Claude
+Code, which run their own tools.
+
 ## September 25 hand-offs to a teammate or a CI run — source only, not released
 
 - **Hand off…** in a conversation's menu (`lumi/handoff.py`,

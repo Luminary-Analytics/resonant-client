@@ -1,7 +1,7 @@
 # Modern agent runtime
 
 Status: implemented foundation and canonical extension guide
-Last updated: 2026-09-25 (repository allow rules answer Auto-edit's prompt)
+Last updated: 2026-09-25 (a session with a tool list refuses tools outside it)
 
 This document describes the runtime Resonant uses for long-horizon coding with
 its native provider adapters. The design favors correct, verified
@@ -122,11 +122,15 @@ gate hook that exits non-zero is a `deny`.
 
 ## Tool approvals
 
-Each tool call passes, in order: PRE_TOOL_USE hooks, the execution policy, then
-the autonomy tier. Built-in policy denies are checked before a project's
-`lumi-policy.json`, so a repository can tighten the policy but cannot
-weaken a built-in deny. A policy `prompt` rule requires approval even in
-Full-auto.
+A session built with a tool list (a delegated worker, an orchestration
+specialist, a harness evaluator) first refuses any tool outside that list,
+including `task`, `task_batch`, `await_user`, `search_tools` and MCP tools. The
+list offered to the model is only a hint. A refused call reaches no hook,
+policy or approval prompt. Each remaining tool call passes, in order:
+PRE_TOOL_USE hooks, the execution policy, then the autonomy tier. Built-in
+policy denies are checked before a project's `lumi-policy.json`, so a
+repository can tighten the policy but cannot weaken a built-in deny. A policy
+`prompt` rule requires approval even in Full-auto.
 
 A trusted project's `allow` rules answer Auto-edit's prompt (Plan uses the
 same tier). A call the tier would ask about runs without asking when the policy

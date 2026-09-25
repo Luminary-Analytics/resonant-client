@@ -27,7 +27,7 @@ The dated September 15/18 records below are historical.
 
 Validation on September 25, 2026:
 
-- Full `pytest`: 3,977 passed, 4 skipped. `test_schedules.py` (17 tests):
+- Full `pytest`: 3,981 passed, 4 skipped. `test_schedules.py` (17 tests):
   validation, registering on save, unregistering on pause and removal, a refused registration saving nothing,
   the `lumi run` arguments, kept and pruned results, a real `lumi run`
   without a model recording why it failed, the running claim and its
@@ -46,6 +46,29 @@ Validation on September 25, 2026:
   an add, keeping what was typed. Checked in the dark and light themes. The
   remove confirmation was answered by a stubbed `window.confirm`, since the
   pane can't press a native dialog's buttons.
+
+## September 25 zero data retention — source only, not released
+
+- **Connections that keep no data**: a custom connection can be marked
+  **This endpoint keeps no prompts or responses** (`zero_retention`), shown
+  as a "Zero retention" badge.
+- **Policies can require it** (`models.require_zero_retention`,
+  [organization policy](enterprise-policy.md)): only local Ollama and EXO
+  models (Ollama's `-cloud` models run on ollama.com, so they don't count),
+  marked connections, and providers the policy names in
+  `models.zero_retention_providers` stay in the model menu; others are
+  refused. The check is part of `Policy.model_allowed`, so every place that
+  already checks models enforces it.
+
+Validation on September 25, 2026:
+
+- Full `pytest`: 3,963 passed, 4 skipped. `test_zero_retention.py`: the
+  flag, each kind of provider under the requirement, Ollama cloud models,
+  other rules still applying, invalid fields, an unreadable connection.
+- In the browser pane, a custom connection saved with the box ticked showed
+  the "Zero retention" badge and was stored with `zero_retention: true`.
+  The first try stored `false`: the form's save payload lists its fields and
+  didn't include the new one, which this check caught and which is fixed.
 
 ## September 25 an organization's shared model credit — source only, not released
 

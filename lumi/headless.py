@@ -170,6 +170,9 @@ def _configure(settings: Any) -> None:
 
     github_tools.configure(settings)
     os_sandbox.configure(settings)
+    from . import connections, policy
+
+    policy.set_zero_retention_resolver(connections.zero_retention_resolver(settings))
 
 
 def _read_prompt(args: argparse.Namespace, stdin: TextIO) -> str:

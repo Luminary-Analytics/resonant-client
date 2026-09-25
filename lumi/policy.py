@@ -32,7 +32,8 @@ What a policy can do (every section is optional)::
       "organization": "Acme",
       "settings": {"privacy.secret_scan": true, "security.cli_adapters": false},
       "permissions": {"allowed_modes": ["ask", "auto-edit"]},
-      "models": {"allowed": ["anthropic:*"], "blocked": ["openrouter:*"]},
+      "models": {"allowed": ["anthropic:*"], "blocked": ["openrouter:*"],
+                 "require_zero_retention": true, "zero_retention_providers": ["anthropic"]},
       "files": {"exclude": ["**/.env", "*.pem"]},
       "shell": {"rules": [{"tool_pattern": "bash", "action": "deny",
                            "arg_patterns": {"command": "curl"}}]},
@@ -101,6 +102,11 @@ class Policy:
     budgets: tuple = ()
     # Model capabilities an administrator states (lumi/capabilities.py).
     capability_overrides: tuple = ()
+    # Only providers that keep no data: local ones, the providers named here
+    # (the organization's zero data retention agreements) and connections
+    # marked zero_retention (see zero_retention_ok).
+    require_zero_retention: bool = False
+    zero_retention_providers: tuple[str, ...] = ()
     raw: dict = field(default_factory=dict)
 
     # ── Queries ────────────────────────────────────────────────────────────
@@ -117,9 +123,23 @@ class Policy:
         target = f"{backend}:{model}"
         if any(fnmatch.fnmatchcase(target, pattern) for pattern in self.models_blocked):
             return False
+        if self.require_zero_retention and not self.zero_retention_ok(backend, model):
+            return False
         return self.models_allowed is None or any(
             fnmatch.fnmatchcase(target, pattern) for pattern in self.models_allowed
         )
+
+    def zero_retention_ok(self, backend: str, model: str = "") -> bool:
+        """Whether ``backend`` keeps no data: local, named by the policy, or a connection marked so.
+
+        Ollama's cloud models (``...:cloud``, ``...-cloud``) run on ollama.com, so
+        they count as local only when the policy names ``ollama``.
+        """
+        if backend in self.zero_retention_providers:
+            return True
+        if backend in LOCAL_PROVIDERS:
+            return not str(model).endswith((":cloud", "-cloud"))
+        return bool(_zero_retention_connection(backend))
 
     def mcp_server_allowed(self, name: str, *, stdio: bool) -> bool:
         if stdio and not self.mcp_allow_stdio:
@@ -161,6 +181,8 @@ class Policy:
             "prices": [pattern for pattern, _ in self.prices],
             "budgets": len(self.budgets),
             "capability_overrides": [pattern for pattern, _ in self.capability_overrides],
+            "require_zero_retention": self.require_zero_retention,
+            "zero_retention_providers": list(self.zero_retention_providers),
         }
 
 
@@ -199,6 +221,35 @@ def verify_signature(document: dict, signature_b64: str, public_key_b64: str) ->
     except (InvalidSignature, ValueError):
         return False
 
+
+# Providers that run on this computer or the local network: nothing leaves.
+LOCAL_PROVIDERS = frozenset({"ollama", "exo"})
+# Set by the app (connections are in its settings): backend -> keeps no data.
+_zero_retention_resolver = None
+
+
+def set_zero_retention_resolver(resolver) -> None:
+    """How ``Policy.zero_retention_ok`` learns which connections keep no data (``conn-<id>``)."""
+    global _zero_retention_resolver
+    _zero_retention_resolver = resolver
+
+
+def _zero_retention_connection(backend: str) -> bool:
+    resolver = _zero_retention_resolver
+    if resolver is None or not str(backend).startswith("conn-"):
+        return False
+    try:
+        return bool(resolver(backend))
+    except Exception:  # an unreadable connection doesn't qualify
+        return False
+
+
+def _flag(value, where: str) -> bool:
+    if value is None:
+        return False
+    if not isinstance(value, bool):
+        raise PolicyError(f"{where} must be true or false.")
+    return value
 
 def parse(data: Any, *, source: str, trusted_keys: dict[str, str] | None = None,
           require_signature: bool = False) -> Policy:
@@ -284,6 +335,9 @@ def parse(data: Any, *, source: str, trusted_keys: dict[str, str] | None = None,
         allowed_modes=allowed_modes,
         models_allowed=_patterns(models["allowed"], "models.allowed") if "allowed" in models else None,
         models_blocked=_patterns(models.get("blocked"), "models.blocked"),
+        require_zero_retention=_flag(models.get("require_zero_retention"), "models.require_zero_retention"),
+        zero_retention_providers=_patterns(models.get("zero_retention_providers"),
+                                           "models.zero_retention_providers"),
         exclude=_patterns((document.get("files") or {}).get("exclude"), "files.exclude"),
         shell_rules=tuple(shell_rules),
         mcp_allowed=_patterns(mcp["allowed_servers"], "mcp.allowed_servers") if "allowed_servers" in mcp else None,

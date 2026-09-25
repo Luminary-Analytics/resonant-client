@@ -13632,6 +13632,9 @@ body.is-window-dragging * {
 .connection-status.ok { color: var(--ok); }
 .connection-status.err { color: var(--err); }
 
+/* A connection marked zero retention (lumi/connections.py). */
+.connection-badge { display: inline-block; align-self: flex-start; width: fit-content; margin: 2px 0; padding: 1px 6px; border-radius: 999px; font-size: 11px; font-weight: 600; border: 1px solid var(--border); color: var(--text-secondary, inherit); }
+
 /* Settings > Scheduled tasks (lumi/schedules.py). */
 .schedule-form { display: grid; gap: 8px; margin-top: 12px; max-width: 560px; }
 .schedule-form label { display: grid; gap: 4px; font-size: 12px; color: var(--text-secondary); }

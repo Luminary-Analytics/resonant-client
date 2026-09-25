@@ -191,6 +191,10 @@ Settings follows the app theme: dark, light or match system.
    connection's name.
 3. A connection that is in use by a running turn cannot be edited or removed
    until the run finishes or stops. Removing a connection also deletes its key.
+4. **This endpoint keeps no prompts or responses** marks a connection covered
+   by a zero data retention agreement (a "Zero retention" badge). An
+   organization policy that requires zero retention allows only these
+   connections, local models and the providers it names.
 
 ## ChatGPT/Codex and OpenRouter
 

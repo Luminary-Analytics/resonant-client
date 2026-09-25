@@ -170,3 +170,10 @@ class TestRefusals:
         assert "French" in trusted.project_instructions and trusted.autonomy_tier == "full-auto"
         assert trusted.max_model_requests == 3 and trusted.audit_session_id == "headless:r2"
         assert trusted.computer_use_enabled is False
+        # File tools stay inside the project, as in the app.
+        assert trusted.sandbox is not None and trusted.sandbox.enabled
+        from lumi.engine.sandbox import SandboxViolation
+
+        with pytest.raises(SandboxViolation):
+            trusted._prepare_workspace_tool_args("file_write", {"path": str(tmp_path.parent / "x.txt"),
+                                                                "content": "x"})

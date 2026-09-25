@@ -2096,6 +2096,10 @@ class AppState:
         from ..engine import github_tools
 
         github_tools.configure(self.settings)
+        # And whether the agent's commands run in the shell sandbox.
+        from ..engine import os_sandbox
+
+        os_sandbox.configure(self.settings)
 
     @property
     def cloud(self):

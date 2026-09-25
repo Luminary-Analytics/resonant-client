@@ -16,6 +16,7 @@ import threading
 import time
 import uuid
 
+from lumi.engine import os_sandbox
 from lumi.processes import background_process_kwargs, close_windows_job, windows_kill_job
 from lumi.secrets_store import child_env
 
@@ -29,7 +30,7 @@ class JobManager:
     def _root(project):
         return os.path.normcase(str(Path(project).resolve(strict=True)))
 
-    def start(self, project, argv, *, timeout=1200, cancel_event=None):
+    def start(self, project, argv, *, timeout=1200, cancel_event=None, sandbox_roots=()):
         root = self._root(project)
         if not isinstance(argv, list) or not argv or any(not isinstance(v, str) or '\0' in v for v in argv):
             raise ValueError('command must be a non-empty array of program and arguments')
@@ -46,7 +47,10 @@ class JobManager:
                     raise ValueError('This project already has a running job; inspect or cancel it first')
             if len(active) >= 8:
                 raise ValueError('Managed job limit reached (8); finish or cancel a job first')
-            process = subprocess.Popen(argv, cwd=root, stdin=subprocess.DEVNULL, env=child_env(),
+            # Inside the shell sandbox when it's on (engine/os_sandbox.py); refused
+            # when it's on and can't run here.
+            launch = os_sandbox.prepare_argv(argv, roots=sandbox_roots or [root], cwd=root)
+            process = subprocess.Popen(launch, cwd=root, stdin=subprocess.DEVNULL, env=child_env(),
                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                 **background_process_kwargs(new_process_group=True))
             try:

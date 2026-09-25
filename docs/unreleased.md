@@ -8,6 +8,63 @@ The heartbeat remains paused. Documentation maintenance does not resume work,
 spending or grants, and changes no native implementation or installed bundle.
 The dated September 15/18 records below are historical.
 
+## September 25 shell sandbox and command guardrails — source only, not released
+
+See [shell sandbox and command guardrails](shell-sandbox.md).
+
+- **Guardrails, always on** (`lumi/engine/guardrails.py`). A short list of
+  commands is never run, in any permission mode:
+  - deleting the whole file system, a drive or the home folder (`rm -rf /`,
+    `rm -rf ~`, `Remove-Item -Recurse C:\`, `rd /s /q C:\`);
+  - `chmod -R`/`chown -R` on `/`, `mkfs`, `format C:`, `diskpart`,
+    `dd` onto a disk, a fork bomb;
+  - shutting down or restarting.
+
+  They're deny rules ahead of every tier's rules and ahead of organization
+  and repository `allow` rules. The irreversibility floor checks them again
+  before a command, check, job or preview starts, so a hook's rewrite or a
+  session without an execution policy can't get past them.
+- **The shell sandbox, off by default** (`lumi/engine/os_sandbox.py`,
+  `security.shell_sandbox`: `"off"` or `"project"`). When it's on, the agent's
+  commands, checks, jobs and previews can write only to the project, the
+  temporary folders and terminal devices. Git's own folder stays read-only,
+  because hooks written there would run outside the sandbox.
+  - macOS uses `sandbox-exec` with a Seatbelt profile.
+  - Linux uses bubblewrap.
+  - Windows has no sandbox yet. With the setting on, commands are refused
+    rather than run unprotected.
+  - Settings > Privacy & security says whether a sandbox can run here. The
+    check runs in the background at startup, so Settings never waits for it.
+  - An organization can require the sandbox. A policy with any other value
+    is invalid.
+- **`lumi run` keeps file tools inside the project.** Headless sessions had
+  no path sandbox; they now get the one the app uses.
+
+Validation on September 25, 2026:
+
+- Full `pytest` on Windows: 3,955 passed, 4 skipped (the live sandbox test
+  skips on Windows). `ruff check .` clean.
+- `test_guardrails.py` (29 commands that are refused, 26 everyday ones that
+  aren't; every tier; repository and organization `allow` rules; the check
+  before commands, jobs and previews start; nothing reaches a shell).
+- `test_os_sandbox.py`: the setting and its values, Settings never waiting
+  for the check, refusing commands, checks, jobs and previews when the
+  sandbox can't run, the bubblewrap arguments and the Seatbelt profile, and
+  a live test (see below).
+- `test_headless.py`: a headless session refuses a file write outside the
+  project. `test_policy.py`: a policy with another sandbox value is invalid.
+- In the browser pane, from an isolated home with the scripted Ollama stub:
+  - with the sandbox off, `echo hello from lumi` ran (exit 0);
+  - Settings > Privacy & security > Shell sandbox said "No sandbox can run
+    here: Lumi has no shell sandbox on Windows yet." Choosing **Only the
+    project and temporary folders** with the keyboard saved
+    `security.shell_sandbox: "project"`, and the note added that the agent
+    can't run commands;
+  - the next command was refused: "The shell sandbox is on … No command was
+    executed.";
+  - in Full-auto, `mkfs.ext4 /dev/sda1` was refused before running: "Blocked
+    by policy: Formatting a disk is never allowed, in any permission mode."
+
 ## September 25 large repositories — source only, not released
 
 - **The codebase index follows `.gitignore`** ([guide](desktop-workflow.md#large-repositories)).

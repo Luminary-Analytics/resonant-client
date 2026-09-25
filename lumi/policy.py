@@ -232,6 +232,8 @@ def parse(data: Any, *, source: str, trusted_keys: dict[str, str] | None = None,
         validate_policy_settings(settings)
     except ValueError as exc:
         raise PolicyError(str(exc)) from exc
+    if "security.shell_sandbox" in settings and settings["security.shell_sandbox"] not in ("off", "project"):
+        raise PolicyError("'security.shell_sandbox' must be \"off\" or \"project\".")
     permissions = document.get("permissions") or {}
     modes = permissions.get("allowed_modes")
     allowed_modes = _patterns(modes, "permissions.allowed_modes") if modes is not None else None

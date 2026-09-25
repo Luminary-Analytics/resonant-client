@@ -190,14 +190,20 @@ def default_full_auto_policy() -> ExecutionPolicy:
 
 
 def policy_for_tier(tier: str) -> ExecutionPolicy:
-    """Get the default policy for an autonomy tier."""
+    """Get the default policy for an autonomy tier.
+
+    Every tier starts with the guardrails (engine/guardrails.py): commands
+    that are never run, whatever the tier allows.
+    """
+    from .guardrails import policy_rules as guardrail_rules
+
     policies = {
         "suggest": default_suggest_policy,
         "auto-edit": default_auto_edit_policy,
         "full-auto": default_full_auto_policy,
     }
     factory = policies.get(tier, default_auto_edit_policy)
-    return factory()
+    return ExecutionPolicy(guardrail_rules() + factory().rules)
 
 
 def project_execution_policy(tier: str, project_root: str, *, honor_allows: bool = True) -> ExecutionPolicy:
@@ -207,8 +213,9 @@ def project_execution_policy(tier: str, project_root: str, *, honor_allows: bool
     override built-in denies (see ExecutionPolicy.merge). Its ``allow`` rules
     skip approval prompts, so they apply only while the user trusts the
     project and its policy hasn't changed since (gui/workspace_trust.py).
-    Organization shell rules (lumi/policy.py) come before everything: neither
-    a repository nor a tier can loosen them.
+    Organization shell rules (lumi/policy.py) come next: neither a repository
+    nor a tier can loosen them. The guardrails (engine/guardrails.py) come
+    before everything, so an organization's ``allow`` can't reach them either.
     """
     policy = policy_for_tier(tier)
     # lumi-policy.json; repositories from before the rebrand keep resonant-policy.json.
@@ -228,5 +235,8 @@ def project_execution_policy(tier: str, project_root: str, *, honor_allows: bool
     org_policy = current_policy()
     if org_policy and org_policy.shell_rules:
         org_rules = ExecutionPolicy.from_rules(list(org_policy.shell_rules)).rules
-        merged = ExecutionPolicy(org_rules + merged.rules)
+        from .guardrails import policy_rules as guardrail_rules
+
+        first = guardrail_rules()
+        merged = ExecutionPolicy(first + org_rules + [rule for rule in merged.rules if rule not in first])
     return merged

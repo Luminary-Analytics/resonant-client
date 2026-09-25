@@ -7,7 +7,9 @@ jobs. It uses the same engine as the desktop app. These all apply:
 - [budgets](usage-and-costs.md#budgets);
 - [usage records](usage-and-costs.md);
 - the [audit log](audit-log.md);
-- file exclusions and the secret scan.
+- file exclusions and the secret scan;
+- the path checks, command guardrails and, when it's on, the
+  [shell sandbox](shell-sandbox.md).
 
 The code is `lumi/headless.py`.
 

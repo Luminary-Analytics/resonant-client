@@ -47,6 +47,7 @@ guide belongs in that navigation; historical records stay out of it.
 - [Shared agent/contributor instructions](../AGENTS.md)
 - [Architecture and module ownership](../ARCHITECTURE.md)
 - [Organization policy for administrators](enterprise-policy.md)
+- [Shell sandbox and command guardrails](shell-sandbox.md)
 - [Audit log and OpenTelemetry export](audit-log.md)
 - [Usage records and prices](usage-and-costs.md)
 - [Running Lumi without a UI (`lumi run`, CI, containers)](headless.md)

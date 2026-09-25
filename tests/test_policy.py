@@ -69,6 +69,7 @@ class TestParse:
         ({**BASE, "models": {"allowed": "anthropic:*"}}, "list of strings"),
         ({**BASE, "expires_at": "next week"}, "ISO 8601"),
         ({**BASE, "shell": {"rules": ["deny all"]}}, "rule objects"),
+        ({**BASE, "settings": {"security.shell_sandbox": "strict"}}, "shell_sandbox"),
     ])
     def test_invalid_documents(self, document, message):
         with pytest.raises(PolicyError, match=message):

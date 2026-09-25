@@ -1251,6 +1251,13 @@ class Session:
 
         return ask
 
+    def _sandbox_roots(self) -> list[str]:
+        """The folders this session may write to, for the shell sandbox (engine/os_sandbox.py)."""
+        sandbox = self.sandbox
+        if sandbox is not None and getattr(sandbox, "enabled", False):
+            return [sandbox.project_path, *getattr(sandbox, "allowed_dirs", [])]
+        return [self.project_path] if self.project_path else []
+
     def _prepare_workspace_tool_args(self, tool_name: str, tool_args: dict) -> dict:
         """Normalize and validate path-bearing tool arguments.
 
@@ -3224,6 +3231,7 @@ class Session:
                             settings=getattr(self, "_settings_ref", None),
                             session_name=self.browser_session_name,
                             exclusions=self.exclusions,
+                            sandbox_roots=self._sandbox_roots(),
                         )
                         if self.action_guard is not None:
                             try:

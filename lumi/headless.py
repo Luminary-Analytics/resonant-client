@@ -106,6 +106,7 @@ def build_session(settings: Any, spec: Any, *, project: str, mode: str, trust_pr
     from .engine import Session
     from .engine.exclusions import ExclusionRules
     from .engine.policies import project_execution_policy
+    from .engine.sandbox import PathSandbox
     from .gui.project_instructions import load_project_instructions
     from .gui.workspace_trust import WorkspaceTrust
     from .policy import current as current_policy
@@ -120,6 +121,8 @@ def build_session(settings: Any, spec: Any, *, project: str, mode: str, trust_pr
         max_model_requests=max_requests,
     )
     session.project_path = project
+    # File tools stay inside the project, as in the app (gui/app.py).
+    session.sandbox = PathSandbox(project, enabled=True)
     session.autonomy_tier = MODES[mode]
     session.execution_policy = project_execution_policy(
         session.autonomy_tier, project, honor_allows=trust_project or status.honor_policy_allows)
@@ -163,9 +166,10 @@ def _configure(settings: Any) -> None:
     pricing.configure(settings)
     usage.configure(settings)
     budgets.configure(settings)
-    from .engine import github_tools
+    from .engine import github_tools, os_sandbox
 
     github_tools.configure(settings)
+    os_sandbox.configure(settings)
 
 
 def _read_prompt(args: argparse.Namespace, stdin: TextIO) -> str:

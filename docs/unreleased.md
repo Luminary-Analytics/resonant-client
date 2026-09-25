@@ -234,6 +234,33 @@ into a temporary extensions folder and user-data folder, where it was listed
 as `luminary-analytics.lumi-vscode` 0.1.0. The extension was not run inside
 VS Code, and no JetBrains IDE was run.
 
+## September 25 issue trackers: Jira, Linear, GitHub and GitLab — source only, not released
+
+- **Start from an issue** ([guide](issue-trackers.md),
+  `lumi/engine/issue_trackers.py`): `@issue:ENG-12` attaches an issue to a
+  message, and the `issue_view` tool reads one. The agent gets the title,
+  state, assignee, labels, description and latest comments, presented as the
+  issue's content rather than instructions.
+- **Link back**: `issue_comment` comments on it (Ask and Auto-edit ask first).
+- Issues are named by link, by `jira:`, `linear:`, `github:` or `gitlab:`
+  and a key, by `#34` for this repository, or by a bare key when only Jira or
+  only Linear is set up.
+- **Settings > Issue trackers**: Jira Cloud (site, email, API token, REST v3
+  with Atlassian documents), Jira Server or Data Center (a personal access
+  token, REST v2), and Linear (an API key, GraphQL). GitHub and GitLab issues
+  use the pull request tools' tokens. `JIRA_URL`, `JIRA_EMAIL`,
+  `JIRA_API_TOKEN` and `LINEAR_API_KEY` work too.
+
+Validation on September 25, 2026: `test_issue_trackers.py` (6 tests) runs
+against mocked APIs. It covers naming by link, prefix, `#34` for GitHub and
+GitLab origins, and bare keys with one, both or neither tracker set up. It
+covers Atlassian documents both ways, and Jira Cloud and Server, including
+their authentication headers and comment bodies. It covers Linear's query and
+mutation, GitHub and GitLab issues and comments (without GitLab's system
+notes), `@issue:` attachments, including a failure, and `issue_view` being
+read-only. Full `pytest`: 4,142 passed, 4 skipped. In the browser pane, Settings >
+Issue trackers saved a Jira site typed there. No real tracker was called.
+
 ## September 25 changed files count only edits that happened — source only, not released
 
 - A task's **Changed files** and the "Review these changes" next-prompt

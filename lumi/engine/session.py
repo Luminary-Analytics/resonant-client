@@ -1361,6 +1361,7 @@ class Session:
             "bash",
             "git_status", "git_diff", "git_commit", "git_branch_create", "git_log",
             "github_pr_view", "github_check_log", "github_pr_create", "github_pr_comment", "github_pr_update",
+            "issue_view", "issue_comment",
             "repl_python_start", "repl_node_start",
         }
 

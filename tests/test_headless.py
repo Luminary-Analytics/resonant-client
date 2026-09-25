@@ -170,6 +170,8 @@ class TestRefusals:
         assert "French" in trusted.project_instructions and trusted.autonomy_tier == "full-auto"
         assert trusted.max_model_requests == 3 and trusted.audit_session_id == "headless:r2"
         assert trusted.computer_use_enabled is False
+        # Tools read Settings as in the app (language servers, the autonomy floor).
+        assert isinstance(trusted._settings_ref, _Settings)
         # File tools stay inside the project, as in the app.
         assert trusted.sandbox is not None and trusted.sandbox.enabled
         from lumi.engine.sandbox import SandboxViolation

@@ -1001,6 +1001,7 @@ class LumiRunCards {
             glob: [`Finding files matching ${quoted(pattern) || 'the requested pattern'}`, `Found files matching ${quoted(pattern) || 'the requested pattern'}`],
             grep: [`Searching ${target} for ${quoted(pattern) || 'matching code'}`, `Searched ${target} for ${quoted(pattern) || 'matching code'}`],
             git_status: ['Checking repository status', 'Checked repository status'],
+            code_intel: this._codeIntelActivity(args, path),
             git_diff: ['Reviewing workspace changes', 'Reviewed workspace changes'],
             git_commit: ['Creating a Git commit', 'Created a Git commit'],
             bash: [`Running ${command || 'a terminal command'}`, `Ran ${command || 'a terminal command'}`],
@@ -1036,6 +1037,17 @@ class LumiRunCards {
         return { active: `Using ${label}`, completed: `Finished ${label}` };
     }
 
+
+    _codeIntelActivity(args = {}, path = 'a file') {
+        const symbol = args.symbol ? `“${this._liveRunCompactValue(args.symbol, 40)}”` : 'a symbol';
+        return {
+            definition: [`Finding where ${symbol} is defined`, `Found where ${symbol} is defined`],
+            references: [`Finding uses of ${symbol}`, `Found uses of ${symbol}`],
+            hover: [`Looking up ${symbol}`, `Looked up ${symbol}`],
+            diagnostics: [`Checking ${path} for problems`, `Checked ${path} for problems`],
+            symbols: [`Outlining ${path}`, `Outlined ${path}`],
+        }[args.action] || ['Asking the language server', 'Asked the language server'];
+    }
 
     _setLiveRunPhase(phase, detail = '', step = null) {
         const run = this._liveRun;

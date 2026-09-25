@@ -1282,8 +1282,10 @@ AGENT_TOOLS.extend([
 
 # GitHub pull requests (engine/github_tools.py), loaded through search_tools.
 from .github_tools import GITHUB_TOOLS  # noqa: E402
+from .lsp import CODE_INTEL_TOOLS  # noqa: E402
 
 AGENT_TOOLS.extend(GITHUB_TOOLS)
+AGENT_TOOLS.extend(CODE_INTEL_TOOLS)
 
 DIRECTOR_TOOLS = [
     {
@@ -1417,6 +1419,8 @@ TOOL_ICONS = {
     "window_focus":        "◉",
     "screen_ocr":          "🔍",
     "open_application":    "▶",
+    # Language servers
+    "code_intel":          "λ",
     # Git tools
     "git_status":          "±",
     "git_diff":            "≠",
@@ -1514,6 +1518,7 @@ def execute_tool(
     session_name: str = "",
     exclusions=None,
     sandbox_roots: Sequence[str] = (),
+    project_trusted: bool = False,
 ) -> ToolResult:
     """
     Execute a tool and return structured result.
@@ -1524,6 +1529,9 @@ def execute_tool(
     ``sandbox_roots`` are the folders the session may write to (its path
     sandbox). When the shell sandbox is on (engine/os_sandbox.py), commands,
     jobs and previews can write only there and to temporary folders.
+
+    ``project_trusted`` is whether the project is trusted (gui/workspace_trust.py);
+    language servers (``code_intel``) start only then.
 
     This is the pure execution layer — no display logic, no approval prompts.
     The engine handles permission; the TUI handles display.
@@ -1642,6 +1650,11 @@ def execute_tool(
             return result
         if name == "bash":
             return _exec_bash(arguments, start, cancel_event=cancel_event, sandbox_roots=sandbox_roots)
+        if name == "code_intel":
+            from .lsp import exec_code_intel
+            return exec_code_intel(arguments, start, project_path=project_path, settings=settings,
+                                   exclusions=exclusions, sandbox_roots=sandbox_roots,
+                                   trusted=project_trusted, cancel_event=cancel_event)
         elif name == "file_write":
             return _exec_file_write(arguments, start)
         elif name == "file_read":

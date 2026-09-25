@@ -8,6 +8,76 @@ The heartbeat remains paused. Documentation maintenance does not resume work,
 spending or grants, and changes no native implementation or installed bundle.
 The dated September 15/18 records below are historical.
 
+## September 25 specialists follow the organization's and the project's rules — source only, not released
+
+**A mission could run a command the organization denies.** Orchestration
+specialists (`lumi/orchestration/runner.py`) run a Mission's **Build this
+roadmap** and autonomous sessions. They got only the Full-auto tier's built-in
+rules: the guardrails, the review gate, then allow everything. The
+organization's `shell.rules` and the project's `lumi-policy.json` never
+applied, so a specialist's `echo forbidden-by-acme > ran.txt` ran although
+Acme's policy denies it.
+
+- **Specialists get the policy a chat session gets**
+  (`project_execution_policy`): Full-auto with the project's
+  `lumi-policy.json` and the organization's shell rules. Only the guardrails
+  and the review gate come before the organization's rules.
+  - The project's file is read from the project root, also when a specialist
+    works in a subfolder that an earlier one declared (`Working subdir:`).
+  - Its `allow` rules count only while the user trusts the project and the
+    file is the version they trusted (`gui/workspace_trust.py`). Its `deny`
+    and `prompt` rules always apply.
+  - The policy is built as each specialist starts, so a change of trust or
+    policy applies from the next one.
+- **A `prompt` rule refuses the call in a specialist**, the organization's or
+  the project's, since nobody can answer a specialist's approval prompt.
+  Before, the specialist ran the command without asking.
+- This closes the gap noted under "a broken lumi-policy.json can't drop
+  organization rules" below.
+- Docs: [agent runtime](modern-agent-runtime.md#tool-approvals).
+
+Validation on September 25, 2026:
+
+- Full `pytest`: 4,344 passed, 5 skipped. `ruff check .` clean, the 61 Node
+  tests in AGENTS.md pass, `git diff --check` clean.
+- `test_specialist_execution_policy.py` (5 tests) runs
+  `LocalSpecialistRunner` with a scripted model and the real `Session`, and
+  checks the file each command writes:
+  - an organization deny refuses `echo forbidden-by-acme > ran.txt` with
+    "Blocked by policy: Acme: no", and `ran.txt` isn't written;
+  - under the same policy, `echo allowed-by-acme > ok.txt` runs and writes
+    its file;
+  - a project deny applies to a specialist working in `web/`;
+  - with a project `allow` followed by a `prompt` for every other command,
+    the allowed command runs in a trusted project. In an untrusted one the
+    `allow` is dropped, and the `prompt` refuses the command.
+- Against the previous `runner.py`, 3 of the 5 fail: the organization's deny,
+  the project's deny in `web/` and the untrusted project's prompt. Each
+  command ran. The other command and the trusted case pass on both.
+- In the browser pane, from an isolated home with the scripted Ollama stub
+  and an organization policy for "Acme" (`LUMI_POLICY_FILE`) that denies
+  `forbidden-by-acme`:
+  - a Mission (**Start an autonomous session**, not run autonomously) got its
+    spec, and **Build this roadmap** ran the planner and an implement
+    specialist;
+  - the specialist's `echo forbidden-by-acme > ran.txt` row showed "not run"
+    and **denied**, the model received "Blocked by policy: Acme: no", and
+    `ran.txt` wasn't written;
+  - its next command, `echo allowed-by-acme > ok.txt`, ran (exit 0) and wrote
+    `ok.txt`. Both plan nodes finished with confidence 1.00;
+  - the real `~/.resonant` was unchanged afterwards. No `~/.lumi` or Lumi
+    credential entries appeared. The fixture's own `CODEX_HOME` was never
+    created. `~/.codex` logs changed during the run while the user's own Codex
+    was running; those writes are unattributed.
+- Found during that run, not changed here: `/plan` and **Plan this** start
+  nothing. Since 8d0b2c8, the `intent_start` handler compares the module's
+  `command` decorator, not the message's command, with each name, so the
+  intent commands send no reply.
+
+Not exercised: a packaged build, a live model, an autonomous session's own
+loop in the app (its dispatches and REFLECT pass use the same runner, and its
+tests pass), macOS and Linux.
+
 ## September 25 the organization's pack registry — source only, not released
 
 - **The registry in policy** (`lumi/policy.py`, `lumi/engine/capability_packs.py`,
@@ -338,7 +408,8 @@ tool calls checked against it.
   section that isn't an object is invalid too.
 - **Not changed:** intent specialists (`orchestration/runner.py`) still run
   with the Full-auto rules alone. They get neither the organization's shell
-  rules nor the project's policy.
+  rules nor the project's policy. (Changed later the same day: see
+  "specialists follow the organization's and the project's rules" above.)
 
 Validation on September 25, 2026, after merging main (including the
 repository allow rules change):

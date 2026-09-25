@@ -157,9 +157,14 @@ repository can tighten the policy but cannot weaken a built-in deny. A policy
 `prompt` rule requires approval even in Full-auto. Rules are checked when they
 load (`PolicyRule.from_dict`). A `lumi-policy.json` with a mistake keeps only
 its valid `deny` and `prompt` rules and logs a warning (`repository_rules`).
-The policy the app and `lumi run` give a session includes the organization's
-shell rules, and so does the app's fallback when the project's policy can't be
-built (`with_organization_rules`).
+The policies that the app, `lumi run` and the orchestration runner build
+include the organization's shell rules, and so does the app's fallback when
+the project's policy can't be built (`with_organization_rules`). The runner
+(`orchestration/runner.py`, which missions and autonomous sessions use) gives
+each specialist Full-auto with the project's `lumi-policy.json`, read from the
+project root even when the specialist works in a subfolder, and builds it as
+the specialist starts. Nobody can answer a specialist's approval prompt, so a
+`prompt` rule refuses the call.
 
 A trusted project's `allow` rules answer Auto-edit's prompt (Plan uses the
 same tier). A call the tier would ask about runs without asking when the policy

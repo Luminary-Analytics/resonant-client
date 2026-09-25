@@ -29,7 +29,7 @@ import threading
 import time
 from typing import Any, Callable, Optional
 
-from ..engine.policies import policy_for_tier
+from ..engine.policies import ExecutionPolicy, project_execution_policy
 from ..engine.sandbox import PathSandbox
 from ..engine.session import Session
 from .plan_graph import NodeSpecialization, NodeStatus, PlanGraph, PlanNode
@@ -337,7 +337,7 @@ class LocalSpecialistRunner:
         )
         session.project_path = effective_path
         session.sandbox = workspace_sandbox
-        session.execution_policy = policy_for_tier("full-auto")
+        session.execution_policy = self._execution_policy(workspace_sandbox.project_path)
         # Hand the settings through so autonomy.check_floor can pick up custom
         # protected branches / budget cap / external paths during tool dispatch.
         session._settings_ref = self.settings
@@ -512,6 +512,25 @@ class LocalSpecialistRunner:
         return result
 
     # ── Helpers ────────────────────────────────────────────────────
+
+    @staticmethod
+    def _execution_policy(project_root: str) -> ExecutionPolicy:
+        """Full-auto with the project's lumi-policy.json and the organization's shell rules.
+
+        Built as the app builds a chat session's (engine/policies.py), when
+        each specialist starts, so trust and policy changes apply from the
+        next one. It comes from the project root, not the node's working
+        subdir: a specialist working in ``web/`` keeps the project's rules.
+        The repository's ``allow`` rules count only while the user trusts the
+        project (gui/workspace_trust.py). Nobody can answer a specialist's
+        approval prompt, so a ``prompt`` rule refuses the call.
+        """
+        from ..gui.workspace_trust import WorkspaceTrust
+
+        trust = WorkspaceTrust().status(project_root)
+        return project_execution_policy(
+            "full-auto", project_root, honor_allows=trust.honor_policy_allows, policy_digest=trust.policy_digest,
+        )
 
     @staticmethod
     def _repair_structured_output(backend: Any, text: str, schema: dict) -> Optional[dict]:

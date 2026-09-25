@@ -30,6 +30,10 @@ def test_the_guides_link_to_files_that_exist():
         for target in LINK.findall(text):
             if re.match(r"^[a-z][a-z0-9+.-]*:", target) or target.startswith("#"):
                 continue
+            # An absolute path on a contributor's machine (the AI Employee pause
+            # notice) isn't a repository link, and exists only on that machine.
+            if re.match(r"^[A-Za-z]:[\\/]", target):
+                continue
             destination = (path.parent / target.partition("#")[0]).resolve()
             if not destination.exists():
                 broken.append(f"{page}: {target}")

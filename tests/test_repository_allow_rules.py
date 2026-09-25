@@ -107,6 +107,25 @@ def test_auto_edit_still_asks_and_the_answer_decides(tmp_path, command, trusted)
     assert not (project / "other").exists()
 
 
+def test_a_broken_rule_in_the_file_turns_its_allow_rules_off(tmp_path):
+    # Without the broken rule, a later allow could let through what that rule
+    # was meant to stop (engine/policies.repository_rules). Its deny stays.
+    project = _project(tmp_path, [
+        {"tool_pattern": "bash", "action": "deny", "arg_globs": {"command": "mkdir made-by-mistake"}},
+        {"tool_pattern": "bash", "action": "prompt", "arg_patterns": "mkdir"},
+        ALLOW_MKDIR,
+    ])
+
+    asked, result = _run(_session(project, "bash", {"command": "mkdir made"}))
+
+    assert asked == ["bash"]
+    assert result["denied"] is True
+    assert not (project / "made").exists()
+    denied_asked, denied = _run(_session(project, "bash", {"command": "mkdir made-by-mistake"}), answer=True)
+    assert denied_asked == [] and denied["denied"] is True
+    assert not (project / "made-by-mistake").exists()
+
+
 @pytest.mark.parametrize("command", [
     "npm test; whoami",
     "npm test & whoami",

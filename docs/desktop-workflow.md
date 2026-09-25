@@ -151,10 +151,8 @@ desktop and git actions, except the ones a trusted project's
 **Plan** uses Auto-edit approvals for native providers.
 **Full-auto** runs everything inside the project sandbox. A project's
 `lumi-policy.json` can require more approval but cannot lift a built-in
-block. If the file has a mistake, Lumi still applies its valid deny and ask
-(`prompt`) rules but none of its approval-skipping (`allow`) rules until it's
-fixed, and the log says what's wrong. Codex and Claude Code can't pass an
-approval request to Lumi, so under Ask and Plan they only read.
+block. Codex and Claude Code can't pass an approval request to Lumi, so under
+Ask and Plan they only read.
 
 **Deny** is final: nothing, including a hook, runs the call afterward. The
 approval dialog takes focus when it opens, so typing in the composer cannot
@@ -222,6 +220,13 @@ Projects that were already in Recent projects when trust arrived are trusted,
 but their `allow` rules wait for your review once. Each call an `allow` rule
 runs is recorded in the [audit log](audit-log.md) as an approval by
 `project_policy`.
+
+If a rule has a mistake, such as `arg_patterns` that isn't an object of
+regular expressions or an action other than `allow`, `prompt` or `deny`, Lumi
+skips that rule and all of the file's `allow` rules until it's fixed. Its
+valid `deny` and `prompt` rules still apply. A file that isn't JSON, or isn't
+an object with a `rules` list, is ignored. The log names each mistake, and
+your organization's rules apply either way.
 
 ## Anthropic, OpenAI and custom connections
 

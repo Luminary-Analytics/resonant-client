@@ -171,6 +171,18 @@ Validation on September 25, 2026:
   digits or a URL's underline; 2 only split one color into more segments. No
   line keeps highlighter bold or underline now. A turn with markup-like text
   raised `MarkupError` on main and prints in full here.
+- On main at 1c42562 with this change (a30d4de), from an isolated home:
+  - a full `pytest` run, before the last result and summary lines moved to
+    `_print`: 4,402 passed, 5 skipped;
+  - a full run on the final code: 4,401 passed, 5 skipped and 1 failed outside
+    the TUI. `tests/test_skill_curator.py` hit `OSError: [WinError 1450]
+    Insufficient system resources` creating a pytest temp folder, on a machine
+    where several sessions run their suites at once; that file passed alone
+    (27 tests);
+  - `ruff check .` is clean (ruff 0.12.12), `node --check` passes for `app.js`
+    and `settings_view.js`, the four Node UI test files pass (66 tests), and
+    `git diff --check` is clean. The real `~/.resonant` was unchanged and no
+    `~/.lumi` was created.
 
 Not exercised: the TUI in a terminal window with a live model; the console was
 captured instead, from an isolated home. Not changed: `main()`'s own lines

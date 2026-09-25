@@ -600,6 +600,60 @@ async def _schedule_change(ctx: CommandContext) -> None:
     await ctx.send(await _in_executor(lambda: _schedules_payload(settings)))
 
 
+def _model_evals_payload(**extra: Any) -> dict:
+    from .. import model_evals
+
+    return {"event": "model_evals", "data": {**model_evals.overview(), **extra}}
+
+
+@command("model_evals_list")
+async def _model_evals_list(ctx: CommandContext) -> None:
+    await ctx.send(await _in_executor(_model_evals_payload))
+
+
+@command("model_eval_save")
+async def _model_eval_save(ctx: CommandContext) -> None:
+    # Validation runs git in the project: off the event loop.
+    from .. import model_evals
+
+    raw = ctx.msg.get("comparison")
+    if not isinstance(raw, dict):
+        await ctx.send_error("Send the comparison's fields.")
+        return
+    try:
+        saved = await _in_executor(lambda: model_evals.create(raw))
+    except model_evals.EvalError as exc:
+        await ctx.send({"event": "model_eval_error", "message": str(exc)})
+        return
+    await ctx.send(await _in_executor(lambda: _model_evals_payload(saved=saved.id)))
+
+
+@command("model_eval_change")
+async def _model_eval_change(ctx: CommandContext) -> None:
+    """Run, stop or remove a comparison. Runs report progress as they finish."""
+    from .. import model_evals
+
+    comparison_id, action = str(ctx.msg.get("id") or ""), str(ctx.msg.get("action") or "")
+    loop = asyncio.get_running_loop()
+
+    def on_update() -> None:  # from the comparison's thread
+        asyncio.run_coroutine_threadsafe(ctx.send(_model_evals_payload()), loop)
+
+    try:
+        if action == "run":
+            await _in_executor(lambda: model_evals.runner.start(comparison_id, on_update))
+        elif action == "stop":
+            await _in_executor(model_evals.runner.stop)
+        elif action == "remove":
+            await _in_executor(lambda: model_evals.remove(comparison_id))
+        else:
+            raise model_evals.EvalError("Choose run, stop or remove.")
+    except model_evals.EvalError as exc:
+        await ctx.send({"event": "model_eval_error", "message": str(exc)})
+        return
+    await ctx.send(await _in_executor(_model_evals_payload))
+
+
 @command("project_trust_list")
 async def _project_trust_list(ctx: CommandContext) -> None:
     # The open project's status plus every remembered decision, for Settings.
@@ -3222,7 +3276,7 @@ _SOCKET_SETTING_KEYS: dict[str, frozenset[str]] = {
         "display_name", "show_companion", "default_backend", "default_model",
         "default_permission_mode", "auto_lint_after_edits", "auto_test_after_edits",
         "auto_test_command", "max_model_requests", "big_context_profile",
-        "harness_enabled", "fallback_models", "role_models",
+        "harness_enabled", "autonomous_sessions", "fallback_models", "role_models",
     }),
     "appearance": frozenset({"theme", "density", "font_size"}),
     "local_backends": frozenset({"ollama_host", "ollama_num_ctx", "ollama_keep_alive"}),

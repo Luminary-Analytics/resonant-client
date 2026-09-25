@@ -662,6 +662,11 @@ class LumiApp {
         this.ws.send(JSON.stringify({ command: 'mcp_list' }));
     }
 
+    /** Autonomous sessions are experimental: their button and views show only when turned on. */
+    _syncAutonomousSwitch() {
+        document.body.dataset.autonomousSessions = this.settings?.general?.autonomous_sessions === true ? '1' : '0';
+    }
+
     requestLspList() {
         if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
         this.ws.send(JSON.stringify({ command: 'lsp_list' }));
@@ -1034,6 +1039,10 @@ class LumiApp {
         if (missionToggle) {
             missionToggle.addEventListener('click', () => this.openMissionComposer());
         }
+        // The composer's entry to autonomous sessions (shown when Settings
+        // turns them on); the header toggle above is hidden in this layout.
+        document.getElementById('composer-autonomous-btn')
+            ?.addEventListener('click', () => this.openMissionComposer());
         this.userInput.addEventListener('keydown', (e) => {
             // Fuzzy file picker hijacks navigation/select keys when open so
             // it can act like a real autocomplete instead of moving the
@@ -3836,6 +3845,7 @@ class LumiApp {
                 break;
             case 'settings':
                 this.settings = event.data || {};
+                this._syncAutonomousSwitch();
                 this.settingsError = '';
                 this._settingsDrafts = {};
                 // A save succeeded: an earlier refusal no longer applies, even
@@ -3997,6 +4007,15 @@ class LumiApp {
                 // A saved form is emptied at once; a run finishing waits until
                 // nobody is typing (renderSettingsView defers for a focused field).
                 if (this.currentView === 'settings') this.renderSettingsView({force: Boolean(event.data?.saved)});
+                break;
+            case 'model_evals':
+                this.modelEvals = event.data;
+                if (event.data?.saved) { this._evalDraft = null; this.modelEvalError = ''; }
+                if (this.currentView === 'settings') this.renderSettingsView({force: Boolean(event.data?.saved)});
+                break;
+            case 'model_eval_error':
+                this.modelEvalError = event.message || 'That did not work.';
+                if (this.modelEvals && this.currentView === 'settings') this.renderSettingsView({force: true});
                 break;
             case 'schedule_error':
                 this.scheduleError = event.message || 'That did not work.';
@@ -4196,6 +4215,7 @@ class LumiApp {
         // Store settings
         if (event.settings) {
             this.settings = event.settings;
+            this._syncAutonomousSwitch();
             this._renderAccountMenu();
         }
         // An organization policy can limit the permission modes (lumi/policy.py).
@@ -11304,9 +11324,11 @@ class LumiApp {
     }
 
     escapeHtml(str) {
-        const div = document.createElement('div');
-        div.textContent = str;
-        return div.innerHTML;
+        // Quotes too: pages put the result in attribute values (value="…",
+        // aria-label="…") as well as text, and an unescaped quote there cut
+        // a saved form field short at the next re-render.
+        const entities = {'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'};
+        return String(str ?? '').replace(/[&<>"']/g, ch => entities[ch]);
     }
 
     shortenPath(path) {

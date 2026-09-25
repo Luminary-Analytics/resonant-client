@@ -577,3 +577,12 @@ test('a prompt keeps amounts and version numbers in its question', () => {
         "Today's spend is $0.27, past your $0.20 limit \u2014 continue anyway?");
     assert.equal(app._conciseAwaitUserQuestion('The tests pass. Upgrade to Python 3.12 now?'), 'Upgrade to Python 3.12 now?');
 });
+
+test('escaped text is safe inside attribute values', () => {
+    const app = setup(() => Promise.resolve({ok: true}));
+    // A check command with quotes used to end value="..." early on re-render.
+    assert.equal(app.escapeHtml(`python -c "print('x')" <&>`), 'python -c &quot;print(&#39;x&#39;)&quot; &lt;&amp;&gt;');
+    assert.equal(app.escapeHtml(null), '');
+    assert.equal(app.escapeHtml(undefined), '');
+    assert.equal(app.escapeHtml(3), '3');
+});

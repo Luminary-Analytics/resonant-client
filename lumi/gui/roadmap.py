@@ -166,6 +166,11 @@ class Roadmap:
     # resume — a mission restarted after a crash keeps the deadline the user
     # chose for it.
     decision_timeout_label: str = ""
+    # Model spending the mission may reach ("$25"; empty: no limit), and
+    # what it has spent so far ("$3.20"), written after each iteration so a
+    # mission resumed after a restart keeps counting from there.
+    spend_limit_label: str = ""
+    spent_label: str = ""
     status: str = "running"        # "running" | "paused" | "complete" | "failed"
 
     goal_spec_block: str = ""      # raw markdown from `## Goal (from grill spec)`
@@ -248,6 +253,8 @@ _BUDGET_RE = re.compile(r"^\*\*Time budget:\*\*[ \t]*(.*?)[ \t]*$", re.MULTILINE
 _DECISION_TIMEOUT_RE = re.compile(
     r"^\*\*Decision timeout:\*\*[ \t]*(.*?)[ \t]*$", re.MULTILINE,
 )
+_SPEND_LIMIT_RE = re.compile(r"^\*\*Spending limit:\*\*[ \t]*(.*?)[ \t]*$", re.MULTILINE)
+_SPENT_RE = re.compile(r"^\*\*Spent so far:\*\*[ \t]*(.*?)[ \t]*$", re.MULTILINE)
 _STATUS_RE = re.compile(r"^\*\*Status:\*\*\s*(\w+)", re.MULTILINE)
 
 # Tier section header: `### Tier 1 — initial decomposition` etc.
@@ -341,6 +348,10 @@ def parse(markdown: str) -> Roadmap:
         rm.time_budget_label = m.group(1).strip()
     if m := _DECISION_TIMEOUT_RE.search(markdown):
         rm.decision_timeout_label = m.group(1).strip()
+    if m := _SPEND_LIMIT_RE.search(markdown):
+        rm.spend_limit_label = m.group(1).strip()
+    if m := _SPENT_RE.search(markdown):
+        rm.spent_label = m.group(1).strip()
     if m := _STATUS_RE.search(markdown):
         rm.status = m.group(1).strip()
 
@@ -472,6 +483,10 @@ def render(rm: Roadmap) -> str:
     # through load+save and don't churn on the next REFLECT write.
     if rm.decision_timeout_label:
         parts.append(f"**Decision timeout:** {rm.decision_timeout_label}")
+    if rm.spend_limit_label:
+        parts.append(f"**Spending limit:** {rm.spend_limit_label}")
+    if rm.spent_label:
+        parts.append(f"**Spent so far:** {rm.spent_label}")
     parts.append(f"**Status:** {rm.status}")
     parts.append("")
 

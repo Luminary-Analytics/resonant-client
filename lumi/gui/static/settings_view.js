@@ -433,6 +433,123 @@ class LumiSettingsView {
         return rows.map(([label, value]) => `<div class="settings-row"><div class="settings-row-copy"><span class="settings-row-label">${label}</span></div><div class="settings-row-value settings-policy-value">${value}</div></div>`).join('');
     }
 
+    _renderModelComparisons() {
+        const esc = value => this.escapeHtml(String(value ?? ''));
+        const data = this.modelEvals;
+        if (!data) return '<p class="editor-help">Loading…</p>';
+        const money = value => typeof value === 'number' ? `$${value.toFixed(value < 1 ? 4 : 2)}` : '—';
+        const statusText = {ready: 'Not run yet', running: 'Running…', done: 'Finished', stopped: 'Stopped',
+            failed: 'Failed', interrupted: 'Interrupted (Lumi closed)'};
+        const items = (data.items || []).map(item => {
+            const running = data.running === item.id;
+            const table = (item.summary || []).map(row => `<tr><th scope="row"><code>${esc(row.model)}</code></th>
+                <td>${row.passed}/${row.tasks}</td><td>${money(row.cost_usd)}</td>
+                <td>${row.median_seconds == null ? '—' : `${esc(row.median_seconds)}s`}</td></tr>`).join('');
+            const details = (item.tasks || []).map((task, index) => {
+                const cells = (item.results || []).filter(r => r.task === index).map(r => `<li>
+                    <span class="${r.passed ? 'eval-pass' : 'eval-fail'}">${r.passed ? 'Passed' : 'Failed'}</span>
+                    <code>${esc(r.model)}</code> · ${esc(r.status)}${typeof r.elapsed === 'number' ? ` · ${esc(r.elapsed)}s` : ''} · ${money(r.cost_usd)} · ${esc(r.changed_files)} file${r.changed_files === 1 ? '' : 's'} changed
+                    ${r.error ? `<div class="settings-row-hint">${esc(String(r.error).slice(0, 300))}</div>` : ''}
+                    ${r.check_output ? `<pre class="eval-check-output">${esc(r.check_output)}</pre>` : ''}</li>`).join('');
+                return `<details class="eval-task"><summary>Task ${index + 1}: ${esc(task.prompt.split('\n')[0].slice(0, 120))}</summary>
+                    <div class="settings-row-hint">Check: <code>${esc(task.check)}</code></div>
+                    ${cells ? `<ul class="eval-results">${cells}</ul>` : '<p class="settings-row-hint">No runs yet.</p>'}</details>`;
+            }).join('');
+            const id = esc(item.id);
+            const action = running
+                ? `<button type="button" class="btn-sm" id="eval-stop-${id}" data-eval-action="stop" data-eval-id="${id}">Stop</button>`
+                : `<button type="button" class="btn-sm" id="eval-run-${id}" data-eval-action="run" data-eval-id="${id}" ${data.running ? 'aria-disabled="true"' : ''}>${item.results?.length ? 'Run again' : 'Run'}</button>`;
+            const progress = running ? ` · ${(item.results || []).length} of ${item.tasks.length * item.models.length} runs` : '';
+            return `<div class="settings-row eval-row">
+                <div class="settings-row-copy"><span class="settings-row-label">${esc(item.name)}</span>
+                    <div class="settings-row-hint">${esc(statusText[item.status] || item.status)}${progress} · ${item.tasks.length} task${item.tasks.length === 1 ? '' : 's'} · ${esc(item.mode)} · up to ${esc(item.max_minutes)} min a run · <code>${esc(item.project)}</code></div>
+                    ${item.error ? `<div class="settings-row-hint">${esc(item.error)}</div>` : ''}
+                    <table class="eval-summary"><thead><tr><th scope="col">Model</th><th scope="col">Passed</th><th scope="col">Cost</th><th scope="col">Median time</th></tr></thead><tbody>${table}</tbody></table>
+                    ${details}
+                </div>
+                <div class="settings-row-value schedule-actions">${action}
+                    <button type="button" class="btn-sm" id="eval-remove-${id}" data-eval-action="remove" data-eval-id="${id}" aria-label="Remove ${esc(item.name)}" ${running ? 'aria-disabled="true"' : ''}>Remove</button>
+                </div></div>`;
+        }).join('');
+        const draft = this._evalDraft || (this._evalDraft = {
+            name: '', project: this.currentCwd || '', models: [], tasks: [{prompt: '', check: ''}], mode: 'auto-edit',
+            max_minutes: 10});
+        const labels = this._getBackendLabels ? this._getBackendLabels() : {};
+        const modelBoxes = Object.entries(this.backends || {})
+            .filter(([, info]) => (info?.models || []).length)
+            .map(([backend, info]) => `<fieldset class="eval-model-group"><legend>${esc(labels[backend] || backend)}</legend>${info.models.map(model => {
+                const value = `${backend}:${model}`;
+                return `<label><input type="checkbox" name="models" value="${esc(value)}" ${draft.models.includes(value) ? 'checked' : ''}> ${esc(model)}</label>`;
+            }).join('')}</fieldset>`).join('');
+        const taskRows = draft.tasks.map((task, index) => `<div class="eval-task-row" data-task-row="${index}">
+                <label>Task ${index + 1} <textarea class="settings-input" id="eval-task-${index}" data-task-field="prompt" rows="2" placeholder="Fix the failing test in tests/test_api.py">${esc(task.prompt)}</textarea></label>
+                <label>Check (passes with exit code 0) <input class="settings-input" id="eval-check-${index}" data-task-field="check" value="${esc(task.check)}" placeholder="python -m pytest tests/test_api.py -q" spellcheck="false"></label>
+                ${draft.tasks.length > 1 ? `<button type="button" class="btn-sm" data-remove-task="${index}" aria-label="Remove task ${index + 1}">Remove task</button>` : ''}
+            </div>`).join('');
+        const error = this.modelEvalError ? `<div class="settings-error-banner" role="alert">${esc(this.modelEvalError)}</div>` : '';
+        const modes = {ask: 'Read only (ask)', 'auto-edit': 'Edit files (auto-edit)', bypass: 'Everything (bypass)'};
+        return `<p class="editor-help">Run the same tasks with each model and see which passes your checks, what it costs and how long it takes. Each run starts from the project's last commit in its own copy, so it never touches your work, and is an unattended <code>lumi run</code>: nobody is asked anything, your organization's policy and budgets apply, and its requests count in Usage &amp; cost.</p>
+            ${items || '<p class="editor-help">No comparisons yet.</p>'}
+            <h4 class="settings-subheading">New comparison</h4>
+            ${error}
+            <form class="schedule-form eval-form" data-eval-form>
+                <label>Name <input class="settings-input" id="eval-name" name="name" maxlength="80" required value="${esc(draft.name)}" placeholder="Test fixes: default vs. cheaper model"></label>
+                <label>Project (a git repository) <input class="settings-input" id="eval-project" name="project" value="${esc(draft.project)}" required spellcheck="false"></label>
+                <div class="eval-models"><span class="eval-models-label">Models to compare (2 to 6)</span>${modelBoxes || '<p class="settings-row-hint">No models are available yet.</p>'}</div>
+                ${taskRows}
+                <div><button type="button" class="btn-sm" data-add-task ${draft.tasks.length >= 20 ? 'disabled' : ''}>Add task</button></div>
+                <div class="schedule-when">
+                    <label>What it may do <select class="settings-select" id="eval-mode" name="mode">${Object.entries(modes).map(([value, label]) => `<option value="${value}" ${draft.mode === value ? 'selected' : ''}>${label}</option>`).join('')}</select></label>
+                    <label>Stop each run after (minutes) <input class="settings-input" id="eval-minutes" name="max_minutes" type="number" min="1" max="60" value="${esc(draft.max_minutes)}" required></label>
+                </div>
+                <div><button type="submit" class="btn-sm">Create comparison</button></div>
+            </form>`;
+    }
+
+    _bindModelComparisons() {
+        const root = this.settingsBody;
+        root?.querySelectorAll('[data-eval-action]').forEach(button => button.addEventListener('click', () => {
+            if (button.getAttribute('aria-disabled') === 'true') return;
+            const action = button.dataset.evalAction;
+            if (action === 'remove' && !window.confirm('Remove this comparison and its results?')) return;
+            button.setAttribute('aria-disabled', 'true');
+            this.modelEvalError = '';
+            this.send({command: 'model_eval_change', id: button.dataset.evalId, action});
+        }));
+        const form = root?.querySelector('[data-eval-form]');
+        if (!form) return;
+        const read = () => {
+            const fields = new FormData(form);
+            const tasks = [...form.querySelectorAll('[data-task-row]')].map(row => ({
+                prompt: row.querySelector('[data-task-field="prompt"]').value,
+                check: row.querySelector('[data-task-field="check"]').value}));
+            this._evalDraft = {name: fields.get('name') || '', project: fields.get('project') || '',
+                models: fields.getAll('models'), tasks, mode: fields.get('mode') || 'auto-edit',
+                max_minutes: fields.get('max_minutes') || ''};
+            return this._evalDraft;
+        };
+        form.addEventListener('input', read);
+        form.addEventListener('change', read);
+        form.querySelector('[data-add-task]')?.addEventListener('click', () => {
+            const draft = read();
+            draft.tasks.push({prompt: '', check: ''});
+            this.renderSettingsView({force: true});
+            document.getElementById(`eval-task-${draft.tasks.length - 1}`)?.focus();
+        });
+        form.querySelectorAll('[data-remove-task]').forEach(button => button.addEventListener('click', () => {
+            const draft = read();
+            draft.tasks.splice(Number(button.dataset.removeTask), 1);
+            this.renderSettingsView({force: true});
+        }));
+        form.addEventListener('submit', event => {
+            event.preventDefault();
+            const draft = read();
+            this.modelEvalError = '';
+            form.querySelector('[type="submit"]').disabled = true;
+            this.send({command: 'model_eval_save', comparison: {...draft, max_minutes: Number(draft.max_minutes)}});
+        });
+    }
+
     _renderScheduledTasks() {
         const esc = value => this.escapeHtml(String(value ?? ''));
         const data = this.schedules;
@@ -1347,7 +1464,7 @@ class LumiSettingsView {
 
     _settingsPages() {
         return [
-            {id:'general', title:'General', group:'Personal', icon:'settings', description:'Choose how the agent works and which models new sessions use.', sections:['general'], fields:['default_permission_mode','default_backend','default_model','fallback_models','role_models','auto_lint_after_edits','auto_test_after_edits','auto_test_command','max_model_requests','big_context_profile','harness_enabled'], keywords:'permissions approval workflow fallback failover roles summarize'},
+            {id:'general', title:'General', group:'Personal', icon:'settings', description:'Choose how the agent works and which models new sessions use.', sections:['general'], fields:['default_permission_mode','default_backend','default_model','fallback_models','role_models','auto_lint_after_edits','auto_test_after_edits','auto_test_command','max_model_requests','big_context_profile','harness_enabled','autonomous_sessions'], keywords:'permissions approval workflow fallback failover roles summarize autonomous mission unattended'},
             {id:'profile', title:'Profile', group:'Personal', icon:'person', description:'Personalize your local workspace identity.', sections:['general'], fields:['display_name']},
             {id:'appearance', title:'Appearance', group:'Personal', icon:'sun', description:'Make the workspace feel right for you.', sections:['appearance']},
             {id:'pets', title:'Pets', group:'Personal', icon:'pet', description:'A little company while you build.', sections:['general'], fields:['show_companion'], keywords:'Echo companion'},
@@ -1364,7 +1481,7 @@ class LumiSettingsView {
             {id:'privacy', title:'Privacy & security', group:'Security', icon:'shield', description:'Control what Lumi reads, keeps and sends, and which tools it may use.', sections:['org_policy','privacy','file_exclusions','transcripts','audit_log','audit','audit_status','security','shell_sandbox','project_trust'], keywords:'audit log opentelemetry otlp tamper evidence secrets redact scan credentials DLP exclude ignore lumiignore env retention delete trust AGENTS.md policy codex claude computer gateway organization managed group policy MDM sandbox seatbelt bubblewrap bwrap shell commands'},
             {id:'local_backends', title:'Ollama runtime', group:'Advanced', icon:'cube', description:'Tune your local model runtime.', sections:['local_backends']},
             {id:'prompt_inspector', title:'Prompt inspector', group:'Advanced', icon:'book', description:'Inspect the instructions used by the active model.', sections:['prompt_inspector']},
-            {id:'model_evaluations', title:'Model evaluations', group:'Advanced', icon:'chart', description:'Review model quality and runtime diagnostics.', sections:['model_evaluations']},
+            {id:'model_evaluations', title:'Model evaluations', group:'Advanced', icon:'chart', description:'Compare models on your own tasks, and review model quality and runtime diagnostics.', sections:['model_comparisons', 'model_evaluations'], keywords:'compare comparison benchmark evaluate models tasks switch pass rate'},
             {id:'iteration_checkpoints', title:'Checkpoints & recovery', group:'Advanced', icon:'history', description:'Inspect saved iterations and recovery options.', sections:['iteration_checkpoints']},
             {id:'lumi_account', title:'Lumi account', group:'Personal', icon:'person', description:'Sign in to Lumi Cloud and use your organization’s policy on this computer.', sections:['lumi_account'], keywords:'lumi cloud organization team company sign in enroll device computer managed policy seat'},
             {id:'about', title:'About Lumi', group:'Personal', icon:'book', description:'What Lumi is, what it costs and what it sends where.', sections:['about'], keywords:'version license free plan pricing account privacy telemetry notices MIT'},
@@ -1463,6 +1580,7 @@ class LumiSettingsView {
             this.send({command: 'audit_status'});
         }
         if (page === 'scheduled_tasks') this.send({command: 'schedules_list'});
+        if (page === 'model_evaluations') this.send({command: 'model_evals_list'});
         const command = {creative_editors:'editor_list', capability_packs:'capability_pack_list', cost_tracking:'get_costs', model_evaluations:'evaluation_list', iteration_checkpoints:'checkpoint_list', updates:'update_status', about:'about_info', lumi_account:'cloud_status'}[page];
         if (command) this.send({command});
     }
@@ -1532,6 +1650,8 @@ class LumiSettingsView {
                       hint: 'Bumps Ollama context to 131072 tokens and batch to 2048. Best for large-repo sessions. Restart the app for the change to take effect on the next backend connection.' },
                     { key: 'harness_enabled', label: 'Sprint workflow (planner / generator / evaluator)', type: 'toggle',
                       hint: 'Off by default. Enable to use Lumi\u2019s structured planner\u2192generator\u2192evaluator pattern with sprint contracts and an autonomous cycle. State lives in ~/.lumi/, not in your repo.' },
+                    { key: 'autonomous_sessions', label: 'Autonomous sessions (experimental)', type: 'toggle',
+                      hint: 'Off by default. Shows the Autonomous button: Lumi drafts a spec with you, then works through it unattended within a time budget and an optional spending limit, checking the acceptance criteria as it goes.' },
                 ]
             },
             {
@@ -1570,6 +1690,7 @@ class LumiSettingsView {
             {
                 id: 'prompt_inspector', title: 'Active Prompt Inspector', custom: true,
             },
+            { id: 'model_comparisons', title: 'Compare models on your tasks', custom: true },
             {
                 id: 'model_evaluations', title: 'GLM / DeepSeek Evaluations', custom: true,
             },
@@ -1754,7 +1875,7 @@ class LumiSettingsView {
         })).flatMap(section => page.id === 'general' ? [
             {heading:'Permissions', keys:['default_permission_mode']},
             {heading:'Models', keys:['default_backend','default_model','fallback_models','role_models','big_context_profile']},
-            {heading:'Workflow', keys:['auto_lint_after_edits','auto_test_after_edits','auto_test_command','max_model_requests','harness_enabled']},
+            {heading:'Workflow', keys:['auto_lint_after_edits','auto_test_after_edits','auto_test_command','max_model_requests','harness_enabled','autonomous_sessions']},
         ].map(group => ({...section, heading:group.heading, fields:section.fields.filter(field => group.keys.includes(field.key))})) : [section]) : [];
         this.settingsBody.innerHTML = '';
         if (this.settingsError) {
@@ -1796,6 +1917,8 @@ class LumiSettingsView {
                 bodyHtml = this._renderProjectTrust();
             } else if (section.id === 'scheduled_tasks') {
                 bodyHtml = this._renderScheduledTasks();
+            } else if (section.id === 'model_comparisons') {
+                bodyHtml = this._renderModelComparisons();
             } else if (section.id === 'capability_packs') {
                 bodyHtml = this._renderCapabilityPacks();
             } else if (section.id === 'cost_tracking') {
@@ -2041,6 +2164,7 @@ class LumiSettingsView {
         this._bindUpdateCheck();
         this._bindLumiAccount();
         this._bindScheduledTasks();
+        this._bindModelComparisons();
         this.settingsBody.querySelectorAll('[data-trust-decision]').forEach(button => {
             button.addEventListener('click', () => {
                 button.disabled = true;

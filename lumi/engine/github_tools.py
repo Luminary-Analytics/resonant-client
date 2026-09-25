@@ -32,10 +32,11 @@ def configure(settings: Any) -> None:
     """Read the token from Settings at use, so a changed key applies at once."""
     global _token_source
     _token_source = (lambda: str(settings.get("api_keys", "github", "") or "")) if settings is not None else (lambda: "")
-    from . import code_hosts, issue_trackers  # the other hosts' and trackers' keys, from the same Settings
+    from . import code_hosts, issue_trackers, review_gate  # the same Settings
 
     code_hosts.configure(settings)
     issue_trackers.configure(settings)
+    review_gate.configure(settings)
 
 
 def set_transport_for_tests(transport: Any) -> None:
@@ -196,7 +197,9 @@ def pr_view(cwd: str, number: Any = None) -> tuple[str, dict]:
         lines.append(f"- [id {comment['id']}] @{(comment.get('user') or {}).get('login')}: {_clip(comment.get('body'))}")
     lines.append(f"\nBody:\n{_clip(pr.get('body'), 3_000)}")
     metadata = {"number": n, "url": pr["html_url"], "failing_checks": [c.get("name") for c in failing],
-                "review_comments": len(review_comments), "repo": f"{repo.owner}/{repo.name}"}
+                "review_comments": len(review_comments), "repo": f"{repo.owner}/{repo.name}",
+                "state": "merged" if pr.get("merged_at") else pr.get("state", ""),
+                "decisions": decisions}
     return "\n".join(lines), metadata
 
 
@@ -299,9 +302,20 @@ def _other_host(cwd: str):
 
 
 def exec_github_pr_view(args: dict, start: float):
+    from . import review_gate
+
     cwd = args.get("cwd") or "."
     host = _other_host(cwd)
-    return _run(host.view if host else pr_view, start, cwd, args.get("number"))
+    result = _run(host.view if host else pr_view, start, cwd, args.get("number"))
+    meta = getattr(result, "metadata", None) or {}
+    if not getattr(result, "is_error", False) and not host and meta.get("url"):
+        # The review queue follows the pull request's state (engine/review_gate.py).
+        decisions = set((meta.get("decisions") or {}).values())
+        status = ("merged" if meta.get("state") == "merged" else "closed" if meta.get("state") == "closed"
+                  else "changes_requested" if "CHANGES_REQUESTED" in decisions
+                  else "approved" if "APPROVED" in decisions else "waiting")
+        review_gate.report(meta["url"], status)
+    return result
 
 
 def exec_github_check_log(args: dict, start: float):
@@ -316,13 +330,29 @@ def exec_github_check_log(args: dict, start: float):
 
 
 def exec_github_pr_create(args: dict, start: float):
+    from . import review_gate
+
     cwd = args.get("cwd") or "."
     host = _other_host(cwd)
     if host and not str(args.get("title") or "").strip():
         return _run(pr_create, start, cwd, title="")  # the same refusal on every host
-    return _run(host.create if host else pr_create, start, cwd, title=str(args.get("title") or ""),
-                body=str(args.get("body") or ""), base=str(args.get("base") or ""),
-                draft=bool(args.get("draft")), push=args.get("push", True) is not False)
+    title = str(args.get("title") or "")
+    result = _run(host.create if host else pr_create, start, cwd, title=title,
+                  body=review_gate.pr_body(str(args.get("body") or "")), base=str(args.get("base") or ""),
+                  draft=bool(args.get("draft")), push=args.get("push", True) is not False)
+    if not result.is_error and review_gate.enabled():
+        request = None
+        if not host:
+            repo = repo_for(cwd)
+            number = int(result.metadata["number"])
+
+            def request(people: list[str], teams: list[str]) -> None:
+                _request(repo, "POST", f"{repo.path}/pulls/{number}/requested_reviewers",
+                         json={"reviewers": people, "team_reviewers": teams})
+        note = review_gate.after_create(cwd, result.metadata or {}, title, request=request)
+        if note:
+            result.output = f"{result.output}\n{note}"
+    return result
 
 
 def exec_github_pr_comment(args: dict, start: float):

@@ -1565,6 +1565,7 @@ class LumiSettingsView {
             {id:'rag', title:'Codebase index', group:'Coding', icon:'book', description:'Index your project for semantic code search.', sections:['rag'], keywords:'RAG files repository'},
             {id:'hooks', title:'Hooks', group:'Coding', icon:'plug', description:'Inspect commands that run at lifecycle events.', sections:['hooks']},
             {id:'capability_packs', title:'Capability packs', group:'Coding', icon:'cube', description:'Review what a pack would run, then approve or revoke it. Nothing in a pack runs until you approve it.', sections:['capability_packs'], keywords:'plugins extensions trust approve repository pack'},
+            {id:'code_review', title:'Code review', group:'Coding', icon:'shield', description:'Have named people review the agent’s pull requests before they merge.', sections:['review'], keywords:'review reviewer approve approval pull request merge request push main master protected branch queue'},
             {id:'scheduled_tasks', title:'Scheduled tasks', group:'Coding', icon:'clock', description:'Run a saved task at set times, even when Lumi is closed.', sections:['scheduled_tasks'], keywords:'schedule cron nightly recurring automation task scheduler launchd unattended'},
             {id:'privacy', title:'Privacy & security', group:'Security', icon:'shield', description:'Control what Lumi reads, keeps and sends, and which tools it may use.', sections:['org_policy','privacy','file_exclusions','transcripts','audit_log','audit','audit_status','security','shell_sandbox','project_trust'], keywords:'audit log opentelemetry otlp tamper evidence secrets redact scan credentials DLP exclude ignore lumiignore env retention delete trust AGENTS.md policy codex claude computer gateway organization managed group policy MDM sandbox seatbelt bubblewrap bwrap shell commands'},
             {id:'local_backends', title:'Ollama runtime', group:'Advanced', icon:'cube', description:'Tune your local model runtime.', sections:['local_backends']},
@@ -1875,6 +1876,16 @@ class LumiSettingsView {
                       hint: 'JIRA_URL also works.' },
                     { key: 'jira_email', label: 'Jira email', type: 'text', placeholder: 'you@example.com',
                       hint: 'For Jira Cloud, the account the API token belongs to. Leave it empty for Jira Server or Data Center.' },
+                ]
+            },
+            {
+                id: 'review', title: 'Agent pull requests',
+                note: 'For teams where every change needs a human reviewer. Your organization can turn this on for everyone in its policy.',
+                fields: [
+                    { key: 'agent_changes', label: 'Agent changes wait for a reviewer', type: 'toggle',
+                      hint: 'The agent doesn’t merge pull requests or push to main, master, trunk or production; it opens a pull request that names the reviewers, and joins your organization’s review queue in Lumi Cloud when you’re signed in. Branch protection on your repository is what requires the approval.' },
+                    { key: 'reviewers', label: 'Reviewers', type: 'lines', placeholder: 'octocat\nacme/platform-team',
+                      hint: 'GitHub usernames, or organization/team, one per line. Lumi requests their review on GitHub; on GitLab, Bitbucket and Azure DevOps the description names them.' },
                 ]
             },
             {

@@ -398,8 +398,12 @@ def policy_for_tier(tier: str) -> ExecutionPolicy:
         "auto-edit": default_auto_edit_policy,
         "full-auto": default_full_auto_policy,
     }
+    from .review_gate import policy_rules as review_rules
+
     factory = policies.get(tier, default_auto_edit_policy)
-    return ExecutionPolicy(guardrail_rules() + factory().rules)
+    # While agent changes need review (engine/review_gate.py), merging and
+    # pushing to a default branch are refused right after the guardrails.
+    return ExecutionPolicy(guardrail_rules() + review_rules() + factory().rules)
 
 
 def project_execution_policy(
@@ -443,10 +447,11 @@ def project_execution_policy(
 def with_organization_rules(policy: ExecutionPolicy) -> ExecutionPolicy:
     """``policy`` with the organization's shell rules (lumi/policy.py) checked first.
 
-    Only the guardrails (engine/guardrails.py) come before them. The app's
-    fallback, when a project's policy can't be built, uses this too
-    (gui/app.py). The rules were validated when the organization policy
-    loaded, so this doesn't fail on them.
+    Only the guardrails (engine/guardrails.py) come before them, followed
+    by the review gate's rules while agent changes need review
+    (engine/review_gate.py). The app's fallback, when a project's policy
+    can't be built, uses this too (gui/app.py). The rules were validated
+    when the organization policy loaded, so this doesn't fail on them.
     """
     from ..policy import current as current_policy
 
@@ -455,6 +460,7 @@ def with_organization_rules(policy: ExecutionPolicy) -> ExecutionPolicy:
         return policy
     org_rules = ExecutionPolicy.from_rules(list(org_policy.shell_rules)).rules
     from .guardrails import policy_rules as guardrail_rules
+    from .review_gate import policy_rules as review_rules
 
-    first = guardrail_rules()
+    first = guardrail_rules() + review_rules()
     return ExecutionPolicy(first + org_rules + [rule for rule in policy.rules if rule not in first])

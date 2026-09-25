@@ -258,6 +258,48 @@ Not exercised: a live model, a packaged build, orchestration specialists and
 harness evaluators in the app (their existing tests pass), and Codex or Claude
 Code, which run their own tools.
 
+## September 25 agent changes wait for a reviewer — source only, not released
+
+- **Settings > Code review > Agent changes wait for a reviewer**
+  (`lumi/engine/review_gate.py`, [guide](code-review.md)), with **Reviewers**
+  (GitHub usernames or `organization/team`).
+  - An organization can lock both in its policy (`review.agent_changes`,
+    `review.reviewers`; Luminary-Analytics/lumi-cloud#23). The client's policy
+    parser checks their types.
+- **While on, the agent doesn't merge or push to a default branch.** Deny
+  rules for `gh pr merge`, `glab mr merge`, completing an Azure DevOps pull
+  request, and `git push` naming main, master, trunk or production come right
+  after the guardrails in every tier and project policy. That puts them ahead
+  of repository and organization allow rules.
+- **Its pull requests name the reviewers.** `github_pr_create` adds a line to
+  the description.
+  - On GitHub it requests review from the named people and teams.
+  - It tells the model the change waits for review.
+  - When the person is signed in, it reports the pull request to the
+    organization's review queue in Lumi Cloud (`lumi/review_queue.py`), and
+    `github_pr_view` reports its state as reviews come in.
+
+Validation on September 25, 2026: `test_review_gate.py` (16 tests) covers:
+
+- off by default;
+- what's refused and what isn't (a feature-branch push, `main-refactor`,
+  `echo gh pr merge`);
+- every tier denying a merge, even with a repository allow rule and an
+  organization allow rule;
+- the pull request's description, the reviewer request and the queue report
+  against a mocked GitHub;
+- the state reported from `github_pr_view`;
+- the Settings validation, and the policy lock's parsing.
+
+A cross-check ran the real Lumi Cloud of that branch in-process: the app's
+`ReviewQueue` registered a pull request and reported it approved. A policy
+saved and published with the review lock parsed in the app as `True` with
+`['octocat', 'acme/platform']`.
+
+In the browser pane, with an isolated app, Settings > Code review turned on
+with Space. A reviewer typed as "octo cat" was refused with a message, and the
+typed text stayed. Corrected, it saved `['octocat', 'acme/platform']`.
+
 ## September 25 project notes for the team — source only, not released
 
 - **Share with the team** on a note in **Project notes**

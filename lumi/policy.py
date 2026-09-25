@@ -285,6 +285,11 @@ def parse(data: Any, *, source: str, trusted_keys: dict[str, str] | None = None,
         raise PolicyError(str(exc)) from exc
     if "security.shell_sandbox" in settings and settings["security.shell_sandbox"] not in ("off", "project"):
         raise PolicyError("'security.shell_sandbox' must be \"off\" or \"project\".")
+    if "review.agent_changes" in settings and not isinstance(settings["review.agent_changes"], bool):
+        raise PolicyError("'review.agent_changes' must be true or false.")
+    reviewers = settings.get("review.reviewers", [])
+    if not isinstance(reviewers, list) or not all(isinstance(name, str) for name in reviewers):
+        raise PolicyError("'review.reviewers' must list GitHub usernames or organization/team names.")
     permissions = document.get("permissions") or {}
     modes = permissions.get("allowed_modes")
     allowed_modes = _patterns(modes, "permissions.allowed_modes") if modes is not None else None

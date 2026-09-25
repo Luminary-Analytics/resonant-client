@@ -100,6 +100,10 @@ class Policy:
     packs_allowed: tuple[str, ...] | None = None
     # Repository URL patterns packs may be installed from (lumi/engine/pack_install.py).
     sources_allowed: tuple[str, ...] | None = None
+    # Capability pack publishers the organization trusts ({key_id: {name, public_key}},
+    # engine/pack_signing.py), and whether packs they didn't sign stay off.
+    publishers: dict[str, dict] = field(default_factory=dict)
+    require_signed: bool = False
     trusted_keys: dict[str, str] = field(default_factory=dict)
     # Negotiated prices (lumi/pricing.py): ordered (pattern, Price) pairs.
     prices: tuple = ()
@@ -186,6 +190,8 @@ class Policy:
             "mcp_allow_stdio": self.mcp_allow_stdio,
             "packs_allowed": list(self.packs_allowed) if self.packs_allowed is not None else None,
             "sources_allowed": list(self.sources_allowed) if self.sources_allowed is not None else None,
+            "pack_publishers": sorted(entry["name"] for entry in self.publishers.values()),
+            "require_signed_packs": self.require_signed,
             "prices": [pattern for pattern, _ in self.prices],
             "budgets": len(self.budgets),
             "capability_overrides": [pattern for pattern, _ in self.capability_overrides],
@@ -216,6 +222,17 @@ def _patterns(value: Any, where: str) -> tuple[str, ...]:
 def canonical(document: dict) -> bytes:
     """The bytes a signature covers: sorted keys, no whitespace, UTF-8."""
     return json.dumps(document, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+
+
+def _pack_publishers(value: Any) -> dict[str, dict]:
+    if value is None:
+        return {}
+    from .engine.pack_signing import PackSigningError, publishers
+
+    try:
+        return publishers(value)
+    except PackSigningError as exc:
+        raise PolicyError(f"extensions.trusted_publishers: {exc}") from exc
 
 
 def verify_signature(document: dict, signature_b64: str, public_key_b64: str) -> bool:
@@ -385,6 +402,8 @@ def parse(data: Any, *, source: str, trusted_keys: dict[str, str] | None = None,
             _patterns(extensions["allowed_sources"], "extensions.allowed_sources")
             if "allowed_sources" in extensions else None
         ),
+        publishers=_pack_publishers(extensions.get("trusted_publishers")),
+        require_signed=extensions.get("require_signed") is True,
         trusted_keys={str(k): str(v) for k, v in raw_keys.items()},
         prices=prices,
         budgets=budgets,

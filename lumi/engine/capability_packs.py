@@ -25,6 +25,11 @@ pack directory plus the repository files that the pack's hook and MCP commands
 name. Any change to those files withdraws trust until the pack is approved
 again. Trusted packs are re-verified before their hooks run and before they
 contribute skills, agents or MCP servers.
+
+A publisher's signature (``lumi-pack.sig``, engine/pack_signing.py) says who
+made a pack; it never approves one. A signature that doesn't match the files
+makes the pack unverifiable, and an organization's policy can turn off packs
+its trusted publishers didn't sign (``extensions.require_signed``).
 """
 
 from __future__ import annotations
@@ -104,6 +109,9 @@ class CapabilityPack:
     # (engine/provider_extensions.py).
     manifest_version: int = 0
     providers: list[dict[str, Any]] = field(default_factory=list)
+    # The publisher's signature as engine/pack_signing.check reads it:
+    # status (verified, unknown_publisher, invalid, unsigned), key_id, publisher, claimed, reason.
+    signature: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -366,9 +374,13 @@ class CapabilityPackManager:
         *,
         configured: dict[str, Any] | None = None,
         roots: Iterable[str | Path] = (),
+        publishers: dict[str, Any] | None = None,
     ):
         self.project_path = Path(project_path).expanduser().resolve()
         self.configured = configured if isinstance(configured, dict) else {}
+        # Publishers the person trusts (settings' pack_publishers); the
+        # organization's policy adds its own when a pack loads.
+        self.publishers = publishers if isinstance(publishers, dict) else {}
         default_roots = [
             *(folder / "packs" for folder in project_dirs(self.project_path)),
             state_home() / "packs",
@@ -577,11 +589,19 @@ class CapabilityPackManager:
             problem = problem or f"Its manifest is invalid: {exc}."
         configured = self.configured.get(pack_id)
         from ..policy import current as current_policy
+        from .pack_signing import check as check_signature
 
         org_policy = current_policy()
+        # The organization's names for its publishers win over the person's.
+        signature = check_signature(directory, {**self.publishers, **(org_policy.publishers if org_policy else {})})
+        if signature["status"] == "invalid":
+            problem = problem or f"Its signature is invalid: {signature['reason']}."
         if not problem and org_policy and not org_policy.pack_allowed(pack_id):
             # Blocked whatever the user approved; the approval itself is kept.
             problem = f"{org_policy.organization}'s policy doesn't allow this pack."
+        if not problem and org_policy and org_policy.require_signed and not (
+                signature["status"] == "verified" and signature["key_id"] in org_policy.publishers):
+            problem = f"{org_policy.organization}'s policy turns off packs that a publisher it trusts didn't sign."
         trusted, enabled, status = self._trust(
             configured if isinstance(configured, dict) else {},
             directory, digest, scope, problem,
@@ -611,6 +631,7 @@ class CapabilityPackManager:
             pinned_files=pinned_files,
             manifest_version=manifest_version,
             providers=providers,
+            signature=signature,
         )
         return pack, data
 

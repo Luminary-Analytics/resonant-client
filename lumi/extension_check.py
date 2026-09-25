@@ -1,10 +1,12 @@
-"""``lumi extension check <folder>``: a pack as Lumi sees it, before it's installed (docs/extensions.md).
+"""``lumi extension``: work on extension packs (docs/extensions.md).
 
-Loads the manifest with Lumi's own rules, then starts each provider the way
-a connection would: once to list its models and once to answer a short
-prompt, checking what it writes against the protocol. The folder is the
-author's own pack, so it runs without an approval; nothing is installed or
-saved.
+* ``check <folder>`` loads the manifest with Lumi's own rules, then starts
+  each provider the way a connection would: once to list its models and once
+  to answer a short prompt, checking what it writes against the protocol.
+  The folder is the author's own pack, so it runs without an approval;
+  nothing is installed or saved.
+* ``keygen <key file>`` makes an Ed25519 key for signing packs, and ``sign
+  <folder>`` writes the pack's ``lumi-pack.sig`` (engine/pack_signing.py).
 """
 
 from __future__ import annotations
@@ -37,6 +39,14 @@ def check(folder: str | Path, *, prompt: str = DEFAULT_PROMPT, api_key: str = ""
         findings.append(("problem", pack.problem))
     else:
         findings.append(("ok", f"{pack.name} {pack.version} loads (manifest version {pack.manifest_version})."))
+    signature = pack.signature or {}
+    key = " ".join(signature.get("key_id", "")[i:i + 4] for i in range(0, 16, 4))
+    if signature.get("status") == "verified":
+        findings.append(("ok", f"Signed by {signature['publisher']} (key {key}), a publisher your organization trusts."))
+    elif signature.get("status") == "unknown_publisher":
+        findings.append(("ok", f"Signed as \u201c{signature['claimed']}\u201d with key {key}; the files match."))
+    elif signature.get("status") == "unsigned":
+        findings.append(("note", "It isn't signed. `lumi extension sign` adds a publisher signature."))
     if pack.manifest_version < MANIFEST_VERSION:
         findings.append(("note", f'Add "manifest_version": {MANIFEST_VERSION}; without it, Lumi reads the '
                                   "manifest as one from before the Extension SDK."))
@@ -98,6 +108,43 @@ def _try_stream(pack, provider, command, model, prompt, api_key, timeout) -> lis
     return findings
 
 
+def _keygen(path: Path) -> int:
+    from .engine.pack_signing import fingerprint, generate_key
+
+    private_pem, public_key = generate_key()
+    try:
+        # Never over an existing key, and readable only by its owner where the system allows.
+        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError:
+        print(f"{path} already exists. Choose a new file; a key is never overwritten.", file=sys.stderr)
+        return 1
+    with os.fdopen(descriptor, "wb") as handle:
+        handle.write(private_pem)
+    print(f"Saved the private key to {path}. Keep it secret: anyone with it can sign as you.")
+    print(f"Public key: {public_key}")
+    print(f"Key id: {fingerprint(public_key)}")
+    print("Publish the public key where people can check it, and sign packs with: lumi extension sign <folder> "
+          f"--key {path} --publisher <name>")
+    return 0
+
+
+def _sign(folder: Path, key_file: Path, publisher: str) -> int:
+    from .engine.capability_packs import _manifest_path
+    from .engine.pack_signing import PackSigningError, sign
+
+    if _manifest_path(folder) is None:
+        print(f"{folder} has no lumi-pack.json.", file=sys.stderr)
+        return 1
+    try:
+        record = sign(folder, key_file.read_bytes(), publisher)
+    except (OSError, PackSigningError) as exc:
+        print(f"Not signed: {exc}", file=sys.stderr)
+        return 1
+    print(f"Signed {folder} as {record['publisher']} with key {record['key_id']}. "
+          "Any later change to its files breaks the signature, so sign again after editing.")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="lumi extension", description="Work on Lumi extension packs.")
     commands = parser.add_subparsers(dest="command", required=True)
@@ -107,7 +154,17 @@ def main(argv: list[str] | None = None) -> int:
     checker.add_argument("--key-env", default="LUMI_PROVIDER_API_KEY", metavar="NAME",
                          help="An environment variable holding the provider's key (never pass keys as arguments)")
     checker.add_argument("--no-run", action="store_true", help="Check the manifest without starting providers")
+    keygen = commands.add_parser("keygen", help="Make a key for signing packs.")
+    keygen.add_argument("key_file", help="Where to save the private key. Keep it secret; it isn't encrypted.")
+    signer = commands.add_parser("sign", help="Sign a pack: writes lumi-pack.sig. Sign again after any change.")
+    signer.add_argument("folder", help="The pack's folder (with lumi-pack.json)")
+    signer.add_argument("--key", required=True, help="The private key file from lumi extension keygen")
+    signer.add_argument("--publisher", required=True, help="Who publishes the pack, as people will see it")
     args = parser.parse_args(argv)
+    if args.command == "keygen":
+        return _keygen(Path(args.key_file))
+    if args.command == "sign":
+        return _sign(Path(args.folder), Path(args.key), args.publisher)
     findings = check(args.folder, prompt=args.prompt, api_key=os.environ.get(args.key_env, ""), run=not args.no_run)
     marks = {"ok": "ok", "note": "note", "problem": "PROBLEM"}
     for kind, message in findings:

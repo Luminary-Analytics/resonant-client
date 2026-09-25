@@ -795,6 +795,7 @@ class AppState:
         manager = CapabilityPackManager(
             project_path or self.project.project_path,
             configured=self.settings.get("plugins") or {},
+            publishers=self.settings.get("pack_publishers") or {},
         )
         try:
             manager.discover()
@@ -813,7 +814,8 @@ class AppState:
         # and agents. MCP servers are connected only for the open project.
         from ..engine.capability_packs import CapabilityPackManager
 
-        other = CapabilityPackManager(project_path, configured=self.settings.get("plugins") or {})
+        other = CapabilityPackManager(project_path, configured=self.settings.get("plugins") or {},
+                                      publishers=self.settings.get("pack_publishers") or {})
         try:
             other.discover()
         except Exception:
@@ -883,13 +885,60 @@ class AppState:
             entry["source"] = source if isinstance(source, dict) and pack.scope == "user" else None
             return entry
 
+        from ..policy import current as current_policy
+
+        policy = current_policy()
+        mine = self.settings.get("pack_publishers") or {}
+        publishers = [{"key_id": key_id, "name": str(entry.get("name") or ""), "source": ""}
+                      for key_id, entry in sorted(mine.items()) if isinstance(entry, dict)]
+        publishers += [{"key_id": key_id, "name": entry["name"], "source": policy.organization}
+                       for key_id, entry in sorted((policy.publishers if policy else {}).items())]
         return {
             "event": "capability.pack_list",
             "project_path": str(manager.project_path),
             "packs": [described(pack) for pack in packs],
             "pending": self.capability_packs_pending(),
             "catalog": manager.context_catalog(),
+            "publishers": publishers,
+            "require_signed": bool(policy and policy.require_signed),
         }
+
+    def trust_pack_publisher(self, pack_id: str, path: str) -> dict:
+        """Trust the key that signed a pack, under the name its signature gives; it approves nothing."""
+        from .. import audit
+        from ..engine import pack_signing
+        from ..engine.capability_packs import CapabilityPackError, pack_location_key
+
+        manager = self.capability_packs or self.refresh_capability_packs()
+        target = pack_location_key(path) if path else ""
+        pack = next((p for p in manager.discover() if p.id == pack_id and pack_location_key(p.path) == target), None)
+        if pack is None:
+            raise CapabilityPackError("That pack isn't there any more. Reload Settings and try again.")
+        # Read the signature again now: what the person saw may have changed since.
+        signature = pack_signing.check(pack.path, {})
+        if signature["status"] != "unknown_publisher":
+            raise CapabilityPackError(f"The signature on {pack.name} can't be trusted: "
+                                      + (signature["reason"] or "it isn't signed."))
+        publishers = dict(self.settings.get("pack_publishers") or {})
+        publishers[signature["key_id"]] = {"name": signature["claimed"], "public_key": signature["public_key"],
+                                           "trusted_at": int(time.time())}
+        self.settings.set("pack_publishers", None, publishers)
+        audit.record("extension.publisher_trust", key_id=signature["key_id"], publisher=signature["claimed"],
+                     pack=pack.id)
+        self.refresh_capability_packs()
+        return self.capability_pack_payload()
+
+    def forget_pack_publisher(self, key_id: str) -> dict:
+        """Stop trusting a publisher's key; packs it signed show as unknown again."""
+        from .. import audit
+
+        publishers = dict(self.settings.get("pack_publishers") or {})
+        removed = publishers.pop(str(key_id), None)
+        if removed is not None:
+            self.settings.set("pack_publishers", None, publishers)
+            audit.record("extension.publisher_forget", key_id=str(key_id))
+            self.refresh_capability_packs()
+        return self.capability_pack_payload()
 
     def install_capability_pack(self, url: str, ref: str, subdir: str = "") -> tuple[dict, dict]:
         """Install a pack from a git repository at one commit; it still needs approval."""

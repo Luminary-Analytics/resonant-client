@@ -492,6 +492,34 @@ async def _capability_pack_revoke(ctx: CommandContext) -> None:
     await _set_capability_pack_approval(ctx, approve=False)
 
 
+async def _pack_publisher_change(ctx: CommandContext, change, notice: str) -> None:
+    from ..engine.capability_packs import CapabilityPackError
+
+    try:
+        payload = await _in_executor(change)
+    except CapabilityPackError as exc:
+        payload = await _in_executor(ctx.state.capability_pack_payload)
+        payload["error"] = str(exc)
+        await ctx.send(payload)
+        return
+    await ctx.send(payload)
+    await ctx.send({"event": "ui_notice", "message": notice})
+
+
+@command("capability_pack_trust_publisher")
+async def _capability_pack_trust_publisher(ctx: CommandContext) -> None:
+    # Trusting a publisher approves nothing: each pack still needs its own approval.
+    await _pack_publisher_change(ctx, lambda: ctx.state.trust_pack_publisher(
+        str(ctx.msg.get("pack_id") or ""), str(ctx.msg.get("path") or "")),
+        "Publisher trusted. Packs signed with its key show as verified; you still approve each one.")
+
+
+@command("capability_pack_forget_publisher")
+async def _capability_pack_forget_publisher(ctx: CommandContext) -> None:
+    await _pack_publisher_change(ctx, lambda: ctx.state.forget_pack_publisher(str(ctx.msg.get("key_id") or "")),
+                                 "Publisher forgotten. Packs it signed show as signed by an unknown publisher.")
+
+
 @command("capability_pack_install")
 async def _capability_pack_install(ctx: CommandContext) -> None:
     """Install a pack from a git repository pinned to one commit; approval stays separate."""

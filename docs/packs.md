@@ -132,9 +132,15 @@ hook then blocks it. A `json` hook reads the arguments from standard input, and
   is reviewed again.
 - **Location-bound.** An approval covers the pack at that folder only. Copying a
   pack elsewhere needs a new approval.
+- **Signatures say who made it.** A publisher can sign a pack
+  (`lumi-pack.sig`). Settings shows the signer when you trust their key, and
+  a signature that doesn't match the files turns the pack off. A signature
+  never approves a pack. See [Signing a pack](extensions.md#signing-a-pack).
 - **Organization limits.** A policy can limit packs by id
   (`extensions.allowed_packs`) and Git sources by URL
-  (`extensions.allowed_sources`). See [Organization policy](enterprise-policy.md).
+  (`extensions.allowed_sources`), and turn off packs its trusted publishers
+  didn't sign (`extensions.require_signed`). See
+  [Organization policy](enterprise-policy.md).
 
 ## Sharing a pack
 

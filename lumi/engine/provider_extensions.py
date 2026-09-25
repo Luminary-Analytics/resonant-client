@@ -74,9 +74,11 @@ def pack_manager(settings: Any = None):
     from .capability_packs import CapabilityPackManager
 
     configured = (settings.get("plugins") or {}) if settings is not None else {}
+    publishers = (settings.get("pack_publishers") or {}) if settings is not None else {}
     # Providers are global like connections, so only packs outside any project
     # count: no pack can be inside this project path.
-    return CapabilityPackManager(state_home() / "packs" / ".no-project", configured=configured)
+    return CapabilityPackManager(state_home() / "packs" / ".no-project", configured=configured,
+                                 publishers=publishers)
 
 
 def available(settings: Any = None) -> list[dict]:

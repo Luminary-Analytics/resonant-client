@@ -2639,7 +2639,6 @@ class LumiApp {
 
         this.clearPreviewPanel();
         this.closePreviewPanel();
-        this._maybeRenderOnboardingCard();
 
         const projectStep = document.getElementById('project-step');
         const backendStep = document.getElementById('backend-step');
@@ -3971,6 +3970,13 @@ class LumiApp {
                 this.auditStatus = event;
                 if (this.currentView === 'settings') this.renderSettingsView();
                 break;
+            case 'onboarding_progress':
+                this.settings = {...(this.settings || {}), onboarding: {...(this.settings?.onboarding || {}), first_task_done: Boolean(event.first_task_done)}};
+                break;
+            case 'sample_project':
+                // Open the new sample project; the checklist redraws with the next empty chat.
+                if (event.path) this.selectProjectFolder(event.path);
+                break;
             case 'update_status':
                 this.updateStatus = event.data;
                 if (this.currentView === 'settings' && !this.refreshUpdateStatus()) this.renderSettingsView();
@@ -4524,41 +4530,72 @@ class LumiApp {
         this.userInput.focus();
     }
 
-    /** First-run onboarding card on the welcome screen. Dismissed permanently via localStorage. */
-    _maybeRenderOnboardingCard() {
-        try {
-            if (localStorage.getItem('lumi_onboarding_seen') === '1') return;
-        } catch (_) { /* private mode, etc. — show once anyway */ }
+    /**
+     * The first-run checklist in the empty chat (lumi/gui/onboarding.py): connect
+     * a model, open a project, finish a first task. Each step reads real state;
+     * none of them sends anything by itself.
+     */
+    _onboardingSteps() {
+        const onboarding = this.settings?.onboarding || {};
+        const modelReady = Object.values(this.backends || {}).some(info => Array.isArray(info?.models) && info.models.length > 0);
+        const playground = this._normalizeProjectPath(this.playgroundProject?.path || '');
+        const cwd = this._normalizeProjectPath(this.currentCwd || '');
+        const projectReady = Boolean(cwd) && cwd !== playground;
+        return {model: modelReady, project: projectReady, task: Boolean(onboarding.first_task_done),
+                dismissed: Boolean(onboarding.dismissed)};
+    }
 
-        // Don't render twice
-        if (document.getElementById('onboarding-card')) return;
-
-        const projectStep = document.getElementById('project-step');
-        if (!projectStep) return;
-
-        const card = document.createElement('div');
-        card.id = 'onboarding-card';
-        card.className = 'onboarding-card';
+    _renderOnboardingChecklist(container) {
+        const steps = this._onboardingSteps();
+        if (steps.dismissed || (steps.model && steps.project && steps.task)) return;
+        const sample = /[\\/]lumi-sample$/.test(this._normalizeProjectPath(this.currentCwd || ''));
+        const mark = done => `<span class="onboarding-step-mark${done ? ' done' : ''}" aria-hidden="true">${done ? '✓' : ''}</span>`;
+        const state = done => `<span class="sr-only">${done ? 'Done' : 'To do'}</span>`;
+        const card = document.createElement('section');
+        card.className = 'onboarding-card onboarding-checklist';
+        card.setAttribute('aria-label', 'Get started with Lumi');
         card.innerHTML = `
             <div class="onboarding-header">
-                <span class="onboarding-pill">Welcome</span>
-                <button class="onboarding-dismiss" aria-label="Dismiss" title="Dismiss">&times;</button>
+                <span class="onboarding-pill">Get started</span>
+                <button type="button" class="onboarding-dismiss" data-onboarding="dismiss" aria-label="Hide the getting-started checklist" title="Hide">&times;</button>
             </div>
-            <h3 class="onboarding-title">Pick up where you left off</h3>
-            <p class="onboarding-sub">Open a project, choose your model, and describe what you want to build.</p>
-            <ul class="onboarding-list">
-                <li><span class="onboarding-bullet">◇</span><span><strong>Your projects</strong> &mdash; switch folders from the sidebar.</span></li>
-                <li><span class="onboarding-bullet">⌕</span><span><strong>Find any session</strong> &mdash; use search or press Ctrl+K.</span></li>
-                <li><span class="onboarding-bullet">↗</span><span><strong>See the result</strong> &mdash; open previews and review named checks as work progresses.</span></li>
-            </ul>
-            <p class="onboarding-cta">Pick a workspace folder below to get started.</p>
-        `;
-        card.querySelector('.onboarding-dismiss').addEventListener('click', () => {
-            try { localStorage.setItem('lumi_onboarding_seen', '1'); } catch (_) {}
+            <ol class="onboarding-steps">
+                <li class="${steps.model ? 'done' : ''}">${mark(steps.model)}<div><strong>Connect a model</strong>${state(steps.model)}
+                    <p>${steps.model ? 'A model is ready in the model menu.' : 'Use Ollama on this computer, add an API key, or sign in with ChatGPT.'}</p>
+                    ${steps.model ? '' : '<button type="button" class="btn-sm" data-onboarding="connect">Open Connections</button>'}</div></li>
+                <li class="${steps.project ? 'done' : ''}">${mark(steps.project)}<div><strong>Open a project</strong>${state(steps.project)}
+                    <p>${steps.project ? `Working in ${this.escapeHtml(this._projectNameFromPath(this.currentCwd))}.` : 'Pick a folder, or try a tiny sample project.'}</p>
+                    ${steps.project ? '' : '<button type="button" class="btn-sm" data-onboarding="folder">Choose a folder</button> <button type="button" class="btn-sm" data-onboarding="sample">Try the sample project</button>'}</div></li>
+                <li class="${steps.task ? 'done' : ''}">${mark(steps.task)}<div><strong>Finish a first task</strong>${state(steps.task)}
+                    <p>${sample ? 'The sample has a bug. Let Lumi write tests, run them and fix it.' : 'Describe what you want below, or start from a suggestion.'}</p>
+                    ${steps.task || !steps.model || !steps.project ? '' : '<button type="button" class="btn-sm" data-onboarding="task">Use a suggested task</button>'}</div></li>
+            </ol>`;
+        card.querySelector('[data-onboarding="dismiss"]').addEventListener('click', () => {
+            this.settings = {...(this.settings || {}), onboarding: {...(this.settings?.onboarding || {}), dismissed: true}};
+            this.send({command: 'update_settings', section: 'onboarding', key: 'dismissed', value: true});
             card.remove();
         });
-        projectStep.parentNode.insertBefore(card, projectStep);
+        card.querySelector('[data-onboarding="connect"]')?.addEventListener('click', () => {
+            this._settingsActivePage = 'provider_connections';
+            this.switchView('settings');
+        });
+        card.querySelector('[data-onboarding="folder"]')?.addEventListener('click', () => this.openProjectFolder());
+        card.querySelector('[data-onboarding="sample"]')?.addEventListener('click', event => {
+            event.currentTarget.disabled = true;
+            event.currentTarget.textContent = 'Creating…';
+            this.send({command: 'create_sample_project'});
+        });
+        card.querySelector('[data-onboarding="task"]')?.addEventListener('click', () => {
+            this.userInput.value = sample
+                ? 'Add unit tests for app.py with unittest, run them, and fix any bug they find.'
+                : 'Explain what this project does, then suggest one small improvement and make it.';
+            this.userInput.dispatchEvent(new Event('input', {bubbles: true}));
+            this.userInput.focus();
+        });
+        container.classList.add('with-onboarding');
+        container.appendChild(card);
     }
+
 
     /** Render an empty-state card in the chat panel when there are no messages yet. */
     _maybeRenderChatEmptyState() {
@@ -4575,6 +4612,7 @@ class LumiApp {
             <h2 class="chat-empty-title">What would you like to build?</h2>
             <p class="chat-empty-sub">${this.currentCwd ? `Start a session in ${this.escapeHtml(this._projectNameFromPath(this.currentCwd))}` : 'Choose a project to get started'}</p>
         `;
+        this._renderOnboardingChecklist(empty);
         this.chatMessages.appendChild(empty);
         this.agentPanel?.classList.add('has-empty-state');
     }
@@ -10875,7 +10913,6 @@ class LumiApp {
 
         this.clearPreviewPanel();
         this.closePreviewPanel();
-        this._maybeRenderOnboardingCard();
 
         const projectStep = document.getElementById('project-step');
         const backendStep = document.getElementById('backend-step');

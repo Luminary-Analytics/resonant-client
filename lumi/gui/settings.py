@@ -144,6 +144,11 @@ DEFAULTS = {
         "enabled": False,
         "server_url": "",
     },
+    # The first-run checklist (lumi/gui/onboarding.py).
+    "onboarding": {
+        "dismissed": False,
+        "first_task_done": False,
+    },
     # Settings > Updates (lumi/update_channels.py): automatic, manual or off;
     # the stable or beta channel; and a release line ("0.20") to stay on.
     # Read at startup, so a change applies after a restart.

@@ -2803,6 +2803,19 @@ def _update_check_message(info: dict, started: bool) -> str:
     return message
 
 
+@command("create_sample_project")
+async def _cmd_create_sample_project(ctx: CommandContext) -> None:
+    """Make (or find) the first-run sample project; the page then opens it."""
+    from .onboarding import SAMPLE_TASK, create_sample_project
+
+    try:
+        path = await asyncio.to_thread(create_sample_project)
+    except OSError as exc:
+        await ctx.send({"event": "error", "message": f"Couldn't create the sample project: {exc}"})
+        return
+    await ctx.send({"event": "sample_project", "path": str(path), "task": SAMPLE_TASK})
+
+
 @command("update_status")
 async def _cmd_update_status(ctx: CommandContext) -> None:
     from lumi.updater import status as update_status
@@ -3068,6 +3081,7 @@ _SOCKET_SETTING_KEYS: dict[str, frozenset[str]] = {
     "audit": frozenset({"otlp_endpoint", "otlp_auth_header"}),
     "security": frozenset({"cli_adapters", "computer_use", "chat_gateway"}),
     "updates": frozenset({"mode", "channel", "pin"}),
+    "onboarding": frozenset({"dismissed"}),
     "model_favorites": frozenset({"models"}),
 }
 
@@ -3123,6 +3137,7 @@ def _socket_setting_value(section: Any, key: Any, value: Any) -> Any:
         return normalize(key, value)
     if (section, key) in {
         ("network", "system_certificates"), ("privacy", "secret_scan"), ("privacy", "audit_log"),
+        ("onboarding", "dismissed"),
     } or section == "security":
         if not isinstance(value, bool):
             raise ValueError(f"{section}.{key} must be on or off.")

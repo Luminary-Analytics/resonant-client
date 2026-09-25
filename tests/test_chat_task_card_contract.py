@@ -427,7 +427,7 @@ def test_settings_navigation_is_idempotent_and_background_events_cannot_close_it
     assert "view === 'settings' && this.currentView === 'settings'" not in source
 
     show_start = source.index("    showChatInterface({ force = false } = {}) {")
-    show_end = source.index("\n    /** First-run onboarding card", show_start)
+    show_end = source.index("\n    /**\n     * The first-run checklist", show_start)
     show_body = source[show_start:show_end]
     assert "if (!force && this.currentView !== 'agents') return;" in show_body
 

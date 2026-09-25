@@ -8,6 +8,44 @@ The heartbeat remains paused. Documentation maintenance does not resume work,
 spending or grants, and changes no native implementation or installed bundle.
 The dated September 15/18 records below are historical.
 
+## September 25 getting-started checklist — source only, not released
+
+- **A first-run checklist in the empty chat** ([guide](desktop-workflow.md#getting-started),
+  `lumi/gui/onboarding.py`) replaces the static welcome card. Its three steps
+  follow real state:
+  - **Connect a model**, with a shortcut to Connections;
+  - **Open a project**, with the folder picker, or **Try the sample
+    project**, which creates `Documents/Lumi Projects/lumi-sample`, a tiny
+    Python program with a planted bug, and opens it;
+  - **Finish a first task**: **Use a suggested task** fills the composer
+    without sending. The first turn that ends without an error sets
+    `onboarding.first_task_done`.
+- The **×** hides the checklist for good (`onboarding.dismissed`). The page
+  can't mark the task done itself. The checklist moves the empty chat up so
+  short windows show it.
+
+Validation on September 25, 2026:
+
+- 4 tests in `test_onboarding.py`:
+  - the sample project and its planted bug;
+  - never overwriting an existing sample;
+  - what counts as a finished turn;
+  - the settings and socket commands, including refusing
+    `first_task_done` from the page.
+- Full `pytest`: 3,853 passed, 3 skipped. A contract test that found the old
+  card's comment now looks for the checklist's.
+- In the browser pane, from a fresh isolated home with the scripted Ollama
+  stub as the only model:
+  - the checklist showed the model step done;
+  - **Try the sample project** created and opened `lumi-sample`;
+  - **Use a suggested task** filled and focused the composer;
+  - Enter ran the turn, the task step was ticked, and `first_task_done` was
+    saved;
+  - a new session showed no checklist;
+  - in a second fresh run, **×** hid it and saved `dismissed`;
+  - at 1280×720 the whole checklist was above the composer. In the 417-pixel
+    browser pane it needs a scroll.
+
 ## September 25 image descriptions for text-only models — source only, not released
 
 - **A vision model describes images for a chat model that can't see them**

@@ -18,15 +18,27 @@ from lumi import model_evals
 from lumi.gui import ws_commands
 
 FAKE_RUN = textwrap.dedent("""\
-    import json, pathlib, sys, time
+    import json, pathlib, subprocess, sys, time
     args = sys.argv[1:]
     assert args[0] == "run"
     option = lambda name: args[args.index(name) + 1]
     project, model = pathlib.Path(option("--project")), option("--model")
+    git = lambda *more: subprocess.run(["git", "-C", str(project), "-c", "user.email=t@example.com",
+                                        "-c", "user.name=T", *more], check=True, capture_output=True)
     if model == "slow":
         time.sleep(120)
     if model == "good":
         (project / "fixed.txt").write_text("fixed", encoding="utf-8")
+    if model == "committer":  # commits as it goes: a model in bypass can run git commit
+        (project / "fixed.txt").write_text("fixed", encoding="utf-8")
+        git("add", "fixed.txt")
+        git("commit", "-q", "-m", "Fix")
+        (project / "app.py").write_text("print('fixed')", encoding="utf-8")
+        git("commit", "-q", "-am", "Tidy")
+    if model == "bulky":  # commits more than a kept diff holds
+        (project / "fixed.txt").write_text("x" * 300_000, encoding="utf-8")
+        git("add", "fixed.txt")
+        git("commit", "-q", "-m", "Big")
     (project / "notes.txt").write_text(args[-1], encoding="utf-8")  # the prompt
     print(json.dumps({"status": "completed", "errors": [],
                       "usage": {"cost_usd": 0.02 if model == "good" else 0.01, "calls": 2}}))
@@ -141,6 +153,48 @@ def test_each_model_runs_each_task_in_its_own_copy(repo):
     assert all(isinstance(row["median_seconds"], float) for row in rows)
     assert len(updates) == 5  # after each run, and at the end
     assert model_evals.overview()["items"][0]["summary"][0]["passed"] == 2
+
+
+def test_the_kept_diff_includes_what_a_run_committed(repo):
+    # A run can commit its work: a model in bypass can run git commit, and a
+    # hook of yours can commit each edit. Its diff and changed files are taken
+    # against the commit it started from, not the worktree's HEAD at the end.
+    def head() -> str:
+        return subprocess.run(["git", "-C", repo, "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
+
+    start = head()
+    comparison = model_evals.create(_raw(repo, models=["ollama:committer", "ollama:bulky"]))
+    model_evals.runner.start(comparison.id)
+    model_evals.runner.join(60)
+
+    done = model_evals.get(comparison.id)
+    committer, bulky = done.results
+    # committer: fixed.txt and app.py in two commits, then notes.txt uncommitted.
+    assert [(r["model"], r["status"], r["passed"], r["changed_files"]) for r in done.results] == [
+        ("ollama:committer", "completed", True, 3), ("ollama:bulky", "completed", True, 2)]
+    lines = pathlib.Path(committer["diff"]).read_text(encoding="utf-8").splitlines()
+    assert {"+fixed", "-print('hi')", "+print('fixed')", "+Create fixed.txt"} <= set(lines)
+    assert committer["start_commit"] == bulky["start_commit"] == start
+
+    # What a run committed counts toward the 200 KB a kept diff holds.
+    marker = b"\n... (diff truncated)\n"
+    kept = pathlib.Path(bulky["diff"]).read_bytes()
+    assert b"+" + b"x" * 1000 in kept and kept.endswith(marker)
+    assert len(kept) == model_evals.MAX_DIFF_BYTES + len(marker)
+
+    # The commits stayed in the runs' worktrees: your checkout is where it was.
+    status = subprocess.run(["git", "-C", repo, "status", "--porcelain"], capture_output=True, text=True).stdout
+    assert head() == start and status == ""
+
+
+def test_a_file_named_like_the_start_commit_does_not_empty_the_diff(repo):
+    # git refuses an argument that names both a revision and a file, and the
+    # kept diff would be empty.
+    start = subprocess.run(["git", "-C", repo, "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
+    (pathlib.Path(repo) / start).write_text("named like the commit", encoding="utf-8")
+    kept = model_evals._keep_diff(SimpleNamespace(id="0123456789"), pathlib.Path(repo), start)
+    assert kept["changed_files"] == 1
+    assert "+named like the commit" in pathlib.Path(kept["diff"]).read_text(encoding="utf-8").splitlines()
 
 
 def test_runs_trust_only_the_policy_version_the_user_trusted(repo, tmp_path, monkeypatch):

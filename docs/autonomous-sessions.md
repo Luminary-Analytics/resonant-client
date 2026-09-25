@@ -47,6 +47,21 @@ It stops when:
 | blocked | The reflect pass said "blocked" three times in a row. |
 | sub-tasks kept failing | Two iterations failed in a row. |
 | stuck, needs you | The items ran out and the criteria still don't pass. |
+| not allowed by policy | Your organization's policy stopped allowing Full-auto (below). |
+
+## Your files, trust and your organization's policy
+
+Each planned task follows the rules a chat in the project follows: files you
+exclude (**Settings > Privacy & security**, the project's `.lumiignore` or
+your organization's policy) are never read, and the project's instructions,
+notes and language servers are used only once you trust the project.
+
+Autonomous sessions run in Full-auto, since nobody is there to approve each
+step, and the session runs its own `[bash]` checks. If your organization's
+policy doesn't allow Full-auto, **Build autonomously** and **Resume** say so
+and start nothing; the spec card stays as it was. If such a policy arrives
+while a session runs, the step already running finishes, no further step
+starts, and the session stops before its next iteration or reflect pass.
 
 ## The spending limit
 

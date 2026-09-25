@@ -97,8 +97,57 @@ lumi usage
   `session`.
 - `--format csv` or `--format jsonl` exports the records themselves.
 
+## Budgets
+
+Budgets act on the priced spend in these records (`lumi/budgets.py`). Each
+has up to three thresholds:
+
+- **Alert** (`warn_usd`): the conversation shows a notice, once per period.
+- **Ask** (`approve_usd`): before the next model request, Lumi asks whether
+  to continue. The question comes once per period, or once per turn for a
+  per-turn budget. **Stop** ends the turn. A run that can't ask, such as the
+  chat gateway or a delegated worker, stops.
+- **Stop** (`block_usd`): the turn stops before its next model request. A
+  turn can't start while a day or month budget is spent. Work is kept.
+
+Under **Settings > Usage & cost** you can set:
+
+- **Daily budget alert** (`cost_tracking.budget_alert_usd`): an alert past
+  today's amount.
+- **Ask before spending more than** (`cost_tracking.daily_limit_usd`): asks
+  past today's amount.
+- **Stop a turn after spending** (`cost_tracking.turn_limit_usd`): a
+  per-turn cap. Send Continue to go on with a fresh allowance.
+
+The page lists every budget in effect with this period's spend.
+
+An organization policy adds its own budgets, which people can't change:
+
+```json
+"budgets": [
+  {"scope": "user", "period": "month", "warn_usd": 200, "approve_usd": 300, "block_usd": 400},
+  {"scope": "project", "match": "*/payments-*", "period": "day", "block_usd": 50},
+  {"scope": "turn", "block_usd": 5, "block_unpriced": true}
+]
+```
+
+Scopes:
+
+- `user`: this machine's account.
+- `project`: project folders matching the `match` glob.
+- `turn`: one turn.
+
+Periods are UTC days or months. Unpriced calls can't count toward a budget,
+so `block_unpriced` refuses unpriced models while that budget applies.
+Subscription and local models are still allowed. Alerts, answers and stops
+go to the [audit log](audit-log.md) as `budget.warning`, `budget.approval`
+and `budget.block`.
+
 ## Not covered yet
 
+- Budgets are enforced on each machine from its own records. A team budget
+  across people and machines, and approval by someone other than the person
+  running Lumi, need Lumi Cloud.
 - The quick "should this turn plan first?" classification some backends run,
   and skill-mission extraction, are not recorded.
 - Autonomous mission budgets (`general.budget_usd_max`) count priced calls

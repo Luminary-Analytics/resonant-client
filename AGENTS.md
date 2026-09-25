@@ -88,7 +88,9 @@ host enrollment and actual packaged/learned-benefit qualification remain open.
   and paths through `audit.name`; never record setting or key values.
 - Model calls outside a turn go through `engine/request_purpose.auxiliary_stream`
   with a purpose, so `usage.py` records them. Prices come from `pricing.py`;
-  a model without a known price is unpriced (`None`), never $0.
+  a model without a known price is unpriced (`None`), never $0. Budgets
+  (`budgets.py`) are checked before every model request of a turn; a new
+  loop that calls a model repeatedly must check them too.
 
 ## Working in the codebase
 

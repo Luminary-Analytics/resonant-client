@@ -21,7 +21,6 @@ import difflib
 from collections import deque
 from pathlib import Path
 import uuid
-from datetime import date
 from typing import Any, Callable, Optional
 
 
@@ -58,7 +57,7 @@ from ..connections import (
 from ..sonn import SonnBackend
 from ..engine import Session
 from ..network_defaults import default_thinking_for_model, resolve_exo_url, resolve_ollama_url, resolve_sonn_url
-from .. import audit, net, pricing, secret_scan, usage
+from .. import audit, budgets, net, pricing, secret_scan, usage
 from . import ws_commands
 from .appearance import page_appearance
 from .chat_loop import ChatRunLoop
@@ -243,7 +242,6 @@ class AppState:
         # Every recorded model call adds to the totals Settings shows: turns,
         # workers, titles and compaction alike (lumi/usage.py).
         usage.set_listener(self._count_usage)
-        self._budget_alert_days: set[str] = set()
         # v0.5.9a2 — per-iteration cost + model attribution. Updated
         # from two layers: the chat-stream `status` event handler
         # records each model's tokens; the autonomous-event forwarder
@@ -2065,6 +2063,8 @@ class AppState:
         # And price overrides and whether usage is recorded.
         pricing.configure(self.settings)
         usage.configure(self.settings)
+        # And the spending alerts and limits (lumi/budgets.py).
+        budgets.configure(self.settings)
 
     def enforce_retention(self) -> dict:
         """Delete transcripts older than the retention setting (gui/retention.py)."""
@@ -3450,19 +3450,6 @@ async def _run_session_streaming(
                             "iter_cost_tracker.record_status raised",
                             exc_info=True,
                         )
-                    budget_alert = state.settings.get("cost_tracking", "budget_alert_usd", None)
-                    today = date.today().isoformat()
-                    today_cost = state.costs.get_daily_cost(today)["cost_usd"]
-                    if (
-                        budget_alert is not None and
-                        today_cost >= float(budget_alert) and
-                        today not in state._budget_alert_days
-                    ):
-                        state._budget_alert_days.add(today)
-                        await ws.send_json({
-                            "event": "status_msg",
-                            "message": f"Daily spend crossed ${float(budget_alert):.2f} (${today_cost:.4f} today)",
-                        })
 
             if event_type == EngineEvent.SESSION_END.value and event.get("telemetry"):
                 try:

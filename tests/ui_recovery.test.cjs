@@ -486,3 +486,10 @@ test('capability pack review escapes repository text and approves only what it s
     assert.equal(html.match(/data-pack-action="approve"/g).length, 1);
     assert.match(html, /contains a link/);
 });
+
+test('a prompt keeps amounts and version numbers in its question', () => {
+    const app = setup(() => Promise.resolve({ok: true}));
+    assert.equal(app._conciseAwaitUserQuestion("Today's spend is $0.27, past your $0.20 limit \u2014 continue anyway?"),
+        "Today's spend is $0.27, past your $0.20 limit \u2014 continue anyway?");
+    assert.equal(app._conciseAwaitUserQuestion('The tests pass. Upgrade to Python 3.12 now?'), 'Upgrade to Python 3.12 now?');
+});

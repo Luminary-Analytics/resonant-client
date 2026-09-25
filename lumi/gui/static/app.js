@@ -3842,6 +3842,10 @@ class LumiApp {
                     this._priceDraft = null;
                 }
                 this._renderAccountMenu();
+                // Budgets and prices on Usage & cost follow the saved settings.
+                if (this.currentView === 'settings' && this._settingsActivePage === 'cost_tracking') {
+                    this.send({ command: 'get_costs' });
+                }
                 if (!this.isRunning) {
                     this.setPermissionMode(
                         this.settings.general?.default_permission_mode || this.permissionMode || 'bypass',
@@ -6425,6 +6429,20 @@ class LumiApp {
                     <div class="settings-row-hint">Shows an alert after tracked daily spend crosses this amount.</div>
                 </div>
             </div>
+            <div class="settings-row">
+                <span class="settings-row-label">Ask before spending more than ($ per day)</span>
+                <div class="settings-row-value">
+                    <input class="settings-input" type="number" min="0" step="0.01" value="${Number(data.daily_limit_usd) || ''}" data-section="cost_tracking" data-key="daily_limit_usd" placeholder="None" aria-label="Ask before spending more than this per day, in dollars"${this._costLock('daily_limit_usd')} />
+                    <div class="settings-row-hint">Past this amount a turn asks whether to continue, once a day.</div>
+                </div>
+            </div>
+            <div class="settings-row">
+                <span class="settings-row-label">Stop a turn after spending ($)</span>
+                <div class="settings-row-value">
+                    <input class="settings-input" type="number" min="0" step="0.01" value="${Number(data.turn_limit_usd) || ''}" data-section="cost_tracking" data-key="turn_limit_usd" placeholder="None" aria-label="Stop a turn after spending this many dollars"${this._costLock('turn_limit_usd')} />
+                    <div class="settings-row-hint">Work is kept; send Continue to go on with a new turn.</div>
+                </div>
+            </div>
         `;
         if (!costs) {
             return `${controls}<div class="cost-dashboard-loading"><span></span>Loading usage history&hellip;</div>`;
@@ -6483,6 +6501,7 @@ class LumiApp {
                     ${statCard('Tracked total', total, `${dailyEntries.length} day${dailyEntries.length === 1 ? '' : 's'}`)}
                 </div>
                 ${budgetHtml}
+                ${this._renderBudgets(costs.budgets)}
                 <div class="cost-history">
                     <div class="cost-history-title"><strong>Recent daily usage</strong><span>Input</span><span>Output</span><span>Cost</span></div>
                     ${historyRows || '<div class="cost-history-empty">No token usage has been recorded yet.</div>'}
@@ -6492,6 +6511,37 @@ class LumiApp {
                 <p class="cost-dashboard-note">Local and Ollama-hosted models still report tokens when available. Local models count as $0; Codex, Claude Code and Ollama cloud models are covered by their subscriptions; other models without a price are counted as unpriced, never as $0.</p>
             </div>
         `;
+    }
+
+    _costLock(key) {
+        return this.settings?._meta?.locked?.[`cost_tracking.${key}`] ? ' disabled' : '';
+    }
+
+    _renderBudgets(budgets) {
+        const rules = (budgets || []).filter(rule => rule.applies !== false);
+        if (!rules.length) return '';
+        const esc = value => this.escapeHtml(String(value ?? ''));
+        const money = value => this._formatUsageCost(value);
+        const rows = rules.map(rule => {
+            const owner = rule.owner ? esc(rule.owner) : 'You';
+            const scope = rule.scope === 'turn' ? 'each turn'
+                : `${rule.period === 'month' ? 'this month' : 'today'}${rule.scope === 'project' ? `, projects matching <code>${esc(rule.match)}</code>` : ''}`;
+            const steps = [
+                rule.warn_usd != null ? `alert at ${money(rule.warn_usd)}` : '',
+                rule.approve_usd != null ? `asks at ${money(rule.approve_usd)}` : '',
+                rule.block_usd != null ? `stops at ${money(rule.block_usd)}` : '',
+                rule.block_unpriced ? 'unpriced models not allowed' : '',
+            ].filter(Boolean).join(' &middot; ');
+            const top = Math.max(Number(rule.block_usd) || 0, Number(rule.approve_usd) || 0, Number(rule.warn_usd) || 0);
+            const percent = rule.scope !== 'turn' && top > 0 ? Math.min(100, (Number(rule.spent_usd) || 0) / top * 100) : 0;
+            const spent = rule.scope === 'turn' ? '' : `<strong>${money(rule.spent_usd)} spent</strong>`;
+            return `
+                <div class="cost-budget" aria-label="${owner} budget for ${esc(rule.scope === 'turn' ? 'each turn' : rule.period)}">
+                    <div><span>${owner}: ${scope} &middot; ${steps}</span>${spent}</div>
+                    ${rule.scope === 'turn' ? '' : `<div class="cost-budget-track"><span style="width:${percent}%"></span></div>`}
+                </div>`;
+        }).join('');
+        return `<div class="cost-budgets"><div class="cost-history-title"><strong>Budgets</strong></div>${rows}</div>`;
     }
 
     _renderUsageByModel(month) {
@@ -8010,7 +8060,9 @@ class LumiApp {
         const questionBlock = blocks.find((block) => block.includes('?'));
         let concise = questionBlock || blocks[0] || normalized;
         if (questionBlock) {
-            const sentences = questionBlock.match(/[^.!?]+[.!?]+|[^.!?]+$/g) || [];
+            // A sentence ends at . ! or ? before a space, so "$0.27" and
+            // "Python 3.12" stay whole.
+            const sentences = questionBlock.split(/(?<=[.!?])\s+/);
             const directQuestions = sentences.filter((sentence) => sentence.includes('?'));
             if (directQuestions.length > 0) concise = directQuestions.join(' ');
         } else {
@@ -9089,6 +9141,8 @@ class LumiApp {
             this._renderOllamaExhaustedChip(event);
         } else if (event.kind === 'secrets_redacted') {
             this._renderSecretsRedactedNotice(event);
+        } else if (event.kind === 'budget_warning') {
+            this._renderBudgetNotice(event);
         }
         // Future kinds get their own renderers; swallow unknown kinds
         // silently rather than confuse the user with unfamiliar text.
@@ -9099,6 +9153,20 @@ class LumiApp {
      * machine (lumi/secret_scan.py). The note stays in the transcript so
      * the user can tell why the model saw [REDACTED …] text.
      */
+    /** A spending alert from lumi/budgets.py; the turn continues. */
+    _renderBudgetNotice(event) {
+        if (!this.chatMessages) return;
+        const notice = document.createElement('div');
+        notice.className = 'backend-status-banner backend-status-budget';
+        notice.setAttribute('role', 'status');
+        notice.innerHTML = `
+            <svg class="backend-status-icon" width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true"><circle cx="8" cy="8" r="6.2" stroke="currentColor" stroke-width="1.3"/><path d="M8 4.5v7M10 6c-.4-.7-1.1-1-2-1-1.1 0-2 .6-2 1.5S7 7.8 8 8s2 .6 2 1.5-.9 1.5-2 1.5c-.9 0-1.6-.3-2-1" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>
+            <span class="backend-status-text">${this.escapeHtml(event.message || 'Spending passed an alert.')}</span>
+        `;
+        this.chatMessages.appendChild(notice);
+        this.scrollToBottom();
+    }
+
     _renderSecretsRedactedNotice(event) {
         if (!this.chatMessages) return;
         const notice = document.createElement('div');

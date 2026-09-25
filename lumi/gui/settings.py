@@ -126,7 +126,11 @@ DEFAULTS = {
     },
     "cost_tracking": {
         "enabled": True,
+        # Budgets (lumi/budgets.py): warn past the alert, ask before going past
+        # the daily limit, and stop a turn at the per-turn limit.
         "budget_alert_usd": None,
+        "daily_limit_usd": None,
+        "turn_limit_usd": None,
         # Your own prices (lumi/pricing.py): {"provider:model-glob": {"input": ..,
         # "output": .., "cached_input": .., "cache_write": ..}} in USD per million tokens.
         "price_overrides": {},

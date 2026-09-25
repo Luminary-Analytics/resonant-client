@@ -1417,13 +1417,14 @@ Examples:
 
     # The audit log and usage records follow Settings and organization policy here too.
     try:
-        from . import audit, pricing, usage
+        from . import audit, budgets, pricing, usage
         from .gui.settings import SettingsManager
 
         settings = SettingsManager()
         audit.configure(settings)
         pricing.configure(settings)
         usage.configure(settings)
+        budgets.configure(settings)
     except Exception:
         logging.getLogger(__name__).debug("Audit settings unavailable", exc_info=True)
 

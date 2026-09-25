@@ -37,7 +37,8 @@ What a policy can do (every section is optional)::
                            "arg_patterns": {"command": "curl"}}]},
       "mcp": {"allowed_servers": ["github"], "allow_stdio": false},
       "extensions": {"allowed_packs": ["team-*"]},
-      "pricing": {"prices": {"anthropic:claude-opus-*": {"input": 3.2, "output": 16}}}
+      "pricing": {"prices": {"anthropic:claude-opus-*": {"input": 3.2, "output": 16}}},
+      "budgets": [{"scope": "user", "period": "month", "warn_usd": 200, "block_usd": 400}]
     }
 
 Locked settings override the user's value and can't be changed in Settings,
@@ -93,6 +94,8 @@ class Policy:
     trusted_keys: dict[str, str] = field(default_factory=dict)
     # Negotiated prices (lumi/pricing.py): ordered (pattern, Price) pairs.
     prices: tuple = ()
+    # Spending rules (lumi/budgets.py), owned by the organization.
+    budgets: tuple = ()
     raw: dict = field(default_factory=dict)
 
     # ── Queries ────────────────────────────────────────────────────────────
@@ -150,6 +153,7 @@ class Policy:
             "mcp_allow_stdio": self.mcp_allow_stdio,
             "packs_allowed": list(self.packs_allowed) if self.packs_allowed is not None else None,
             "prices": [pattern for pattern, _ in self.prices],
+            "budgets": len(self.budgets),
         }
 
 
@@ -237,6 +241,13 @@ def parse(data: Any, *, source: str, trusted_keys: dict[str, str] | None = None,
         prices = parse_prices((document.get("pricing") or {}).get("prices") or {})
     except ValueError as exc:
         raise PolicyError(f"pricing.prices: {exc}") from exc
+    from .budgets import parse_rules
+
+    organization = str(document.get("organization") or "your organization")
+    try:
+        budgets = parse_rules(document.get("budgets"), owner=organization)
+    except ValueError as exc:
+        raise PolicyError(f"budgets: {exc}") from exc
     raw_keys = document.get("trusted_keys") or {}
     if not isinstance(raw_keys, dict):
         raise PolicyError("trusted_keys must map key ids to base64 Ed25519 public keys.")
@@ -262,6 +273,7 @@ def parse(data: Any, *, source: str, trusted_keys: dict[str, str] | None = None,
         ),
         trusted_keys={str(k): str(v) for k, v in raw_keys.items()},
         prices=prices,
+        budgets=budgets,
         raw=document,
     )
 

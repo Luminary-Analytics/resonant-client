@@ -622,8 +622,11 @@ async def _get_costs(ctx: CommandContext) -> None:
         # This month's calls from the usage records, and the prices in effect.
         month = datetime.now(timezone.utc).strftime("%Y-%m")
         rows = usage.ledger().records(since=month)
+        from .. import budgets
+
         return {
             **ctx.state.costs.get_all_costs(),
+            "budgets": budgets.status(getattr(getattr(ctx.state, "project", None), "project_path", "") or ""),
             "month": {"period": month, **usage.totals(rows), "by_model": usage.breakdown(rows, "model"),
                       "by_purpose": usage.breakdown(rows, "purpose")},
             "pricing": pricing.describe_catalog(),
@@ -3003,7 +3006,8 @@ _SOCKET_SETTING_KEYS: dict[str, frozenset[str]] = {
     "network": frozenset({"ollama_url", "exo_url", "sonn_url", "proxy_url", "no_proxy", "system_certificates"}),
     "api_keys": frozenset({"sonn", "openrouter", "kimi", "anthropic", "openai", "otlp"}),
     "engram": frozenset({"enabled", "server_url"}),
-    "cost_tracking": frozenset({"enabled", "budget_alert_usd", "price_overrides"}),
+    "cost_tracking": frozenset({"enabled", "budget_alert_usd", "daily_limit_usd", "turn_limit_usd",
+                                "price_overrides"}),
     "privacy": frozenset({
         "secret_scan", "excluded_paths", "transcript_retention_days",
         "audit_log", "audit_capture", "audit_retention_days",
@@ -3076,6 +3080,12 @@ def _socket_setting_value(section: Any, key: Any, value: Any) -> Any:
             if text and not text.startswith("#") and text not in patterns:
                 patterns.append(text)
         return patterns
+    elif section == "cost_tracking" and key in {"budget_alert_usd", "daily_limit_usd", "turn_limit_usd"}:
+        if value in (None, ""):
+            return None  # an emptied field removes the limit
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not 0 <= value <= 1_000_000:
+            raise ValueError("Enter an amount in USD, or leave it empty for no limit.")
+        return float(value) or None
     elif (section, key) == ("cost_tracking", "price_overrides"):
         from ..pricing import parse_override_lines
 

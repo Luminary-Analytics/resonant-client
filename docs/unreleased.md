@@ -8,6 +8,44 @@ The heartbeat remains paused. Documentation maintenance does not resume work,
 spending or grants, and changes no native implementation or installed bundle.
 The dated September 15/18 records below are historical.
 
+## September 25 changed files count only edits that happened — source only, not released
+
+- A task's **Changed files** and the "Review these changes" next-prompt
+  suggestion count a file change only when that call's own result succeeds,
+  matched by call id (`lumi/gui/static/app.js`). They used to count the
+  model's `file_edit` or `file_write` call, so an edit the user rejected, a
+  policy blocked, that failed (`old_text` not found) or that a cancel stopped
+  before it ran still counted: the suggestion offered to review changes that
+  never happened, and a card finished without the server's evidence (a turn
+  ending in an error, or a replayed interrupted turn) listed the file.
+- Replay rebuilds the list from the saved results the same way. A Codex file
+  change counts when its result succeeds. A worker's tool events never count
+  for the parent turn and can't complete a parent call that has the same id.
+  The line and diff counts shown beside each file are unchanged.
+- A worker's handoff still lists the files its write calls named, whether or
+  not they succeeded; the engine builds that list.
+
+Validation on September 25, 2026:
+
+- Full `pytest`: 3,995 passed, 5 skipped. `ruff check` clean.
+- `node --test tests/ui_recovery.test.cjs tests/appearance.test.cjs`: 37
+  passed. Three new tests drive the real `handleToolCall`,
+  `handleToolResult` and `replayDisplayEvents` with rejected,
+  policy-blocked, failed, unanswered, accepted, id-less, Codex and worker
+  events. All three fail against the previous `app.js`, and they also catch
+  counting a worker's result for the parent or ignoring `denied`.
+- In the browser pane, with an isolated home and a scripted
+  Ollama-compatible model. Ask mode on this base refuses edits by policy, so
+  a project `lumi-policy.json` `prompt` rule for `file_edit` in Auto-edit
+  produced the real Accept/Reject card:
+  - Before the change, Reject left `notes.txt` unchanged, yet the next prompt
+    suggested reviewing the changes, and after a provider error the Failed
+    card listed `notes.txt` under **Changed files**.
+  - After it, a rejection, a rejection followed by a provider error and an
+    Ask-mode policy block listed no changed files and suggested no review.
+    An accepted edit changed the file, listed `notes.txt` and suggested
+    reviewing it. After a reload, only the accepted turn listed a file.
+
 ## September 25 code intelligence — source only, not released
 
 - **`code_intel`** ([guide](code-intelligence.md), `lumi/engine/lsp.py`):

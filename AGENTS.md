@@ -42,8 +42,10 @@ host enrollment and actual packaged/learned-benefit qualification remain open.
 - Follow the [harness north star](docs/agentic-harness-north-star.md): correct
   completion, verification, maintainability, and time to a trustworthy result
   come before token efficiency.
-- Keep behavior capability-driven. Ollama, EXO, Kimi, OpenRouter, and SONN adapters
-  translate provider protocols into the engine contract. Codex and Claude Code
+- Keep behavior capability-driven. Anthropic, OpenAI, Ollama, EXO, Kimi, OpenRouter,
+  SONN and custom-connection adapters translate provider protocols into the engine
+  contract. Connections are validated data (`lumi/connections.py`), not code per
+  provider; their keys live in `api_keys` as `conn_<id>`. Codex and Claude Code
   run their own CLI tool loops; do not claim identical native tool behavior.
 - Preserve explicit model choices. Account discovery may update available
   models, but adding a model must not silently change a user's default.

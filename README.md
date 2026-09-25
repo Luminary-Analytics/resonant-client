@@ -28,6 +28,15 @@ sidebar with focused pages for preferences, connections, and integrations.
 
 ## Provider Support
 
+- **Anthropic:** Claude through the Messages API with native tools, extended
+  thinking (signed thinking replayed within a tool loop), prompt caching and
+  cache-aware usage. Also on Amazon Bedrock and Google Vertex AI.
+- **OpenAI:** GPT and o-series models through the Responses API, stateless
+  (`store: false`) with encrypted reasoning carried between tool calls. Also on
+  Azure OpenAI.
+- **Custom connections:** any OpenAI-compatible endpoint (LiteLLM, vLLM, an
+  internal gateway), Azure OpenAI, or Claude on Bedrock or Vertex, defined in
+  **Settings > Connections** without code.
 - **Ollama:** the zero-credential local-first default. Models are discovered
   from the configured endpoint.
 - **EXO:** distributed inference through its OpenAI-compatible endpoint, with
@@ -128,6 +137,41 @@ pip install -e ".[all,dev]"
 Python 3.11 or newer is required.
 
 ## Configure A Provider
+
+### Anthropic
+
+Add an Anthropic key under **Settings > API keys**, or set `ANTHROPIC_API_KEY`,
+then use **Settings > Connections > Check connection & refresh models**. Lumi
+lists the models the key can use. The thinking selector sets an extended-thinking
+budget (off, low, med, high, max). Usage is billed to your Anthropic account.
+
+### OpenAI
+
+Add an OpenAI key under **Settings > API keys**, or set `OPENAI_API_KEY`. Lumi uses
+the Responses API without storing conversations at OpenAI, and maps the thinking
+selector to reasoning effort. This is separate from signing in with ChatGPT for
+Codex and is billed to the API account.
+
+### Custom connections
+
+**Settings > Connections > Custom connections** adds an endpoint without code:
+
+- **OpenAI-compatible:** a base URL ending in `/v1` (LiteLLM, vLLM, an internal
+  gateway), a bearer token, a key in a custom header, or no key; extra headers;
+  and models listed by hand or discovered from `/models`.
+- **Azure OpenAI:** `https://NAME.openai.azure.com/openai/v1`, an `api-key`, and
+  your deployment names as models.
+- **Claude on Amazon Bedrock:** a region and model or inference-profile ids. Lumi
+  signs requests with your AWS credentials (environment, profile or SSO through
+  botocore when installed) or uses a Bedrock API key.
+- **Claude on Google Vertex AI:** a project, region and model ids, using Google
+  Application Default Credentials (google-auth or the gcloud CLI).
+- **Anthropic or OpenAI Responses proxies:** the same APIs at another URL.
+
+**Test connection** checks credentials and lists models before saving. Each
+connection appears in **Models** under its own name. Connection keys are stored
+with your other API keys and never returned to the page. HTTP (not HTTPS) is
+accepted only for localhost and private-network endpoints.
 
 ### Ollama
 
@@ -269,6 +313,12 @@ now that browsing works out of the box.
 | `SONN_API_URL` | none | Complete SONN project API base URL ending in `/openai/v1` |
 | `SONN_API_KEY` | none | SONN private invitation key |
 | `OPENROUTER_API_KEY` | none | OpenRouter API key |
+| `ANTHROPIC_API_KEY` | none | Anthropic API key |
+| `OPENAI_API_KEY` | none | OpenAI API key |
+| `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_SESSION_TOKEN` / `AWS_PROFILE` | none | Credentials for Claude on Bedrock connections |
+| `AWS_BEARER_TOKEN_BEDROCK` | none | Bedrock API key, used when a Bedrock connection has no key of its own |
+| `GOOGLE_APPLICATION_CREDENTIALS` | none | Service account for Claude on Vertex AI connections |
+| `LUMI_ANTHROPIC_READ_TIMEOUT_SEC` / `LUMI_OPENAI_READ_TIMEOUT_SEC` | `600` | Stream read timeouts for the Anthropic and OpenAI adapters |
 | `MOONSHOT_BASE_URL` | `https://api.moonshot.ai/v1` | Kimi-compatible API URL |
 | `LUMI_OLLAMA_NUM_CTX` | capability-derived | Ollama context override |
 | `LUMI_OLLAMA_NUM_BATCH` | Ollama default | Optional batch override |

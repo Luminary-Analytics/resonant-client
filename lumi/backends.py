@@ -3945,6 +3945,14 @@ def create_backend(
     if backend_type == "openrouter":
         from .openrouter import OpenRouterBackend
         return OpenRouterBackend(api_key=api_key or "", model=model or "", thinking=thinking)
+    if backend_type == "anthropic":
+        from .anthropic_api import AnthropicBackend
+        return AnthropicBackend(api_key or "", model or AnthropicBackend.DEFAULT_MODEL,
+                                base_url=base_url or "", thinking=thinking)
+    if backend_type == "openai":
+        from .openai_api import OpenAIResponsesBackend
+        return OpenAIResponsesBackend(api_key or "", model or OpenAIResponsesBackend.DEFAULT_MODEL,
+                                      base_url=base_url or "", thinking=thinking)
     if backend_type == "sonn":
         from .sonn import SonnBackend
         return SonnBackend(api_key=api_key or "", model=model or SonnBackend.DEFAULT_MODEL,
@@ -3964,8 +3972,8 @@ def create_backend(
         )
     if backend_type != "ollama":
         raise ValueError(
-            f"Unsupported backend {backend_type!r}. Lumi supports "
-            f"Ollama, EXO, Kimi, OpenRouter, SONN, Codex, and Claude Code."
+            f"Unsupported backend {backend_type!r}. Lumi supports Anthropic, OpenAI, "
+            f"Ollama, EXO, Kimi, OpenRouter, SONN, Codex, Claude Code and custom connections."
         )
     if not model:
         raise ValueError("Model name required for Ollama backend")

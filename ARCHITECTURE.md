@@ -7,8 +7,12 @@ product priorities live in the [harness north star](docs/agentic-harness-north-s
 ## Runtime boundaries
 
 Lumi is a Python agent runtime with a Starlette/WebSocket GUI, a Rich TUI,
-and a pywebview desktop shell. Ollama, EXO, Kimi, OpenRouter, and SONN supply models to
-Lumi's engine loop. Codex and Claude Code adapters instead run installed
+and a pywebview desktop shell. Anthropic, OpenAI, Ollama, EXO, Kimi, OpenRouter, SONN and
+custom connections supply models to Lumi's engine loop. `anthropic_api.py` (Messages
+API, direct/Bedrock/Vertex) and `openai_api.py` (Responses API, OpenAI/Azure) render
+history with the shared Chat Completions converter, then translate it, so tool-call
+repair behaves the same everywhere. `connections.py` validates user-defined
+connections and builds their backends. Codex and Claude Code adapters instead run installed
 CLIs, whose native tool execution remains inside those CLIs.
 
 The GUI owns interaction and rendering. Runtime construction owns provider,

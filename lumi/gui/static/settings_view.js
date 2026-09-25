@@ -240,6 +240,191 @@ class LumiSettingsView {
         this.switchView('settings');
     }
 
+    _renderApiProviderCard(provider, label, keyHint) {
+        const info = (this.providerConnections || {})[provider] || {};
+        const text = info.error || (info.status === 'ready'
+            ? `Connected · ${info.model_count ?? (info.models || []).length} models available · billed to your ${label} account`
+            : `Add your ${label} key in API keys below, then check the connection. ${keyHint}`);
+        return `<div class="provider-connection"><strong>${this.escapeHtml(label)}</strong>
+            <p>${this.escapeHtml(text)}</p>
+            <button class="btn-sm" data-provider="${provider}" data-provider-action="status">Check connection & refresh models</button></div>`;
+    }
+
+    _connectionTypeHints() {
+        return {
+            'openai-compatible': 'Base URL ending in /v1, for LiteLLM, vLLM, Ollama\u2019s /v1 or an internal gateway.',
+            'openai': 'Leave the URL blank for api.openai.com, or point at a proxy that speaks the Responses API.',
+            'azure-openai': 'https://NAME.openai.azure.com/openai/v1 \u2014 list your deployment names as models.',
+            'anthropic': 'Leave the URL blank for api.anthropic.com, or point at a proxy that speaks the Messages API.',
+            'anthropic-bedrock': 'Uses your AWS credentials (environment, profile or SSO) or a Bedrock API key. List model or inference-profile ids.',
+            'anthropic-vertex': 'Uses Google Application Default Credentials. Set the project and region, and list model ids.',
+        };
+    }
+
+    _connectionAuthOptions(type) {
+        const byType = {
+            'openai-compatible': ['bearer', 'header', 'none'],
+            'openai': ['bearer', 'header', 'none'],
+            'azure-openai': ['header', 'bearer'],
+            'anthropic': ['header', 'bearer', 'none'],
+            'anthropic-bedrock': ['aws', 'bearer'],
+            'anthropic-vertex': ['google'],
+        };
+        const labels = { bearer: 'Bearer token', header: 'Key in a header', none: 'No key', aws: 'AWS credentials', google: 'Google credentials' };
+        return (byType[type] || ['bearer']).map(value => ({ value, label: labels[value] }));
+    }
+
+    _blankConnectionDraft() {
+        return { name: '', type: 'openai-compatible', base_url: '', auth: 'bearer', auth_header: '', models: '',
+                 region: '', project: '', api_version: '', aws_profile: '', context_window: '', vision: false,
+                 headers: '', max_tokens_param: 'max_tokens', reasoning_effort: '', api_key: '' };
+    }
+
+    _connectionDraftFrom(item) {
+        return { ...this._blankConnectionDraft(), ...item,
+                 models: (item.models || []).join(', '),
+                 headers: Object.entries(item.headers || {}).map(([k, v]) => `${k}: ${v}`).join('\n'),
+                 context_window: item.context_window || '', vision: Boolean(item.vision), api_key: '' };
+    }
+
+    _connectionPayload(draft) {
+        const headers = {};
+        for (const line of String(draft.headers || '').split('\n')) {
+            const index = line.indexOf(':');
+            if (index > 0) headers[line.slice(0, index).trim()] = line.slice(index + 1).trim();
+        }
+        const payload = { name: draft.name, type: draft.type, base_url: draft.base_url, auth: draft.auth,
+                          auth_header: draft.auth_header, models: draft.models, headers,
+                          region: draft.region, project: draft.project, api_version: draft.api_version,
+                          aws_profile: draft.aws_profile, max_tokens_param: draft.max_tokens_param,
+                          reasoning_effort: draft.reasoning_effort };
+        if (this._connectionEdit?.originalId) payload.id = this._connectionEdit.originalId;
+        if (String(draft.context_window || '').trim()) payload.context_window = Number(draft.context_window);
+        if (draft.vision) payload.vision = true;
+        return payload;
+    }
+
+    _renderCustomConnections() {
+        const data = this.connectionsData || { items: [], types: {} };
+        const types = data.types || {};
+        const edit = this._connectionEdit;
+        const status = this._connectionStatus;
+        const statusHtml = status ? `<p class="connection-status ${status.ok ? 'ok' : 'err'}" role="status">${this.escapeHtml(status.message)}</p>` : '';
+        const rows = (data.items || []).map(item => {
+            const confirm = this._connectionDeleteId === item.id;
+            return `<li class="connection-row">
+                <div class="connection-row-main"><strong>${this.escapeHtml(item.name)}</strong>
+                <span class="connection-meta">${this.escapeHtml(types[item.type] || item.type)}${item.base_url ? ' · ' + this.escapeHtml(item.base_url) : ''}</span>
+                <span class="connection-meta">${item.models?.length ? this.escapeHtml(item.models.slice(0, 4).join(', ')) + (item.models.length > 4 ? ` +${item.models.length - 4}` : '') : 'Models discovered from the endpoint'}${item.auth === 'none' || item.auth === 'aws' || item.auth === 'google' ? '' : item.has_key ? ' · key stored' : ' · no key yet'}</span></div>
+                <div class="connection-row-actions">${confirm
+                    ? `<span class="connection-confirm">Remove ${this.escapeHtml(item.name)}?</span><button class="btn-sm" data-conn-action="delete-confirm" data-conn-id="${this.escapeHtml(item.id)}">Remove</button><button class="btn-sm" data-conn-action="delete-cancel">Keep</button>`
+                    : `<button class="btn-sm" data-conn-action="edit" data-conn-id="${this.escapeHtml(item.id)}" aria-label="Edit ${this.escapeHtml(item.name)}">Edit</button><button class="btn-sm" data-conn-action="delete" data-conn-id="${this.escapeHtml(item.id)}" aria-label="Remove ${this.escapeHtml(item.name)}">Remove</button>`}</div>
+            </li>`;
+        }).join('');
+        let form = '';
+        if (edit) {
+            const d = edit.draft;
+            const typeOptions = Object.entries(types).map(([value, label]) => `<option value="${value}" ${d.type === value ? 'selected' : ''}>${this.escapeHtml(label)}</option>`).join('');
+            const authOptions = this._connectionAuthOptions(d.type).map(o => `<option value="${o.value}" ${d.auth === o.value ? 'selected' : ''}>${o.label}</option>`).join('');
+            const showKey = !['none', 'aws', 'google'].includes(d.auth) || (d.type === 'anthropic-bedrock' && d.auth === 'bearer');
+            const storedKey = edit.hasKey ? 'Stored key — leave blank to keep it' : 'Enter the key';
+            const field = (id, label, input, hint = '') => `<label class="connection-field" for="conn-f-${id}"><span>${label}</span>${input}${hint ? `<small>${hint}</small>` : ''}</label>`;
+            const text = (id, value, attrs = '') => `<input class="settings-input" id="conn-f-${id}" data-conn-field="${id}" value="${this.escapeHtml(String(value ?? ''))}" ${attrs}>`;
+            form = `<form class="connection-form" id="connection-form" novalidate>
+                <h4>${edit.originalId ? 'Edit connection' : 'Add a connection'}</h4>
+                <div class="connection-grid">
+                ${field('name', 'Name', text('name', d.name, 'maxlength="60" placeholder="Company gateway" autocomplete="off"'))}
+                ${field('type', 'Type', `<select class="settings-select" id="conn-f-type" data-conn-field="type">${typeOptions}</select>`, this.escapeHtml(this._connectionTypeHints()[d.type] || ''))}
+                ${['anthropic-bedrock', 'anthropic-vertex'].includes(d.type) ? '' : field('base_url', 'Endpoint URL', text('base_url', d.base_url, 'placeholder="https://" autocomplete="off" spellcheck="false"'))}
+                ${field('auth', 'Authentication', `<select class="settings-select" id="conn-f-auth" data-conn-field="auth">${authOptions}</select>`)}
+                ${d.auth === 'header' ? field('auth_header', 'Key header', text('auth_header', d.auth_header, 'placeholder="api-key" spellcheck="false"')) : ''}
+                ${showKey ? field('api_key', 'Key', `<input class="settings-input" type="password" id="conn-f-api_key" data-conn-field="api_key" value="${this.escapeHtml(d.api_key || '')}" placeholder="${storedKey}" autocomplete="off">`, 'Stored locally with your other API keys; never shown again.') : ''}
+                ${field('models', d.type === 'azure-openai' ? 'Deployments' : 'Models', text('models', d.models, 'placeholder="Comma-separated ids" spellcheck="false"'), d.type === 'openai-compatible' || d.type === 'openai' || d.type === 'anthropic' ? 'Leave blank to list the models the endpoint reports.' : '')}
+                ${['anthropic-bedrock', 'anthropic-vertex'].includes(d.type) ? field('region', 'Region', text('region', d.region, 'placeholder="us-east-1" spellcheck="false"')) : ''}
+                ${d.type === 'anthropic-vertex' ? field('project', 'Google Cloud project', text('project', d.project, 'spellcheck="false"')) : ''}
+                ${d.type === 'anthropic-bedrock' && d.auth === 'aws' ? field('aws_profile', 'AWS profile (optional)', text('aws_profile', d.aws_profile, 'placeholder="default" spellcheck="false"')) : ''}
+                ${d.type === 'azure-openai' ? field('api_version', 'API version (optional)', text('api_version', d.api_version, 'placeholder="Only for pre-v1 endpoints" spellcheck="false"')) : ''}
+                ${field('context_window', 'Context window (optional)', text('context_window', d.context_window, 'inputmode="numeric" placeholder="Tokens, e.g. 128000"'))}
+                ${d.type === 'openai-compatible' ? field('max_tokens_param', 'Output limit parameter', `<select class="settings-select" id="conn-f-max_tokens_param" data-conn-field="max_tokens_param"><option value="max_tokens" ${d.max_tokens_param !== 'max_completion_tokens' ? 'selected' : ''}>max_tokens</option><option value="max_completion_tokens" ${d.max_tokens_param === 'max_completion_tokens' ? 'selected' : ''}>max_completion_tokens</option></select>`) : ''}
+                ${d.type === 'openai-compatible' ? field('reasoning_effort', 'Reasoning effort', `<select class="settings-select" id="conn-f-reasoning_effort" data-conn-field="reasoning_effort">${['', 'low', 'medium', 'high'].map(v => `<option value="${v}" ${d.reasoning_effort === v ? 'selected' : ''}>${v || 'Don\u2019t send'}</option>`).join('')}</select>`) : ''}
+                ${field('headers', 'Extra headers (optional)', `<textarea class="settings-input" id="conn-f-headers" data-conn-field="headers" rows="3" placeholder="Header-Name: value" spellcheck="false">${this.escapeHtml(d.headers || '')}</textarea>`, 'One per line. Put secrets in the key field instead.')}
+                <label class="connection-check"><input type="checkbox" id="conn-f-vision" data-conn-field="vision" ${d.vision ? 'checked' : ''}> Models accept images</label>
+                </div>
+                <div class="provider-actions"><button class="btn-sm" type="button" data-conn-action="test">Test connection</button>
+                <button class="btn-sm connection-save" type="submit">${edit.originalId ? 'Save changes' : 'Add connection'}</button>
+                <button class="btn-sm" type="button" data-conn-action="cancel">Cancel</button></div>
+            </form>`;
+        }
+        return `<div class="provider-connection custom-connections"><strong>Custom connections</strong>
+            <p>Gateways such as LiteLLM or vLLM, Azure OpenAI, Claude on Amazon Bedrock or Google Vertex AI, or any OpenAI-compatible endpoint. Each appears in the model menu under its name.</p>
+            ${rows ? `<ul class="connection-list">${rows}</ul>` : ''}
+            ${statusHtml}
+            ${form || '<button class="btn-sm" type="button" data-conn-action="add">Add connection</button>'}
+        </div>`;
+    }
+
+    _bindCustomConnections() {
+        const root = this.settingsBody?.querySelector('.custom-connections');
+        if (!root) return;
+        root.querySelectorAll('[data-conn-field]').forEach(input => {
+            input.addEventListener(input.tagName === 'SELECT' || input.type === 'checkbox' ? 'change' : 'input', () => {
+                const draft = this._connectionEdit?.draft;
+                if (!draft) return;
+                const field = input.dataset.connField;
+                draft[field] = input.type === 'checkbox' ? input.checked : input.value;
+                // Type and authentication decide which fields exist. The form
+                // re-renders from the draft, so forcing past the edit guard
+                // loses nothing and keeps focus on this control.
+                if (field === 'type') {
+                    const allowed = this._connectionAuthOptions(draft.type).map(o => o.value);
+                    if (!allowed.includes(draft.auth)) draft.auth = allowed[0];
+                    this.renderSettingsView({force: true});
+                } else if (field === 'auth') {
+                    this.renderSettingsView({force: true});
+                }
+            });
+        });
+        root.querySelectorAll('[data-conn-action]').forEach(btn => btn.addEventListener('click', () => {
+            const action = btn.dataset.connAction;
+            const id = btn.dataset.connId;
+            const item = (this.connectionsData?.items || []).find(entry => entry.id === id);
+            if (action === 'add') {
+                this._connectionEdit = { originalId: '', hasKey: false, draft: this._blankConnectionDraft() };
+                this._connectionStatus = null;
+            } else if (action === 'edit' && item) {
+                this._connectionEdit = { originalId: item.id, hasKey: item.has_key, draft: this._connectionDraftFrom(item) };
+                this._connectionStatus = null;
+            } else if (action === 'cancel') {
+                this._connectionEdit = null;
+                this._connectionStatus = null;
+            } else if (action === 'delete') {
+                this._connectionDeleteId = id;
+            } else if (action === 'delete-cancel') {
+                this._connectionDeleteId = null;
+            } else if (action === 'delete-confirm' && id) {
+                this._connectionDeleteId = null;
+                this.send({ command: 'connection_delete', id });
+                return;
+            } else if (action === 'test' && this._connectionEdit) {
+                const draft = this._connectionEdit.draft;
+                this._connectionStatus = { ok: true, message: 'Testing the connection…' };
+                this.send({ command: 'connection_test', connection: this._connectionPayload(draft),
+                            api_key: draft.api_key || undefined, original_id: this._connectionEdit.originalId || undefined });
+            }
+            this.renderSettingsView();
+            if (action === 'add' || action === 'edit') document.getElementById('conn-f-name')?.focus();
+        }));
+        root.querySelector('#connection-form')?.addEventListener('submit', event => {
+            event.preventDefault();
+            const edit = this._connectionEdit;
+            if (!edit) return;
+            this._connectionStatus = { ok: true, message: 'Saving…' };
+            this.send({ command: 'connection_save', connection: this._connectionPayload(edit.draft),
+                        api_key: edit.draft.api_key || undefined, original_id: edit.originalId || undefined });
+            this.renderSettingsView();
+        });
+    }
+
     _renderProviderConnections() {
         const connections = this.providerConnections || {};
         const codex = connections.codex || {};
@@ -263,7 +448,9 @@ class LumiSettingsView {
                 loginLink = `<a href="${this.escapeHtml(url.href)}" target="_blank" rel="noopener noreferrer">Continue sign-in in your browser</a><button class="btn-sm" data-provider="codex" data-provider-action="cancel">Cancel sign-in</button>`;
             }
         } catch (_) { /* No pending browser login. */ }
-        return `<div class="provider-connection">
+        return this._renderApiProviderCard('anthropic', 'Anthropic', 'ANTHROPIC_API_KEY also works.')
+            + this._renderApiProviderCard('openai', 'OpenAI', 'OPENAI_API_KEY also works.')
+            + `<div class="provider-connection">
             <strong>ChatGPT / Codex</strong><p>${this.escapeHtml(codex.error || accountLabel)}</p>
             ${quota}${subscription && !quota ? '<p class="provider-note">Usage limits unavailable. Refresh to try again.</p>' : ''}
             <div class="provider-actions"><button class="btn-sm" data-provider="codex" data-provider-action="login">Sign in with ChatGPT</button>
@@ -275,7 +462,8 @@ class LumiSettingsView {
             <button class="btn-sm" data-provider="openrouter" data-provider-action="status">Check connection & refresh models</button></div>
             <div class="provider-connection"><strong>SONN</strong>
             <p>${this.escapeHtml(sonn.error || (sonn.status === 'ready' ? `Connected · ${sonn.model_count} models available` : 'Set your project API base URL in Network and your SONN key in API keys below.'))}</p>
-            <button class="btn-sm" data-provider="sonn" data-provider-action="status">Check SONN connection & refresh models</button></div>`;
+            <button class="btn-sm" data-provider="sonn" data-provider-action="status">Check SONN connection & refresh models</button></div>`
+            + this._renderCustomConnections();
     }
 
     openProviderPicker() {
@@ -838,6 +1026,7 @@ class LumiSettingsView {
         this._settingsLoadedPage = page;
         if (page === 'sonn_account' && !this.sonnAccount) this._requestSonnAccount();
         if (page === 'provider_connections' && !this.providerConnections?.codex) this.send({command:'provider_connection', provider:'codex', action:'status'});
+        if (page === 'provider_connections') this.send({command: 'connections_list'});
         const command = {creative_editors:'editor_list', capability_packs:'capability_pack_list', cost_tracking:'get_costs', model_evaluations:'evaluation_list', iteration_checkpoints:'checkpoint_list'}[page];
         if (command) this.send({command});
     }
@@ -866,6 +1055,8 @@ class LumiSettingsView {
                     // compatibility with older settings.json.
                     { key: 'default_backend', label: 'Default backend', type: 'select',
                       options: [
+                          { value: 'anthropic', label: 'Anthropic' },
+                          { value: 'openai', label: 'OpenAI' },
                           { value: 'ollama', label: 'Ollama' },
                           { value: 'exo', label: 'EXO' },
                           { value: 'kimi', label: 'Kimi API' },
@@ -959,6 +1150,10 @@ class LumiSettingsView {
             {
                 id: 'api_keys', title: 'API keys', open: false,
                 fields: [
+                    { key: 'anthropic', label: 'Anthropic API key', type: 'password',
+                      hint: 'Stored locally with your other keys. ANTHROPIC_API_KEY is also supported. Usage is billed to your Anthropic account.' },
+                    { key: 'openai', label: 'OpenAI API key', type: 'password',
+                      hint: 'Stored locally with your other keys. OPENAI_API_KEY is also supported. Usage is billed to your OpenAI account.' },
                     { key: 'sonn', label: 'SONN API key', type: 'password',
                       hint: 'Enter your private invitation key. Stored locally in ~/.lumi/settings.json and hidden after saving. SONN_API_KEY is also supported.' },
                     { key: 'openrouter', label: 'OpenRouter API key', type: 'password',
@@ -1241,6 +1436,7 @@ class LumiSettingsView {
             this._requestSonnAccount();
             this.renderSettingsView();
         });
+        this._bindCustomConnections();
         this.settingsBody.querySelectorAll('[data-provider-action]').forEach(btn => {
             btn.addEventListener('click', () => {
                 btn.disabled = true;

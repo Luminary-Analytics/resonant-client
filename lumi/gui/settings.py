@@ -52,7 +52,10 @@ DEFAULTS = {
         # unknown keys; nothing reads them anymore.
     },
     # Secrets are masked before settings are sent to the frontend.
-    "api_keys": {"kimi": "", "openrouter": "", "sonn": "", "telegram_bot": ""},
+    "api_keys": {"anthropic": "", "openai": "", "kimi": "", "openrouter": "", "sonn": "", "telegram_bot": ""},
+    # Custom model connections (gateways, Azure, Bedrock, Vertex); see lumi/connections.py.
+    # Each one's key is stored in api_keys as conn_<id>.
+    "connections": [],
     "project_models": {},
     "model_favorites": {"models": []},
     # Chat-channel gateway (`lumi gateway`): drive the agent from

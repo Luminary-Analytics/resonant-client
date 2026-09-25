@@ -45,6 +45,16 @@ from ..backends import (
     resolve_codex_cli_path,
 )
 from ..openrouter import OpenRouterBackend
+from ..anthropic_api import AnthropicBackend
+from ..openai_api import OpenAIResponsesBackend
+from ..connections import (
+    backend_key as connection_backend_key,
+    connection_id_from_backend,
+    discover_models as discover_connection_models,
+    find_connection,
+    list_connections,
+    secret_setting as connection_secret_setting,
+)
 from ..sonn import SonnBackend
 from ..engine import Session
 from ..network_defaults import default_thinking_for_model, resolve_exo_url, resolve_ollama_url, resolve_sonn_url
@@ -908,15 +918,57 @@ class AppState:
             except (ValueError, OSError):
                 return []
 
-        with ThreadPoolExecutor(max_workers=4) as pool:
+        anthropic_key, anthropic_source, anthropic_env, anthropic_setting = self._api_key_details(
+            "anthropic", "ANTHROPIC_API_KEY")
+        openai_key, openai_source, openai_env, openai_setting = self._api_key_details(
+            "openai", "OPENAI_API_KEY")
+        connections = list_connections(self.settings)
+
+        def _probe_connection(connection):
+            key = str(self.settings.get("api_keys", connection_secret_setting(connection["id"]), "") or "")
+            try:
+                return discover_connection_models(connection, key, timeout=4.0)
+            except Exception:
+                return list(connection.get("models") or [])
+
+        with ThreadPoolExecutor(max_workers=min(12, 6 + len(connections))) as pool:
             ollama_future = pool.submit(_probe_ollama)
             exo_future = pool.submit(_probe_exo)
             router_future = pool.submit(_probe_router)
             sonn_future = pool.submit(_probe_sonn)
+            anthropic_future = (
+                pool.submit(AnthropicBackend.list_available_models, anthropic_key) if anthropic_key else None)
+            openai_future = (
+                pool.submit(OpenAIResponsesBackend.list_available_models, openai_key) if openai_key else None)
+            connection_futures = [(c, pool.submit(_probe_connection, c)) for c in connections]
             ollama_info = ollama_future.result()
             exo_catalog = exo_future.result()
             router_catalog = router_future.result()
             sonn_catalog = sonn_future.result()
+            anthropic_models = anthropic_future.result() if anthropic_future else []
+            openai_models = openai_future.result() if openai_future else []
+            connection_models = [(c, future.result()) for c, future in connection_futures]
+
+        if anthropic_key:
+            available["anthropic"] = {
+                "label": "Anthropic", "models": anthropic_models or list(AnthropicBackend.MODELS),
+                "api_key_source": anthropic_source, "api_key_env": anthropic_env,
+                "api_key_setting": anthropic_setting,
+            }
+        if openai_key:
+            available["openai"] = {
+                "label": "OpenAI", "models": openai_models or list(OpenAIResponsesBackend.MODELS),
+                "api_key_source": openai_source, "api_key_env": openai_env,
+                "api_key_setting": openai_setting,
+            }
+        for connection, models in connection_models:
+            if models:
+                available[connection_backend_key(connection["id"])] = {
+                    "label": connection["name"], "models": models,
+                    "connection_id": connection["id"], "connection_type": connection["type"],
+                    "api_key_source": "settings",
+                    "api_key_setting": connection_secret_setting(connection["id"]),
+                }
 
         if ollama_info:
             available["ollama"] = ollama_info
@@ -1053,6 +1105,27 @@ class AppState:
             spec.permission_mode = self.permission_mode
             return spec
 
+        if backend_type in ("anthropic", "openai"):
+            label, env_name, defaults = (
+                ("Anthropic", "ANTHROPIC_API_KEY", AnthropicBackend.MODELS) if backend_type == "anthropic"
+                else ("OpenAI", "OPENAI_API_KEY", OpenAIResponsesBackend.MODELS))
+            api_key, source, env_var, setting = self._api_key_details(backend_type, env_name)
+            if not api_key:
+                raise ValueError(f"Add your {label} API key in Settings → API keys.")
+            models = (self.available_backends.get(backend_type) or {}).get("models") or list(defaults)
+            return BackendSpec(backend_type=backend_type, model=model or self._resolve_default_model(models),
+                               api_key_source=source, api_key_env=env_var, api_key_setting=setting)
+        connection_id = connection_id_from_backend(backend_type)
+        if connection_id:
+            connection = find_connection(self.settings, connection_id)
+            if connection is None:
+                raise ValueError("That connection no longer exists. Choose another model.")
+            models = (self.available_backends.get(backend_type) or {}).get("models") or connection["models"]
+            selected = model or self._resolve_default_model(models)
+            if not selected:
+                raise ValueError(f"Choose a model for {connection['name']} in Settings → Connections.")
+            return BackendSpec(backend_type=backend_type, model=selected, api_key_source="settings",
+                               api_key_setting=connection_secret_setting(connection_id))
         if backend_type == "openrouter":
             api_key, source, env_var, setting = self._api_key_details("openrouter", "OPENROUTER_API_KEY")
             if not api_key:
@@ -1115,8 +1188,8 @@ class AppState:
 
         if backend_type != "ollama":
             raise ValueError(
-                f"Backend '{backend_type}' is not supported. Lumi "
-                f"supports Ollama, EXO, Kimi, OpenRouter, SONN, Codex, and Claude Code."
+                f"Backend '{backend_type}' is not supported. Lumi supports Anthropic, OpenAI, "
+                f"Ollama, EXO, Kimi, OpenRouter, SONN, Codex, Claude Code and custom connections."
             )
 
         info = self.available_backends.get("ollama")
@@ -1548,7 +1621,9 @@ class AppState:
         backend_order = []
         if configured_backend:
             backend_order.append(configured_backend)
-        backend_order.extend(k for k in ("ollama", "exo", "kimi", "codex", "openrouter", "claude-code", "sonn") if k not in backend_order)
+        backend_order.extend(k for k in ("ollama", "exo", "kimi", "anthropic", "openai", "codex", "openrouter",
+                                         "claude-code", "sonn") if k not in backend_order)
+        backend_order.extend(k for k in self.available_backends if k.startswith("conn-") and k not in backend_order)
 
         for backend_type in backend_order:
             info = self.available_backends.get(backend_type) or {}
@@ -1595,7 +1670,8 @@ class AppState:
             backend_order.append(configured)
         backend_order.extend(
             backend_type
-            for backend_type in ("exo", "kimi", "codex", "openrouter", "claude-code", "ollama", "sonn")
+            for backend_type in ("exo", "kimi", "anthropic", "openai", "codex", "openrouter", "claude-code",
+                                 "ollama", "sonn", *[k for k in self.available_backends if k.startswith("conn-")])
             if backend_type != failed and backend_type not in backend_order
         )
         for backend_type in backend_order:
@@ -1786,8 +1862,9 @@ class AppState:
 
         if (
             self.backend_spec and
-            self.backend_spec.backend_type in {"ollama", "exo", "kimi", "openrouter", "sonn"} and
-            section in {"api_keys", "engram", "general", "network"}
+            (self.backend_spec.backend_type in {"ollama", "exo", "kimi", "openrouter", "sonn", "anthropic", "openai"}
+             or self.backend_spec.backend_type.startswith("conn-")) and
+            section in {"api_keys", "engram", "general", "network", "connections"}
         ):
             try:
                 if section == "network" and self.backend_spec.backend_type == "ollama":
@@ -1868,6 +1945,10 @@ class AppState:
                 entry["url"] = info["url"]
             if "cli_path" in info:
                 entry["cli_path"] = info["cli_path"]
+            if "label" in info:
+                entry["label"] = info["label"]
+            if "connection_type" in info:
+                entry["connection_type"] = info["connection_type"]
             if "health" in info:
                 entry["patterns"] = info["health"].get("memory_patterns", 0)
             backends_info[key] = entry

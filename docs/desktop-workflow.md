@@ -32,8 +32,7 @@ a one-time launch link. In the desktop window, **File > Open in Browser** (also
 in the command palette) opens the running app in your default browser.
 `lumi-gui --browser` prints a one-time link instead. A used link cannot open
 another browser, but the tab it opened keeps working through reloads and
-reconnects, as do new tabs of that browser at the same address, until SONN
-Client exits. After a restart, paste the new link into an existing tab. A page
+reconnects, as do new tabs of that browser at the same address, until Lumi exits. After a restart, paste the new link into an existing tab. A page
 opened without a link explains how to get one. See [Unreleased](unreleased.md).
 
 **Find projects or sessions** matches project names, paths, and session titles.
@@ -139,7 +138,19 @@ in a pack runs until you approve it there; a pack's own manifest cannot approve
 it. Editing an approved pack turns it off until you review it again. When the
 open project has packs waiting for review, the banner above the composer links
 to that page.
-Settings supports dark and light palettes while retaining the SONN accent.
+Settings follows the app theme: dark, light or match system.
+
+## Anthropic, OpenAI and custom connections
+
+1. Add an Anthropic or OpenAI key under **Settings > Connections > API keys**,
+   or set `ANTHROPIC_API_KEY` / `OPENAI_API_KEY`, then check the connection to
+   list the models the key can use.
+2. **Custom connections** adds a gateway, Azure OpenAI, or Claude on Bedrock or
+   Vertex AI. The form shows only the fields the chosen type needs. **Test
+   connection** checks credentials and lists models; saving (the button or Enter)
+   closes the form and puts the models in **Models** under the connection's name.
+3. A connection that is in use by a running turn cannot be edited or removed
+   until the run finishes or stops. Removing a connection also deletes its key.
 
 ## ChatGPT/Codex and OpenRouter
 

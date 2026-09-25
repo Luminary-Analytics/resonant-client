@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from typing import Any, Optional
 
 from ..backends import create_backend
+from ..connections import connection_id_from_backend, create_connection_backend, find_connection
 
 
 def bind_sonn_conversation(backend, project_path: str, session_id: str) -> bool:
@@ -128,6 +129,16 @@ class BackendSpec:
             )
             backend._editor_settings = settings
             return backend
+        if backend_type in ("anthropic", "openai"):
+            return create_backend(backend_type, model=self.model, api_key=self.resolve_api_key(settings),
+                                  base_url=self.base_url or None, thinking=self.thinking_mode or None)
+        connection_id = connection_id_from_backend(backend_type)
+        if connection_id:
+            connection = find_connection(settings, connection_id)
+            if connection is None:
+                raise ValueError("This session's connection was removed. Choose another model.")
+            return create_connection_backend(connection, self.model, self.resolve_api_key(settings),
+                                             thinking=self.thinking_mode or None)
         if backend_type == "openrouter":
             return create_backend("openrouter", model=self.model,
                                   api_key=self.resolve_api_key(settings), thinking=self.thinking_mode or None)
@@ -151,6 +162,6 @@ class BackendSpec:
             )
 
         raise ValueError(
-            f"Backend '{backend_type}' is not supported. Lumi "
-            f"supports Ollama, EXO, Kimi, OpenRouter, SONN, Codex, and Claude Code."
+            f"Backend '{backend_type}' is not supported. Lumi supports Anthropic, OpenAI, "
+            f"Ollama, EXO, Kimi, OpenRouter, SONN, Codex, Claude Code and custom connections."
         )

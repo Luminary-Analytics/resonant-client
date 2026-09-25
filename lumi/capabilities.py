@@ -131,6 +131,20 @@ def default_context_window(model: str) -> int:
         return 1_048_576
     if "glm-5" in lower or ("deepseek" in lower and "pro" in lower):
         return 131_072
+    # Hosted frontier families (API adapters). Conservative published windows;
+    # a connection can override them.
+    if "claude" in lower:
+        return 200_000
+    if lower.startswith("gpt-5") or "gpt-5" in lower:
+        return 400_000
+    if lower.startswith("gpt-4.1"):
+        return 1_047_576
+    if lower.startswith(("o1", "o3", "o4")):
+        return 200_000
+    if lower.startswith("gpt-4o"):
+        return 128_000
+    if "gemini" in lower:
+        return 1_048_576
     return 32_768
 
 
@@ -147,8 +161,39 @@ def infer_model_capabilities(model: str) -> ModelCapabilities:
     reasoning_levels: tuple[str, ...] = ()
     concurrency: int | None = None
     reasoning_can_disable: bool | None = None
+    prompt_caching: bool | None = None
 
-    if "gpt-oss" in lower:
+    if "claude" in lower:
+        modalities.add("image")
+        native_tools = True
+        parallel_tools = True
+        reasoning_levels = ("low", "med", "high", "max")
+        reasoning_can_disable = True
+        prompt_caching = True
+        concurrency = 4
+    elif base.startswith(("gpt-5", "o1", "o3", "o4")):
+        modalities.add("image")
+        native_tools = True
+        parallel_tools = True
+        structured_output = True
+        reasoning_levels = ("low", "medium", "high")
+        reasoning_can_disable = False
+        prompt_caching = True
+        concurrency = 4
+    elif base.startswith(("gpt-4.1", "gpt-4o")):
+        modalities.add("image")
+        native_tools = True
+        parallel_tools = True
+        structured_output = True
+        prompt_caching = True
+        concurrency = 4
+    elif "gemini" in lower:
+        modalities.add("image")
+        native_tools = True
+        parallel_tools = True
+        reasoning_levels = ("low", "medium", "high")
+        concurrency = 4
+    elif "gpt-oss" in lower:
         native_tools = True
         reasoning_levels = ("low", "medium", "high")
         reasoning_can_disable = False
@@ -197,6 +242,7 @@ def infer_model_capabilities(model: str) -> ModelCapabilities:
         structured_output=structured_output,
         reasoning_levels=reasoning_levels,
         reasoning_can_disable=reasoning_can_disable,
+        prompt_caching=prompt_caching,
         max_safe_concurrency=concurrency,
         computer_use=computer_use,
     )

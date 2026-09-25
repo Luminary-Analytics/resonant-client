@@ -3057,10 +3057,13 @@ async def _cmd_intent(ctx: CommandContext) -> None:
         except Exception:
             logger.debug("intent emit raised", exc_info=True)
 
-    if ctx.state.backend is None:
+    if name == "intent_start" and ctx.state.backend is None:
         await ctx.send({"event": "error",
                             "message": "Connect a backend before starting an intent."})
     else:
+        # Only a new plan needs the current backend. A running plan keeps
+        # the one it started with, so Stop, Pause and Resume must still reach
+        # it after opening a conversation whose model can't start.
         intent_service = ctx.state.get_intent_service(on_event=_emit_intent)
 
         if name == "intent_start":

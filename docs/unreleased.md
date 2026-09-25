@@ -57,12 +57,17 @@ would run.
   rebuilds the intent service. Plans started before kept running, but Stop,
   Pause and Resume answered that they had ended. The new service now takes
   over the plans still running (`IntentService.adopt_running`).
+- **Neither does losing the backend** (`lumi/gui/ws_commands.py`). Opening a
+  conversation whose model can't start leaves the app without a backend, and
+  every plan control was then refused ("Connect a backend before starting an
+  intent."). A running plan keeps the backend it started with, so only
+  starting a plan needs one now.
 
 Validation on September 25, 2026:
 
-- `pytest`: 4391 passed, 5 skipped. `ruff`, `node --check`, the four node
+- `pytest`: 4395 passed, 5 skipped. `ruff`, `node --check`, the four node
   test files (78 pass), `git diff --check`.
-- New tests, each failing against the code it covers (20 mutations, one
+- New tests, each failing against the code it covers (22 mutations, one
   change reverted at a time):
   - the walker marks never-run steps abandoned, reports `plan.stopped`, and
     adds no retry, subgoals, verifier or repair after a stop;
@@ -74,7 +79,10 @@ Validation on September 25, 2026:
   - the dispatch tracker's wait ends while a cancelled sub-mission is still
     stuck;
   - through the app's real `/ws` socket: `intent_cancel` after a model
-    switch stops the running step, and the next one never starts;
+    switch, or with no backend left, stops the running step, and the next
+    one never starts;
+  - Stop, Pause and Resume reach the service without a backend; starting a
+    plan still needs one;
   - in node, against the toolbar markup from `index.html`: Stop's states,
     refusals, reconnecting, Build this roadmap, the stopped step, focus, and
     the graph's abandoned steps.

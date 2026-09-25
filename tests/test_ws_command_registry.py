@@ -678,15 +678,33 @@ def test_the_intent_handler_refuses_a_command_it_does_not_serve(msg):
     assert "Unknown intent command" in sent[0]["message"]
 
 
-def test_intent_commands_need_a_backend():
+def test_starting_a_plan_needs_a_backend():
     built = []
     state = SimpleNamespace(backend=None, get_intent_service=lambda **kwargs: built.append(kwargs))
 
-    sent = _run(ws_commands.HANDLERS["intent_pause"],
-                _ctx(state=state, msg={"command": "intent_pause", "intent_id": "intent-1"}))
+    sent = _run(ws_commands.HANDLERS["intent_start"],
+                _ctx(state=state, msg={"command": "intent_start", "text": "add a toggle"}))
 
     assert built == []
-    assert sent[0]["event"] == "error"
+    assert sent == [{"event": "error", "message": "Connect a backend before starting an intent."}]
+
+
+@pytest.mark.parametrize(("name", "call", "ack"), [
+    ("intent_cancel", "cancel", "intent.cancel_ack"),
+    ("intent_pause", "pause", "intent.pause_ack"),
+    ("intent_resume", "resume", "intent.resume_ack"),
+])
+def test_a_running_plan_stays_controllable_without_a_backend(name, call, ack):
+    # A plan keeps the backend it started with. Opening a conversation whose
+    # model can't start leaves the app without one, and that must not cost
+    # the running plan its Stop.
+    service = _RecordingIntentService()
+    state = SimpleNamespace(backend=None, get_intent_service=lambda *, on_event=None: service)
+
+    sent = _run(ws_commands.HANDLERS[name], _ctx(state=state, msg={"command": name, "intent_id": "intent-1"}))
+
+    assert service.calls == [(call, "intent-1")]
+    assert sent == [{"event": ack, "intent_id": "intent-1", "ok": True}]
 
 
 def _events_until(socket, event_name):
@@ -758,10 +776,14 @@ def test_plan_through_the_app_socket_starts_the_intent_and_streams_its_events(tm
     assert all(event["intent_id"] == accepted["intent_id"] for event in replies if event["event"].startswith("intent."))
 
 
-def test_stop_through_the_app_socket_reaches_a_plan_started_before_a_model_switch(tmp_path, monkeypatch):
+@pytest.mark.parametrize("backend_meanwhile", ["another model", "none"])
+def test_stop_through_the_app_socket_reaches_a_plan_started_before_a_model_switch(
+    tmp_path, monkeypatch, backend_meanwhile,
+):
     """The Plan tab's Stop: intent_cancel on the app's socket ends the running
-    step, and nothing after it starts. Switching models rebuilds the intent
-    service in between, which used to leave the plan out of reach."""
+    step, and nothing after it starts. Meanwhile the person switched models,
+    or opened a conversation whose model can't start (no backend): either
+    used to leave the plan out of reach."""
     from lumi.gui import app as gui_app
     from lumi.orchestration import NodeSpecialization, NodeStatus, SpecialistResult
     from tests.gui_access import LocalClient
@@ -814,7 +836,7 @@ def test_stop_through_the_app_socket_reaches_a_plan_started_before_a_model_switc
         assert accepted is not None, replies
         intent_id = accepted["intent_id"]
         assert implementing.wait(timeout=10)
-        state.backend = object()  # the person picked another model meanwhile
+        state.backend = object() if backend_meanwhile == "another model" else None
         socket.send_json({"command": "intent_cancel", "intent_id": intent_id})
         socket.send_json(sentinel)
         replies = _events_until(socket, "context.state")

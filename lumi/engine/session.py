@@ -1664,6 +1664,45 @@ class Session:
             logger.debug("Budget check failed", exc_info=True)
         return ""
 
+    def _describe_images_for_text_model(self, chat_model: str) -> Iterator[dict]:
+        """Have the ``vision`` role model describe images the chat model can't see.
+
+        Runs only when the chat model's capabilities say it has no vision and a
+        vision model is configured; each image is described once, and the
+        description travels with it (lumi/engine/image_descriptions.py).
+        """
+        from . import image_descriptions
+
+        profile = getattr(self.backend, "capability_profile", None)
+        try:
+            sees_images = bool(profile.supports("vision")) if profile is not None else True
+        except Exception:
+            sees_images = True
+        if sees_images or self.model_role_router is None:
+            return
+        if not image_descriptions.pending(self.conversation_history):
+            return
+        vision = self.model_role_router.backend_for("vision", None)
+        if vision is None or vision is self.backend:
+            return
+        label = f"{getattr(vision, 'name', '') or 'vision'}:{getattr(vision, 'model', '') or ''}".rstrip(":")
+        try:
+            usage_context = self._audit_fields()
+        except Exception:
+            usage_context = {}
+        described = failed = 0
+        for _image, ok in image_descriptions.describe_pending(
+            self.conversation_history, vision, label, usage_context=usage_context,
+            cancel_event=getattr(self, "_cancel_event", None),
+        ):
+            described, failed = described + ok, failed + (not ok)
+        if described or failed:
+            images = f"{described} image{'s' if described != 1 else ''}"
+            message = (f"{label} described {images} for {chat_model or 'the chat model'}, which can't see images."
+                       if described else f"{label} couldn't describe the images; the chat model gets a notice instead.")
+            yield make_event(EngineEvent.BACKEND_STATUS, kind="images_described", message=message,
+                             described=described, failed=failed)
+
     def _budget_checkpoint(self, on_user_input: Optional[Callable]) -> Iterator[dict]:
         """Before a model request: warn, ask or stop as budgets require.
 
@@ -2216,6 +2255,9 @@ class Session:
                     message=secret_scan.describe(redacted),
                     kinds=dict(redacted),
                 )
+            # A chat model without vision gets images as text: the vision
+            # model from Models for roles describes each one once.
+            yield from self._describe_images_for_text_model(backend_model)
             # A single specialist turn can add dozens of tool results, so
             # enforce the real backend window before every inference step.
             context_window = getattr(self.backend, "effective_context_tokens", None)

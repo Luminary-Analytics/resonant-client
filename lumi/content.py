@@ -77,6 +77,9 @@ def text_fallback(part: dict[str, Any]) -> str:
     if media_type:
         label_bits.append(media_type)
     label = ": ".join(label_bits[:2]) + (f" ({label_bits[2]})" if len(label_bits) > 2 else "")
+    described_by = str(part.get("described_by") or "").strip()
+    if description and described_by:
+        return f"[{label}, described by {described_by}]\n{description}"
     if description:
         return f"[{label}]\n{description}"
     if part_type == "diagnostic":

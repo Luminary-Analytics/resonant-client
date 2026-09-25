@@ -9161,6 +9161,8 @@ class LumiApp {
             this._renderBudgetNotice(event);
         } else if (event.kind === 'model_fallback') {
             this._renderModelFallbackNotice(event);
+        } else if (event.kind === 'images_described') {
+            this._renderImagesDescribedNotice(event);
         }
         // Future kinds get their own renderers; swallow unknown kinds
         // silently rather than confuse the user with unfamiliar text.
@@ -9180,6 +9182,20 @@ class LumiApp {
         notice.innerHTML = `
             <svg class="backend-status-icon" width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M3 5h8l-2-2M13 11H5l2 2" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
             <span class="backend-status-text">${this.escapeHtml(event.message || 'Continued with a fallback model.')}</span>
+        `;
+        this.chatMessages.appendChild(notice);
+        this.scrollToBottom();
+    }
+
+    /** The vision model described images for a chat model that can't see them (engine/image_descriptions.py). */
+    _renderImagesDescribedNotice(event) {
+        if (!this.chatMessages) return;
+        const notice = document.createElement('div');
+        notice.className = 'backend-status-banner backend-status-images';
+        notice.setAttribute('role', 'status');
+        notice.innerHTML = `
+            <svg class="backend-status-icon" width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true"><rect x="2.5" y="3.5" width="11" height="9" rx="1.5" stroke="currentColor" stroke-width="1.3"/><circle cx="6" cy="7" r="1.2" stroke="currentColor" stroke-width="1.1"/><path d="M3.5 11.5l3-3 2 2 2-2 2.5 2.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            <span class="backend-status-text">${this.escapeHtml(event.message || 'Images were described for the chat model.')}</span>
         `;
         this.chatMessages.appendChild(notice);
         this.scrollToBottom();

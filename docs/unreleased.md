@@ -8,6 +8,43 @@ The heartbeat remains paused. Documentation maintenance does not resume work,
 spending or grants, and changes no native implementation or installed bundle.
 The dated September 15/18 records below are historical.
 
+## September 25 image descriptions for text-only models — source only, not released
+
+- **A vision model describes images for a chat model that can't see them**
+  (`lumi/engine/image_descriptions.py`, [guide](models.md#images-for-models-that-cant-see-them)).
+  - When the chat model's capabilities have no vision and **Models for
+    roles** has a `vision` model, attached pictures and tool screenshots are
+    described before the request.
+  - Each image is described once (at most six per step), and the description
+    is saved with the image and the model that wrote it.
+  - Text-only adapters send `[Image: …, described by provider:model]` plus the
+    description. These are the Ollama tool screenshots, custom connections
+    with **Models accept images** off, and SONN's text transport, which still
+    says a notice isn't evidence when there is no description.
+  - The conversation shows a notice. Usage records the requests as
+    `image_description`.
+  - Two failures leave the image with its notice.
+- Custom connections with **Models accept images** off now send text in place
+  of images, in messages and tool screenshots alike. Connections without the
+  setting keep sending images, as before.
+
+Validation on September 25, 2026:
+
+- 9 tests in `test_image_descriptions.py`:
+  - finding undescribed images;
+  - the labelled fallback;
+  - a turn where a stand-in vision model describes an attached image once,
+    records `image_description` usage, and isn't asked again;
+  - tool screenshots;
+  - nothing is asked without a vision model, or when the chat model sees;
+  - failures and the retry cap;
+  - a gateway without vision getting text for both images;
+  - a gateway with vision still getting the image;
+  - SONN passing a labelled description.
+- The new conversation notice mirrors the fallback notice. It wasn't checked
+  in the browser, because attaching an image needs a native file dialog the
+  browser pane can't drive.
+
 ## September 25 capability packs from Git — source only, not released
 
 - **Settings > Capability packs > Install from Git** (`lumi/engine/pack_install.py`, [guide](desktop-workflow.md)):

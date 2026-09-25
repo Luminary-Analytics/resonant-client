@@ -436,6 +436,11 @@ lumi --ollama-url http://192.168.1.20:11434 --model your-model
 From the desktop window, use **File > Open in Browser**. The local server refuses
 pages that were not opened from such a link.
 
+`lumi` without a subcommand opens the [terminal UI](docs/terminal-ui.md) in the
+current folder. It runs tools without asking unless you pass `--approve`; the
+project's rules, project trust and your organization's policy apply as in the
+app.
+
 For servers, containers and CI, `lumi run` runs one task without a UI and
 prints a JSON result with an exit code a job can act on:
 

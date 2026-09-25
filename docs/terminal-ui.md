@@ -18,7 +18,7 @@ lumi --model qwen3-coder:30b --approve
 | Option | Meaning |
 | --- | --- |
 | `--dir DIR` | The project folder (default: the current folder) |
-| `--model MODEL` | The Ollama model. Otherwise the default model in Settings, or you choose from the list |
+| `--model MODEL` | The Ollama model. Otherwise Settings' default model when Ollama is the default provider, or you choose from the list |
 | `--ollama-url URL` | Where Ollama runs (default: `OLLAMA_HOST`, then the address in Settings, then this computer) |
 | `--approve` | Ask before changes and commands (Ask). Without it the agent doesn't ask (Bypass) |
 | `--auto-plan` | Plan first when a request looks complex |

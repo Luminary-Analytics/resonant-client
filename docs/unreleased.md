@@ -25,9 +25,9 @@ Bypass (its default):
 - a policy allowing only Ask and Auto-edit didn't stop Bypass.
 
 Only the guardrails held, at dispatch (`check_floor`). With `--approve` (the
-read-only suggest tier, without its policy) the terminal asked about the
-guardrail command and the organization-denied one, and ran the latter once
-approved.
+read-only suggest tier, without its policy) the terminal asked about all three
+commands, the guardrail one included, and ran the organization-denied command
+and the push once they were approved.
 
 - **One way to scope a session** (`headless.scope_session`): the project, path
   sandbox, exclusions, trust, instructions and the tier's execution policy
@@ -77,9 +77,9 @@ approved.
   Audit and usage records name the session `tui:<id>`. The banner shows the
   mode, and whether an untrusted project's instructions and allow rules are
   off.
-- Guide: [the terminal UI](terminal-ui.md). AGENTS.md, ARCHITECTURE.md and the
-  shell sandbox, audit log, usage and organization policy guides mention the
-  terminal.
+- Guide: [the terminal UI](terminal-ui.md). The README, AGENTS.md,
+  ARCHITECTURE.md and the shell sandbox, audit log, usage and organization
+  policy guides mention the terminal.
 
 This settles the "Not exercised" note of "the terminal says why a tool call
 was refused" below: the terminal's own sessions now have hooks and an
@@ -123,10 +123,15 @@ Validation on September 25, 2026:
 - The related suites (chat gateway, exclusions and trust, guardrails,
   `lumi run`, model comparisons, shell sandbox, tasks from chat, review gate,
   scheduled tasks, `test_tui.py`): 208 passed, 1 skipped.
-- FULL_SUITE_RESULT `ruff check .` clean (ruff 0.12.12), `node --check` passes
-  for `app.js` and `settings_view.js`, the four Node UI test files pass (66
-  tests), and `git diff --check` is clean. The real `~/.resonant` was
-  unchanged and no `~/.lumi` was created.
+- Merged with main through #68: full `pytest` 4,409 passed, 5 skipped and 1
+  failed. In `tests/test_repl.py::TestExecWrappers::test_python_round_trip`
+  a fresh Python REPL's first eval (30 s limit) returned an error while about
+  a dozen sessions shared this computer; the file passed alone (22 tests),
+  and `lumi/engine/repl.py` isn't part of this change. `ruff check .` is
+  clean (ruff 0.12.12), `node --check` passes for `app.js` and
+  `settings_view.js`, the four Node UI test files pass (70 tests), and
+  `git diff --check` is clean. The real `~/.resonant` was unchanged and no
+  `~/.lumi` was created.
 
 Not exercised: a real terminal window and a live model. Ollama wasn't
 reachable (10.0.0.131 timed out, and nothing listens locally), so the
@@ -367,9 +372,11 @@ Validation on September 25, 2026:
   created.
 
 Not exercised: the TUI in a terminal window with a live model; the console was
-captured instead. The `lumi` TUI builds its session without hooks or an
-execution policy (`tui.py` `main`), so from it a hook or policy refusal can't
-happen today. The tests give the session they pass to `run_embedded` a hook.
+captured instead. When this landed, the `lumi` TUI built its session without
+hooks or an execution policy (`tui.py` `main`), so from it a hook or policy
+refusal couldn't happen; "the terminal UI keeps the rules `lumi run` keeps"
+above changes that. The tests give the session they pass to `run_embedded` a
+hook.
 
 ## September 25 checkpoint Timeline — source only, not released
 

@@ -1,0 +1,76 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Luminary-Analytics/resonant-client/blob/main/sdk/schema/lumi-pack.schema.json",
+  "title": "Lumi capability pack manifest (lumi-pack.json), manifest version 1",
+  "description": "What a capability pack contains. Nothing in it runs until a person approves the pack in Settings > Capability packs. See docs/packs.md and docs/extensions.md.",
+  "type": "object",
+  "properties": {
+    "id": {"type": "string", "pattern": "^[A-Za-z0-9._-]{1,80}$"},
+    "name": {"type": "string"},
+    "version": {"type": "string"},
+    "description": {"type": "string"},
+    "manifest_version": {"type": "integer", "enum": [1], "description": "The Extension SDK's manifest version. Packs without it are read as version 0."},
+    "lumi": {"type": "string", "pattern": "^\\s*(>=|<=|==|>|<)\\s*[0-9][0-9.]*\\s*(,\\s*(>=|<=|==|>|<)\\s*[0-9][0-9.]*\\s*)*$", "description": "The Lumi versions the pack works with, such as >=0.19.2 or >=0.19,<1."},
+    "providers": {
+      "type": "array",
+      "maxItems": 10,
+      "items": {"$ref": "#/$defs/provider"}
+    },
+    "agents": {"type": "array", "items": {"type": "string"}},
+    "skills": {"type": "array", "items": {"type": "string"}},
+    "hooks": {"type": "array", "items": {"type": "object"}},
+    "mcp_servers": {"type": "object", "additionalProperties": {"type": "object"}},
+    "permissions": {"type": "array", "items": {"type": "string"}},
+    "commands": {"type": "array", "items": {"type": "object"}},
+    "recipes": {"type": "array", "items": {"type": "object"}},
+    "ui_panels": {"type": "array", "items": {"type": "object"}},
+    "metadata": {"type": "object"}
+  },
+  "required": ["id"],
+  "$defs": {
+    "command": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 20,
+      "items": {"type": "string", "minLength": 1},
+      "description": "A program and its arguments. A relative program path runs from inside the pack; a bare name is looked up on PATH."
+    },
+    "provider": {
+      "type": "object",
+      "properties": {
+        "id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,39}$"},
+        "name": {"type": "string", "maxLength": 80},
+        "command": {
+          "oneOf": [
+            {"$ref": "#/$defs/command"},
+            {
+              "type": "object",
+              "properties": {
+                "windows": {"$ref": "#/$defs/command"},
+                "macos": {"$ref": "#/$defs/command"},
+                "linux": {"$ref": "#/$defs/command"},
+                "default": {"$ref": "#/$defs/command"}
+              },
+              "additionalProperties": false,
+              "minProperties": 1
+            }
+          ]
+        },
+        "models": {
+          "type": "array",
+          "maxItems": 100,
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {"type": "string", "minLength": 1},
+              "context_window": {"type": "integer", "minimum": 1024},
+              "tools": {"type": "boolean"}
+            },
+            "required": ["id"]
+          }
+        }
+      },
+      "required": ["id", "command"]
+    }
+  }
+}

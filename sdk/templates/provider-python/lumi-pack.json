@@ -1,0 +1,23 @@
+{
+  "id": "my-provider",
+  "name": "My provider",
+  "version": "0.1.0",
+  "description": "Adds my models to Lumi.",
+  "manifest_version": 1,
+  "lumi": ">=0.19.2",
+  "providers": [
+    {
+      "id": "my-provider",
+      "name": "My provider",
+      "command": {
+        "windows": ["python", "provider.py"],
+        "macos": ["python3", "provider.py"],
+        "linux": ["python3", "provider.py"]
+      },
+      "models": [
+        {"id": "echo", "context_window": 32768, "tools": true},
+        {"id": "remote", "context_window": 128000, "tools": true}
+      ]
+    }
+  ]
+}

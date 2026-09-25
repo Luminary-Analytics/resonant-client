@@ -8,6 +8,95 @@ The heartbeat remains paused. Documentation maintenance does not resume work,
 spending or grants, and changes no native implementation or installed bundle.
 The dated September 15/18 records below are historical.
 
+## September 25 model providers as extensions (Extension SDK v1) — source only, not released
+
+- **Model providers from capability packs** (`lumi/engine/provider_extensions.py`,
+  [guide](extensions.md)).
+  - A pack's manifest can declare `providers`: a command, or one per system,
+    and the models it offers.
+  - Lumi starts the provider for each request and talks to it in JSON lines
+    over standard input and output: `models`, and `stream` answered with
+    text, tool calls, then `done` (usage, and a cost when the provider knows
+    it) or `error`.
+- **Connections.** Settings > Connections has a new type, **A provider from a
+  capability pack**, which picks an approved pack's provider.
+  - The connection's key reaches the process as `LUMI_PROVIDER_API_KEY`.
+  - **Test connection** starts the provider.
+  - Models the manifest lists are offered without starting it.
+- **Trust.**
+  - Only approved, enabled personal packs provide models. The pack is
+    resolved again before every start, so a changed or revoked pack stops at
+    once.
+  - Settings > Capability packs shows each provider's command before
+    approval.
+  - The process gets the usual child environment, a data folder outside the
+    pack, and `PYTHONPYCACHEPREFIX`. Without that, a Python provider wrote
+    `__pycache__` into its pack on its first run and turned the pack off. It
+    also keeps `.pyc` files shipped in a pack from running instead of the
+    reviewed source.
+  - A bare program name comes from absolute PATH entries only; Windows would
+    otherwise look in Lumi's current folder first.
+- **Manifest version 1** (`lumi/engine/capability_packs.py`):
+  - `manifest_version`; a newer one doesn't load, and Settings says why;
+  - `lumi`, the Lumi versions a pack works with;
+  - checked `providers`.
+- **The SDK** (`sdk/`):
+  - `lumi_extension`, a Python package using only the standard library:
+    `Provider`, `serve`, the events and `data_dir`;
+  - `lumi_extension.testing`, which runs a provider as Lumi does;
+  - `sdk/templates/provider-python`, with an offline `echo` model, an
+    OpenAI-compatible `remote` model and tests;
+  - `sdk/new_pack.py`, which makes a pack from the template;
+  - `sdk/schema/lumi-pack.schema.json`, for editors.
+- **`lumi extension check <folder>`** (`lumi/extension_check.py`) loads a
+  pack with Lumi's rules, lists its models and asks the first one a short
+  question.
+
+Validation on September 25, 2026: `tests/test_provider_extensions.py` (32
+tests) starts real provider processes. It covers:
+
+- the manifest's rules and version requirements;
+- the template, made with `sdk/new_pack.py`: approved, answering in a real
+  session with a `file_read` tool call, still approved afterwards with no
+  `__pycache__` in the pack, and refused after an edit;
+- packs inside a project never providing models;
+- the template's own tests passing;
+- `lumi extension check` on a working, a failing and a too-new pack;
+- the key and environment the process gets, and no other model keys;
+- failures: an exit code with the key removed from the message, output that
+  isn't JSON, a timeout;
+- Stop ending the process;
+- the events Lumi reads, including usage, cost and unknown types;
+- unfinished and refused answers;
+- the conversation as text, with notices for images;
+- PATH lookup that ignores the current folder and relative entries;
+- the Connections page's data, connection checks, the SDK's `serve` and test
+  kit, and the manifest schema (skipped without jsonschema).
+
+Removing the `PYTHONPYCACHEPREFIX` line made the session test fail: the pack
+turned itself off after its first run.
+
+In the browser pane, with the template installed in an isolated
+`~/.lumi/packs`:
+
+- The pack's review listed the provider's command for each system. It was
+  approved there.
+- Adding a connection of the new type showed only the fields that apply and
+  named the connection after the provider.
+- **Test connection** started the provider through a PATH lookup of
+  `python`: "Connected · 2 models available: echo, remote". Saving put both
+  models in the model menu.
+- With `echo`, the message `call file_read {"path": "README.md"}` made the
+  provider call the tool; Lumi ran it, and the next answer quoted the file.
+  The pack folder had no `__pycache__` afterwards.
+- After `provider.py` was edited, the next message failed with "Approve the
+  Acme models pack in Settings > Capability packs to use its models. It
+  changed since you approved it." The pack showed "Changed since approval ·
+  off" until it was approved again.
+
+Not yet: signed packs, an organization registry, long-running providers,
+images and reasoning levels.
+
 ## September 25 a broken lumi-policy.json can't drop organization rules — source only, not released
 
 **A repository could turn off its organization's shell rules.** Committing a

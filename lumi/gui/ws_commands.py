@@ -475,7 +475,7 @@ async def _set_capability_pack_approval(ctx: CommandContext, *, approve: bool) -
     await ctx.send({
         "event": "ui_notice",
         "message": (
-            "Capability pack approved. Its hooks, skills, agents and MCP servers are active."
+            "Capability pack approved. Its hooks, skills, agents, MCP servers and model providers are active."
             if approve else
             "Capability pack approval revoked. Its hooks and MCP servers are off."
         ),
@@ -3933,13 +3933,20 @@ async def _cmd_provider_connection(ctx: CommandContext) -> None:
 
 def _connections_payload(state) -> dict:
     from ..connections import AUTH_METHODS, CONNECTION_TYPES, list_connections, secret_setting
+    from ..engine import provider_extensions
 
     items = []
     for connection in list_connections(state.settings):
         key = str(state.settings.get("api_keys", secret_setting(connection["id"]), "") or "")
         items.append({**connection, "has_key": bool(key)})
+    try:
+        extensions = provider_extensions.available(state.settings)
+    except Exception:  # noqa: BLE001 - a broken pack folder mustn't hide the connections
+        logger.warning("Listing extension providers failed", exc_info=True)
+        extensions = []
     return {"event": "connections", "data": {
-        "items": items, "types": CONNECTION_TYPES, "auth_methods": list(AUTH_METHODS)}}
+        "items": items, "types": CONNECTION_TYPES, "auth_methods": list(AUTH_METHODS),
+        "extension_providers": extensions}}
 
 
 def _connection_in_use(ctx: CommandContext, connection_id: str) -> bool:
@@ -4038,14 +4045,17 @@ async def _cmd_connection_test(ctx: CommandContext) -> None:
             token_provider, _tls = sign_in(connection, api_key)
             if token_provider is not None:
                 token_provider()
-            models = discover_models(connection, api_key, timeout=8.0)
+            models = discover_models(connection, api_key, timeout=8.0, settings=ctx.state.settings)
             if connection["type"] in {"openai-compatible"} and not models:
                 raise ValueError(f"{connection['name']} answered, but listed no models. "
                                  "Enter the model ids by hand.")
             probe_model = (models or connection["models"] or [""])[0]
             if connection["type"] != "openai-compatible":
-                backend = create_connection_backend(connection, probe_model, api_key)
+                backend = create_connection_backend(connection, probe_model, api_key, settings=ctx.state.settings)
                 health = backend.health()
+                # An extension's test starts its process; a failure is the result.
+                if connection["type"] == "extension" and not health.get("ok"):
+                    raise ValueError(health.get("error") or "The provider didn't answer.")
                 models = models or health.get("models") or []
             return {"ok": True, "models": models[:200],
                     "message": f"Connected · {len(models)} model{'s' if len(models) != 1 else ''} available"}

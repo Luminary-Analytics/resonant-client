@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import threading
 import time
+import weakref
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
@@ -200,12 +201,9 @@ def _make_daemon(
     decision_timeout_seconds: Optional[float] = None,
 ) -> tuple[AutonomousMissionDaemon, list[dict]]:
     """Build a daemon with an event-collecting on_event callback.
-    Returns `(daemon, events_list)` so tests can inspect event order."""
-    events: list[dict] = []
-
-    def on_event(ev: dict) -> None:
-        events.append(ev)
-
+    Returns `(daemon, events_list)` so tests can inspect event order.
+    Events also feed the daemon's `_DaemonProgress` so waits can key off
+    the terminal event instead of wall-clock time."""
     config = AutonomousMissionConfig(
         intent_id=intent_id,
         roadmap_path=roadmap_path,
@@ -215,24 +213,118 @@ def _make_daemon(
         tick_pause_seconds=tick_pause_seconds,
         decision_timeout_seconds=decision_timeout_seconds,
     )
+    return _tracked_daemon(config, hooks)
+
+
+def _tracked_daemon(
+    config: AutonomousMissionConfig, hooks: DaemonHooks,
+) -> tuple[AutonomousMissionDaemon, list[dict]]:
+    """Build a daemon from `config` whose events are collected and tracked,
+    so `_run_daemon_to_completion` can wait for its terminal event. Other
+    test modules that need their own config use this instead of `on_event=`."""
+    events: list[dict] = []
+    progress = _DaemonProgress()
+
+    def on_event(ev: dict) -> None:
+        events.append(ev)
+        progress.record(ev)
+
     daemon = AutonomousMissionDaemon(config, hooks, on_event=on_event)
+    _PROGRESS[daemon] = progress
     return daemon, events
 
 
-def _run_daemon_to_completion(
-    daemon: AutonomousMissionDaemon, timeout: float = 5.0
-) -> None:
-    """Start, join with timeout, fail loudly if the daemon hung."""
-    daemon.start()
-    daemon.join(timeout=timeout)
-    if daemon.is_running():
+# `_emit_stop` and the crash handler each emit exactly one of these as the
+# daemon's last act before `_run` returns.
+_TERMINAL_EVENTS = frozenset({
+    "autonomous_mission_complete",
+    "autonomous_mission_paused",
+    "autonomous_mission_failed",
+})
+
+# Hang detection is based on progress, not on a completion budget. Every
+# iteration performs several fsync'd atomic roadmap writes (16 for a
+# six-iteration run), and on a loaded windows-latest runner each fsync can
+# take a second, so no fixed wall-clock budget for the WHOLE run is both
+# tight and reliable: a 5s budget failed healthy runs there. Instead a hang
+# is a daemon that goes silent (no event for `_STALL_SECONDS`; a healthy one
+# emits after every step) and an infinite loop is one that keeps emitting
+# without ever reaching a terminal event (`_MAX_EVENTS`, far above any
+# finite test run).
+_STALL_SECONDS = 30.0
+_MAX_EVENTS = 2000
+
+
+class _DaemonProgress:
+    """Event-driven view of one daemon's progress toward termination."""
+
+    def __init__(self) -> None:
+        self._cond = threading.Condition()
+        self.count = 0
+        self.last_kind = ""
+        self.terminal: Optional[str] = None
+
+    def record(self, ev: dict) -> None:
+        with self._cond:
+            self.count += 1
+            self.last_kind = ev.get("event", "")
+            if self.last_kind in _TERMINAL_EVENTS:
+                self.terminal = self.last_kind
+            self._cond.notify_all()
+
+    def wait_for_terminal(self, daemon: AutonomousMissionDaemon) -> Optional[str]:
+        """Block until the terminal event arrives. Returns None on success,
+        otherwise a description of why the daemon will not terminate."""
+        seen = -1
+        last_progress = time.monotonic()
+        with self._cond:
+            while self.terminal is None:
+                if self.count != seen:
+                    seen = self.count
+                    last_progress = time.monotonic()
+                if self.count > _MAX_EVENTS:
+                    return (f"{self.count} events without a terminal event "
+                            f"(infinite loop)")
+                # `record` sets `terminal` under this lock before the thread
+                # can exit, so a dead thread here really skipped it.
+                if not daemon.is_running():
+                    return "daemon thread exited without a terminal event"
+                if time.monotonic() - last_progress > _STALL_SECONDS:
+                    return (f"no daemon event for {_STALL_SECONDS:.0f}s "
+                            f"(hung); last event {self.last_kind!r}")
+                self._cond.wait(timeout=0.25)
+        return None
+
+
+_PROGRESS: weakref.WeakKeyDictionary[AutonomousMissionDaemon, _DaemonProgress] = (
+    weakref.WeakKeyDictionary()
+)
+
+
+def _wait_for_daemon_exit(daemon: AutonomousMissionDaemon) -> None:
+    """Wait for an already-started daemon to emit its terminal event and
+    for its thread to exit. Fails loudly on a hang or an infinite loop."""
+    progress = _PROGRESS[daemon]
+    problem = progress.wait_for_terminal(daemon)
+    if problem is None:
+        # Nothing blocking remains after the terminal event.
+        daemon.join(timeout=_STALL_SECONDS)
+        if daemon.is_running():
+            problem = "thread still alive after its terminal event"
+    if problem is not None:
+        # Snapshot BEFORE stopping so the report shows the daemon's own
+        # state rather than a `user_stop` this helper injected.
+        snapshot = daemon.state_snapshot()
         daemon.stop()
         daemon.join(timeout=2.0)
-        raise AssertionError(
-            f"Daemon did not exit within {timeout}s — likely an "
-            f"infinite loop in the test setup. State: "
-            f"{daemon.state_snapshot()}"
-        )
+        raise AssertionError(f"Daemon did not terminate: {problem}. "
+                             f"State: {snapshot}")
+
+
+def _run_daemon_to_completion(daemon: AutonomousMissionDaemon) -> None:
+    """Start the daemon and wait for it to terminate on its own."""
+    daemon.start()
+    _wait_for_daemon_exit(daemon)
 
 
 def _events_of_kind(events: list[dict], kind: str) -> list[dict]:
@@ -364,7 +456,7 @@ class TestDaemonLifecycle:
         daemon.start()
         assert daemon.is_running()
         slow.set()
-        daemon.join(timeout=2.0)
+        _wait_for_daemon_exit(daemon)
         assert not daemon.is_running()
 
     def test_stop_before_start_is_safe(self, tmp_path):
@@ -431,7 +523,7 @@ class TestParkedDecisionExpiry:
             decision_timeout_seconds=0.2,
         )
 
-        _run_daemon_to_completion(daemon, timeout=10.0)
+        _run_daemon_to_completion(daemon)
 
         applied = _events_of_kind(events, "autonomous_decision_auto_applied")
         assert applied, "an expired park must proceed rather than hang"
@@ -459,14 +551,34 @@ class TestParkedDecisionExpiry:
             path, hooks, max_iterations=1, full_reflect_cadence=1,
             decision_timeout_seconds=0.2,
         )
+        # The daemon consults the fallback only once the deadline has
+        # expired, so this signals "deadline passed" without sleeping for a
+        # guessed duration (slow roadmap writes can delay the park itself).
+        fallback_checked = threading.Event()
+
+        def observed_default(request: dict) -> str:
+            try:
+                return AutonomousMissionDaemon._default_decision_option(request)
+            finally:
+                fallback_checked.set()
+
+        daemon._default_decision_option = observed_default
         daemon.start()
-        # It must still be parked well after the deadline would have expired.
-        time.sleep(0.6)
-        still_parked = daemon.state_snapshot()["activity"]["phase"] == "parked"
-        daemon.stop("user_stop")
-        daemon.join(timeout=5.0)
+        try:
+            assert fallback_checked.wait(_STALL_SECONDS), (
+                "daemon never reached the expired park deadline"
+            )
+            still_parked = (
+                daemon.state_snapshot()["activity"]["phase"] == "parked"
+            )
+        finally:
+            daemon.stop("user_stop")
+            _wait_for_daemon_exit(daemon)
 
         assert still_parked
+        # A guessed answer would be emitted right after the fallback check,
+        # before the daemon could observe the stop, so the full event list
+        # after exit is conclusive.
         assert not _events_of_kind(events, "autonomous_decision_auto_applied")
 
 
@@ -765,7 +877,7 @@ class TestStoppingRules:
             daemon.stop("user_stop", "user clicked stop")
         finally:
             block.set()
-            daemon.join(timeout=5.0)
+            _wait_for_daemon_exit(daemon)
         assert not daemon.is_running()
 
         # cancel_dispatch should have been called on the in-flight handle.
@@ -791,7 +903,7 @@ class TestStoppingRules:
             full_reflect_cadence=999,
         )
 
-        _run_daemon_to_completion(daemon, timeout=3.0)
+        _run_daemon_to_completion(daemon)
 
         paused = _events_of_kind(events, "autonomous_mission_paused")
         assert len(paused) == 1
@@ -1497,7 +1609,7 @@ class TestAtomicTerminalStateTransition:
         time.sleep(0.05)
         daemon.stop("user_stop", "user clicked stop")
         block.set()
-        daemon.join(timeout=2.0)
+        _wait_for_daemon_exit(daemon)
 
         # User-initiated stop → paused on disk (so it CAN be resumed
         # — `paused` is the only status orphan-detection picks up).

@@ -1,4 +1,5 @@
-"""The terminal UI shows why a refused tool call didn't run.
+"""The terminal UI shows why a refused tool call didn't run, and prints text
+it didn't write exactly as written.
 
 A TOOL_RESULT marked ``denied`` never ran, and its output is the reason the
 model was given: a hook's message (a guard that timed out included), a policy
@@ -7,14 +8,21 @@ approval nobody could answer. The terminal printed only "✗ denied" and
 dropped it, so a hook that never answered looked like the person's own Deny.
 A refused read or search in a collapsed step read "0 matches".
 
-These tests capture the TUI's Rich console as plain text. Two run real
+Tool arguments and output, the model's words and model names go into Rich
+markup. Unescaped, a grep pattern's "[a-z_]" class vanished as an unknown
+style, "[/]" raised MarkupError out of consume_events, ":a:" became an
+emoji, and a backslash before a "[" or at the end was lost.
+
+These tests capture the TUI's Rich console as plain text. Three run real
 sessions the way the TUI runs each message (`run_embedded`): one with a
-hook that refuses, one answering the TUI's own approval prompt with "n".
+hook that refuses, one answering the TUI's own approval prompt with "n",
+and one whose search pattern and command output hold brackets.
 """
 from __future__ import annotations
 
 import importlib
 import io
+import itertools
 import sys
 
 import pytest
@@ -24,6 +32,7 @@ from prompt_toolkit.input import create_pipe_input
 from prompt_toolkit.output.vt100 import Vt100_Output
 from rich.cells import cell_len
 from rich.console import Console
+from rich.text import Text
 
 from lumi.engine.hooks import HookDefinition, HookRunner, HookType
 from lumi.engine.sandbox import PathSandbox
@@ -149,6 +158,206 @@ def test_a_long_unbroken_reason_folds_inside_the_gutter(screen):
     assert folded.replace(" ", "") == reason.replace(" ", "")
 
 
+# ── Text the TUI didn't write prints as written ────────────────────────
+
+CALL = "  ┃ "  # a tool call's line
+
+
+def test_escaped_text_reads_back_exactly():
+    # Every string of these characters up to six long, between the TUI's own
+    # tags: tags and closing tags, backslashes before a "[" (one that opens a
+    # tag and one that doesn't) and at the end, where they meet the closing tag.
+    for length in range(7):
+        for chars in itertools.product("[]\\/a ", repeat=length):
+            text = "".join(chars)
+            markup = f"[{tui.C_TEXT}]{tui._esc(text)}[/{tui.C_TEXT}]"
+            assert Text.from_markup(markup, emoji=False).plain == text, markup
+
+
+@pytest.mark.parametrize("text", [
+    "'[a-z_]+\\(' 3 matches",  # the class read as a style: "'+\(' 3 matches"
+    "Error: unexpected [/] in input",  # MarkupError: nothing to close
+    "[bold]x[/bold] [/something]",  # "[/something]" is a MarkupError too
+    "[link=https://example.com]y[/link] [@click=quit]z",
+    "\\[0-9]+\\] and \\[bold]",  # a regex's escaped brackets lost their backslash
+    "sed -e 's:a:b:' && echo :x:",  # emoji codes
+    "C:\\hooks\\", "C:\\hooks\\\\", "a\\\\\\",  # backslashes before the closing tag
+])
+def test_outside_text_prints_as_written(screen, text):
+    tui._print(f"  [{tui.C_TEXT}]{tui._esc(text)}[/{tui.C_TEXT}]")
+
+    assert screen() == [f"  {text}"]
+
+
+TOOL_CALLS = {
+    "grep pattern": (
+        "grep", {"pattern": "[a-z_]+\\(", "path": "src/[old]"},
+        [f"{CALL}/ '[a-z_]+\\('  (src/[old])"],
+    ),
+    "glob pattern": ("glob", {"pattern": "**/[a-z]*.py", "path": "."}, [f"{CALL}✱ **/[a-z]*.py  (.)"]),
+    "file path": ("file_read", {"path": "docs/[/]/[bold]notes.md"}, [f"{CALL}→ docs/[/]/[bold]notes.md"]),
+    "command": (
+        "bash", {"command": 'echo "[/] [bold]x[/bold]" :a: C:\\tmp\\'},
+        [f"{CALL}$ Shell", f'{STATUS}$ echo "[/] [bold]x[/bold]" :a: C:\\tmp\\'],
+    ),
+    "task prompt": (
+        "task", {"prompt": "find [/] and [bold]", "agent_type": "[explore]"},
+        [f"{CALL}│ Task [explore] agent", f'{STATUS}"find [/] and [bold]"'],
+    ),
+    "batch lines": (
+        "batch", {"calls": [
+            {"name": "grep", "arguments": {"pattern": "[a-z_]+\\("}},
+            {"name": "file_read", "arguments": {"path": "a/[b]\\"}},
+            {"name": "[/]mystery", "arguments": {}},
+        ]},
+        [f"{CALL}⚡ Batch 3 parallel calls", f"{STATUS}/ Grep '[a-z_]+\\('",
+         f"{STATUS}→ Read a/[b]\\", f"{STATUS}⚙ [/]mystery"],
+    ),
+    "url": (
+        "browser_navigate", {"url": "https://example.test/?filter[name]=a"},
+        [f"{CALL}⊕ https://example.test/?filter[name]=a"],
+    ),
+    "selector": ("browser_click", {"selector": 'a[href="/login"]'}, [f'{CALL}◎ Click a[href="/login"]']),
+    "typed text": ("browser_type", {"text": "C:\\tmp\\"}, [f"{CALL}⌨ Type 'C:\\tmp\\'"]),
+    "read selector": (
+        "browser_read", {"mode": "text", "selector": "div[data-x]"},
+        [f"{CALL}◫ Read page  (text · div[data-x])"],
+    ),
+    "script": (
+        "browser_js", {"code": "document.querySelectorAll('a[href]')[0]"},
+        [f"{CALL}⟐ JavaScript", f"{STATUS}document.querySelectorAll('a[href]')[0]"],
+    ),
+    "desktop typing": ("computer_type", {"text": "[/] done\\"}, [f"{CALL}⌨ Type '[/] done\\'"]),
+    "desktop click": (
+        "computer_click", {"x": "[b]", "y": 2, "button": "[/]"},
+        [f"{CALL}◎ Click ([b], 2)  ([/])"],
+    ),
+    "unknown tool": ("mcp__docs__[bold]search", {}, [f"{CALL}⚙ mcp__docs__[bold]search"]),
+}
+
+
+@pytest.mark.parametrize("name, arguments, expected", list(TOOL_CALLS.values()), ids=list(TOOL_CALLS))
+def test_a_tool_call_prints_its_arguments_as_written(screen, name, arguments, expected):
+    tui._render_tool_call({"event": "tool.call", "name": name, "arguments": arguments})
+
+    assert screen() == expected
+
+
+def test_a_file_change_prints_its_path_and_text_as_written(screen):
+    tui._render_tool_call({"event": "tool.call", "name": "file_edit", "arguments": {
+        "path": "app/[id].py",
+        "old_text": "def f(x: list[str]):",
+        "new_text": "def f(x: list[str]) -> dict[str, int]:  # [/] :a:",
+    }})
+    tui._render_tool_call({"event": "tool.call", "name": "file_write", "arguments": {
+        "path": "notes/[draft].md", "content": "[/]",
+    }})
+
+    lines = screen()
+    assert lines[0] == f"{CALL}~ Edit app/[id].py"
+    # Inside the diff's panel: the type hints were "list" and "dict" before.
+    diff = "\n".join(lines)
+    assert "- def f(x: list[str]):" in diff
+    assert "+ def f(x: list[str]) -> dict[str, int]:  # [/] :a:" in diff
+    assert f"{CALL}← Write notes/[draft].md" in lines
+
+
+def _result(name: str, output: str, *, is_error: bool = False, metadata: dict | None = None,
+            elapsed: float = 0.0) -> dict:
+    return {"event": "tool.result", "name": name, "call_id": "c1", "output": output,
+            "is_error": is_error, "denied": False, "elapsed": elapsed, "metadata": metadata or {}}
+
+
+TOOL_RESULTS = {
+    "read error": (
+        _result("file_read", "Error: unexpected [/] in input", is_error=True),
+        [f"{STATUS}✗ Error: unexpected [/] in input"],
+    ),
+    "edit error": (
+        _result("file_edit", "old_text not found in app/[id].py: [bold]x[/bold]", is_error=True),
+        [f"{STATUS}✗ old_text not found in app/[id].py: [bold]x[/bold]"],
+    ),
+    "command output": (
+        _result("bash", "[/] [bold]x[/bold] \\[0-9] :a:\nC:\\tmp\\\n(exit code: 3)",
+                is_error=True, metadata={"exit_code": 3}, elapsed=0.5),
+        [f"{STATUS}[/] [bold]x[/bold] \\[0-9] :a:", f"{STATUS}C:\\tmp\\",
+         f"{STATUS}(exit code: 3)", f"{STATUS}0.5s · exit 3"],
+    ),
+    "script output": (_result("browser_js", "[/]\n[1, 2][0]"), [f"{STATUS}[/]", f"{STATUS}[1, 2][0]"]),
+    "page title": (
+        _result("browser_navigate", "Navigated.", metadata={"title": "Docs [beta] — [/]"}),
+        [f"{STATUS}✓ Docs [beta] — [/]"],
+    ),
+    "click output": (_result("browser_click", 'Clicked a[href="/login"]'), [f'{STATUS}✓ Clicked a[href="/login"]']),
+    "screenshot error": (
+        _result("browser_screenshot", "Error: [/] no page", is_error=True),
+        [f"{STATUS}✗ Error: [/] no page"],
+    ),
+    "desktop output": (_result("computer_type", "Typed '[/]'"), [f"{STATUS}✓ Typed '[/]'"]),
+    "other tool error": (
+        _result("mcp__docs__search", "Error [E42]: [/] missing \\[x] :a: C:\\", is_error=True),
+        [f"{STATUS}✗ Error [E42]: [/] missing \\[x] :a: C:\\"],
+    ),
+}
+
+
+@pytest.mark.parametrize("event, expected", list(TOOL_RESULTS.values()), ids=list(TOOL_RESULTS))
+def test_a_tool_result_prints_its_output_as_written(screen, event, expected):
+    tui._render_tool_result(event)
+
+    assert screen() == expected
+
+
+def test_a_turn_prints_what_tools_and_the_model_said_as_written(screen):
+    events = [
+        {"event": "step.start", "step": 1, "step_type": "execute", "label": ""},
+        # Only a search and a read: the step collapses to one line per call.
+        {"event": "tool.call", "name": "grep", "arguments": {"pattern": "[a-z_]+\\(", "path": "."}},
+        _result("grep", "app.py:1: def load(", metadata={"count": 3}),
+        {"event": "tool.call", "name": "file_read", "arguments": {"path": "docs/[/]/[bold]notes.md"}},
+        _result("file_read", "…", metadata={"lines": 12}),
+        {"event": "status", "model": "local[/]:a:"},
+        {"event": "step.end", "step": 1, "elapsed": 0.2},
+        {"event": "step.start", "step": 2, "step_type": "execute", "label": "after [/]mystery"},
+        {"event": "subagent.start", "agent_type": "[explore]", "prompt": "look for [/] in [bold]"},
+        {"event": "subagent.end", "agent_type": "[explore]", "steps": 2, "elapsed": 1.5},
+        {"event": "error", "message": "Backend error [500]: unexpected [/] in input C:\\"},
+        {"event": "choices", "before": "Which one? [/] :a: C:\\tmp\\", "options": ["a", "b"]},
+        {"event": "step.end", "step": 2, "elapsed": 0.4},
+        {"event": "session.end", "total_elapsed": 1.0, "total_steps": 2},
+    ]
+
+    tui.consume_events(iter(events))
+
+    lines = [line.rstrip() for line in screen()]
+    for expected in [
+        "  ◆ Step 1  Grep, Read",
+        "    │ / '[a-z_]+\\('  3 matches",
+        "    │ → docs/[/]/[bold]notes.md  12 lines",
+        "  ▣ local[/]:a: · 0.2s",
+        "  ◆ Step 2  after [/]mystery",
+        f"{CALL}│ Task  [explore] agent",
+        f'{STATUS}"look for [/] in [bold]"',
+        f"{STATUS}✓ [explore] · 2 steps · 1.5s",
+        "  ✗ Backend error [500]: unexpected [/] in input C:\\",
+        "  Which one? [/] :a: C:\\tmp\\",
+        "  ▣ local[/]:a: · 0.4s",
+    ]:
+        assert expected in lines, (expected, lines)
+
+
+def test_a_choice_menu_prints_the_options_as_written(screen, monkeypatch):
+    monkeypatch.setattr(tui, "pt_prompt", lambda *args, **kwargs: "2")
+
+    chosen = tui._render_choices(["Keep [bold]x[/bold] (Recommended)", "Drop [/] C:\\tmp\\"])
+
+    assert chosen == "Drop [/] C:\\tmp\\"
+    lines = [line.rstrip() for line in screen()]
+    assert "  ● 1. Keep [bold]x[/bold]  recommended" in lines
+    assert "    2. Drop [/] C:\\tmp\\" in lines
+    assert "  ✓ Drop [/] C:\\tmp\\" in lines
+
+
 # ── Real turns, run the way the TUI runs each message ──────────────────
 
 
@@ -219,3 +428,40 @@ def test_a_turn_shows_the_persons_own_deny_as_denied(tmp_path, screen):
     command = lines.index(f"{STATUS}$ echo published > published.txt")
     assert lines[command + 1] == f"{STATUS}✗ denied"
     assert not any("not run" in line or "Tool execution denied" in line for line in lines)
+
+
+def test_a_turn_prints_a_pattern_and_command_output_as_written(tmp_path, screen):
+    (tmp_path / "app.py").write_text("def load_config(path):\n    return open_file(path)\n", encoding="utf-8")
+    # Output with markup-like text, on stdout and stderr, and a failing exit.
+    script = tmp_path / "report.py"
+    script.write_text(
+        "import sys\n"
+        "print('[/] [bold]x[/bold] \\\\[0-9] :a: C:\\\\tmp\\\\')\n"
+        "sys.stdout.flush()\n"
+        "sys.stderr.write('Error [E1]: unexpected [/] in input\\n')\n"
+        "sys.exit(3)\n",
+        encoding="utf-8",
+    )
+    model = "local[/]:a:"  # a model name reaches the step lines too
+    backend = StreamingBackend(scripts=[
+        [tool_call("grep", {"pattern": "[a-z_]+\\(", "path": "."}, call_id="c1"), done(model=model)],
+        [tool_call("bash", {"command": f'"{sys.executable}" "{script}"'}, call_id="c2"), done(model=model)],
+        [text_delta("The report failed."), done(model=model)],
+    ])
+    session = _session(tmp_path, backend)
+
+    tui.run_embedded(session, "find the loaders, then run the report")
+
+    told = [entry["content"] for entry in session.conversation_history if entry.get("role") == "tool_result"]
+    assert "Error [E1]: unexpected [/] in input" in told[1]
+    lines = [line.rstrip() for line in screen()]
+    # The collapsed search, then its step's line with the model's name.
+    search = next(i for i, line in enumerate(lines) if "'[a-z_]+\\('" in line)
+    assert lines[search].startswith("    │ / '[a-z_]+\\('  ") and lines[search].endswith(" matches")
+    assert lines[search + 1].startswith(f"  ▣ {model} · ")
+    # The command's output, as it printed.
+    output = lines.index(f"{STATUS}[/] [bold]x[/bold] \\[0-9] :a: C:\\tmp\\")
+    assert lines[output + 2] == f"{STATUS}Error [E1]: unexpected [/] in input"
+    assert lines[output + 4] == f"{STATUS}(exit code: 3)"
+    assert lines[output + 5].startswith(STATUS) and lines[output + 5].endswith("s · exit 3")
+    assert lines[output + 6].startswith(f"  ▣ {model} · ")

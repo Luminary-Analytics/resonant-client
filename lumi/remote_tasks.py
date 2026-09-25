@@ -5,7 +5,8 @@ With **Tasks from Slack and Teams** turned on (Settings > Lumi account, the
 account, the app asks Lumi Cloud every 20 seconds for that person's next
 request from chat (lumi_cloud/chat_tasks.py in Lumi Cloud). It runs requests
 one at a time in the chosen project and permission mode, in a session built
-like ``lumi run``'s (lumi/headless.py) with the default model.
+like ``lumi run``'s (lumi/headless.py) with the default model, so the
+person's Settings hooks run as they do in the app.
 
 An action the mode doesn't allow is sent to the chat for approval. It is
 refused when nobody answers within 10 minutes or the person says stop. The

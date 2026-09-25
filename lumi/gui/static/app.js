@@ -3970,6 +3970,11 @@ class LumiApp {
                 this.auditStatus = event;
                 if (this.currentView === 'settings') this.renderSettingsView();
                 break;
+            case 'cloud_status':
+                this.cloudStatus = event.data;
+                if (event.data && !event.data.signing_in && event.data.signed_in) this._cloudUrlDraft = undefined;
+                if (this.currentView === 'settings' && !this.refreshLumiAccount()) this.renderSettingsView();
+                break;
             case 'about_info':
                 this.aboutInfo = event.data;
                 if (this.currentView === 'settings') this.renderSettingsView();

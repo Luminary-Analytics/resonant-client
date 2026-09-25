@@ -1,0 +1,109 @@
+# Lumi Cloud: your account and your organization
+
+Lumi Cloud is where an organization manages Lumi: its members, their seats,
+the computers running Lumi, and the policy those computers enforce. Lumi
+works fully without it. This page covers the app's side, in
+**Settings > Lumi account**. Code: `lumi/cloud.py`.
+
+## Signing in
+
+1. Open **Settings > Lumi account** and enter your organization's Lumi Cloud
+   address (for example `https://cloud.example.com`). If your organization's
+   policy names it, the field is filled in and locked.
+2. Choose **Sign in with your browser**. Lumi opens your browser. Sign in there
+   with your email, GitHub, Google or your company's single sign-on, and
+   approve "Sign in to Lumi on this computer".
+3. The browser says you're signed in, and the page lists your
+   organizations, your role in each and whether you have a seat.
+
+Behind this is the standard sign-in for desktop apps (OAuth 2.0 for native
+apps, RFC 8252):
+
+- The browser returns to a listener that Lumi opens on `127.0.0.1` only for
+  this sign-in, and the exchange uses a PKCE code verifier.
+- Lumi keeps the long-lived sign-in token in your system credential store,
+  never in `settings.json`, and keeps the short-lived one only in memory.
+
+This account is separate from your display name and from any SONN or ChatGPT
+sign-in. **Sign out** ends it on Lumi Cloud too. Your organization can also
+sign the app out from Lumi Cloud.
+
+## Using your organization on this computer
+
+Next to an organization where you have a seat, choose **Use on this
+computer**. Lumi generates a key pair for this computer:
+
+- the private key stays in the credential store;
+- Lumi Cloud gets the public key and lists the computer on the organization's
+  Devices page.
+
+From then on the computer checks in about once an hour, even after you sign
+out. **Leave on this computer** undoes it.
+
+A check-in sends:
+
+- the Lumi version and the operating system;
+- the organization policy version in force;
+- usage totals per model since the last check-in: requests, input and output
+  tokens, and cost.
+
+A check-in never sends prompts, responses, code, file names, project paths or
+session titles.
+
+### The organization's policy
+
+When the organization publishes a policy, the next check-in downloads it:
+
+- **Verified before use.** The policy is signed with the organization's key.
+  Lumi applies it only if the signature matches the key it pinned when you
+  joined (or keys your administrator set, below).
+- **What it can do.** It limits models, permission modes and settings, as a
+  machine policy does ([Organization policy](enterprise-policy.md)).
+  Settings show which organization manages a value.
+- **Expiry.** A downloaded policy lasts 14 days and is refreshed well before
+  then. If this computer can't reach Lumi Cloud, Lumi keeps enforcing the
+  policy for a 7-day grace period, then refuses model requests until it
+  checks in again.
+- **Revocation.** If an administrator revokes this computer or removes you
+  from the organization, the next check-in removes the enrollment and the
+  downloaded policy.
+
+An organization you join yourself doesn't override anything your computer's
+administrator set. With a machine policy in place, its rules apply instead.
+
+## For administrators: enrolling managed computers
+
+To enroll computers without anyone signing in:
+
+1. Create an **enrollment token** on the Devices page in Lumi Cloud.
+2. Deploy the machine policy that the page prints, through Group Policy,
+   Intune, a configuration profile or `%ProgramData%\Lumi\policy.json`
+   ([Deploying on Windows](deploy-windows.md)):
+
+```json
+{
+  "schema": "lumi.policy/v1",
+  "organization": "Acme",
+  "cloud": {
+    "url": "https://cloud.example.com",
+    "organization_id": "org_…",
+    "enrollment_token": "lce_…"
+  },
+  "trusted_keys": {"acme-20260925-1a90d1": "<base64 Ed25519 public key>"},
+  "models": {"allowed": ["anthropic:*"]}
+}
+```
+
+Lumi enrolls on its next start. After that:
+
+- The published cloud policy **replaces** the rules in this machine policy.
+- The machine policy's own rules (`models` above) apply until the first
+  download, and whenever a download fails to verify.
+- Only keys in `trusted_keys`, the `PolicyKeys` registry value or
+  `policy-keys.json` can sign the cloud policy. The file in `~/.lumi/cloud/`
+  is only a cache.
+- People can't leave a managed enrollment or point Lumi at a different Lumi
+  Cloud.
+
+Revoke an enrollment token once the rollout is done. Computers already
+enrolled keep working until they are revoked on the Devices page.

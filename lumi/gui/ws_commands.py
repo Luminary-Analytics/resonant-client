@@ -2813,6 +2813,65 @@ def _third_party_notices_path() -> str:
     return str(candidate) if candidate and candidate.is_file() else ""
 
 
+async def _cloud_run(ctx: CommandContext, action) -> None:
+    """Run a Lumi Cloud action off the event loop, then send the account status."""
+    from ..cloud import CloudError
+
+    client = ctx.state.cloud
+    try:
+        await asyncio.to_thread(action, client)
+    except CloudError as exc:
+        client.last_error = str(exc)
+    except Exception as exc:
+        logger.exception("Lumi Cloud action failed")
+        client.last_error = f"Something went wrong: {exc}"
+    await ctx.send({"event": "cloud_status", "data": await asyncio.to_thread(client.status)})
+
+
+@command("cloud_status")
+async def _cmd_cloud_status(ctx: CommandContext) -> None:
+    """Settings > Lumi account: the Lumi Cloud sign-in and this computer's enrollment."""
+    await ctx.send({"event": "cloud_status", "data": await asyncio.to_thread(ctx.state.cloud.status)})
+
+
+@command("cloud_sign_in")
+async def _cmd_cloud_sign_in(ctx: CommandContext) -> None:
+    """Open the browser to sign in; the result arrives later as a cloud_status event."""
+    url = str(ctx.msg.get("url") or "")
+    await _cloud_run(ctx, lambda client: client.begin_sign_in(url))
+
+
+@command("cloud_cancel")
+async def _cmd_cloud_cancel(ctx: CommandContext) -> None:
+    await _cloud_run(ctx, lambda client: client.cancel_sign_in())
+
+
+@command("cloud_refresh")
+async def _cmd_cloud_refresh(ctx: CommandContext) -> None:
+    await _cloud_run(ctx, lambda client: client.refresh_account())
+
+
+@command("cloud_sign_out")
+async def _cmd_cloud_sign_out(ctx: CommandContext) -> None:
+    await _cloud_run(ctx, lambda client: client.sign_out())
+
+
+@command("cloud_enroll")
+async def _cmd_cloud_enroll(ctx: CommandContext) -> None:
+    organization = str(ctx.msg.get("organization_id") or "")
+    await _cloud_run(ctx, lambda client: client.enroll(organization))
+
+
+@command("cloud_unenroll")
+async def _cmd_cloud_unenroll(ctx: CommandContext) -> None:
+    await _cloud_run(ctx, lambda client: client.unenroll())
+
+
+@command("cloud_check_in")
+async def _cmd_cloud_check_in(ctx: CommandContext) -> None:
+    await _cloud_run(ctx, lambda client: client.check_in())
+
+
 @command("about_info")
 async def _cmd_about_info(ctx: CommandContext) -> None:
     """Settings > About Lumi: version, license and who manages this copy."""

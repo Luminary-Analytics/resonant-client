@@ -70,6 +70,7 @@ nav:
       - Updates: updates.md
       - macOS: macos.md
       - Plans: plans.md
+      - Lumi account and Lumi Cloud: lumi-cloud.md
   - For organizations:
       - Organization policy: enterprise-policy.md
       - Deploying on Windows: deploy-windows.md

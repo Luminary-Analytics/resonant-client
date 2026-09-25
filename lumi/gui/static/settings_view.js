@@ -278,9 +278,90 @@ class LumiSettingsView {
             row(`Lumi ${esc(info.version)}`, `The coding agent by Luminary Analytics. ${managed}`),
             row('Free for individuals', 'The whole agent, every tool, provider and feature in this app, works without an account: with your own API keys, your ChatGPT sign-in, or models on your own computer.'),
             row('What leaves this computer', 'Your prompts, code and keys go only to the model providers you choose. Luminary Analytics receives only the update check, which you can turn off in Updates.'),
-            row('For teams and organizations', 'Lumi Cloud, with central policy, single sign-on, audit export and usage reporting, is in development. Organizations can already set policy on each computer (see docs/enterprise-policy.md).'),
+            row('For teams and organizations', 'Lumi Cloud adds central policy, members, devices and usage reporting; if your organization uses it, sign in from Lumi account. Without it, organizations set policy on each computer (see docs/enterprise-policy.md).'),
             row('License', `Lumi’s source is available under the ${esc(info.license)} license.${info.notices ? ` Third-party components and their licenses: <code>${esc(info.notices)}</code>` : ''}`),
         ].join('');
+    }
+
+    _renderLumiAccount() {
+        const s = this.cloudStatus;
+        if (!s) return '<p class="editor-help">Loading…</p>';
+        const esc = value => this.escapeHtml(String(value ?? ''));
+        const row = (label, hint, value = '') => `<div class="settings-row"><div class="settings-row-copy"><span class="settings-row-label">${label}</span><div class="settings-row-hint">${hint}</div></div>${value ? `<div class="settings-row-value">${value}</div>` : ''}</div>`;
+        const button = (action, label, extra = '') => `<button type="button" class="btn-sm" data-cloud-action="${action}" ${extra}>${label}</button>`;
+        const parts = [];
+        if (s.error) parts.push(`<p class="editor-error" role="alert">${esc(s.error)}</p>`);
+        if (s.cloud_error) parts.push(`<p class="editor-error" role="alert">${esc(s.cloud_error)}</p>`);
+        const device = s.device && s.device.id ? s.device : null;
+        if (s.signing_in) {
+            parts.push(row('Signing in…', 'Finish signing in in your browser. This page updates when you’re done.', button('cancel', 'Cancel')));
+        } else if (s.signed_in && s.account && s.account.email) {
+            parts.push(row(`Signed in as ${esc(s.account.email)}`,
+                `Lumi Cloud at <code>${esc(s.url)}</code>. This account is separate from your display name and from SONN or ChatGPT.`,
+                `${button('refresh', 'Refresh')} ${button('sign_out', 'Sign out')}`));
+            const orgs = Array.isArray(s.account.organizations) ? s.account.organizations : [];
+            if (!orgs.length) parts.push(row('Organizations', 'You aren’t in an organization yet. Accept an invitation, or create one in Lumi Cloud.'));
+            for (const org of orgs) {
+                const here = device && device.organization_id === org.id;
+                const canEnroll = !device && org.has_seat && !s.managed_organization;
+                const note = here ? 'This computer uses its policy.'
+                    : !org.has_seat ? 'You don’t have a seat. Ask an administrator for one.'
+                    : device ? `This computer is enrolled in ${esc(device.organization_name)}.`
+                    : 'Use it on this computer to apply its policy here.';
+                parts.push(row(esc(org.name), `${esc(org.role)} · ${note}`,
+                    canEnroll ? button('enroll', 'Use on this computer', `data-org="${esc(org.id)}" aria-label="Use ${esc(org.name)} on this computer"`) : ''));
+            }
+        } else {
+            const address = this._cloudUrlDraft ?? s.url ?? '';
+            const hint = s.url_locked ? 'Set by your organization’s policy.' : 'Your organization’s Lumi Cloud, such as https://cloud.example.com.';
+            parts.push(`<div class="settings-row"><div class="settings-row-copy"><label class="settings-row-label" for="cloud-url">Lumi Cloud address</label><div class="settings-row-hint">${hint}</div></div>
+                <div class="settings-row-value"><input id="cloud-url" type="url" class="settings-input" value="${esc(address)}" placeholder="https://" autocomplete="url"${s.url_locked ? ' readonly' : ''}> ${button('sign_in', 'Sign in with your browser')}</div></div>`);
+        }
+        if (device) {
+            const how = device.how === 'managed' ? 'managed by your organization' : 'joined in this app';
+            const seen = s.last_checkin ? new Date(s.last_checkin).toLocaleString() : 'not yet';
+            const version = s.policy_version ? `policy version ${esc(s.policy_version)} is in force` : 'no policy is published yet';
+            parts.push(row(`This computer: ${esc(device.organization_name)}`,
+                `Enrolled, ${how}. Last check-in: ${esc(seen)}; ${version}.`,
+                `${button('check_in', 'Check in now')}${device.how === 'managed' ? '' : ` ${button('unenroll', 'Leave on this computer')}`}`));
+        } else if (s.managed_organization) {
+            parts.push(row('This computer', 'Your organization’s policy enrolls this computer in Lumi Cloud automatically.'));
+        }
+        parts.push('<p class="editor-help">An enrolled computer checks in hourly with its Lumi version, the policy in force and usage totals per model (requests, tokens and cost). Prompts, code and file names never go to Lumi Cloud.</p>');
+        return parts.join('');
+    }
+
+    _bindLumiAccount() {
+        const section = this.settingsBody?.querySelector('[data-settings-section="lumi_account"]');
+        if (!section) return;
+        section.querySelector('#cloud-url')?.addEventListener('input', event => { this._cloudUrlDraft = event.target.value; });
+        section.querySelector('#cloud-url')?.addEventListener('keydown', event => {
+            if (event.key === 'Enter') section.querySelector('[data-cloud-action="sign_in"]')?.click();
+        });
+        section.querySelectorAll('[data-cloud-action]').forEach(control => control.addEventListener('click', () => {
+            const action = control.dataset.cloudAction;
+            const organization = this.cloudStatus?.device?.organization_name || 'the organization';
+            if (action === 'unenroll' && !window.confirm(`Leave ${organization} on this computer? Its policy stops applying here.`)) return;
+            control.disabled = true;
+            const message = {command: `cloud_${action}`};
+            if (action === 'sign_in') message.url = (section.querySelector('#cloud-url')?.value || '').trim();
+            if (action === 'enroll') message.organization_id = control.dataset.org;
+            this.send(message);
+        }));
+    }
+
+    /** Redraw the Lumi account section in place; typing in the address field is never interrupted. */
+    refreshLumiAccount() {
+        const body = this.settingsBody?.querySelector('[data-settings-section="lumi_account"] .settings-section-body');
+        if (!body) return false;
+        // Don't pull the address field out from under someone typing in it. Once
+        // signing in starts (Enter keeps focus there) the field is gone anyway.
+        const s = this.cloudStatus || {};
+        const addressStays = !s.signing_in && !(s.signed_in && s.account?.email);
+        if (addressStays && document.activeElement?.id === 'cloud-url') return true;
+        body.innerHTML = this._renderLumiAccount();
+        this._bindLumiAccount();
+        return true;
     }
 
     _bindUpdateCheck() {
@@ -1155,6 +1236,7 @@ class LumiSettingsView {
             {id:'prompt_inspector', title:'Prompt inspector', group:'Advanced', icon:'book', description:'Inspect the instructions used by the active model.', sections:['prompt_inspector']},
             {id:'model_evaluations', title:'Model evaluations', group:'Advanced', icon:'chart', description:'Review model quality and runtime diagnostics.', sections:['model_evaluations']},
             {id:'iteration_checkpoints', title:'Checkpoints & recovery', group:'Advanced', icon:'history', description:'Inspect saved iterations and recovery options.', sections:['iteration_checkpoints']},
+            {id:'lumi_account', title:'Lumi account', group:'Personal', icon:'person', description:'Sign in to Lumi Cloud and use your organization’s policy on this computer.', sections:['lumi_account'], keywords:'lumi cloud organization team company sign in enroll device computer managed policy seat'},
             {id:'about', title:'About Lumi', group:'Personal', icon:'book', description:'What Lumi is, what it costs and what it sends where.', sections:['about'], keywords:'version license free plan pricing account privacy telemetry notices MIT'},
             {id:'updates', title:'Updates', group:'Advanced', icon:'history', description:'Choose how Lumi updates itself and which releases it takes.', sections:['updates','update_status'], keywords:'update upgrade version release beta channel pin stable automatic manual off'},
         ];
@@ -1249,13 +1331,14 @@ class LumiSettingsView {
             this.send({command: 'project_trust_list'});
             this.send({command: 'audit_status'});
         }
-        const command = {creative_editors:'editor_list', capability_packs:'capability_pack_list', cost_tracking:'get_costs', model_evaluations:'evaluation_list', iteration_checkpoints:'checkpoint_list', updates:'update_status', about:'about_info'}[page];
+        const command = {creative_editors:'editor_list', capability_packs:'capability_pack_list', cost_tracking:'get_costs', model_evaluations:'evaluation_list', iteration_checkpoints:'checkpoint_list', updates:'update_status', about:'about_info', lumi_account:'cloud_status'}[page];
         if (command) this.send({command});
     }
 
     _settingsSections() {
         return [
             { id: "sonn_account", title: "SONN account & credits", open: true, custom: true },
+            { id: 'lumi_account', title: 'Lumi account', open: true, custom: true },
             { id: "provider_connections", title: "Connections", open: true, custom: true },
             { id: 'creative_editors', title: 'Creative editors', open: true, custom: true },
             {
@@ -1556,6 +1639,8 @@ class LumiSettingsView {
                 bodyHtml = this._renderUpdateStatus();
             } else if (section.id === 'about') {
                 bodyHtml = this._renderAbout();
+            } else if (section.id === 'lumi_account') {
+                bodyHtml = this._renderLumiAccount();
             } else if (section.id === 'org_policy') {
                 bodyHtml = this._renderOrgPolicy();
             } else if (section.id === 'file_exclusions') {
@@ -1805,6 +1890,7 @@ class LumiSettingsView {
         });
         document.getElementById('audit-verify')?.addEventListener('click', () => this.send({command: 'audit_status'}));
         this._bindUpdateCheck();
+        this._bindLumiAccount();
         this.settingsBody.querySelectorAll('[data-trust-decision]').forEach(button => {
             button.addEventListener('click', () => {
                 button.disabled = true;

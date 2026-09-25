@@ -75,6 +75,26 @@ optional.
 
 Patterns use `*` and `?` wildcards.
 
+## Lumi Cloud
+
+A machine policy with a `cloud` section enrolls the computer in your
+organization's Lumi Cloud with an enrollment token. Lumi then applies the
+policy you publish there, signed with your organization's key:
+
+```json
+{
+  "schema": "lumi.policy/v1",
+  "organization": "Acme",
+  "cloud": {"url": "https://cloud.example.com", "organization_id": "org_…", "enrollment_token": "lce_…"},
+  "trusted_keys": {"acme-20260925-1a90d1": "<base64 Ed25519 public key>"}
+}
+```
+
+The cloud policy replaces the machine policy's own rules once it arrives and
+verifies against `trusted_keys` (or `PolicyKeys` / `policy-keys.json`). Until
+then, the machine policy's rules apply. Lumi Cloud's Devices page prints this
+file when you create an enrollment token. See [Lumi Cloud](lumi-cloud.md).
+
 ## Signed policies and offline use
 
 A policy can be signed with Ed25519 so it can be distributed by less trusted

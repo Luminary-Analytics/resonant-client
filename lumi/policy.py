@@ -19,7 +19,8 @@ trusted as it is. A policy may also be signed: ``{"policy": {...},
 the policy's canonical JSON. Signed policies verify against keys only an
 administrator can set: the ``PolicyKeys`` registry value, ``policy-keys.json``
 beside the machine policy file, or a machine policy's ``trusted_keys``. That is
-how Lumi Cloud will deliver organization policy.
+how Lumi Cloud delivers organization policy (see "Lumi Cloud policy" below
+and lumi/cloud.py).
 A signed policy carries ``expires_at``: past it Lumi keeps enforcing it for
 ``grace_days`` so people can work offline, then refuses model requests until
 a fresh policy arrives.
@@ -417,6 +418,74 @@ class PolicyState:
     policy: Policy | None = None
     error: str = ""
     source: str = ""
+    # True when ``policy`` came from Lumi Cloud; ``machine`` is then the
+    # machine policy that set it up (None for an organization joined in the app).
+    cloud: bool = False
+    machine: Policy | None = None
+    # Why a downloaded Lumi Cloud policy isn't in force, if one exists.
+    cloud_error: str = ""
+
+
+# ── Lumi Cloud policy ───────────────────────────────────────────────────────
+#
+# A computer enrolled in a Lumi Cloud organization (lumi/cloud.py) keeps the
+# organization's latest signed policy in ~/.lumi/cloud/policy.json. That file
+# is user-writable, so it counts only when its signature verifies:
+#
+# * with a machine policy that names a ``cloud`` section, against the keys an
+#   administrator set (machine keys and that policy's ``trusted_keys``). The
+#   cloud policy then replaces the machine policy's own rules, which apply
+#   until the first download and whenever the download is unusable;
+# * without a machine policy, against the keys pinned when the person joined
+#   the organization in the app (``cloud.device.trusted_keys`` in
+#   settings.json). They chose to join, and can leave; nothing here overrides
+#   a machine policy.
+
+
+def cloud_policy_path() -> Path:
+    from .paths import state_home
+
+    return state_home() / "cloud" / "policy.json"
+
+
+def _joined_device() -> dict:
+    """The organization this person joined from the app, from settings.json."""
+    from .paths import state_home
+
+    try:
+        data = json.loads((state_home() / "settings.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    device = (data.get("cloud") or {}).get("device") if isinstance(data, dict) else None
+    return device if isinstance(device, dict) and device.get("id") else {}
+
+
+def _cloud_document() -> dict | None:
+    path = cloud_policy_path()
+    if not path.is_file():
+        return None
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        raise PolicyError("The downloaded policy isn't a JSON object.")
+    return data
+
+
+def _with_cloud_policy(state: PolicyState, keys: dict[str, str]) -> PolicyState:
+    """``state`` with the downloaded Lumi Cloud policy applied, if one is there and verifies."""
+    machine = state.policy
+    try:
+        document = _cloud_document()
+        if document is None:
+            return state
+        organization = machine.organization if machine else str(_joined_device().get("organization_name") or "")
+        how = f"set up by {machine.source}" if machine else "joined in this app"
+        cloud = parse(document, source=f"Lumi Cloud: {organization or 'your organization'} ({how})",
+                      trusted_keys=keys, require_signature=True)
+    except (OSError, ValueError, PolicyError) as exc:
+        note = f"{machine.organization}'s machine policy applies instead." if machine else ""
+        return PolicyState(policy=machine, source=state.source, machine=None,
+                           cloud_error=f"The Lumi Cloud policy can't be used: {exc} {note}".strip())
+    return PolicyState(policy=cloud, source=cloud.source, cloud=True, machine=machine)
 
 
 _lock = threading.Lock()
@@ -437,7 +506,11 @@ def load(*, force: bool = False) -> PolicyState:
             _state = PolicyState(error=f"The policy file couldn't be read: {exc}")
             return _state
         if not found:
-            _state = PolicyState()
+            # No machine policy: an organization this person joined in the app.
+            joined = _joined_device()
+            keys = joined.get("trusted_keys") if isinstance(joined.get("trusted_keys"), dict) else {}
+            _state = _with_cloud_policy(PolicyState(), {str(k): str(v) for k, v in keys.items()}) if joined \
+                else PolicyState()
             return _state
         text, source = found
         try:
@@ -449,11 +522,34 @@ def load(*, force: bool = False) -> PolicyState:
                 keys.update({str(k): str(v) for k, v in (data.get("trusted_keys") or {}).items()})
             policy = parse(data, source=source, trusted_keys=keys)
             _state = PolicyState(policy=policy, source=source)
+            if isinstance(policy.raw.get("cloud"), dict):
+                _state = _with_cloud_policy(_state, keys)
         except (ValueError, PolicyError) as exc:
             # A broken machine policy must not silently mean "no policy":
             # model requests are refused until IT fixes it (see blocked_reason).
             _state = PolicyState(error=f"The organization policy at {source} is invalid: {exc}", source=source)
         return _state
+
+
+def machine_cloud_settings() -> dict:
+    """The ``cloud`` section of the machine policy (an administrator's), or {}."""
+    state = load()
+    machine = state.machine if state.cloud else state.policy
+    section = machine.raw.get("cloud") if machine else None
+    return dict(section) if isinstance(section, dict) else {}
+
+
+def trusted_cloud_keys() -> dict[str, str]:
+    """Keys that may sign this computer's Lumi Cloud policy (machine-set, or pinned at joining)."""
+    state = load()
+    machine = state.machine if state.cloud else state.policy
+    if machine is not None and isinstance(machine.raw.get("cloud"), dict):
+        keys = machine_keys()
+        keys.update(machine.trusted_keys)
+        return keys
+    joined = _joined_device()
+    pinned = joined.get("trusted_keys") if isinstance(joined.get("trusted_keys"), dict) else {}
+    return {str(k): str(v) for k, v in pinned.items()}
 
 
 def current() -> Policy | None:

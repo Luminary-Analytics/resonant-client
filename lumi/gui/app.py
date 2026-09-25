@@ -2097,6 +2097,52 @@ class AppState:
 
         github_tools.configure(self.settings)
 
+    @property
+    def cloud(self):
+        """Lumi Cloud for this computer (lumi/cloud.py), created on first use."""
+        client = getattr(self, "_cloud_client", None)
+        if client is None:
+            from ..cloud import CloudClient
+
+            client = CloudClient(self.settings, on_change=self._cloud_changed)
+            self._cloud_client = client
+            status = client.status()
+            self._cloud_policy_marker = (status.get("policy_version"), status.get("policy_source"))
+        return client
+
+    def _cloud_changed(self, status: dict) -> None:
+        """Lumi Cloud's status changed (a sign-in, an enrollment, a check-in)."""
+        self._push_ws_event({"event": "cloud_status", "data": status})
+        marker = (status.get("policy_version"), status.get("policy_source"))
+        if marker == getattr(self, "_cloud_policy_marker", None):
+            return
+        self._cloud_policy_marker = marker
+        try:
+            self.apply_policy_change()
+            self._push_ws_event({"event": "settings", "data": self.settings.get_masked()})
+            self._push_ws_event(self.get_init_data(refresh_only=True))
+        except Exception:
+            logger.exception("Applying the new organization policy failed")
+
+    def apply_policy_change(self) -> None:
+        """Apply a different organization policy (from Lumi Cloud) to the running app.
+
+        Settings read locked values when used, so this re-applies what is
+        configured once: the process-wide services, the permission mode and
+        the open session's file exclusions.
+        """
+        self.refresh_network_defaults()
+        self.apply_permission_mode(self.permission_mode, session=self.session)
+        if self.codebase_index is not None:
+            self.codebase_index.exclusions = self.exclusions_for(self.project.project_path)
+        if self.session is not None:
+            self.session.exclusions = self.exclusions_for(
+                getattr(self.session, "project_path", "") or self.project.project_path
+            )
+            broker = getattr(self.session, "context_broker", None)
+            if broker is not None:
+                broker.exclusions = self.session.exclusions
+
     def enforce_retention(self) -> dict:
         """Delete transcripts older than the retention setting (gui/retention.py)."""
         from ..paths import state_home

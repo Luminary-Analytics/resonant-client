@@ -1229,13 +1229,14 @@ function toolRowApp() {
     Object.assign(app, {
         _appendToLiveCollapsedGroup: cards._appendToLiveCollapsedGroup,
         _finalizeLiveCollapsedGroup: cards._finalizeLiveCollapsedGroup,
-        removeThinking: noop, _setLiveRunPhase: noop, ensureStepRendered: noop, scrollToBottom: noop,
+        removeThinking: noop, addThinking: noop, _setLiveRunPhase: noop, _advanceLiveMilestone: noop,
+        ensureStepRendered: noop, scrollToBottom: noop,
         trackTerminalStart: noop, trackTerminalEnd: noop,
         _liveRunToolActivity: () => ({active: 'Working', completed: 'Worked'}),
         _ensureTaskCard: () => ({activityEl: activity}),
         activeTerminals: new Map(), subagentContainers: new Map(), subagentStreams: new Map(),
         _blockToolRows: new Map(), stepToolCalls: [], stepToolResults: [], stepIsInlineOnly: false,
-        handlesTools: false, _agentRunSummary: {title: '', fileChanges: [], todos: null},
+        collapsedGroup: [], handlesTools: false, _agentRunSummary: {title: '', fileChanges: [], todos: null},
     });
     app.activity = activity;
     app.htmlWrites = dom.htmlWrites;
@@ -1378,4 +1379,144 @@ test('a worker\'s refused call shows its reason in the worker\'s own rows', () =
     assert.equal(parentRow.getAttribute('data-call-id'), 'call_2');
     assert.equal(parentRow.querySelector('.tool-status').textContent, '✓');
     assert.equal(parentRow.querySelector('.tool-denial-reason'), null);
+});
+
+// ── Evidence answered after its group closed ──────────────────────────
+// The engine announces every call of a response before it runs any. A
+// command or an edit after an Evidence call therefore closes the group while
+// that call still waits to run, and its result arrives afterwards. It still
+// belongs on its own item.
+
+const stepStart = step => ({event: 'step.start', step});
+const stepEnd = step => ({event: 'step.end', step, elapsed: 0.5});
+const grepCall = (id, pattern) => ({event: 'tool.call', name: 'grep', call_id: id, arguments: {pattern, path: '.'}});
+const bashCall = (id, command) => ({event: 'tool.call', name: 'bash', call_id: id, arguments: {command}});
+const answer = (call, output, fields = {}) => ({event: 'tool.result', name: call.name, call_id: call.call_id,
+    output, is_error: false, denied: false, elapsed: 0.2, ...fields});
+
+test('an Evidence call answered after a command closed its group settles its own item', () => {
+    const app = toolRowApp();
+    const early = grepCall('g1', 'TODO'), late = grepCall('g2', 'FIXME');
+    const build = bashCall('b1', 'make build');
+    app.play(stepStart(1), early, answer(early, 'a.py:1: TODO', {metadata: {count: 1}}), stepEnd(1),
+        stepStart(2), late, build);
+    const [group, buildRow] = app.activity.children;
+    assert.ok(!group.classList.contains('running'), 'the command closed the group');
+
+    app.play(answer(late, 'b.py:4: FIXME\nc.py:9: FIXME', {metadata: {count: 2}}),
+        answer(build, 'built', {metadata: {exit_code: 0}}), stepEnd(2));
+    const item = group.querySelectorAll('.evidence-item')[1];
+    assert.equal(item.querySelector('.tool-status').textContent, '✓');
+    assert.ok(!item.classList.contains('pending'));
+    assert.equal(item.querySelector('.tool-meta').textContent, '2 matches');
+    assert.equal(item.querySelector('.tool-evidence-output').textContent, 'b.py:4: FIXME\nc.py:9: FIXME');
+    assert.ok(item.classList.contains('has-output') && !item.classList.contains('show-output'));
+    // The header still counts both steps' calls and no failures, and stays closed.
+    assert.equal(group.querySelector('.collapsed-meta').textContent, 'steps 1–2 · 2 calls');
+    assert.doesNotMatch(group.querySelector('.collapsed-summary').textContent, /failed|not run/);
+    assert.ok(!group.classList.contains('expanded'));
+    assert.equal(buildRow.querySelector('[data-status]').textContent, '✓');
+    assert.equal(app.activity.children.length, 2, 'the result drew no line of its own');
+});
+
+test('a late Evidence command never lends its result to another command\'s row', () => {
+    const app = toolRowApp();
+    const install = bashCall('b1', 'npm install');
+    app.play(stepStart(1), install, answer(install, 'added 12 packages', {metadata: {exit_code: 0}}), stepEnd(1));
+    const checks = bashCall('b2', 'pytest -q');  // Evidence
+    const deploy = bashCall('b3', 'make deploy');  // a command row of its own
+    app.play(stepStart(2), checks, deploy,
+        answer(checks, '1 failed, 3 passed', {is_error: true, metadata: {exit_code: 1}}));
+
+    const [installRow, group, deployRow] = app.activity.children;
+    assert.equal(installRow.dataset.fullOutput, 'added 12 packages');
+    assert.match(installRow.querySelector('[data-meta]').textContent, /^exit 0/);
+    assert.ok(deployRow.querySelector('[data-status]').classList.contains('pending'), 'still waiting to run');
+    assert.equal(deployRow.dataset.fullOutput, undefined);
+    // It failed on its own item, which opens with its output, and the closed
+    // group opens again and counts it.
+    const item = group.querySelector('.evidence-item');
+    assert.equal(item.querySelector('.tool-status').textContent, '✗');
+    assert.ok(item.classList.contains('is-error') && item.classList.contains('show-output'));
+    assert.equal(item.getAttribute('aria-expanded'), 'true');
+    assert.equal(item.querySelector('.tool-evidence-output').textContent, '1 failed, 3 passed');
+    assert.match(group.querySelector('.collapsed-summary').textContent, / · 1 failed$/);
+    assert.ok(group.classList.contains('expanded') && group.classList.contains('has-errors'));
+    assert.equal(group.querySelector('.collapsed-icon').textContent, '▾');
+
+    app.play(answer(deploy, 'deployed', {metadata: {exit_code: 0}}));
+    assert.equal(deployRow.dataset.fullOutput, 'deployed');
+    assert.equal(deployRow.querySelector('[data-status]').textContent, '✓');
+});
+
+test('a refusal answered after its group closed opens its reason on its item, not on a line of its own', () => {
+    const app = toolRowApp();
+    const unanswered = grepCall('g1', 'FIXME'), declined = grepCall('g2', 'XXX');
+    const deploy = bashCall('b1', 'make deploy');
+    app.play(stepStart(1), unanswered, declined, deploy,
+        refusal(unanswered, NO_PROMPT), refusal(declined, 'Tool execution denied by user.'),
+        answer(deploy, 'deployed', {metadata: {exit_code: 0}}));
+
+    const rows = app.activity.children;
+    assert.equal(rows.length, 2);
+    assert.ok(!rows.some(row => row.classList.contains('is-denied')));
+    const group = rows[0];
+    const [blocked, denied] = group.querySelectorAll('.evidence-item');
+    assert.equal(blocked.querySelector('.tool-status').textContent, '✗');
+    assert.equal(blocked.querySelector('.tool-status').style.color, 'var(--warn)');
+    assert.equal(blocked.querySelector('.tool-meta').textContent, 'not run');
+    assert.equal(blocked.querySelector('.tool-evidence-output').textContent, NO_PROMPT);
+    assert.ok(blocked.classList.contains('is-denied') && blocked.classList.contains('show-output'));
+    assert.equal(blocked.getAttribute('aria-expanded'), 'true');
+    // The person's own Deny: marked, with nothing to open.
+    assert.equal(denied.querySelector('.tool-status').textContent, '✗');
+    assert.equal(denied.querySelector('.tool-meta').textContent, 'denied');
+    assert.equal(denied.querySelector('.tool-evidence-output'), null);
+    // The group counts both, opens again, and doesn't call them failures.
+    assert.match(group.querySelector('.collapsed-summary').textContent, / · 2 not run$/);
+    assert.ok(group.classList.contains('expanded') && !group.classList.contains('has-errors'));
+    assert.equal(group.querySelector('.collapsed-icon').textContent, '▾');
+});
+
+test('a screenshot settles its item when its image closes the group, or a later call already did', () => {
+    const app = toolRowApp();
+    const images = [];
+    app.renderScreenshotImage = (data, type, name) => images.push(`${name}:${data}`);
+    const shot = id => ({event: 'tool.call', name: 'browser_screenshot', call_id: id, arguments: {}});
+    const image = data => ({image: {data, media_type: 'image/png'}});
+    const alone = shot('s1');
+    app.play(stepStart(1), alone, answer(alone, 'Captured the page', image('AAAA')), stepEnd(1));
+    const followed = shot('s2');
+    const script = {event: 'tool.call', name: 'browser_js', call_id: 'j1', arguments: {code: 'document.title'}};
+    app.play(stepStart(2), followed, script, answer(followed, 'Captured the page', image('BBBB')));
+
+    const items = app.activity.querySelectorAll('.evidence-item');
+    assert.equal(items.length, 2);
+    for (const item of items) {
+        assert.equal(item.querySelector('.tool-status').textContent, '✓');
+        assert.ok(!item.classList.contains('pending'));
+    }
+    assert.equal(images.join(' '), 'browser_screenshot:AAAA browser_screenshot:BBBB');
+    assert.equal(app.activity.children.length, 3, 'two groups and the script\'s row, no other lines');
+});
+
+test('a closed group\'s waiting item answers only results drawn in its own turn', () => {
+    const app = toolRowApp();
+    // A turn that never finished (Lumi closed while its search waited to run),
+    // as a replay shows it: no session end cleared its closed group.
+    const stale = grepCall('call_5f2a9c01', 'TODO');
+    app.play(stepStart(1), stale, bashCall('b1', 'make build'));
+    const staleItem = app.activity.querySelector('.evidence-item');
+    // The next turn draws in a new task card. A backend that derives ids from
+    // the call gives the same search the same id there.
+    const nextActivity = app.element('div');
+    app._ensureTaskCard = () => ({activityEl: nextActivity});
+    const again = grepCall('call_5f2a9c01', 'TODO');
+    app.play(stepStart(1), bashCall('b2', 'make lint'), again,
+        answer(again, 'a.py:1: TODO', {metadata: {count: 1}}));
+
+    const row = nextActivity.children.find(el => el.getAttribute('data-call-id') === 'call_5f2a9c01');
+    assert.equal(row.querySelector('.tool-status').textContent, '1 matches');
+    assert.ok(staleItem.classList.contains('pending'));
+    assert.equal(staleItem.querySelector('.tool-status').textContent, '…');
 });

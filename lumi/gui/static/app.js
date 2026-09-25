@@ -232,6 +232,9 @@ class LumiApp {
         this.stepRendered = false;
         this.collapsedGroup = [];
         this._liveCollapsedGroup = null;  // live-rendering DOM tracker for inline-only streaks
+        // Evidence groups that closed while calls in them still waited to
+        // run; those calls' results settle their items for the rest of the turn.
+        this._closedEvidenceGroups = [];
         this.lastModel = '';
         this.lastStats = null;
 
@@ -1674,6 +1677,7 @@ class LumiApp {
         this.stepRendered = false;
         this.collapsedGroup = [];
         this._liveCollapsedGroup = null;
+        this._closedEvidenceGroups = [];
         this._currentTurn = this._freshTurnAggregate();
         this._resetTaskCardState();
         this.addUserMessage(text, images);
@@ -5336,10 +5340,48 @@ class LumiApp {
         t.footerEl = el;
     }
 
-    /** Update an in-flight live item with result metadata (line counts, error state). */
-    _updateLiveCollapsedItemResult(resultEvent) {
-        if (!this._liveCollapsedGroup) return;
-        const live = this._liveCollapsedGroup;
+    /**
+     * Whether a result answers one of a group's items still waiting for it:
+     * the item for its call id, or else the last item of its tool when that
+     * call came without an id.
+     */
+    _collapsedGroupAwaits(group, resultEvent) {
+        const callId = resultEvent.call_id || '';
+        if (callId && group.callIdToItem.has(callId)) return true;
+        return Boolean(group._lastItem) && group._lastItemTool === (resultEvent.name || '');
+    }
+
+    /**
+     * Settle the item of a call that ran after its Evidence group closed.
+     * The engine announces every call of a response before it runs any, so
+     * a later command or edit in the same response, or a screenshot's image,
+     * closes the group first (_finalizeLiveCollapsedGroup keeps such groups
+     * for the rest of the turn). Only a group where the result would draw
+     * can answer it, so an earlier turn's card or a worker's lane never
+     * takes a result, even when a backend that derives ids from the call
+     * repeats one. False when no closed group was waiting for this result.
+     */
+    _settleClosedEvidenceItem(resultEvent) {
+        const groups = this._closedEvidenceGroups || [];
+        if (!groups.length) return false;
+        const target = this.getRenderTarget();
+        for (let i = groups.length - 1; i >= 0; i--) {
+            const group = groups[i];
+            if (group.container.parentNode !== target || !this._collapsedGroupAwaits(group, resultEvent)) continue;
+            this._updateLiveCollapsedItemResult(resultEvent, group);
+            if (!group.callIdToItem.size && !group._lastItem) groups.splice(i, 1);
+            return true;
+        }
+        return false;
+    }
+
+    /**
+     * Update a group's item with its call's result: metadata (line counts,
+     * matches), error or refusal. The live group's by default; a closed
+     * group's for a call that ran after it closed.
+     */
+    _updateLiveCollapsedItemResult(resultEvent, live = this._liveCollapsedGroup) {
+        if (!live) return;
         const name = resultEvent.name || '';
         const callId = resultEvent.call_id || '';
 
@@ -5404,28 +5446,14 @@ class LumiApp {
             if (!denied) live.container.classList.add('has-errors');
         }
         if (output) line.setAttribute('aria-expanded', String(line.classList.contains('show-output')));
-        this._updateLiveCollapsedHeader();
+        this._updateLiveCollapsedHeader(live);
     }
 
-    /** Refresh the live group's summary label, step range, and call count. */
-    _updateLiveCollapsedHeader() {
-        if (!this._liveCollapsedGroup) return;
-        const live = this._liveCollapsedGroup;
+    /** Refresh a group's summary label, step range, and call count: the live group's by default. */
+    _updateLiveCollapsedHeader(live = this._liveCollapsedGroup) {
+        if (!live) return;
         const summaryEl = live.header.querySelector('.collapsed-summary');
         const metaEl = live.header.querySelector('.collapsed-meta');
-        if (summaryEl) {
-            const action = inferActionLabel(live.toolCounts);
-            summaryEl.textContent = live.errorCount
-                ? `Evidence · ${action} · ${live.errorCount} failed`
-                : `Evidence · ${action}`;
-            summaryEl.textContent = `◆ ${action}`;
-        }
-        if (summaryEl) {
-            const action = inferActionLabel(live.toolCounts);
-            summaryEl.textContent = live.errorCount
-                ? `Evidence · ${action} · ${live.errorCount} failed`
-                : `Evidence · ${action}`;
-        }
         if (summaryEl) {
             const action = inferActionLabel(live.toolCounts);
             const parts = ['Evidence', action];
@@ -5793,16 +5821,15 @@ class LumiApp {
         }
 
         const liveOwnsResult = Boolean(
-            this._liveCollapsedGroup && (
-                (callId && this._liveCollapsedGroup.callIdToItem.has(callId))
-                || (this._liveCollapsedGroup._lastItemTool === name)
-            )
+            this._liveCollapsedGroup && this._collapsedGroupAwaits(this._liveCollapsedGroup, event)
         );
         if (this.stepIsInlineOnly && liveOwnsResult) {
             // Update the live item with status + metadata (e.g. "5 matches")
             this._updateLiveCollapsedItemResult(event);
             this.stepToolResults.push(event);
         } else {
+            // A call whose group already closed settles its item there
+            // (renderToolResult → _settleClosedEvidenceItem).
             if (!this.stepRendered) this.ensureStepRendered();
             this.renderToolResult(event);
         }
@@ -6072,6 +6099,14 @@ class LumiApp {
         const meta = event.metadata || {};
         const denied = event.denied || false;
         const image = event.image || null;
+
+        // A call that ran after its Evidence group closed: its result, or
+        // its refusal's reason, goes on its own item there.
+        if (this._settleClosedEvidenceItem(event)) {
+            if (image && image.data) this.renderScreenshotImage(image.data, image.media_type || 'image/png', name);
+            this.scrollToBottom();
+            return;
+        }
 
         if (denied) {
             this._settleDeniedToolRow(event);
@@ -7539,6 +7574,8 @@ class LumiApp {
 
         // Flush collapsed group
         this.flushCollapsedGroup();
+        // The turn is over; nothing will answer its calls now.
+        this._closedEvidenceGroups = [];
 
         if (this._cancelInFlight || this._cancelInterrupted) {
             this._finishCancelledTask(event);
@@ -9456,6 +9493,7 @@ class LumiApp {
             this.stepRendered = false;
             this.collapsedGroup = [];
             this._liveCollapsedGroup = null;
+            this._closedEvidenceGroups = [];
         }
     }
 
@@ -10953,6 +10991,7 @@ class LumiApp {
         this.stepRendered = false;
         this.collapsedGroup = [];
         this._liveCollapsedGroup = null;
+        this._closedEvidenceGroups = [];
         this._currentTurn = this._freshTurnAggregate();
         this._blockToolRows = new Map();
         this.subagentDepth = 0;

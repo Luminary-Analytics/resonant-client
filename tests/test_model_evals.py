@@ -32,6 +32,22 @@ FAKE_RUN = textwrap.dedent("""\
                       "usage": {"cost_usd": 0.02 if model == "good" else 0.01, "calls": 2}}))
 """)
 CHECK = f'"{sys.executable}" -c "import pathlib, sys; sys.exit(0 if pathlib.Path(\'fixed.txt\').exists() else 1)"'
+# A real `lumi run` (headless.main) whose model is scripted: it writes fixed.txt.
+SCRIPTED_RUN = textwrap.dedent("""\
+    import sys
+    sys.path.insert(0, {root!r})
+    from types import SimpleNamespace
+    from lumi import headless
+    from tests.streaming_stub import StreamingBackend, done, text_delta, tool_call
+    backend = StreamingBackend(scripts=[
+        [tool_call("file_write", {{"path": "fixed.txt", "content": "fixed"}}), done()],
+        [text_delta("Finished."), done()],
+    ])
+    headless.build_spec = lambda settings, provider, model, project: SimpleNamespace(
+        create_backend=lambda settings: backend, permission_mode="")
+    assert sys.argv[1] == "run"
+    sys.exit(headless.main(sys.argv[2:]))
+""")
 
 
 @pytest.fixture
@@ -156,6 +172,47 @@ def test_runs_trust_only_the_policy_version_the_user_trusted(repo, tmp_path, mon
     assert digests_passed() == [hashlib.sha256(policy.read_bytes()).hexdigest()] * 2
     policy.write_text(json.dumps({"rules": [{"tool_pattern": "*", "action": "allow"}]}), encoding="utf-8")
     assert digests_passed() == ["", ""]  # trusted, but this version isn't reviewed
+
+
+def test_runs_apply_your_settings_hooks(repo, tmp_path, monkeypatch):
+    # Comparisons don't leave your hooks out: they try models you don't rely on
+    # yet, unattended and often in Bypass, where a guard of yours matters most.
+    from lumi.gui.settings import SettingsManager
+
+    # Each run is its own process: it must find this test's settings, never real ones.
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("LUMI_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.setenv("HOME", str(home))
+    script = tmp_path / "scripted_lumi.py"
+    script.write_text(SCRIPTED_RUN.format(root=str(pathlib.Path(__file__).resolve().parent.parent)), encoding="utf-8")
+    monkeypatch.setattr(model_evals, "_lumi_command", lambda: ([sys.executable, str(script)], None))
+
+    def compare() -> list:
+        comparison = model_evals.create(_raw(repo, mode="bypass"))
+        model_evals.runner.start(comparison.id)
+        model_evals.runner.join(120)
+        finished = model_evals.get(comparison.id)
+        assert finished.status == "done", finished.error
+        return [(result["status"], result["passed"]) for result in finished.results]
+
+    assert compare() == [("completed", True)] * 2  # without a hook, each model writes fixed.txt
+
+    saw = tmp_path / "hook-saw.txt"
+    guard = tmp_path / "guard.py"
+    guard.write_text(f"import os, sys\nopen({str(saw)!r}, 'a').write(os.environ['LUMI_PROJECT_PATH'] + '\\n')\n"
+                     "sys.stderr.write('no writes in comparisons')\nsys.exit(1)\n", encoding="utf-8")
+    SettingsManager().set("hooks", None, [
+        {"hook_type": "pre_tool_use", "matcher": "file_write", "command": f'"{sys.executable}" "{guard}"'},
+    ])
+
+    assert compare() == [("needs_attention", False)] * 2
+    # The guard ran in each run's own worktree, never in your checkout.
+    worktrees = saw.read_text(encoding="utf-8").splitlines()
+    assert len(set(worktrees)) == 2 and pathlib.Path(repo) not in {pathlib.Path(path) for path in worktrees}
+    status = subprocess.run(["git", "-C", repo, "status", "--porcelain"], capture_output=True, text=True).stdout
+    assert status == ""
 
 
 def test_stopping_ends_the_current_run(repo):

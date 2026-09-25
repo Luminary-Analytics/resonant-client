@@ -99,6 +99,131 @@ person typed or the local Ollama server sent, not a turn's. The prompt_toolkit
 prompts build `HTML(...)` from the working folder's name and the tool's name
 unescaped: a folder named `R&D` or `a<b` makes `HTML` raise `ExpatError`.
 
+## September 25 your own hooks run in `lumi run`, schedules, comparisons and chats — source only, not released
+
+**Only the app ran them.** The desktop app gives every session the `hooks`
+from `settings.json` (`HookRunner(settings)`). Sessions built by
+`headless.build_session` had no hook runner: `lumi run`, scheduled tasks
+(`lumi schedule run`), the runs of model comparisons, the chat gateway and
+tasks from Slack and Teams. A script in a throwaway home drove each entry
+point with a scripted model, in Bypass, with a Settings `pre_tool_use` hook
+that exits 1: `build_session`, `headless.main`, the gateway's `session_for`
+and a task from chat's `_build_session`. On all four the hook never ran and
+the write it guards happened. The same Settings through `HookRunner(settings)`
+refused it.
+
+- **`headless.build_session` attaches `HookRunner(settings)`**, so every
+  surface above gets the person's hooks. Decided per surface:
+  - **`lumi run`**: hooks are the person's own configuration, not repository
+    content, so they need no trust. Where a hook's program doesn't exist (a
+    container given a copied `settings.json`), a gate hook fails closed: the
+    call is refused with the reason and counts in `denied_calls` (so,
+    usually, `needs_attention` and exit 3). A hook stops at its
+    `timeout_seconds`. A fresh state folder (CI, the container image) has no
+    hooks.
+  - **Scheduled tasks** run on the person's computer, where the hooks'
+    programs are, and unattended work is where a guard matters.
+  - **Model comparisons**: an opt-out was considered and declined. Their runs
+    try models the person doesn't rely on yet, unattended and often in
+    Bypass. Settings hooks already work in any folder, since the app runs
+    them for every project, and here they run in the comparison's worktree.
+    The results also reflect the person's usual setup. Hooks that act on
+    every session, such as a notification, act once per run (documented).
+  - **The chat gateway and tasks from chat** run on the person's computer. A
+    guard refuses a call before anything is asked in the chat. The gateway
+    reads hooks when it starts.
+  - **No opt-out.** `lumi run` has no `--no-hooks`: an option a run can pass
+    is one the agent could pass to a `lumi run` of its own.
+  - **Capability-pack hooks** stay in the app; these surfaces load no packs.
+- **A `permission_request` hook now answers where nobody can be asked, within
+  limits.** With hooks attached, `lumi run`'s approvals go to the person's
+  `permission_request` hook, as the app's background work's do
+  (`Session._permission_hook_decision`). In `auto-edit` it can allow a command
+  the mode would ask about. It answers for the person, so two cases are
+  refused without asking it:
+  - **The read-only `suggest` tier** (`lumi run --mode ask`, and schedules
+    and comparisons set to Read only), and an unknown tier, which fails closed
+    to it. Its policy refuses writes and commands, but calls it doesn't name,
+    such as `check_run` or `job_start`, went to that approval, so an allowing
+    hook would have run them.
+  - **An organization `prompt` rule**, which needs a person: the organization
+    outranks the person's settings. The hook can't rewrite a call into one
+    either. Organization shell rules are now tagged
+    `PolicyRule.source = "organization"` (`policies.ORGANIZATION`, set in
+    `with_organization_rules`). The model is told "The organization's policy
+    requires a person to approve this call (…), but no approval prompt is
+    available for this run". This applies to the app's background work too,
+    where a hook could answer one before.
+- Five existing tests used the read-only tier as the one where a hook settles
+  an unanswerable prompt. They now use Ask without a prompt, which is where
+  that happens, and two of them also check that the hook ran.
+- Guides: [running without a UI](headless.md#hooks) has a new Hooks section.
+  Also updated: scheduled tasks, the chat gateway, Lumi Cloud and model
+  comparisons; packs (where Settings hooks run, and the `permission_request`
+  row); organization policy (`prompt` rules); the runtime contract; and
+  AGENTS.md.
+- The terminal UI (`lumi` with no subcommand) builds its own session and
+  isn't changed here.
+
+Validation on September 25, 2026:
+
+- The script above, rerun after the change: on all four the hook ran once,
+  the write was refused, and `lumi run` exited 3.
+- `python -m lumi run` as a real process, from a throwaway home, against an
+  Ollama-compatible stub, in Bypass with the same kind of guard:
+  - on the base commit (16bf05a) it exited 0 and wrote the file, the hook
+    never ran, and the model was told "File written: …";
+  - on this branch it exited 3 (`needs_attention`, one denied call) and wrote
+    nothing. The model was told "Blocked by hook: Settings guard: no writes
+    from unattended runs".
+- New tests, with the streaming stub and real hook scripts:
+  - `tests/test_headless.py` (4):
+    - a Settings guard refuses a write in Bypass with its message, and
+      `session_start` and `session_end` hooks run;
+    - a `permission_request` hook allows an Auto-edit command;
+    - `--mode ask` refuses `check_run` without asking an allowing hook;
+    - an organization `prompt` rule is refused without asking the hook, while
+      the hook answers the tier's own question about another command.
+  - The gateway, in Ask mode: the call is refused before anything is asked
+    in the chat.
+  - Tasks from chat: no approval is sent.
+  - A scheduled run through `headless.main`: `needs_attention`, nothing
+    written.
+  - A model comparison whose runs are real `lumi run` processes, with a
+    scripted model and a state folder of their own. Both models pass without
+    the hook and fail with it. The hook ran in each run's worktree, never in
+    the checkout.
+  - `tests/test_permission_decisions.py` (4):
+    - the read-only tier and an unknown tier never ask the hook;
+    - an organization prompt is refused without asking the hook, and a
+      person's answer still runs the call;
+    - a hook can't rewrite a call into an organization prompt.
+- Each piece was undone in turn, and each variant failed 1 to 7 of these
+  tests: no hook runner, the read-only tier asking the hook, the hook
+  answering an organization prompt, a rewrite into one, and untagged
+  organization rules. The files were restored after each.
+- A running hook delays `--timeout`. With `--timeout 1` and a hook that
+  takes 4 s, the run took 4.9 s and reported `timeout`. This is now
+  documented, and unchanged.
+- On 16bf05a:
+  - full `pytest`: 4,406 passed, 5 skipped;
+  - `ruff check .` (ruff 0.12.12) and `git diff --check`: clean;
+  - `node --check`: passes for `app.js` and `settings_view.js`;
+  - the four Node UI test files: pass (70 tests).
+- After merging main (the Mac package, run traces, late Evidence results and
+  the accessibility review):
+  - full `pytest`: 4,421 passed, 5 skipped;
+  - `ruff check .`, `node --check` and `git diff --check`: clean;
+  - the Node UI test files: pass (81 tests).
+- The real `~/.resonant` was unchanged, no `~/.lumi` was created, and no Lumi
+  credential was stored.
+
+Not exercised: a live model, a packaged build, and the running desktop app.
+Tasks from chat run inside it, and its background work gets the
+organization-prompt limit; both were tested only at the engine and function
+level. Also not exercised: Codex or Claude Code (their tools never reach tool
+hooks), real Telegram, Slack or Lumi Cloud, and hooks on macOS or Linux.
+
 ## September 25 a plan's specialists report under its card — source only, not released
 
 **A plan's specialists showed up as turns of the conversation.** A plan

@@ -140,6 +140,14 @@ host enrollment and actual packaged/learned-benefit qualification remain open.
   crontab), and tests use `set_registrar_for_tests`: never register real
   tasks from tests or fixtures. A run writes only its results folder, and
   `running.json` keeps a schedule from running twice at once.
+- Every session `headless.build_session` builds (`lumi run`, scheduled tasks,
+  model comparisons' runs, the chat gateway, tasks from chat) runs the
+  person's Settings hooks, as the app does. They are the person's own
+  configuration, not repository content, so they need no trust, and no run
+  option leaves them out. Capability-pack hooks stay in the app, which loads
+  approved packs. A `permission_request` hook settles only approvals the
+  person could give: never in the read-only `suggest` tier, and never for an
+  organization `prompt` rule (`policies.ORGANIZATION`), which needs a person.
 
 ## Working in the codebase
 

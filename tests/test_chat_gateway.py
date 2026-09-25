@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sys
 import threading
 import time
 from argparse import Namespace
@@ -422,3 +423,37 @@ def test_the_organization_policy_applies(tmp_path, monkeypatch):
     with pytest.raises(cli.GatewayError, match="Acme's policy doesn't allow --mode bypass"):
         cli.build_service(_args(project=str(tmp_path), mode="bypass"), _Settings(), Chat())
     assert cli.build_service(_args(project=str(tmp_path)), _Settings(), Chat())
+
+
+def test_the_persons_settings_hooks_guard_each_chat(tmp_path, monkeypatch):
+    # Chat sessions were built without the person's hooks, so a Settings guard
+    # that refused a call in the app let the same call run from a chat.
+    seen = tmp_path / "hook-ran.txt"
+    guard = tmp_path / "guard.py"
+    guard.write_text(f"import sys\nopen({str(seen)!r}, 'a').write('ran\\n')\n"
+                     "sys.stderr.write('no writes from a chat')\nsys.exit(1)\n", encoding="utf-8")
+    hooks = [{"hook_type": "pre_tool_use", "matcher": "file_write", "command": f'"{sys.executable}" "{guard}"'}]
+    backend = StreamingBackend(name="anthropic", model="claude-haiku-4-5", scripts=[
+        [tool_call("file_write", {"path": "notes.txt", "content": "from the chat\n"}), done()],
+        [text_delta("A hook refused the write."), done()],
+    ])
+    monkeypatch.setattr(headless, "build_spec", lambda settings, provider, model, project: SimpleNamespace(
+        create_backend=lambda settings: backend, permission_mode=""))
+    project = tmp_path / "project"
+    project.mkdir()
+    chat = Chat()
+    service = cli.build_service(_args(project=str(project)), _Settings({"hooks": hooks}), chat)
+
+    worker = threading.Thread(target=service._worker, daemon=True)
+    worker.start()
+    try:
+        service.receive(message("write the notes", "42"))
+        wait_for(lambda: "A hook refused the write." in chat.texts())
+    finally:
+        service.stop()
+        worker.join(timeout=2)
+
+    assert not (project / "notes.txt").exists()
+    assert seen.read_text(encoding="utf-8") == "ran\n"
+    # The guard answered before Ask would have put the write to the chat.
+    assert chat.asks == []

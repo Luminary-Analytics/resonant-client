@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sys
 from types import SimpleNamespace
 
 import httpx
@@ -104,6 +105,32 @@ def test_a_request_is_claimed_asked_about_and_answered(enrolled, cloud_fake, mon
     assert task["result"] == {"status": "done", "text": "Wrote notes.txt."}
     assert (project / "notes.txt").read_text(encoding="utf-8") == "from Slack\n"
     assert runner.status()["last"]["status"] == "done" and not runner.status()["running"]
+
+
+def test_the_persons_settings_hooks_guard_requests_from_chat(enrolled, cloud_fake, monkeypatch, tmp_path):
+    # A request from chat ran in a session without the person's hooks, so a
+    # Settings guard that refused a call in the app let it run from Slack.
+    client, project = enrolled
+    guard = tmp_path / "guard.py"
+    guard.write_text("import sys\nsys.stderr.write('not from chat')\nsys.exit(1)\n", encoding="utf-8")
+    client.settings.set("hooks", None, [
+        {"hook_type": "pre_tool_use", "matcher": "file_write", "command": f'"{sys.executable}" "{guard}"'},
+    ])
+    backend = StreamingBackend(name="anthropic", model="claude-haiku-4-5", scripts=[
+        [tool_call("file_write", {"path": "notes.txt", "content": "from Slack\n"}), done()],
+        [text_delta("A hook refused the write."), done()],
+    ])
+    monkeypatch.setattr(headless, "build_spec", lambda settings, provider, model, project: SimpleNamespace(
+        create_backend=lambda settings: backend, permission_mode=""))
+
+    cloud_fake.queue.append({"id": "rtk_7", "prompt": "Write notes.txt", "source": "Slack"})
+    runner_for(client).step()
+
+    task = cloud_fake.tasks["rtk_7"]
+    assert task["result"] == {"status": "done", "text": "A hook refused the write."}
+    assert not (project / "notes.txt").exists()
+    # The guard answered before the mode's approval went to the chat.
+    assert task["approvals"] == []
 
 
 class AskingSession:

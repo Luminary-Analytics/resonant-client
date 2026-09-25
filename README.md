@@ -93,6 +93,8 @@ for their context-handoff and verification boundaries.
   `lumi run --handoff` ([hand-offs](docs/hand-offs.md))
 - Your organization's skills and prompts, published and versioned in Lumi
   Cloud ([team library](docs/team-library.md))
+- Agent changes that wait for a named reviewer: no merging or pushing to the
+  default branch, reviewers requested, a review queue ([code review](docs/code-review.md))
 - Built-in browser control (native CDP) and desktop computer use, with an
   on-screen indicator while the agent drives the machine
 - Permission modes and a project-root path sandbox

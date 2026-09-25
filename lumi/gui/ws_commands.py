@@ -3610,6 +3610,7 @@ _SOCKET_SETTING_KEYS: dict[str, frozenset[str]] = {
     "api_keys": frozenset({"sonn", "openrouter", "kimi", "anthropic", "openai", "otlp", "github", "gitlab", "bitbucket",
                            "azure_devops", "jira", "linear"}),
     "issue_trackers": frozenset({"jira_url", "jira_email"}),
+    "review": frozenset({"agent_changes", "reviewers"}),
     "engram": frozenset({"enabled", "server_url"}),
     "cost_tracking": frozenset({"enabled", "budget_alert_usd", "daily_limit_usd", "turn_limit_usd",
                                 "price_overrides"}),
@@ -3698,6 +3699,25 @@ def _socket_setting_value(section: Any, key: Any, value: Any) -> Any:
             if text and not text.startswith("#") and text not in patterns:
                 patterns.append(text)
         return patterns
+    elif (section, key) == ("review", "agent_changes"):
+        if not isinstance(value, bool):
+            raise ValueError("review.agent_changes must be on or off.")
+    elif (section, key) == ("review", "reviewers"):
+        import re
+
+        items = value.splitlines() if isinstance(value, str) else value
+        if not isinstance(items, list) or len(items) > 20:
+            raise ValueError("Enter up to 20 reviewers, one per line.")
+        names = []
+        for item in items:
+            name = str(item or "").strip().lstrip("@")
+            if not name:
+                continue
+            if not re.fullmatch(r"[A-Za-z0-9][\w.-]{0,38}(/[\w.-]{1,100})?", name):
+                raise ValueError(f"{name} isn't a GitHub username or organization/team.")
+            if name not in names:
+                names.append(name)
+        return names
     elif (section, key) == ("general", "fallback_models"):
         from ..engine.model_roles import parse_fallback_models
 

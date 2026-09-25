@@ -397,6 +397,11 @@ def main():
 
         app_state.cloud.remote_tasks = RemoteTasks(app_state.settings, app_state.cloud)
         start_remote_tasks(app_state.cloud.remote_tasks)
+        # Agent pull requests join the organization's review queue (engine/review_gate.py).
+        from lumi.engine import review_gate
+        from lumi.review_queue import ReviewQueue
+
+        review_gate.set_registrar(ReviewQueue(app_state.cloud))
     except Exception:
         logger.exception("Lumi Cloud check-ins failed to start (non-fatal)")
 

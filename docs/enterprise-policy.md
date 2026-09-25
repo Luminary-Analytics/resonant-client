@@ -142,6 +142,17 @@ fall back to "no policy". It refuses model requests, and Settings shows the
 error, until the policy is fixed. The same happens after an expired policy's
 grace period.
 
+Invalid includes a section that isn't an object, such as
+`"permissions": "ask only"`, and a true-or-false value written as text, such
+as `"allow_stdio": "no"`. It also covers a policy file that isn't UTF-8 text,
+such as the UTF-16 that Windows PowerShell 5.1's `Out-File` writes by
+default. UTF-8 with or without a byte order mark is fine, and a section that
+is missing or `null` counts as empty.
+
+A downloaded Lumi Cloud policy that can't be used doesn't block requests. The
+machine policy stays in force, or no policy for an organization someone
+joined in the app, and Settings shows why.
+
 ## Group Policy and Intune
 
 The MSI package can point Lumi at a policy file as it installs:

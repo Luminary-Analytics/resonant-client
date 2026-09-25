@@ -346,6 +346,30 @@ def test_a_tampered_download_is_not_applied(fake):
     assert state.policy is None and "signature" in state.cloud_error
 
 
+def test_a_downloaded_policy_with_a_section_of_the_wrong_type_isnt_applied(fake):
+    # parse() used to raise AttributeError here, not the PolicyError the download handles.
+    fake.publish({"permissions": "ask only"})
+    client = _client(fake)
+    _sign_in(client, fake)
+    with pytest.raises(cloud.CloudError, match="permissions must be an object"):
+        client.enroll("org_acme")
+    assert not policy.cloud_policy_path().exists()
+
+
+def test_a_stored_policy_lumi_cant_use_is_reported_not_raised(fake):
+    fake.publish({"models": {"allowed": ["anthropic:*"]}})
+    client = _client(fake)
+    _sign_in(client, fake)
+    client.enroll("org_acme")
+    path = policy.cloud_policy_path()
+    envelope = json.loads(path.read_text(encoding="utf-8"))
+    envelope["policy"]["permissions"] = "ask only"  # signed by the organization, but unusable
+    envelope["signature"] = _b64(fake.org_key.sign(policy.canonical(envelope["policy"])))
+    path.write_text(json.dumps(envelope), encoding="utf-8")
+    state = policy.load(force=True)
+    assert not state.cloud and "permissions must be an object" in state.cloud_error
+
+
 def test_a_revoked_computer_forgets_its_enrollment(fake):
     fake.publish({"models": {"allowed": ["anthropic:*"]}})
     client = _client(fake)

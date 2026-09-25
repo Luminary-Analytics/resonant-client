@@ -103,6 +103,83 @@ text) and a second approver's refusal (it takes the same path, with the
 approval's message as the reason). The terminal UI shows the reason too; see
 the next section.
 
+## September 25 a mistyped organization policy no longer counts as no policy — source only, not released
+
+**A typo in an administrator's policy could switch the whole policy off.** A
+section of the wrong type made the first `lumi.policy.load()` raise instead of
+reporting an invalid policy. Examples are `"permissions": "ask only"`,
+`"models": [...]`, `"mcp": 5` and `"trusted_keys": [...]`. A policy file that
+isn't UTF-8 text did the same, such as the UTF-16 that Windows PowerShell
+5.1's `Out-File` writes, and so did JSON nested too deeply. In the app, the
+first caller was the updater, which logged the error as its own and carried
+on. Every later call then saw no policy and no error: nothing was enforced,
+model requests weren't refused, and a command the organization's shell rules
+deny ran. Some values also loosened what they control when written as text:
+`"allow_stdio": "no"` allowed command-based MCP servers,
+`"require_signed": "true"` stopped requiring signed capability packs, and
+`"registry_only": "true"` let packs outside the organization's registry run.
+
+- **`load()` never raises** (`lumi/policy.py`). A policy that exists but
+  can't be read or used is an error state on the first call and every later
+  one. Model requests are refused until IT fixes it (`blocked_reason`).
+  Failures `parse()` doesn't anticipate fail closed too.
+- **`parse()` checks each section's type.** `settings`, `permissions`,
+  `models`, `mcp`, `extensions`, `files`, `pricing`, `shell`, `approvals` and
+  `cloud` must be objects. `trusted_keys` must map key ids to text.
+  `grace_days` must be a whole number; text such as `"3"` still works. A
+  missing or `null` section counts as empty.
+- **True-or-false values must be `true` or `false`:** `mcp.allow_stdio`,
+  `extensions.require_signed` and `extensions.registry_only`.
+- **A policy file may start with a UTF-8 byte order mark.** Windows PowerShell
+  5.1 writes one for `-Encoding utf8`, and it used to make the policy
+  invalid. This covers the machine policy file, `LUMI_POLICY_FILE`, Group
+  Policy's `PolicyFile` and `policy-keys.json`.
+- **Lumi Cloud:** a downloaded policy with such a mistake isn't applied. It
+  fails with "The organization's policy wasn't applied: permissions must be
+  an object" instead of an `AttributeError` in the check-in. A stored policy
+  Lumi can't use is reported in Settings, whatever the failure. The machine
+  policy applies instead, or none for an organization joined in the app, as
+  for other unusable downloads.
+- **Not changed:** a budget rule's `block_unpriced` still counts only a
+  literal `true` (`lumi/budgets.py`, which Settings' budgets share).
+
+Validation on September 25, 2026:
+
+- Full `pytest` after merging main (the pack registry and checkpoint
+  Timeline): 4,380 passed, 5 skipped. `ruff check .` clean, the 66 Node tests
+  in AGENTS.md pass, `git diff --check` clean.
+- New tests in `test_policy.py` and `test_cloud.py`:
+  - each mistyped section and value, and null sections still parsing;
+  - a machine policy with a mistyped section, a UTF-16 file, `trusted_keys`
+    as a list, `grace_days` as a list, or JSON nested 100,000 deep. The
+    first and a later `load()` both return the error, and model requests are
+    refused;
+  - a failure `parse()` doesn't anticipate, or one reading the policy text,
+    fails closed. One in a Lumi Cloud policy leaves the machine policy in
+    force;
+  - a file with a UTF-8 byte order mark applies;
+  - a downloaded Lumi Cloud policy with a mistyped section isn't applied,
+    and a stored one is reported, not raised.
+- Against main before this change, 27 of the 29 new cases fail. The other two
+  pass there too: `parse()` already refused a list for `trusted_keys` (it was
+  `load()` that crashed first), and null sections already parsed.
+- In the browser pane, from an isolated home with the scripted Ollama stub.
+  The `LUMI_POLICY_FILE` policy had `"permissions": "ask only"` and a shell
+  rule denying one command:
+  - on main before this change, the updater logged the `AttributeError` at
+    startup and no error showed. In Full-auto, the denied command ran and
+    wrote its file;
+  - with this change, the same message failed with "The organization policy
+    at … is invalid: permissions must be an object. Ask your administrator to
+    fix it." The model received no request, and no file was written.
+    Settings > Privacy & security > Organization policy showed the same
+    error;
+  - the real `~/.resonant` was unchanged, and no `~/.lumi` or Lumi credential
+    entries appeared.
+
+Not exercised: a real Group Policy registry value or macOS configuration
+profile, a packaged build, macOS and Linux.
+
 ## September 25 the terminal says why a tool call was refused — source only, not released
 
 **A refused call printed only "✗ denied".** When a hook, a policy rule, a tool

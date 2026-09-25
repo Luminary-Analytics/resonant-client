@@ -71,6 +71,9 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 SCHEMA = "lumi.policy/v1"
+# Files an administrator writes: UTF-8, with or without the byte order mark
+# Windows PowerShell 5.1 adds for -Encoding utf8.
+ADMIN_TEXT = "utf-8-sig"
 REGISTRY_KEY = r"SOFTWARE\Policies\Luminary Analytics\Lumi"
 MAC_DOMAIN = "com.luminaryanalytics.lumi"
 PERMISSION_MODES = ("ask", "auto-edit", "plan", "bypass")
@@ -307,6 +310,34 @@ def _flag(value, where: str) -> bool:
         raise PolicyError(f"{where} must be true or false.")
     return value
 
+
+def _section(document: dict, name: str) -> dict:
+    """A section of the document: an object, or {} when it's missing or null.
+
+    A section of any other type is a mistake, not an empty section. Read as
+    empty, ``"permissions": "ask only"`` would drop the limits the
+    administrator meant to set.
+    """
+    value = document.get(name)
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise PolicyError(f"{name} must be an object.")
+    return value
+
+
+def _grace_days(value: Any) -> int:
+    """``grace_days`` as a whole number of days; null means none."""
+    if value is None:
+        return 0
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        raise PolicyError("grace_days must be a whole number of days.")
+    try:
+        return max(0, int(value))
+    except (ValueError, OverflowError) as exc:
+        raise PolicyError("grace_days must be a whole number of days.") from exc
+
+
 def parse(data: Any, *, source: str, trusted_keys: dict[str, str] | None = None,
           require_signature: bool = False) -> Policy:
     """Validate a policy document (signed or not) and return it."""
@@ -330,8 +361,8 @@ def parse(data: Any, *, source: str, trusted_keys: dict[str, str] | None = None,
     if document.get("schema") != SCHEMA:
         raise PolicyError(f"Unknown policy schema {document.get('schema')!r}; expected {SCHEMA}.")
 
-    settings = document.get("settings") or {}
-    if not isinstance(settings, dict) or not all(isinstance(k, str) and "." in k for k in settings):
+    settings = _section(document, "settings")
+    if not all(isinstance(k, str) and "." in k for k in settings):
         raise PolicyError("'settings' must map 'section.key' names to values.")
     from .update_channels import validate_policy_settings
 
@@ -346,19 +377,23 @@ def parse(data: Any, *, source: str, trusted_keys: dict[str, str] | None = None,
     reviewers = settings.get("review.reviewers", [])
     if not isinstance(reviewers, list) or not all(isinstance(name, str) for name in reviewers):
         raise PolicyError("'review.reviewers' must list GitHub usernames or organization/team names.")
-    permissions = document.get("permissions") or {}
+    permissions = _section(document, "permissions")
     modes = permissions.get("allowed_modes")
     allowed_modes = _patterns(modes, "permissions.allowed_modes") if modes is not None else None
     if allowed_modes is not None:
         unknown = [m for m in allowed_modes if m not in PERMISSION_MODES]
         if unknown or not allowed_modes:
             raise PolicyError(f"permissions.allowed_modes must list some of {', '.join(PERMISSION_MODES)}.")
-    models = document.get("models") or {}
-    mcp = document.get("mcp") or {}
-    extensions = document.get("extensions") or {}
-    shell = document.get("shell") or {}
-    if not isinstance(shell, dict):
-        raise PolicyError("shell must be an object with a 'rules' list.")
+    models = _section(document, "models")
+    mcp = _section(document, "mcp")
+    allow_stdio = mcp.get("allow_stdio")
+    if allow_stdio is not None and not isinstance(allow_stdio, bool):
+        # Read loosely, "no" would allow command-based servers.
+        raise PolicyError("mcp.allow_stdio must be true or false.")
+    extensions = _section(document, "extensions")
+    files = _section(document, "files")
+    _section(document, "cloud")  # read by load(); another type would silently skip enrollment
+    shell = _section(document, "shell")
     shell_rules = shell.get("rules") or []
     if not isinstance(shell_rules, list) or not all(isinstance(rule, dict) for rule in shell_rules):
         raise PolicyError("shell.rules must be a list of rule objects.")
@@ -377,7 +412,7 @@ def parse(data: Any, *, source: str, trusted_keys: dict[str, str] | None = None,
     from .pricing import parse_prices
 
     try:
-        prices = parse_prices((document.get("pricing") or {}).get("prices") or {})
+        prices = parse_prices(_section(document, "pricing").get("prices") or {})
     except ValueError as exc:
         raise PolicyError(f"pricing.prices: {exc}") from exc
     from .budgets import parse_rules
@@ -393,10 +428,14 @@ def parse(data: Any, *, source: str, trusted_keys: dict[str, str] | None = None,
         capability_overrides = parse_capability_overrides(models.get("capabilities"))
     except ValueError as exc:
         raise PolicyError(f"models.capabilities: {exc}") from exc
-    raw_keys = document.get("trusted_keys") or {}
-    if not isinstance(raw_keys, dict):
+    raw_keys = document.get("trusted_keys")
+    if raw_keys is None:
+        raw_keys = {}
+    if not isinstance(raw_keys, dict) or not all(isinstance(value, str) for value in raw_keys.values()):
         raise PolicyError("trusted_keys must map key ids to base64 Ed25519 public keys.")
-    approvals = document.get("approvals") or {}
+    approvals = document.get("approvals")
+    if approvals is None:
+        approvals = {}
     if not isinstance(approvals, dict):
         raise PolicyError("approvals must be an object with commands and wait_minutes.")
     approval_commands = _patterns(approvals.get("commands"), "approvals.commands")
@@ -412,7 +451,7 @@ def parse(data: Any, *, source: str, trusted_keys: dict[str, str] | None = None,
         signed=signed,
         issued_at=str(document.get("issued_at") or ""),
         expires_at=expires_at,
-        grace_days=max(0, int(document.get("grace_days", 7) or 0)),
+        grace_days=_grace_days(document.get("grace_days", 7)),
         settings=dict(settings),
         allowed_modes=allowed_modes,
         models_allowed=_patterns(models["allowed"], "models.allowed") if "allowed" in models else None,
@@ -420,10 +459,10 @@ def parse(data: Any, *, source: str, trusted_keys: dict[str, str] | None = None,
         require_zero_retention=_flag(models.get("require_zero_retention"), "models.require_zero_retention"),
         zero_retention_providers=_patterns(models.get("zero_retention_providers"),
                                            "models.zero_retention_providers"),
-        exclude=_patterns((document.get("files") or {}).get("exclude"), "files.exclude"),
+        exclude=_patterns(files.get("exclude"), "files.exclude"),
         shell_rules=tuple(shell_rules),
         mcp_allowed=_patterns(mcp["allowed_servers"], "mcp.allowed_servers") if "allowed_servers" in mcp else None,
-        mcp_allow_stdio=mcp.get("allow_stdio", True) is not False,
+        mcp_allow_stdio=allow_stdio is not False,
         packs_allowed=(
             _patterns(extensions["allowed_packs"], "extensions.allowed_packs")
             if "allowed_packs" in extensions else None
@@ -433,9 +472,9 @@ def parse(data: Any, *, source: str, trusted_keys: dict[str, str] | None = None,
             if "allowed_sources" in extensions else None
         ),
         publishers=_pack_publishers(extensions.get("trusted_publishers")),
-        require_signed=extensions.get("require_signed") is True,
+        require_signed=_flag(extensions.get("require_signed"), "extensions.require_signed"),
         registry=_pack_registry(extensions.get("registry")),
-        registry_only=extensions.get("registry_only") is True,
+        registry_only=_flag(extensions.get("registry_only"), "extensions.registry_only"),
         trusted_keys={str(k): str(v) for k, v in raw_keys.items()},
         prices=prices,
         budgets=budgets,
@@ -471,7 +510,7 @@ def _registry_policy() -> tuple[str, str] | None:
                     return str(value), f"Group Policy (HKLM\\{REGISTRY_KEY})"
                 if name == "PolicyFile" and str(value).strip():
                     path = Path(os.path.expandvars(str(value)))
-                    return path.read_text(encoding="utf-8"), f"{path} (set by Group Policy)"
+                    return path.read_text(encoding=ADMIN_TEXT), f"{path} (set by Group Policy)"
     except OSError:
         return None
     return None
@@ -489,7 +528,7 @@ def _macos_managed_policy() -> tuple[str, str] | None:
         data = plistlib.loads(path.read_bytes())
     except Exception:
         return None
-    value = data.get("Policy")
+    value = data.get("Policy") if isinstance(data, dict) else None
     if isinstance(value, str) and value.strip():
         return value, f"configuration profile ({MAC_DOMAIN})"
     if isinstance(value, dict):
@@ -508,7 +547,7 @@ def machine_policy_file() -> Path:
 def _machine_file_policy() -> tuple[str, str] | None:
     path = machine_policy_file()
     if path.is_file():
-        return path.read_text(encoding="utf-8"), str(path)
+        return path.read_text(encoding=ADMIN_TEXT), str(path)
     return None
 
 
@@ -521,7 +560,7 @@ def _load_text() -> tuple[str, str] | None:
     override = os.environ.get("LUMI_POLICY_FILE", "").strip()
     if override:
         path = Path(override)
-        return path.read_text(encoding="utf-8"), str(path)
+        return path.read_text(encoding=ADMIN_TEXT), str(path)
     return None
 
 
@@ -540,7 +579,7 @@ def machine_keys() -> dict[str, str]:
     keys_file = machine_policy_file().with_name("policy-keys.json")
     if keys_file.is_file():
         try:
-            texts.append(keys_file.read_text(encoding="utf-8"))
+            texts.append(keys_file.read_text(encoding=ADMIN_TEXT))
         except OSError:
             pass
     keys: dict[str, str] = {}
@@ -598,9 +637,10 @@ def _joined_device() -> dict:
 
     try:
         data = json.loads((state_home() / "settings.json").read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+    except (OSError, ValueError, RecursionError):
         return {}
-    device = (data.get("cloud") or {}).get("device") if isinstance(data, dict) else None
+    section = data.get("cloud") if isinstance(data, dict) else None
+    device = section.get("device") if isinstance(section, dict) else None
     return device if isinstance(device, dict) and device.get("id") else {}
 
 
@@ -625,7 +665,7 @@ def _with_cloud_policy(state: PolicyState, keys: dict[str, str]) -> PolicyState:
         how = f"set up by {machine.source}" if machine else "joined in this app"
         cloud = parse(document, source=f"Lumi Cloud: {organization or 'your organization'} ({how})",
                       trusted_keys=keys, require_signature=True)
-    except (OSError, ValueError, PolicyError) as exc:
+    except Exception as exc:  # any unusable download, not only the failures parse() names
         note = f"{machine.organization}'s machine policy applies instead." if machine else ""
         return PolicyState(policy=machine, source=state.source, machine=None,
                            cloud_error=f"The Lumi Cloud policy can't be used: {exc} {note}".strip())
@@ -638,41 +678,57 @@ _loaded = False
 
 
 def load(*, force: bool = False) -> PolicyState:
-    """Read machine policy once (or again with ``force``) and return it."""
+    """Read machine policy once (or again with ``force``) and return it.
+
+    Never raises. A policy that exists but can't be read or used is an error
+    state, which refuses model requests (blocked_reason), on this call and
+    every later one: a mistake in it must never read as "no policy".
+    """
     global _state, _loaded
     with _lock:
         if _loaded and not force:
             return _state
+        try:
+            _state = _read_state()
+        except Exception as exc:  # whatever went wrong, fail closed
+            logger.exception("The organization policy couldn't be loaded")
+            _state = PolicyState(error=f"The organization policy couldn't be loaded: {exc}")
         _loaded = True
-        try:
-            found = _load_text()
-        except OSError as exc:
-            _state = PolicyState(error=f"The policy file couldn't be read: {exc}")
-            return _state
-        if not found:
-            # No machine policy: an organization this person joined in the app.
-            joined = _joined_device()
-            keys = joined.get("trusted_keys") if isinstance(joined.get("trusted_keys"), dict) else {}
-            _state = _with_cloud_policy(PolicyState(), {str(k): str(v) for k, v in keys.items()}) if joined \
-                else PolicyState()
-            return _state
-        text, source = found
-        try:
-            data = json.loads(text)
-            keys = machine_keys()
-            if isinstance(data, dict) and "signature" not in data:
-                # The machine policy may name keys that sign policies it doesn't
-                # hold itself (for example the organization's Lumi Cloud policy).
-                keys.update({str(k): str(v) for k, v in (data.get("trusted_keys") or {}).items()})
-            policy = parse(data, source=source, trusted_keys=keys)
-            _state = PolicyState(policy=policy, source=source)
-            if isinstance(policy.raw.get("cloud"), dict):
-                _state = _with_cloud_policy(_state, keys)
-        except (ValueError, PolicyError) as exc:
-            # A broken machine policy must not silently mean "no policy":
-            # model requests are refused until IT fixes it (see blocked_reason).
-            _state = PolicyState(error=f"The organization policy at {source} is invalid: {exc}", source=source)
         return _state
+
+
+def _read_state() -> PolicyState:
+    """The policy in force: the machine policy, Lumi Cloud's, or none (see load)."""
+    try:
+        found = _load_text()
+    except (OSError, ValueError) as exc:  # ValueError: a file that isn't UTF-8 text
+        return PolicyState(error=f"The policy file couldn't be read: {exc}")
+    if not found:
+        # No machine policy: an organization this person joined in the app.
+        joined = _joined_device()
+        if not joined:
+            return PolicyState()
+        keys = joined.get("trusted_keys") if isinstance(joined.get("trusted_keys"), dict) else {}
+        return _with_cloud_policy(PolicyState(), {str(k): str(v) for k, v in keys.items()})
+    text, source = found
+    try:
+        data = json.loads(text)
+        keys = machine_keys()
+        named = data.get("trusted_keys") if isinstance(data, dict) and "signature" not in data else None
+        if isinstance(named, dict):
+            # The machine policy may name keys that sign policies it doesn't
+            # hold itself (for example the organization's Lumi Cloud policy).
+            keys.update({str(k): str(v) for k, v in named.items()})
+        policy = parse(data, source=source, trusted_keys=keys)
+    except Exception as exc:
+        # A broken machine policy must not silently mean "no policy": model
+        # requests are refused until IT fixes it (see blocked_reason). That
+        # holds for any failure, not only the mistakes parse() names.
+        return PolicyState(error=f"The organization policy at {source} is invalid: {exc}", source=source)
+    state = PolicyState(policy=policy, source=source)
+    if isinstance(policy.raw.get("cloud"), dict):
+        state = _with_cloud_policy(state, keys)
+    return state
 
 
 def machine_cloud_settings() -> dict:

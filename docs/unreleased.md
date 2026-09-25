@@ -30,40 +30,46 @@ The dated September 15/18 records below are historical.
 
 Validation on September 25, 2026:
 
-- Full `pytest` before rebasing on `main` with the Timeline: 4,345 passed,
-  5 skipped.
-  - After the rebase, with nine other test runs on the machine: 4,350
-    passed, 5 skipped and 1 failed. `test_exec_list` got a `MemoryError`
-    from psutil listing every process.
-  - An earlier run stalled in `test_signin.py`'s mutual-TLS test and was
-    stopped.
-  - Both files then passed alone (44 tests).
-- `ruff check` clean; the four UI node suites 69 passed.
+- Full `pytest` ran while many other sessions' test suites loaded the
+  machine:
+  - before rebasing: 4,345 passed, 5 skipped;
+  - on `main` with the Timeline: 4,350 passed, 5 skipped and 1 failed.
+    `test_exec_list` got a `MemoryError` from psutil listing every process.
+    An earlier run stalled in `test_signin.py`'s mutual-TLS test and was
+    stopped;
+  - on `main` at #68: 4,393 passed, 5 skipped and 1 failed. A
+    `test_pack_install.py` test ran out of paging file starting git;
+  - each of those tests passed alone.
+  - After merging `main` at #76 it wasn't rerun locally, to spare memory
+    with about 12 sessions running.
+- After merging `main` at #76: `ruff check` clean; the four UI node suites
+  89 passed.
 - The three new tests fail against the `app.js` from before the Timeline
   with the reported numbers: "Worked for 2s · 8 actions", "8 tools" and
   "▣ 4.0s" for the second turn, and "Worked for 5s · 10 actions" for the
-  failed one. Against `main`'s `app.js`, only the `!command` test fails
-  ("6 actions"). They also fail if the new totals start before the
-  interrupted card is settled, or if a refreshed turn loses its replayed
-  calls.
+  failed one. Against `main`'s `app.js`, at #68 and at #76, only the
+  `!command` test fails ("6 actions"). They also fail if the new totals
+  start before the interrupted card is settled, or if a refreshed turn
+  loses its replayed calls.
 - In the browser pane, with an isolated home and a scripted
   Ollama-compatible model (4 tool calls per request, 2 per `!command`).
-  Answered turns hide their footers, so the times below were read from the
-  page:
+  Finished cards hide the footer (`styles.css`), so its times were read
+  from the page:
   - With the `app.js` from before the Timeline, two requests and
     `!echo hello` said "4", "4" and "6 actions" live, and "4", "8" and
     "10 actions" after a reload (footers 3.0s, 5.5s and 7.1s).
-  - With this branch's `app.js` before the rebase, which had the same
-    replay fix, the same saved conversation reloaded as "4", "4" and
-    "2 actions" (3.0s, 2.6s and 1.6s). New live turns, `!echo again` and a
-    request, said "2" and "4 actions", and the same after a reload.
-  - Rebased on `main`, after an app restart, the conversation opened from
-    the sidebar with each turn's own count. A live `!echo third` after a
-    4-call turn said "2 actions" (1.9s), live and after a reload.
-
-Not changed: a replayed turn's footer shows the model of the page's last
-live turn, or none after a reload, because saved turns keep no model or
-token counts.
+  - With this branch's `app.js` on that base, which had the same replay
+    fix, the same saved conversation reloaded as "4", "4" and "2 actions"
+    (3.0s, 2.6s and 1.6s). New live turns, `!echo again` and a request,
+    said "2" and "4 actions", and the same after a reload.
+  - On `main` with the Timeline, and again at #68, the conversation opened
+    from the sidebar after an app restart with each turn's own count.
+    Live turns then gave the same counts after a reload:
+    - with the Timeline, `!echo third` after a replayed 4-call turn said
+      "2 actions" (1.9s);
+    - at #68, a request and then `!echo fourth` said "4" and "2 actions"
+      (3.4s, 1.7s).
+  - Not repeated after merging `main` at #76.
 
 ## September 25 a plan's specialists report under its card — source only, not released
 

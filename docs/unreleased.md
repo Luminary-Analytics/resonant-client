@@ -8,6 +8,87 @@ The heartbeat remains paused. Documentation maintenance does not resume work,
 spending or grants, and changes no native implementation or installed bundle.
 The dated September 15/18 records below are historical.
 
+## September 25 Evidence results after their group closed — source only, not released
+
+**Reads and searches could keep a pulsing "…" for good.** The engine
+announces every tool call of a model response before it runs any of them.
+When a command, an edit or a write followed a read, a search or a check
+command in the same response, the command's row closed the collapsed Evidence
+group, and the earlier calls' results arrived after that. They found no row, so their
+items kept "…" with no count or output. A refused one got a "✗ not run" line
+of its own at the end of the activity, and the header never counted it.
+
+- **A result settles its own item after the group closed**
+  (`lumi/gui/static/run_cards.js` `_finalizeLiveCollapsedGroup`,
+  `lumi/gui/static/app.js` `_settleClosedEvidenceItem`). A group that closes
+  while calls in it still wait to run is kept for the rest of the turn. Their
+  results update their items as they would have in the open group: status,
+  count, output, a refusal's reason (open), and the header's "N failed" and
+  "N not run". A group with a failure or a refusal opens again.
+- **A screenshot's item settles too.** An image in its result closes the group
+  so the picture can show; the screenshot's own item kept "…".
+- **Only in its own card and lane.** A closed group answers only results drawn
+  where it is. An earlier turn's card and a worker's lane never take a result,
+  even when a backend that derives call ids from the call (Ollama) gives a
+  repeated call the same id.
+- **Fixed along the way:** a late Evidence command (`pytest`, `git status`) put
+  its status, exit code and output on the last command row instead, such as
+  the command after it that hadn't run yet.
+
+Validation on September 25, 2026:
+
+- Five tests in `tests/ui_recovery.test.cjs` drive the real handlers through
+  step start and end, with the Evidence group from `run_cards.js`:
+  - a search answered after a command closed a group spanning two steps (the
+    header keeps "steps 1–2 · 2 calls" and no failure count);
+  - a failing `pytest` answered after `make deploy` closed its group: its item
+    opens with the output and the header counts "1 failed", while the waiting
+    `make deploy` row and an earlier `npm install` row keep their own results;
+  - a policy's refusal and the user's own Deny answered after the group
+    closed: reasons on their items, "2 not run", no lines of their own;
+  - a screenshot whose image closes its group, and one whose group a later
+    `browser_js` closed;
+  - a closed group from an earlier turn doesn't take a later turn's result with
+    the same call id.
+- On the previous `app.js` and `run_cards.js`, the first four failed: items
+  still "…", `pytest`'s result on the waiting `make deploy` row, and four rows
+  for a group and one command. The fifth passed there; without the fix's
+  card-and-lane check it fails. Taking out any other part of the fix (keeping
+  closed groups, the check in `renderToolResult`, a closed group's header
+  counts, the screenshot's image) fails at least one of the others.
+- Full `pytest` 4,294 passed, 5 skipped. `ruff check .` clean, `node --check`
+  passes for `app.js` and `settings_view.js`, the four Node UI test files pass
+  (70 tests), `git diff --check` clean.
+- In the browser pane, from an isolated home with a scripted Ollama stub, in
+  Full-auto: one response called `git status --short`, grep `TODO`, grep
+  `FORBIDDEN` (refused by the project's `lumi-policy.json`) and
+  `echo built> build.txt`.
+  - Before the fix, all three Evidence items kept "…" with no output, the
+    refusal read "✗ not run" with its reason on a line after the build
+    command, and the header read "Evidence · Searching codebase".
+  - After the fix, a reload replayed the same saved turn with ✓ and output on
+    `git status --short` and `TODO` ("1 matches"), ✗ "not run" with the
+    policy's reason open on `FORBIDDEN`, "Evidence · Searching codebase ·
+    1 not run", and no line of its own.
+  - A live run, recorded after each event: the build call closed the group
+    with three waiting items, each result then settled its own item while the
+    build row still waited, and the refusal opened the group again. Its calls
+    had the first turn's ids (the adapter derives them from the call); the
+    first turn's items kept one output each.
+  - Enter and Space opened and closed a late item's output and a refusal's
+    reason, with `aria-expanded` following. At 375 px there was no horizontal
+    scroll. A response with only a search still settled it in the open group.
+  - The real `~/.resonant` was unchanged, no `~/.lumi` was created, and no Lumi
+    credential was stored. `~/.codex` changed during the run, as it had before
+    it started; the fixture pointed `CODEX_HOME` at its own home and never
+    started Codex, so those writes are unattributed.
+
+Not exercised: a live model, a packaged build, Codex or Claude Code (their
+tools use the activity panel, not Evidence groups), a real screenshot in the
+app (a Node test covers the image path) and a worker's lane in the app (worker
+calls are never grouped). Unchanged: a call that never ran because the turn
+was stopped first still reads "…".
+
 ## September 25 refused tool calls say why — source only, not released
 
 **A refused call's row said only "denied".** When a hook, a policy rule, a

@@ -182,9 +182,14 @@ class LumiRunCards {
             const attention = live.errorCount || live.deniedCount;
             if (attention) live.container.classList.add('expanded');
             const icon = live.header && live.header.querySelector('.collapsed-icon');
-            if (icon && live.errorCount) icon.textContent = '\u25be';
-            if (icon) icon.textContent = '▸';
             if (icon) icon.textContent = attention ? '\u25be' : '\u25b8';
+            // The engine announces every call of a response before it runs
+            // any, so a command or an edit after Evidence calls closes the
+            // group while they still wait to run. Their results come later
+            // and still belong on their items (_settleClosedEvidenceItem).
+            if (live.callIdToItem.size || live._lastItem) {
+                (this._closedEvidenceGroups ||= []).push(live);
+            }
             this._liveCollapsedGroup = null;
         }
         this.collapsedGroup = [];

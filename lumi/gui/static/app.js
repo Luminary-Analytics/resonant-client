@@ -3947,6 +3947,10 @@ class LumiApp {
                 if (event.artifact) this.runtimeArtifacts.unshift(event.artifact);
                 this.renderRuntimeView();
                 break;
+            case 'audit_status':
+                this.auditStatus = event;
+                if (this.currentView === 'settings') this.renderSettingsView();
+                break;
             case 'project_trust':
                 this.projectTrust = event;
                 if (this._runtimeBannerState) {

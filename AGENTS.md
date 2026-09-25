@@ -82,6 +82,10 @@ host enrollment and actual packaged/learned-benefit qualification remain open.
   values), and check `policy.current()` where a new model, mode, MCP server,
   pack or shell path is chosen. User-writable locations must never replace a
   machine policy, and an invalid policy blocks requests instead of vanishing.
+- Every agent turn goes through `Session.run`, which records its events in
+  the audit log (`audit.py`); run new entry points through it rather than
+  `_run_turn`. Record content only through `audit.content` (capture levels)
+  and paths through `audit.name`; never record setting or key values.
 
 ## Working in the codebase
 

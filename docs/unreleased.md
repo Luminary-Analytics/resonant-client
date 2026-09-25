@@ -8,6 +8,64 @@ The heartbeat remains paused. Documentation maintenance does not resume work,
 spending or grants, and changes no native implementation or installed bundle.
 The dated September 15/18 records below are historical.
 
+## September 25 audit log — source only, not released
+
+- **Audit log** (`lumi/audit.py`, [guide](audit-log.md)): hash-chained JSON
+  lines in `~/.lumi/audit/`, one file per UTC day. `Session.run` now wraps the
+  loop (`_run_turn`) and records every turn from the GUI, gateway, terminal UI
+  and workers:
+  - turn start and end with outcome;
+  - model usage, with each provider's token names normalized;
+  - tool calls and results;
+  - file changes, including Codex's;
+  - user and hook approvals;
+  - secret redactions and errors.
+
+  Settings changes (key names only) and project trust decisions are recorded
+  too.
+- **Tamper evidence:** each record hashes the previous one. **Settings >
+  Privacy & security > Audit log status** verifies the whole chain. The GUI,
+  terminal UI and gateway share one chain through an OS file lock.
+- **Capture levels** (`privacy.audit_capture`):
+  - metadata only (the default): names, outcomes, sizes, paths and digests;
+  - redacted content;
+  - full content.
+
+  Saved keys are removed at every level.
+- **Retention:** `privacy.audit_retention_days` (default 365) is separate from
+  transcript retention; `privacy.audit_log` turns recording off.
+- **OpenTelemetry export:** `audit.otlp_endpoint`, `audit.otlp_auth_header` and
+  an `api_keys.otlp` token send spans over OTLP/HTTP JSON. They use GenAI
+  semantic-convention attributes and a bounded background queue that drops
+  instead of blocking. An organization policy can lock all of these settings.
+
+Validation on September 25, 2026:
+
+- 27 new tests in `test_audit_log.py`:
+  - the chain: edits, removals, reordering, a second writer, threads, odd
+    text, large records, day rollover;
+  - capture levels and retention;
+  - span attributes, batching, a failing collector, the background thread,
+    and starting and stopping the export;
+  - real `Session.run` turns: file change, usage, denial, stop, error, and a
+    broken log;
+  - the socket's validation of the new settings, and change records that name
+    only keys that really changed.
+- Full `pytest`: 3,686 passed, 2 skipped.
+- In the browser pane, with an isolated home, the scripted Ollama stub and a
+  local HTTP server standing in for a collector:
+  - a turn produced ten chained records;
+  - the collector received the batches with the `Bearer` token header and
+    GenAI span attributes;
+  - Privacy & security showed "Verified: 9 records". After one record was
+    edited on disk, **Verify again**, pressed with the keyboard, reported
+    "2026-09-25.jsonl:6 was changed";
+  - after switching the capture level to redacted, a prompt's GitHub-format
+    token was kept only as `[REDACTED GitHub token]`;
+  - leaving a field unchanged recorded nothing.
+
+Not exercised: a real OpenTelemetry collector product, and the packaged app.
+
 ## September 25 organization policy — source only, not released
 
 - **`lumi.policy/v1`** (`lumi/policy.py`, [administrator guide](enterprise-policy.md)):

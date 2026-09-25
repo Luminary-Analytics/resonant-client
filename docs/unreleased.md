@@ -12,9 +12,9 @@ The dated September 15/18 records below are historical.
 
 **A refused call's row said only "denied".** When a hook, a policy rule, a
 tool boundary, a second approver or an approval nobody could answer stops a
-tool call, the model gets the reason as the call's result. The app added a line reading "✗ denied"
-(and "not run" on a command's row) and dropped the reason. A guard hook that
-timed out looked the same as the user's own Deny.
+tool call, the model gets the reason as the call's result. The app added a
+line reading "✗ denied" (and "not run" on a command's row) and dropped the
+reason. A guard hook that timed out looked the same as the user's own Deny.
 
 - **The reason shows under the call's row** (`lumi/gui/static/app.js`,
   `_settleDeniedToolRow`), always set as text, since it can come from a hook,
@@ -64,10 +64,11 @@ Validation on September 25, 2026:
 - On the previous `app.js` and `run_cards.js`, all four failed: six rows for
   three calls (the extra "✗ denied" lines), ✓ for the refused Evidence call,
   and no reason in the worker's row.
-- After rebasing on main (with gate hooks failing closed and second
-  approvals): full `pytest` 4,289 passed, 5 skipped. `ruff check .` clean, `node --check` passes for
-  `app.js` and `settings_view.js`, the four Node UI test files pass (59
-  tests), `git diff --check` clean.
+- After rebasing on main (with gate hooks failing closed, second approvals
+  and worker transcripts): full `pytest` 4,294 passed, 5 skipped.
+  `ruff check .` clean, `node --check` passes for `app.js` and
+  `settings_view.js`, the four Node UI test files pass (65 tests),
+  `git diff --check` clean.
 - In the browser pane, from an isolated home with a scripted Ollama stub, in
   Ask mode, with two `pre_tool_use` hooks in `settings.json` (one exits 1 with
   a message on stderr, one sleeps past `timeout_seconds: 2`) and the built-in
@@ -85,7 +86,8 @@ Validation on September 25, 2026:
     block when they give no answer. Raise its timeout_seconds if it needs
     longer."
   - The model's closing message listed the same reasons it had been given.
-    After a reload, the replayed session showed the same rows.
+    After a reload, the replayed session showed the same rows, and so did a
+    last run on the branch rebased over worker transcripts.
   - At 375 px there was no horizontal scroll, including for reasons with 120
     to 160 character unbroken tokens, which wrapped inside their rows.
   - On a refused Evidence call, Enter closed the reason and Space opened it

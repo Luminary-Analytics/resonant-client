@@ -29,8 +29,9 @@ The dated September 15/18 records below are historical.
     page"), is the first thing in the tab order. It's a button because the
     launch code travels in the URL fragment.
   - **Window titles** name the screen: "Settings · Lumi".
-  - **The command-palette button** now shows a focus ring, not just hover's
-    faint border.
+  - **Focus rings** on the command-palette button, which showed only hover's
+    faint border, and on the composer's model and reasoning menus, which
+    showed only a text color change.
   - **The daily budget field** in Usage & cost has a label.
 
 Validation on September 25, 2026, in the browser pane. A checker ran on
@@ -42,6 +43,10 @@ duplicate ids, headings, language, landmarks and composited text contrast:
 - With real key presses: the Tab order, focus rings, the permission menu
   (open, move, choose, Escape), the command palette and model picker
   returning focus, and the skip control.
+- After merging the checkpoint Timeline: the Timeline dialog (opened from the
+  command palette, with no checkpoints in it) in both themes, focus moving to
+  Close and returning on Escape, the permission menu again, and the model
+  menu's focus ring in both themes.
 - Switching themes in place left CSS transitions half-done in the hidden
   pane and gave false contrast results, so each theme was rendered from load.
 

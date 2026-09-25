@@ -23,12 +23,12 @@
   - Text contrast against the actual composited background, with the
     WCAG 1.4.3 thresholds.
   - Coverage in the app: the main view, all 25 Settings pages, and the command
-    palette, model picker and permission menu. In the portal: 21 pages,
-    signed in as an owner.
+    palette, model picker, permission menu and Timeline (without checkpoints
+    in it). In the portal: 21 pages, signed in as an owner.
 - **Keyboard checks with real key presses**: tab order through the app's
   titlebar, sidebar and composer; visible focus; opening, moving through and
-  closing the command palette, model picker and permission menu; focus
-  returning to what opened them; the skip control.
+  closing the command palette, model picker, permission menu and Timeline;
+  focus returning to what opened them; the skip control.
 
 ## Fixed during this review
 
@@ -40,8 +40,9 @@
   or the arrow keys open it on the current mode, the arrows, Home and End
   move, and Escape closes it and returns focus. The toggle says whether it's
   open and the options say which is chosen.
-- **Focus** on the command-palette button was only a faint border change. It
-  now has a focus ring.
+- **Focus** on the command-palette button was only a faint border change,
+  and on the composer's model and reasoning menus only a text color change.
+  They now have focus rings.
 - **A daily budget field** in Usage & cost had no label.
 - **Bypassing blocks.** A "Skip to the message box" control (or "Skip to the
   Settings page") is now the first thing in the app's tab order.
@@ -97,7 +98,7 @@ Support**, **Not Applicable**, **Not Evaluated**.
 | 1.4.13 Content on Hover or Focus | Partially Supports | Supports | The app uses native tooltips (`title`) and some hover-only hints. |
 | 2.4.5 Multiple Ways | Supports | Supports | The app has Settings search, the command palette and navigation. The portal has navigation on every page. |
 | 2.4.6 Headings and Labels | Supports | Supports | |
-| 2.4.7 Focus Visible | Supports | Supports | The app was checked by tabbing through its main view, and the command-palette button was fixed. The portal draws a focus outline on every control (`:focus-visible`); it wasn't walked with the keyboard. |
+| 2.4.7 Focus Visible | Supports | Supports | The app was checked by tabbing through its main view, and the command-palette button and the composer's model and reasoning menus were fixed. The portal draws a focus outline on every control (`:focus-visible`); it wasn't walked with the keyboard. |
 | 3.1.2 Language of Parts | Not Applicable | Not Applicable | Interface text is English; model output isn't marked up by language. |
 | 3.2.3 Consistent Navigation | Supports | Supports | |
 | 3.2.4 Consistent Identification | Supports | Supports | |

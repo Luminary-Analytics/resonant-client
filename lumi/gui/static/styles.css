@@ -11865,6 +11865,13 @@ body:not([data-autonomous-sessions="1"]) .autonomous-mission-browser,
     outline: none;
 }
 
+/* Keyboard focus needs a ring, not just hover's color change (WCAG 2.4.7). */
+.model-selector:focus-visible,
+.reasoning-selector:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
+}
+
 .window-resize-edge {
     display: none;
     position: fixed;

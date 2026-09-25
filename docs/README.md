@@ -55,7 +55,7 @@ guide belongs in that navigation; historical records stay out of it.
 - [Usage records and prices](usage-and-costs.md)
 - [Running Lumi without a UI (`lumi run`, CI, containers)](headless.md)
 - [Scheduled tasks (`lumi schedule`, Task Scheduler, launchd, cron)](scheduled-tasks.md)
-- [GitHub pull requests (reviews, checks, opening and commenting)](github.md)
+- [Pull requests on GitHub, GitLab, Bitbucket and Azure DevOps (reviews, checks, opening and commenting)](github.md)
 - [Fallback models, roles and capability overrides](models.md)
 - [Signing in to enterprise model endpoints (OAuth, Entra ID, client certificates)](connection-sign-in.md)
 - [Updates: channels, pins and turning them off](updates.md)

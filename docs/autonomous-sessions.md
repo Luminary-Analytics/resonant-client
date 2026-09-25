@@ -34,6 +34,16 @@ iteration builds one item as its own planned task and records the commit it
 made. Every three iterations, and when the items run out, a **reflect** pass
 checks the criteria and adds or blocks items.
 
+In the conversation, each iteration's task reports under a **Plan** card, with
+a line per specialist. A reflect pass that needs the model (a criterion to
+check in the browser or by hand, or one that failed) reports under a
+**Reflection** card: how many criteria were met when it started, its commands,
+edits and reasoning as they happen, and whether it finished, was stopped or
+failed. Its verdict follows in a card of its own. None of these is a turn of
+the conversation: they bring no Retry or suggested prompt, and leave the
+message box and keyboard focus alone. They aren't saved with the
+conversation; the roadmap keeps the iteration log.
+
 It stops when:
 
 | Reason | What happened |

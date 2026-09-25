@@ -13778,3 +13778,9 @@ body.is-window-dragging * {
 .plan-run-status.is-running .task-run-mark { background: transparent; }
 .plan-run-status.is-running .task-run-mark::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: var(--brand); animation: live-run-pulse 1.8s ease-out infinite; }
 @media (prefers-reduced-motion: reduce) { .plan-run-status.is-running .task-run-mark::before { animation: none; } }
+/* A plan the person didn't send (a roadmap's, an autonomous iteration's, a
+   reflect pass) is headed by its label and title, not a message bubble. */
+.plan-card-lumi .task-card-header { justify-content: flex-start; }
+.plan-card-lumi .task-card-main { display: flex; align-items: baseline; gap: 8px; min-width: 0; max-width: 100%; margin-left: 0; }
+.plan-card-lumi .task-card-label { display: block; flex-shrink: 0; color: var(--text-secondary); font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; }
+.plan-card-lumi .task-request-text { min-width: 0; padding: 0; border-radius: 0; background: none; color: var(--text); font-size: 13px; font-weight: 600; overflow-wrap: anywhere; }

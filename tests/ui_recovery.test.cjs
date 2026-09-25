@@ -1559,6 +1559,73 @@ test('a step\'s prose stays above its calls, and a finished step stays open whil
     assert.deepEqual(app.turnCalls, []);
 });
 
+// An autonomous session's REFLECT pass runs its specialist outside
+// IntentService (gui/autonomous_factory.py) and reports as a one-step plan
+// with an id of its own: reflect.start, the tagged session, reflect.done.
+const reflectStart = (intentId, ts, text = 'Check the roadmap against its acceptance criteria') =>
+    ({event: 'reflect.start', intent_id: intentId, node_id: 'n1', text, specialization: 'reflect',
+      goal: '1 of 2 criteria met, 1 to check in the browser', ts});
+const reflectDone = (intentId, status, ts, error = '') =>
+    ({event: 'reflect.done', intent_id: intentId, node_id: 'n1', status, error, ts});
+
+test('a REFLECT pass reports under a Reflection card of its own, never as the conversation\'s turn', () => {
+    const app = planApp();
+    // The conversation's own turn is running when the pass starts.
+    app.isRunning = true;
+    app._liveRun = {active: true, lastEventAt: 1};
+    const mark = editCall('call_1', '.lumi/roadmap-m1.md');
+    app.play(reflectStart('pass-1', 10),
+        fromSpecialist('pass-1', {event: 'session.start', model: 'stub'}, {event: 'step.start', step: 1},
+            {event: 'text.delta', delta: 'The toggle shows; marking it.'}, mark,
+            {event: 'text.done', text: 'The toggle shows; marking it.'}, toolResult(mark),
+            {event: 'status', model: 'stub', stats: {input_tokens: 10, output_tokens: 5}},
+            {event: 'context.state', used: 100}, {event: 'step.end', step: 1},
+            {event: 'session.end', outcome: 'changed_unverified'}),
+        reflectDone('pass-1', 'done', 22));
+
+    assert.deepEqual(app.turnCalls, []);
+    assert.equal(app.isRunning, true);
+    assert.equal(app._liveRun.lastEventAt, 1, 'the turn\'s progress heard nothing');
+    const card = app.card('pass-1');
+    assert.equal(app.chatMessages.children.length, 1);
+    assert.ok(card.classList.contains('plan-card-lumi'), 'headed as Lumi\'s, not as the person\'s message');
+    assert.equal(card.querySelector('.task-card-label').textContent, 'Reflection');
+    assert.equal(card.querySelector('.task-request-text').textContent, 'Check the roadmap against its acceptance criteria');
+    const [step] = app.steps('pass-1');
+    assert.equal(app.steps('pass-1').length, 1);
+    assert.equal(step.querySelector('.task-activity-title').textContent, 'Reflection');
+    assert.equal(step.querySelector('.plan-step-goal').textContent, '1 of 2 criteria met, 1 to check in the browser');
+    assert.equal(step.querySelector('.task-activity-meta').textContent, 'done · 1 action · 12s');
+    assert.equal(step.querySelector('.tool-row').getAttribute('data-tool'), 'file_edit');
+    assert.equal(step.querySelector('.message-content').textContent, 'The toggle shows; marking it.');
+    assert.equal(step.open, false);
+    assert.equal(card.querySelector('.task-run-label').textContent, 'Reflection done');
+    assert.equal(card.querySelector('.task-run-detail').textContent, '1 action · 12s');
+
+    // A pass the session's Stop interrupted, and one that broke: each on its own card, open, saying so.
+    app.play(reflectStart('pass-2', 30, 'Act on the decision, then check the roadmap against its acceptance criteria'),
+        fromSpecialist('pass-2', {event: 'error', message: 'Interrupted'}, {event: 'session.end', outcome: 'interrupted'}),
+        reflectDone('pass-2', 'abandoned', 31),
+        reflectStart('pass-3', 40), reflectDone('pass-3', 'blocked', 40, 'boom'));
+    assert.equal(app.chatMessages.children.length, 3);
+    const [stopped] = app.steps('pass-2');
+    assert.equal(app.card('pass-2').querySelector('.task-request-text').textContent,
+        'Act on the decision, then check the roadmap against its acceptance criteria');
+    assert.deepEqual([stopped.querySelector('.task-activity-meta').textContent, stopped.open], ['stopped · 1s', true]);
+    assert.equal(stopped.querySelector('.error-block').textContent, '✗ Interrupted');
+    assert.equal(app.card('pass-2').querySelector('.task-run-label').textContent, 'Reflection stopped');
+    const [broken] = app.steps('pass-3');
+    assert.deepEqual([broken.querySelector('.task-activity-meta').textContent, broken.open], ['blocked', true]);
+    assert.equal(broken.querySelector('.error-block').textContent, '✗ boom');
+    assert.equal(app.card('pass-3').querySelector('.task-run-label').textContent, 'Reflection failed');
+    assert.deepEqual(app.turnCalls, []);
+    assert.equal(app.isRunning, true);
+
+    // A /plan the person sent stays their message.
+    app.startIntent('add a footer');
+    assert.equal(app.chatMessages.children.at(-1).classList.contains('plan-card-lumi'), false);
+});
+
 // ── A refused call says why ───────────────────────────────────────────
 // Its row shows the reason the model was told: a hook's message, a policy
 // rule, an approval nobody could answer. The person's own Deny needs none.

@@ -1006,6 +1006,106 @@ Validation on September 25, 2026:
   the tracker the same way.
 - Only tests were run: no autonomous session ran in the app.
 
+## September 25 a reflect pass reports under its own card — source only, not released
+
+**An autonomous session's reflect pass still arrived as turns of the
+conversation.** "September 25 a plan's specialists report under its card"
+kept a plan's specialists out of the conversation's turn by the
+`_source: "intent"` tag IntentService gives their events. A reflect pass runs
+its REFLECT specialist outside IntentService (`make_reflect_runner` in
+`lumi/gui/autonomous_factory.py`), which forwarded that specialist's events
+untagged. So every pass that needed the model (a `[chrome]` or `[manual]`
+criterion, or one that failed) went through the conversation's turn
+handlers. In the fixture described below, on `main`:
+
+- the pass drew as an unnamed turn card: "Worked for 16s · 1 action", the
+  model's prose and its raw JSON verdict;
+- its end ran the turn's completion (`handleSessionEnd`): `setRunning(false)`
+  moved keyboard focus into the message box, and a next prompt was
+  suggested;
+- while a message of the person's own was still waiting on the model, the
+  pass drew its work and JSON into that message's card and finished it:
+  "Please ping the conversation…" read "Worked for 24s · 1 action ·
+  hello.txt is there and reads well. {…}", and `isRunning` and the live
+  progress cleared. The message's real answer came 31 s later, in a card of
+  its own with no message above it.
+
+**Now a reflect pass reports like a one-step plan.**
+
+- `make_reflect_runner` gives each pass an id of its own (its one-node
+  graph's) and a runner of its own, as IntentService does per plan. It sends:
+  - `reflect.start`, with the card's title ("Check the roadmap against its
+    acceptance criteria", or "Act on the decision, then …" after a decision)
+    and where the criteria stand ("1 of 2 criteria met, 1 to check in the
+    browser, 1 for you to judge");
+  - the specialist's events, as copies tagged `_source: "intent"` with that
+    id. The session's own events are unchanged;
+  - `reflect.done`: `done`, `abandoned` when the session was stopped during
+    the pass, or `blocked`. A stop ends the pass's session with an error,
+    which the runner reports as BLOCKED; it shows as stopped, not failed.
+
+  The daemon gets the same outcome as before.
+- The page draws each pass under a "Reflection" card (`app.js`, "Plan
+  activity"): a "Reflection" step with that line, its commands, edits and
+  prose as they come, folded once done and left open when stopped or failed;
+  and a status line: "Reflection running", "Reflection done · 1 action ·
+  20s", "Reflection stopped" or "Reflection failed". The pass's verdict card
+  follows as before.
+- Nothing from a pass reaches the conversation's turn: its cards and
+  progress, `isRunning`, the verdict and Retry, the suggestion, or focus.
+- Cards Lumi starts (a roadmap's or an iteration's "Plan", and a
+  "Reflection") are now headed by their label and name. The task-card styles
+  hid the label and drew the name as a message bubble, as if the person had
+  sent it. A `/plan` card is still the person's message.
+
+Like a plan's, a pass's activity isn't saved with the conversation: a reload
+shows its verdict card without it.
+
+Validation on September 25, 2026:
+
+- `tests/test_autonomous_factory.py` adds 2 tests. A pass's forwarded events
+  carry the tag and the pass's own id without changing the session's events,
+  and fall between its `reflect.start` and `reflect.done`; `reflect.done`
+  says done, stopped (a BLOCKED result after a stop) or blocked, with the
+  error. Checked by mutation, they fail without the tag, without the id, with
+  the event changed in place, with the untagged emitter, with a stop reported
+  as blocked, with one id for every pass, and without the error.
+- `tests/ui_recovery.test.cjs` adds 1 test driving the real handlers into a
+  fake conversation beside a running turn: the card, its step, row, prose and
+  fold, the done, stopped and failed status lines, the heading, and a `/plan`
+  card that stays a message. It fails against 10 mutations: no `reflect.*`
+  handlers, no reflect kind, a "Plan" label, the plan's status lines, a step
+  count, every end shown as done, no step end, no `_source` routing, no
+  heading, and a heading on the person's `/plan`.
+- Full `pytest` on this change over `main` (e004b5a): FILL. The four UI
+  node suites: FILL. `ruff check` and `git diff --check` clean.
+- In the browser pane, with an isolated home (temporary USERPROFILE, HOME and
+  LUMI_STATE_HOME, `LUMI_KEYCHAIN=off`, CLI connections off) and a scripted
+  Ollama-compatible model answering the interview, planner, implementer and
+  REFLECT (a `file_read`, then its verdict), in autonomous sessions started
+  from the ∞ button:
+  - A pass after the first iteration drew "Reflection · 1 of 1 criteria met,
+    1 for you to judge · done · 1 action · 20s" and "Reflection done", then
+    the verdict card. Keyboard focus stayed on the Timeline button through the
+    pass, and nothing called `setRunning`, `handleSessionEnd` or the
+    suggestion.
+  - **Stop** during a pass: "✗ Interrupted", "stopped · 15s" left open, and
+    "Reflection stopped".
+  - A message sent while a pass ran kept its "Working for …" through the
+    pass's end and got its own answer 28 s later.
+  - The same sessions on `main` showed the behavior listed above.
+  - The heading's label measured 9.66:1 in the dark theme and 8.23:1 in the
+    light theme (switched in place), its name about 16:1. At 375 px the card
+    fits and nothing scrolls sideways.
+  - The real home was unchanged afterwards.
+
+Not in this change:
+
+- A Stop that lands during a reflect pass on an empty roadmap ends the
+  session as "stuck, needs you" rather than "stopped by you": the daemon's
+  empty-roadmap branch decides before it checks for the stop. Seen in the
+  fixture; it predates this change.
+
 ## September 25 a plan's specialists report under its card — source only, not released
 
 **A plan's specialists showed up as turns of the conversation.** A plan
@@ -1110,7 +1210,8 @@ Validation on September 25, 2026:
 Not in this change:
 
 - The autonomous daemon's REFLECT pass (`make_reflect_runner`) forwards its
-  specialist's events without the tag, so they still arrive as turns.
+  specialist's events without the tag, so they still arrive as turns. (Since
+  addressed: see "September 25 a reflect pass reports under its own card".)
 - After a reload during a plan, its events reach the page again only once
   another plan command is sent from it (`get_intent_service` rebinds the
   socket then).

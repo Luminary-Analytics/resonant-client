@@ -374,7 +374,10 @@ work details, so nothing is added to it.
 
 A plan (a `/plan` message, or a Mission's **Build this roadmap**) reports
 under its own card (Unreleased): the `/plan` message, or a "Plan" card named
-from the roadmap's spec. Each specialist has a line, for example "Implementer
+from the roadmap's spec, headed by that label and name rather than drawn as
+your message. An autonomous session's reflect pass reports the same way,
+under a "Reflection" card (see [autonomous sessions](autonomous-sessions.md)).
+Each specialist has a line, for example "Implementer
 · Add a toggle to the settings page · done · 2 actions · 1s", open while it
 runs with its commands, edits and prose. A finished line folds; one that
 didn't finish, or whose check asked for a repair, stays open. A status line

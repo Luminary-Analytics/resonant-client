@@ -174,6 +174,8 @@ const LUMI_EVENT_DELEGATES = {
     'mission_phase_changed': 'handleMissionPhaseChanged',
     'project_files': 'handleProjectFiles',
     'rag_results': 'handleRagResults',
+    'reflect.done': 'handleReflectDone',
+    'reflect.start': 'handleReflectStart',
     'session.end': 'handleSessionEnd',
     'session_history_page': 'handleSessionHistoryPage',
     'session.start': 'handleSessionStart',
@@ -7952,6 +7954,11 @@ class LumiApp {
     // the completion verdict with Retry, the next-prompt suggestion, or focus.
     // Plan activity isn't saved with the conversation; the Plan tab's History
     // keeps the plan's snapshots.
+    //
+    // An autonomous session's REFLECT pass (gui/autonomous_factory.py) runs
+    // one specialist the same way, outside IntentService. It reports as a
+    // one-step plan with an id of its own, under a "Reflection" card:
+    // reflect.start, its specialist's tagged events, then reflect.done.
 
     /**
      * Plans shown on this page, by intent id, and /plan cards whose plan
@@ -7965,7 +7972,8 @@ class LumiApp {
 
     _newPlanRun(intentId) {
         return {
-            intentId, intentText: '', request: '', fromUser: false, card: null,
+            // kind: 'plan', or 'reflect' for a REFLECT pass (handleReflectStart).
+            intentId, kind: 'plan', intentText: '', request: '', fromUser: false, card: null,
             steps: new Map(), currentNodeId: '', status: 'running', error: '',
             toolCount: 0, firstTs: 0, lastTs: 0, allDone: null,
         };
@@ -8059,9 +8067,13 @@ class LumiApp {
         }
         const nodeId = String(wrapped.node_id || '');
         if (!nodeId || !['node.start', 'node.done'].includes(wrapped.kind)) return;
-        const ts = Number(wrapped.ts) || 0;
+        this._applyPlanNodeEvent(run, wrapped.kind, nodeId, payload, Number(wrapped.ts) || 0);
+    }
+
+    /** A specialist's step starts (node.start) or ends (node.done). */
+    _applyPlanNodeEvent(run, kind, nodeId, payload, ts) {
         const step = this._planStep(run, nodeId, payload);
-        if (wrapped.kind === 'node.start') {
+        if (kind === 'node.start') {
             run.currentNodeId = nodeId;
             step.status = 'running';
             step.startTs = ts;
@@ -8077,6 +8089,31 @@ class LumiApp {
         }
         this._renderPlanStep(run, step);
         this._setPlanStatus(run, run.status === 'starting' ? 'running' : run.status);
+    }
+
+    /**
+     * An autonomous session's REFLECT pass starts: a one-step plan whose id
+     * is its own, named by the event (not claimed by a waiting /plan card).
+     * Its specialist's events follow, tagged `_source: "intent"`.
+     */
+    handleReflectStart(event) {
+        const run = this._planRunFor(event);
+        if (!run) return;
+        run.kind = 'reflect';
+        if (!run.intentText) run.intentText = String(event.text || '').trim();
+        this._applyPlanNodeEvent(run, 'node.start', String(event.node_id || 'reflect'), {
+            specialization: event.specialization || 'reflect', goal: String(event.goal || ''),
+        }, Number(event.ts) || 0);
+    }
+
+    /** The REFLECT pass ended: done, abandoned (the session was stopped) or blocked. */
+    handleReflectDone(event) {
+        const run = this._planRunFor(event);
+        if (!run) return;
+        const status = String(event.status || 'done');
+        this._applyPlanNodeEvent(run, 'node.done', String(event.node_id || run.currentNodeId || 'reflect'),
+            { status, error: event.error || '' }, Number(event.ts) || 0);
+        this._setPlanStatus(run, { done: 'complete', abandoned: 'cancelled' }[status] || 'failed');
     }
 
     /** A plan specialist's engine event, drawn in its step and nowhere else. */
@@ -8111,12 +8148,18 @@ class LumiApp {
         }
     }
 
-    /** The plan's card: the /plan message, or a "Plan" card for a plan started elsewhere. */
+    /**
+     * The plan's card: the /plan message, or a "Plan" card for a plan
+     * started elsewhere, or a "Reflection" card for a REFLECT pass.
+     */
     _planCard(run) {
         if (run.card) return run.card;
         this._removeChatEmptyState();
         const card = document.createElement('article');
         card.className = 'task-card plan-card task-card-running';
+        // A plan the person didn't send is headed by its label and title,
+        // not drawn as their message (styles.css, .plan-card-lumi).
+        if (!run.fromUser) card.classList.add('plan-card-lumi');
         // Not a message of the session: forking from a later message counts
         // only the session's own (_forkFromUserMessage).
         card.dataset.userMessage = 'plan';
@@ -8127,10 +8170,10 @@ class LumiApp {
         main.className = 'task-card-main';
         const label = document.createElement('div');
         label.className = 'task-card-label';
-        label.textContent = run.fromUser ? 'You' : 'Plan';
+        label.textContent = run.fromUser ? 'You' : (run.kind === 'reflect' ? 'Reflection' : 'Plan');
         const request = document.createElement('div');
         request.className = 'task-request-text';
-        request.textContent = run.request || this._planTitle(run.intentText) || 'Plan';
+        request.textContent = run.request || this._planTitle(run.intentText) || label.textContent;
         main.appendChild(label);
         main.appendChild(request);
         header.appendChild(main);
@@ -8244,7 +8287,14 @@ class LumiApp {
         if (!card) return;
         const current = run.steps.get(run.currentNodeId);
         const counts = this._planCounts(run);
-        const [state, label, detail] = {
+        const statuses = run.kind === 'reflect' ? {
+            // One step, whose line already says what it checks, and no
+            // Plan-tab controls: a REFLECT pass runs, then ends one way.
+            running: ['running', 'Reflection running', ''],
+            complete: ['done', 'Reflection done', counts],
+            cancelled: ['warning', 'Reflection stopped', counts],
+            failed: ['error', 'Reflection failed', counts],
+        } : {
             starting: ['running', 'Starting plan', ''],
             running: ['running', 'Plan running', current ? `${current.titleEl.textContent}: ${current.goalEl.textContent}` : ''],
             paused: ['warning', 'Plan paused', 'No new step starts until you resume it in the Plan tab.'],
@@ -8253,7 +8303,8 @@ class LumiApp {
             cancelled: ['warning', 'Plan cancelled', counts],
             failed: ['error', 'Plan failed', run.error || 'The plan stopped with an error.'],
             not_started: ['error', 'Plan not started', run.error],
-        }[run.status] || ['running', 'Plan running', ''];
+        };
+        const [state, label, detail] = statuses[run.status] || statuses.running;
         card.statusEl.className = `task-run-summary plan-run-status is-${state}`;
         card.markEl.textContent = { done: 'OK', warning: '!', error: '!' }[state] || '';
         card.labelEl.textContent = label;
@@ -8264,7 +8315,8 @@ class LumiApp {
 
     _planCounts(run) {
         const steps = run.steps.size;
-        const parts = [`${steps} step${steps === 1 ? '' : 's'}`];
+        // A REFLECT pass is always one step.
+        const parts = run.kind === 'reflect' ? [] : [`${steps} step${steps === 1 ? '' : 's'}`];
         if (run.toolCount) parts.push(`${run.toolCount} action${run.toolCount === 1 ? '' : 's'}`);
         if (run.firstTs && run.lastTs > run.firstTs) parts.push(this._formatRunDuration(run.lastTs - run.firstTs));
         return parts.join(' · ');

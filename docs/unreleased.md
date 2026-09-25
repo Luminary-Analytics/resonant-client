@@ -8,6 +8,49 @@ The heartbeat remains paused. Documentation maintenance does not resume work,
 spending or grants, and changes no native implementation or installed bundle.
 The dated September 15/18 records below are historical.
 
+## September 25 sharing a conversation — source only, not released
+
+- **Share…** in a conversation's menu (`lumi/share.py`,
+  [guide](lumi-cloud.md#sharing-a-conversation)) puts a read-only copy in the
+  signed-in person's Lumi Cloud organization and shows its link, with **Copy
+  link** and **Stop sharing**. Lumi Cloud shows it to the organization's
+  members or, when an owner or admin allows it, to anyone with the link
+  (Luminary-Analytics/lumi-cloud#19).
+- The copy holds people's messages, Lumi's replies and a line for each
+  action, marked when it failed. It never holds tool results. Saved keys and
+  secret patterns are removed (`secret_scan.redact_text`), and the project
+  appears by its folder's name. `CloudClient.account_call` reaches Lumi
+  Cloud's API as the signed-in person. The links are remembered in
+  `shares.json` in Lumi's state folder.
+- The conversation menu is now buttons with menu roles: it opens with its
+  first item focused, arrow keys move through it, Escape or Tab closes it and
+  focus returns to the conversation. Enter or Space on a conversation's ⋯
+  button opens the menu instead of the conversation.
+
+Validation on September 25, 2026: `test_share.py` covers what the copy holds
+(no tool output, failed and denied actions marked, a saved key and a GitHub
+token removed, the folder's name only) and the dialog's commands with a fake
+Lumi Cloud: status, sharing a conversation saved in another recent project,
+stopping, a refusal and a conversation that isn't saved. Replay's lookup,
+now shared with sharing, is checked on the same saved conversation.
+
+A cross-check ran the real Lumi Cloud of that branch and these commands in
+one process: a link share was refused until the owner allowed it; the
+organization's link opened for its member with `no-store`, `no-referrer` and
+`noindex` headers, sent a signed-out visitor to sign in, and showed "Nothing
+is shared here" to someone outside the organization; tool output never
+reached the page; stopping closed the link.
+
+In the browser pane, with Lumi Cloud and an isolated app running together,
+the conversation's menu was opened with the mouse and from the keyboard (Tab
+to ⋯, Enter, arrows, Enter). The dialog refused a link share with the
+organization's message, created the organization's link with Enter, showed it
+again on reopening, fell back to selecting the link when the clipboard was
+refused, closed with Escape with focus back on the ⋯ button, and stopped
+sharing. The portal's page showed the conversation (failed action in red) in
+dark and light, at phone width without sideways scrolling, and "Nothing is
+shared here" after stopping. The dialog fit a 420-pixel window.
+
 ## September 25 worker handoffs report only what happened — source only, not released
 
 **A worker's handoff listed files it never changed.** The handoff a delegated

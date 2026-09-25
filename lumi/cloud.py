@@ -499,6 +499,11 @@ class CloudClient:
         self._device_access = (token, time.monotonic() + max(60, int(answer.get("expires_in") or 3600)) - 60)
         return token
 
+    def account_call(self, method: str, path: str, **kwargs: Any) -> dict:
+        """Lumi Cloud's API as the signed-in person (shared sessions, lumi/share.py); {} for no content."""
+        token = self._access_token()
+        return self._call(method, f"{self.url}{path}", headers={"Authorization": f"Bearer {token}"}, **kwargs)
+
     def device_call(self, method: str, path: str, **kwargs: Any) -> dict:
         """Lumi Cloud's device API as this computer (tasks from chat, lumi/remote_tasks.py); {} for no content."""
         token = self._device_token()

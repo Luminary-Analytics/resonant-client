@@ -1178,21 +1178,13 @@ async def _skill_pin_toggle(ctx: CommandContext) -> None:
 # ---------------------------------------------------------------------------
 
 
-@command("get_session_replay_events")
-async def _get_session_replay_events(ctx: CommandContext) -> None:
-    """Fetch a session's display events without switching the active one."""
-    from .sessions import _sessions_dir, is_valid_session_id
+def _saved_session(ctx: CommandContext, target_id: str, project_path: str):
+    """A saved conversation by id, from ``project_path`` or any recent project; None when there's none."""
+    from .sessions import SessionRecord, _sessions_dir, is_valid_session_id
 
-    target_id = ctx.msg.get("session_id", "")
-    project_path = ctx.msg.get("project_path") or ctx.project_path
     if not is_valid_session_id(target_id):
-        await ctx.send({
-            "event": "session_replay_events", "session_id": target_id,
-            "error": "not found", "events": [],
-        })
-        return
+        return None
     record_project_path = project_path
-
     path = _sessions_dir(project_path) / f"{target_id}.json"
     if not path.exists():
         # The session may belong to a different recent project.
@@ -1205,25 +1197,32 @@ async def _get_session_replay_events(ctx: CommandContext) -> None:
                 path = candidate
                 record_project_path = candidate_root
                 break
-
     if not path.exists():
-        await ctx.send({
-            "event": "session_replay_events", "session_id": target_id,
-            "error": "not found", "events": [],
-        })
-        return
-    try:
-        from .sessions import SessionRecord
+        return None
+    record = SessionRecord.from_dict(json.loads(path.read_text(encoding="utf-8")))
+    record.project_path = record_project_path
+    if record.ledger.path.exists():
+        record.load_ledger()
+    return record
 
-        data = json.loads(path.read_text(encoding="utf-8"))
-        record = SessionRecord.from_dict(data)
-        record.project_path = record_project_path
-        if record.ledger.path.exists():
-            record.load_ledger()
+
+@command("get_session_replay_events")
+async def _get_session_replay_events(ctx: CommandContext) -> None:
+    """Fetch a session's display events without switching the active one."""
+    target_id = ctx.msg.get("session_id", "")
+    project_path = ctx.msg.get("project_path") or ctx.project_path
+    try:
+        record = _saved_session(ctx, target_id, project_path)
+        if record is None:
+            await ctx.send({
+                "event": "session_replay_events", "session_id": target_id,
+                "error": "not found", "events": [],
+            })
+            return
         await ctx.send({
             "event": "session_replay_events",
             "session_id": target_id,
-            "title": data.get("title") or "",
+            "title": record.title or "",
             "events": record.display_events,
         })
     except Exception as exc:
@@ -1231,6 +1230,67 @@ async def _get_session_replay_events(ctx: CommandContext) -> None:
             "event": "session_replay_events", "session_id": target_id,
             "error": str(exc), "events": [],
         })
+
+
+async def _share_state(ctx: CommandContext, session_id: str, **extra: Any) -> None:
+    """The Share dialog: this conversation's link, and where it can be shared."""
+    from .. import share
+
+    status = await asyncio.to_thread(ctx.state.cloud.status)
+    account = status.get("account") or {}
+    await ctx.send({"event": "session_share", "session_id": session_id,
+                    "share": share.remembered().get(session_id), "signed_in": bool(status.get("signed_in")),
+                    "organizations": [{"id": org.get("id"), "name": org.get("name")}
+                                      for org in account.get("organizations") or []], **extra})
+
+
+@command("session_share_status")
+async def _session_share_status(ctx: CommandContext) -> None:
+    await _share_state(ctx, str(ctx.msg.get("session_id") or ""))
+
+
+@command("session_share")
+async def _session_share(ctx: CommandContext) -> None:
+    """Share a read-only copy of a saved conversation in Lumi Cloud (lumi/share.py)."""
+    from .. import share
+    from ..cloud import CloudError
+
+    session_id = str(ctx.msg.get("session_id") or "")
+    project_path = str(ctx.msg.get("project_path") or ctx.project_path or "")
+
+    def work() -> None:
+        record = _saved_session(ctx, session_id, project_path)
+        if record is None:
+            raise CloudError("That conversation isn't saved yet.")
+        copy = share.export(record.display_events, title=record.title, project_path=record.project_path,
+                            model=str(record.model or ""))
+        if not copy["entries"]:
+            raise CloudError("There's nothing in this conversation to share yet.")
+        answer = share.share(ctx.state.cloud, copy, organization_id=str(ctx.msg.get("organization_id") or ""),
+                             visibility=str(ctx.msg.get("visibility") or "organization"))
+        share.remember(session_id, answer)
+
+    try:
+        await asyncio.to_thread(work)
+        await _share_state(ctx, session_id)
+    except CloudError as exc:
+        await _share_state(ctx, session_id, error=str(exc))
+
+
+@command("session_share_stop")
+async def _session_share_stop(ctx: CommandContext) -> None:
+    from .. import share
+    from ..cloud import CloudError
+
+    session_id = str(ctx.msg.get("session_id") or "")
+    shared = share.remembered().get(session_id) or {}
+    try:
+        if shared.get("id"):
+            await asyncio.to_thread(share.stop, ctx.state.cloud, str(shared["id"]))
+        share.remember(session_id, None)
+        await _share_state(ctx, session_id)
+    except CloudError as exc:
+        await _share_state(ctx, session_id, error=str(exc))
 
 
 @command("get_session_history_page")

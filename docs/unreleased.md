@@ -8,6 +8,72 @@ The heartbeat remains paused. Documentation maintenance does not resume work,
 spending or grants, and changes no native implementation or installed bundle.
 The dated September 15/18 records below are historical.
 
+## September 25 a `!command` turn counts only its own work — source only, not released
+
+- **A `!command` turn counts only its own work.** When a command's output
+  goes to the model (`!cmd`), `_runShellShortcut` (`lumi/gui/static/app.js`)
+  reset the turn's state but not its totals, so its "Worked for … · N
+  actions" and its footer time added the previous turn's: "6 actions" for a
+  turn of 2 tool calls after a turn of 4. It now starts new totals, as a
+  typed request does (`_prepareTurnUI`).
+- **Tests for each turn's totals after a reload.** The checkpoint Timeline
+  (below) fixed replay counting each turn's tools on top of the earlier
+  turns'. New tests in `tests/ui_recovery.test.cjs` keep it fixed. They run
+  the real replay, turn-end and summary code, `run_cards.js` included:
+  - two saved turns of 4 calls: "4 actions", "4 tools" and their own footer
+    time each, not "8";
+  - a turn that ended in an error: its own "Worked for" time and actions;
+  - a turn Lumi closed during, settled by the next request with its own work;
+  - a refresh during a run: the unfinished turn counts its replayed calls
+    and the ones that arrive live;
+  - a `!command` turn.
+
+Validation on September 25, 2026:
+
+- Full `pytest` ran while many other sessions' test suites loaded the
+  machine:
+  - before rebasing: 4,345 passed, 5 skipped;
+  - on `main` with the Timeline: 4,350 passed, 5 skipped and 1 failed.
+    `test_exec_list` got a `MemoryError` from psutil listing every process.
+    An earlier run stalled in `test_signin.py`'s mutual-TLS test and was
+    stopped;
+  - on `main` at #68: 4,393 passed, 5 skipped and 1 failed. A
+    `test_pack_install.py` test ran out of paging file starting git;
+  - each of those tests passed alone.
+  - After merging `main` at #76 it wasn't rerun locally, to spare memory
+    with about 12 sessions running. CI passed it there, and again after
+    `main` at #74.
+- After merging `main` at #77, which gives each turn's footer its own model
+  and tokens: `ruff check` clean; the four UI node suites 92 passed.
+- The three new tests fail against the `app.js` from before the Timeline
+  with the reported numbers: "Worked for 2s · 8 actions", "8 tools" and
+  "▣ 4.0s" for the second turn, and "Worked for 5s · 10 actions" for the
+  failed one. Against `main`'s `app.js`, at #68, #76 and #77, only the
+  `!command` test fails ("6 actions"). They also fail if the new totals
+  start before the interrupted card is settled, or if a refreshed turn
+  loses its replayed calls.
+- In the browser pane, with an isolated home and a scripted
+  Ollama-compatible model (4 tool calls per request, 2 per `!command`).
+  Finished cards hide the footer (`styles.css`), so its times were read
+  from the page:
+  - With the `app.js` from before the Timeline, two requests and
+    `!echo hello` said "4", "4" and "6 actions" live, and "4", "8" and
+    "10 actions" after a reload (footers 3.0s, 5.5s and 7.1s).
+  - With this branch's `app.js` on that base, which had the same replay
+    fix, the same saved conversation reloaded as "4", "4" and "2 actions"
+    (3.0s, 2.6s and 1.6s). New live turns, `!echo again` and a request,
+    said "2" and "4 actions", and the same after a reload.
+  - On `main` with the Timeline, and again at #68, the conversation opened
+    from the sidebar after an app restart with each turn's own count.
+    Live turns then gave the same counts after a reload:
+    - with the Timeline, `!echo third` after a replayed 4-call turn said
+      "2 actions" (1.9s);
+    - at #68, a request and then `!echo fourth` said "4" and "2 actions"
+      (3.4s, 1.7s).
+  - After merging `main` at #76, the conversation replayed with each turn's
+    own count. A request and then `!echo fifth` said "4" and "2 actions"
+    (3.0s, 1.5s), live and after a reload.
+
 ## September 25 Evidence calls drawn once — source only, not released
 
 **A read, a search or a check could show twice.** Evidence calls (`file_read`,

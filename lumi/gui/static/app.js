@@ -9923,6 +9923,7 @@ class LumiApp {
             this.collapsedGroup = [];
             this._liveCollapsedGroup = null;
             this._closedEvidenceGroups = [];
+            this._currentTurn = this._freshTurnAggregate();
         }
     }
 

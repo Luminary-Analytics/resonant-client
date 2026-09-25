@@ -328,6 +328,138 @@ test('replay rebuilds changed files from saved results, not saved calls', () => 
     assert.deepEqual(app.changes(), ['notes.txt: Diff +1 −1']);
 });
 
+// A turn's "Worked for … · N actions", its "N steps | M tools" summary and its
+// elapsed footer count that turn's work only, live and after a reload.
+
+// Keeps children and HTML text, which is all the summaries write and read
+// back. Only class selectors find anything.
+function summaryElement() {
+    const el = {
+        className: '', innerHTML: '', textContent: '', hidden: false, isConnected: true,
+        dataset: {}, style: {}, children: [], parentNode: null,
+        get firstChild() { return el.children[0] || null; },
+        get classList() {
+            const names = () => el.className.split(/\s+/).filter(Boolean);
+            return {
+                contains: name => names().includes(name),
+                add: (...more) => { el.className = [...new Set([...names(), ...more])].join(' '); },
+                remove: (...less) => { el.className = names().filter(name => !less.includes(name)).join(' '); },
+            };
+        },
+        appendChild(child) {
+            if (child.parentNode) child.parentNode.children.splice(child.parentNode.children.indexOf(child), 1);
+            child.parentNode = el;
+            el.children.push(child);
+            return child;
+        },
+        prepend(child) { el.appendChild(child); el.children.unshift(el.children.pop()); },
+        append(...children) { children.forEach(child => el.appendChild(child)); },
+        insertAdjacentElement(where, child) {
+            const parent = el.parentNode;
+            if (where !== 'afterend' || !parent) return null;
+            parent.appendChild(child);
+            parent.children.splice(parent.children.indexOf(el) + 1, 0, parent.children.pop());
+            return child;
+        },
+        querySelector(selector) {
+            const name = /^(?::scope > )?\.([\w-]+)$/.exec(selector)?.[1];
+            return (name && el.children.find(child => child.classList.contains(name))) || null;
+        },
+        querySelectorAll: () => [],
+        addEventListener() {},
+        setAttribute() {},
+    };
+    return el;
+}
+
+// The real turn handlers and summaries, with run_cards.js mixed in as
+// applyMixin (app.js) does. Thinking dots, tool rows, scrolling and the
+// server are stubbed.
+function turnSummaryApp() {
+    const context = vm.createContext({console, Event, URLSearchParams, performance, WebSocket: {OPEN: 1}, window: {},
+        document: {getElementById: () => null, createElement: summaryElement}});
+    vm.runInContext(source + '\nthis.App = LumiApp;', context);
+    vm.runInContext(fs.readFileSync(path.join(__dirname, '../lumi/gui/static/run_cards.js'), 'utf8'), context);
+    const runCards = Object.getOwnPropertyDescriptors(context.window.LumiRunCards.prototype);
+    delete runCards.constructor;
+    Object.defineProperties(context.App.prototype, runCards);
+    const app = Object.create(context.App.prototype);
+    const noop = () => {};
+    Object.assign(app, {
+        userInput: {value: '', style: {}}, chatMessages: summaryElement(),
+        activeTerminals: new Map(), subagentContainers: new Map(), subagentStreams: new Map(),
+        handlesTools: false, lastModel: '', lastStats: null,
+        removeThinking: noop, addThinking: noop, setRunning: noop, scrollToBottom: noop, clearTerminals: noop,
+        requestGitStatus: noop, send: noop, renderToolResult: noop, showResumeButton: noop,
+        renderToolCall: () => app.getRenderTarget().appendChild(summaryElement()),
+    });
+    // What each task card says once its turn is over.
+    app.cards = () => app.chatMessages.children.filter(card => card.classList.contains('task-card')).map(card => {
+        const part = (parent, name) => parent.children.find(child => child.classList.contains(name));
+        const [, activity, , footer] = card.children;
+        const worked = part(activity, 'task-activity-details')?.children[0].innerHTML || '';
+        return {
+            worked: [/task-activity-title">([^<]*)/, /task-activity-meta">([^<]*)/]
+                .map(pattern => pattern.exec(worked)?.[1]).filter(Boolean).join(' · '),
+            summary: /task-run-detail">([^<]*)/.exec(part(footer, 'task-run-summary')?.innerHTML)?.[1] || '',
+            footer: (part(footer, 'turn-footer')?.innerHTML || '').replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim(),
+        };
+    });
+    return app;
+}
+
+// One turn as the ledger saves it: the request, a step of edits, the turn's
+// end. `ended: false` is a turn Lumi closed during.
+function savedTurn(text, calls, elapsed, {ended = true} = {}) {
+    const edits = Array.from({length: calls}, (_, index) => editCall(`${text}_${index}`, `${text}_${index}.txt`));
+    const events = [{event: 'user_message', text}, {event: 'step.start', step: 1},
+        ...edits.flatMap(call => [call, toolResult(call)])];
+    if (!ended) return events;
+    return [...events, {event: 'step.end', step: 1, elapsed}, {event: 'session.end', total_elapsed: elapsed,
+        total_steps: 1, outcome: 'changed_verified', evidence: {changed_files: edits.map(call => call.arguments.path),
+        checks: [{status: 'passed', requirement: 'Tests pass', command: 'pytest -q'}]}}];
+}
+
+test('each replayed turn reports its own actions, tools and time', () => {
+    const app = turnSummaryApp();
+    // The third turn's model failed in its second step.
+    const failed = [...savedTurn('third', 2, 0, {ended: false}), {event: 'step.end', step: 1, elapsed: 1.25},
+        {event: 'step.start', step: 2}, {event: 'error', message: 'The model stopped responding.'},
+        {event: 'step.end', step: 2, elapsed: 0.25}, {event: 'session.end', total_elapsed: 1.5, total_steps: 2, outcome: 'failed'}];
+    app.replayDisplayEvents([...savedTurn('first', 4, 1.5), ...savedTurn('second', 4, 2.5), ...failed]);
+    assert.deepEqual(app.cards(), [
+        {worked: 'Worked for 1s · 4 actions', summary: '1 step | 4 tools | 4 files | 1/1 named checks passed | 1s', footer: '▣ 1.5s'},
+        {worked: 'Worked for 2s · 4 actions', summary: '1 step | 4 tools | 4 files | 1/1 named checks passed | 2s', footer: '▣ 2.5s'},
+        {worked: 'Worked for 1s · 2 actions', summary: 'The model stopped responding.', footer: ''},
+    ]);
+});
+
+test('an interrupted turn keeps its own totals, and a reconnected turn counts on live', () => {
+    // The next saved request settles a turn Lumi closed during, with that turn's work.
+    const app = turnSummaryApp();
+    app.replayDisplayEvents([...savedTurn('closed', 3, 0, {ended: false}), ...savedTurn('next', 2, 1.5)]);
+    assert.deepEqual(app.cards().map(card => card.worked), ['Work details · 3 actions', 'Worked for 1s · 2 actions']);
+
+    // A refresh mid-run replays the unfinished turn (its request, step start and
+    // first two calls); the rest of it arrives live.
+    const live = turnSummaryApp();
+    const running = savedTurn('running', 4, 2);
+    live.replayDisplayEvents([...savedTurn('done', 4, 1.5), ...running.slice(0, 6)], {activeRun: true});
+    running.slice(6).forEach(event => live.handleEvent(event));
+    assert.deepEqual(live.cards().at(-1),
+        {worked: 'Worked for 2s · 4 actions', summary: '1 step | 4 tools | 4 files | 1/1 named checks passed | 2s', footer: '▣ 2.0s'});
+});
+
+test('a !command turn counts only its own actions', () => {
+    const app = turnSummaryApp();
+    app._renderShellSnippetRunning = () => summaryElement();
+    app.replayDisplayEvents(savedTurn('earlier', 4, 1.5));
+    app._runShellShortcut('git status', true);
+    // Live, no user_message arrives: the command's snippet stands in for it.
+    savedTurn('!git status', 2, 1).slice(1).forEach(event => app.handleEvent(event));
+    assert.deepEqual(app.cards().map(card => card.worked), ['Worked for 1s · 4 actions', 'Worked for 1s · 2 actions']);
+});
+
 // The application account must never inherit another provider's identity.
 function accountView(settings = {}, sonnAccount, document = {}) {
     const context = vm.createContext({window: {}, document});

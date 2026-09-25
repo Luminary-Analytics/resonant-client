@@ -35,6 +35,7 @@ from ..content import build_user_content
 from .tools import (
     AGENT_TOOLS,
     BATCH_ALLOWED_TOOL_NAMES,
+    COMPUTER_ACCESS_TOOL_NAMES,
     DESKTOP_TOOL_NAMES,
     DIRECTOR_TOOLS,
     execute_tool,
@@ -884,6 +885,11 @@ class Session:
         is materially worse than not having the tool. Advertising them also
         spends schema budget on every request for a capability that cannot work.
         """
+        if not self.computer_use_enabled:
+            return [
+                tool for tool in tools
+                if (tool.get("function") or {}).get("name") not in COMPUTER_ACCESS_TOOL_NAMES
+            ]
         if self._supports_computer_use():
             return tools
         return [
@@ -1370,9 +1376,10 @@ class Session:
                 f"Tool '{tool_name}' arguments must be a JSON object, got "
                 f"{type(tool_args).__name__}."
             )
-        if tool_name in DESKTOP_TOOL_NAMES and not self.computer_use_enabled:
+        if tool_name in COMPUTER_ACCESS_TOOL_NAMES and not self.computer_use_enabled:
             # Not offered to the model when off, but history or a guess can
-            # still name one.
+            # still name one. That covers the clipboard, screen recording and
+            # accessibility tools too, not only the screen-driving ones.
             raise ToolBoundaryViolation(
                 "Computer use is turned off (Settings > Privacy & security, or your "
                 "organization's policy)."

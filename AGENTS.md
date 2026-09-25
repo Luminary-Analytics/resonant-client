@@ -128,6 +128,12 @@ host enrollment and actual packaged/learned-benefit qualification remain open.
   app: `engine/policies.project_execution_policy`, `ExclusionRules`, workspace
   trust and policy checks. Keep the two in step, and never let a headless run
   trust a repository unless it was trusted in the app or `--trust-project` is set.
+- Computer use: `security.computer_use` (and policy) gates every tool in
+  `tools.COMPUTER_ACCESS_TOOL_NAMES`: the screen, input, other apps'
+  interfaces and the clipboard, not only the screen-driving
+  `DESKTOP_TOOL_NAMES`. A new tool that reaches outside the project must join
+  that set. Never write model-supplied text into AppleScript or other script
+  source; pass it as an argument (`on run argv`).
 - Scheduled tasks (`schedules.py`) run `lumi schedule run <id>`, which is a
   `lumi run`; a schedule never passes `--trust-project`. Only `save`,
   `set_enabled` and `remove` touch the OS scheduler (schtasks, launchctl,

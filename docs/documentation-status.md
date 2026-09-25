@@ -64,6 +64,8 @@ guidance needs an explicit status notice and a current replacement.
 - [docs/sonn.md](sonn.md)
 - [docs/documentation-status.md](documentation-status.md)
 - [docs/skills.md](skills.md)
+- [docs/index.md](index.md): the documentation site's home page
+- [docs/packs.md](packs.md)
 - [docs/unreleased.md](unreleased.md)
 
 ## Historical plans and subsystem records

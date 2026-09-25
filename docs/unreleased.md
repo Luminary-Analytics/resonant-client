@@ -8,6 +8,37 @@ The heartbeat remains paused. Documentation maintenance does not resume work,
 spending or grants, and changes no native implementation or installed bundle.
 The dated September 15/18 records below are historical.
 
+## September 25 documentation site — source only, not published
+
+- **The user and administrator guides build as a site** (`mkdocs.yml`, MkDocs
+  with the Material theme, in Lumi's gold-on-night colors with light and dark
+  modes). [The home page](index.md) groups them:
+  - **Using Lumi**: getting started, models, enterprise sign-in, usage and
+    costs, updates, macOS and plans;
+  - **For organizations**: policy, Windows deployment, the audit log, running
+    without a UI, and GitHub;
+  - **Extending Lumi**: capability packs, skills and creative editors.
+- **[Writing a capability pack](packs.md)** is new: the manifest's fields,
+  agent and skill files, every hook type, how approval and digests work, and
+  sharing a pack from Git.
+- The **Docs** workflow builds the site with `mkdocs build --strict` on every
+  pull request and keeps it as the `lumi-docs-site` artifact. It isn't
+  published anywhere yet; where it goes (GitHub Pages or the Lumi website)
+  needs the owner's decision. Build it locally with
+  `pip install -r packaging/docs-requirements.txt` and `mkdocs serve`.
+- Historical plans and release notes are built but left out of the site's
+  navigation. `docs/README.md`, the repository's documentation index, isn't
+  part of the site, because it and the site's home page would share an
+  address.
+
+Validation on September 25, 2026:
+
+- `test_docs_links.py`: every page in the navigation exists, and every
+  relative link in those pages points to a file in the repository.
+- Full `pytest`: 3,856 passed, 3 skipped.
+- MkDocs isn't installed on the development machine, so the site itself is
+  built by the Docs workflow on the pull request.
+
 ## September 25 free for individuals: About Lumi and plans — source only, not released
 
 - **Settings > About Lumi**, also opened from **Help > About Lumi**, which

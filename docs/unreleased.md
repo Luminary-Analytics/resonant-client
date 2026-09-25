@@ -8,6 +8,78 @@ The heartbeat remains paused. Documentation maintenance does not resume work,
 spending or grants, and changes no native implementation or installed bundle.
 The dated September 15/18 records below are historical.
 
+## September 24 network trust, credential store and secret hygiene — source only, not released
+
+- **Corporate networks** (`lumi/net.py`, **Settings > Connections > Network**):
+  - TLS is verified with the operating system's certificate store (`truststore`),
+    so a company root certificate used for TLS inspection works without exporting
+    PEM bundles. A toggle turns this off.
+  - A configured proxy is exported as `HTTPS_PROXY`/`HTTP_PROXY`, and a bypass list
+    is added to `NO_PROXY`. Local addresses always connect directly.
+  - Clearing the proxy restores the variables the user's own environment had.
+  - Proxy URLs with a user name or password are refused; authenticating proxies
+    need a machine-level proxy or a local helper.
+- **API keys in the OS credential store** (`lumi/secrets_store.py`): keys saved in
+  Settings go to Windows Credential Manager, the macOS Keychain or the Secret
+  Service (service `Lumi`), and `settings.json` keeps the placeholder
+  `__keychain__`.
+  - Existing plaintext keys move on first load.
+  - Settings says where keys are kept.
+  - The store is never used while settings live in the legacy `~/.resonant`
+    folder: an older SONN Client sharing that folder would read the placeholder as
+    its key.
+  - `LUMI_KEYCHAIN=off` and `LUMI_KEYCHAIN_SERVICE` control it.
+- **Keys stay out of child processes:** the agent's shell, hooks, stdio MCP servers,
+  managed jobs and previews, the Python REPL, automatic tests and lint, and
+  acceptance checks start without Lumi's model-provider keys
+  (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY` and the others in
+  `secrets_store.PROVIDER_KEY_ENV`). An MCP server's own `env` entries still apply.
+  Codex and Claude Code keep their environment.
+- **Secrets removed before each model request** (`lumi/secret_scan.py`):
+  - The values of saved keys, sensitive settings and provider keys in the
+    environment are always replaced in tool output. Values shorter than 16
+    characters are ignored.
+  - **Settings > Privacy & security > Scan for secrets** (off by default) also
+    replaces well-known credential formats in tool output and in your messages:
+    cloud and platform keys, tokens, private keys, passwords in connection
+    strings and `.env` lines.
+  - The model sees `[REDACTED <kind>]`, and the chat shows a note saying what was
+    removed. Codex and Claude Code read files through their own tools and are not
+    scanned.
+- **Diagnostics redact by value:** **Help > Save diagnostics** removes the actual
+  values of saved keys (including keys in the credential store) wherever they
+  appear, in addition to the existing patterns. The embedded `settings.json` is
+  masked field by field, so a triager still sees which providers were configured.
+- Settings no longer rebuilds a form under a click. After a toggle or menu saved,
+  clicking straight into a text or key field lost the typing, because the
+  deferred refresh ran before the clicked field had focus.
+- `truststore` and `keyring` are now core dependencies. `packaging/bundle-policy.json`
+  requires keyring's entry-point metadata in the bundle, because without it the
+  frozen app would silently keep keys in `settings.json`.
+
+Validation on September 24, 2026:
+
+- 53 new tests: `test_secret_hygiene.py`, `test_network_settings.py`,
+  `test_secret_scan.py`.
+  - The credential store is an in-memory keyring.
+  - The shell, a hook and an MCP server are checked for the key they must not
+    receive.
+  - Two turns with a scripted backend confirm that the model never received a
+    planted token or a saved key.
+- Full `pytest`: 3,570 passed, 2 skipped.
+- In the browser pane against an isolated home, with an in-memory keyring and the
+  scripted Ollama stub:
+  - The scan toggle, the proxy (a credentialed URL was refused, a valid one saved
+    normalized), the bypass list and the certificate toggle (by keyboard) were set
+    through Settings.
+  - An OpenAI key was saved to the store and cleared.
+  - A turn that read a file containing a fake GitHub token showed the redaction
+    note, and the stub received `[REDACTED GitHub token]`, never the token.
+  - The Privacy page was checked at phone width.
+
+Not exercised: a real proxy or TLS-inspecting network, the real Windows Credential
+Manager or macOS Keychain (the fixture replaced them), and the packaged app.
+
 ## September 24 model connections: Anthropic, OpenAI and custom endpoints — source only, not released
 
 - **Anthropic (Claude):** a native Messages API adapter (`lumi/anthropic_api.py`)

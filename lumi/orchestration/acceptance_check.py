@@ -60,6 +60,7 @@ from typing import Callable, Optional
 from lumi.processes import background_process_kwargs
 
 from ..gui.roadmap import AcceptanceCriterion
+from ..secrets_store import child_env
 
 logger = logging.getLogger(__name__)
 
@@ -160,6 +161,7 @@ class BashRunner:
                 proc = subprocess.run(
                     [bash_path, "-c", command],
                     cwd=self.cwd,
+                    env=child_env(),
                     capture_output=True,
                     text=True,
                     timeout=self.timeout_seconds,
@@ -174,6 +176,7 @@ class BashRunner:
                     command,
                     shell=True,
                     cwd=self.cwd,
+                    env=child_env(),
                     capture_output=True,
                     text=True,
                     timeout=self.timeout_seconds,

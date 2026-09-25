@@ -9650,6 +9650,17 @@ body {
     font-variant-numeric: tabular-nums;
 }
 
+/* Secrets removed from a model request (lumi/secret_scan.py). */
+.backend-status-privacy {
+    background: color-mix(in srgb, var(--accent) 10%, var(--bg-secondary, transparent));
+    border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
+    color: var(--text);
+}
+
+.backend-status-privacy .backend-status-icon {
+    color: var(--accent);
+}
+
 /* ── v0.6.4 (F2): persistent retry-exhausted chip ─────────────── */
 
 .backend-status-exhausted {

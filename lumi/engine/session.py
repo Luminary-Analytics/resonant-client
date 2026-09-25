@@ -29,6 +29,7 @@ from ..backends import (
     EVENT_BACKEND_STATUS,
     EVENT_EXTERNAL_TOOL,
 )
+from .. import secret_scan
 from ..events import EngineEvent, make_event
 from ..content import build_user_content
 from .tools import (
@@ -1876,6 +1877,19 @@ class Session:
                     message_id=steering["message_id"],
                     text=steering["text"],
                     step=exec_step + 1,
+                )
+            # Secrets never reach the model or the summarizer: saved key
+            # values always, and known credential formats when the scan is
+            # on (lumi/secret_scan.py). The current message is scrubbed like
+            # its history copy so adapters still recognise it as sent.
+            redacted = secret_scan.scrub_history(self.conversation_history)
+            current_msg, _ = secret_scan.scrub_user_message(current_msg)
+            if redacted:
+                yield make_event(
+                    EngineEvent.BACKEND_STATUS,
+                    kind="secrets_redacted",
+                    message=secret_scan.describe(redacted),
+                    kinds=dict(redacted),
                 )
             # A single specialist turn can add dozens of tool results, so
             # enforce the real backend window before every inference step.

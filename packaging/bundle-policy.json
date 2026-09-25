@@ -33,7 +33,8 @@
     "_internal/lumi/orchestration/bundled_skills/browser-acceptance.md",
     "_internal/lumi/orchestration/bundled_skills/transaction-acceptance.md",
     "_internal/lumi/browser_extension/manifest.json",
-    "_internal/lumi/browser_extension/background.js"
+    "_internal/lumi/browser_extension/background.js",
+    "_internal/keyring-*.dist-info/entry_points.txt"
   ],
   "required_executables": [
     { "path": "_internal/rg.exe", "version_contains": "ripgrep 15.2.0" }

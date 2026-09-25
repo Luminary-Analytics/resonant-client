@@ -15,6 +15,7 @@ from urllib.parse import urlsplit
 import urllib.request
 
 from lumi.processes import background_process_kwargs, windows_kill_job, close_windows_job
+from lumi.secrets_store import child_env
 
 
 class PreviewManager:
@@ -38,7 +39,7 @@ class PreviewManager:
             with socket.socket() as probe:
                 if probe.connect_ex(('127.0.0.1', parsed.port)) == 0:
                     raise ValueError('Preview port is already in use; choose another port.')
-            process = subprocess.Popen(argv, cwd=root, stdin=subprocess.DEVNULL,
+            process = subprocess.Popen(argv, cwd=root, stdin=subprocess.DEVNULL, env=child_env(),
                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                 **background_process_kwargs(new_process_group=True))
             try:

@@ -926,6 +926,13 @@ class LumiSettingsView {
     }
 
 
+    _secretStorageNote() {
+        const storage = this.settings?._meta?.secret_storage;
+        if (!storage) return '';
+        if (storage.keychain) return `Keys you save here are kept in ${storage.store || 'your system credential store'}; settings.json holds only a placeholder.`;
+        return `Keys you save here are kept in ~/.lumi/settings.json. ${storage.reason || ''}`.trim();
+    }
+
     _settingsPages() {
         return [
             {id:'general', title:'General', group:'Personal', icon:'settings', description:'Choose how the agent works and which models new sessions use.', sections:['general'], fields:['default_permission_mode','default_backend','default_model','auto_lint_after_edits','auto_test_after_edits','auto_test_command','max_model_requests','big_context_profile','harness_enabled'], keywords:'permissions approval workflow'},
@@ -934,13 +941,14 @@ class LumiSettingsView {
             {id:'pets', title:'Pets', group:'Personal', icon:'pet', description:'A little company while you build.', sections:['general'], fields:['show_companion'], keywords:'Echo companion'},
             {id:'sonn_account', title:'SONN account & credits', group:'Personal', icon:'person', description:'Your authenticated SONN identity and prepaid credit balance.', sections:['sonn_account'], keywords:'billing invitation balance'},
             {id:'cost_tracking', title:'Usage & cost', group:'Personal', icon:'chart', description:'Review tracked model usage and local spending alerts.', sections:['cost_tracking'], keywords:'tokens budget'},
-            {id:'provider_connections', title:'Connections', group:'Integrations', icon:'globe', description:'Connect model providers and manage their endpoints and API keys.', sections:['provider_connections','network','api_keys'], keywords:'ChatGPT Codex OpenRouter SONN login authentication'},
+            {id:'provider_connections', title:'Connections', group:'Integrations', icon:'globe', description:'Connect model providers and manage their endpoints and API keys.', sections:['provider_connections','network','api_keys'], keywords:'ChatGPT Codex OpenRouter SONN login authentication proxy certificates TLS keychain'},
             {id:'creative_editors', title:'Creative editors', group:'Integrations', icon:'cube', description:'Work with Blender, Unity, and Unreal Engine 5.', sections:['creative_editors']},
             {id:'mcp_servers', title:'MCP servers', group:'Integrations', icon:'plug', description:'Connect tools supplied by external servers.', sections:['mcp_servers']},
             {id:'engram', title:'Memory', group:'Coding', icon:'book', description:'Configure the optional Engram memory service.', sections:['engram']},
             {id:'rag', title:'Codebase index', group:'Coding', icon:'book', description:'Index your project for semantic code search.', sections:['rag'], keywords:'RAG files repository'},
             {id:'hooks', title:'Hooks', group:'Coding', icon:'plug', description:'Inspect commands that run at lifecycle events.', sections:['hooks']},
             {id:'capability_packs', title:'Capability packs', group:'Coding', icon:'cube', description:'Review what a pack would run, then approve or revoke it. Nothing in a pack runs until you approve it.', sections:['capability_packs'], keywords:'plugins extensions trust approve repository pack'},
+            {id:'privacy', title:'Privacy & security', group:'Security', icon:'shield', description:'Control what leaves your machine with each model request.', sections:['privacy'], keywords:'secrets redact scan credentials DLP'},
             {id:'local_backends', title:'Ollama runtime', group:'Advanced', icon:'cube', description:'Tune your local model runtime.', sections:['local_backends']},
             {id:'prompt_inspector', title:'Prompt inspector', group:'Advanced', icon:'book', description:'Inspect the instructions used by the active model.', sections:['prompt_inspector']},
             {id:'model_evaluations', title:'Model evaluations', group:'Advanced', icon:'chart', description:'Review model quality and runtime diagnostics.', sections:['model_evaluations']},
@@ -988,9 +996,14 @@ class LumiSettingsView {
                 : (index + (event.key === 'ArrowDown' ? 1 : -1) + buttons.length) % buttons.length;
             event.preventDefault(); buttons[next]?.focus();
         });
-        this.settingsBody.addEventListener('focusout', () => queueMicrotask(() => {
+        // Flush a deferred render once focus has settled. A microtask runs
+        // during the focus change, before the clicked field receives focus, so
+        // it rebuilt the form under the click and dropped what was typed next
+        // (click a toggle, then click into a key field). The render still
+        // waits while the new focus is another field.
+        this.settingsBody.addEventListener('focusout', () => setTimeout(() => {
             if (this._settingsRenderPending) this.renderSettingsView();
-        }));
+        }, 0));
     }
 
     _renderSettingsNavigation(pages) {
@@ -1005,10 +1018,11 @@ class LumiSettingsView {
             plug:'M5 1v4m6-4v4M3 5h10v3a5 5 0 0 1-10 0z M8 13v2',
             book:'M8 3C5 1 2 1 1 2v11c3-1 5 0 7 1 2-1 4-2 7-1V2c-1-1-4-1-7 1z M8 3v11',
             history:'M2 5a6 6 0 1 1 0 6M2 1v4h4M8 4v4l3 2',
+            shield:'M8 1 2 3v5c0 4 3 6 6 7 3-1 6-3 6-7V3z M5.5 8l2 2 3-3.5',
         };
         const nav = document.getElementById('settings-nav');
         const scrollTop = nav.scrollTop, scrollLeft = nav.scrollLeft;
-        nav.innerHTML = ['Personal','Integrations','Coding','Advanced'].map(group => {
+        nav.innerHTML = ['Personal','Integrations','Coding','Security','Advanced'].map(group => {
             const items = pages.filter(page => page.group === group);
             return items.length ? `<div class="settings-nav-group"><h3>${group}</h3>${items.map(page => `<button type="button" id="settings-nav-${page.id}" data-settings-page="${page.id}" ${page.id === this._settingsActivePage ? 'aria-current="page"' : ''}><svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="${icons[page.icon]}" stroke="currentColor" stroke-width="1.15" stroke-linecap="round" stroke-linejoin="round"/></svg><span>${this.escapeHtml(page.title)}</span></button>`).join('')}</div>` : '';
         }).join('');
@@ -1145,21 +1159,38 @@ class LumiSettingsView {
                     { key: 'sonn_url', label: 'SONN API base URL', type: 'text',
                       placeholder: 'https://getsonn.com/v1/workspace/projects/<project-id>/openai/v1',
                       hint: 'Paste your project connection URL ending in /openai/v1. SONN_API_URL is also supported. Model: sonn-auto.' },
+                    { key: 'proxy_url', label: 'Proxy', type: 'text',
+                      placeholder: 'http://proxy.example.com:8080',
+                      hint: 'Sends model, account and update traffic through this proxy. Local addresses always connect directly. Leave blank to use HTTPS_PROXY from your environment.' },
+                    { key: 'no_proxy', label: 'Connect directly to', type: 'text',
+                      placeholder: 'internal.example.com, models.corp.example.com',
+                      hint: 'Comma-separated hosts that bypass the proxy. localhost, 127.0.0.1 and ::1 always do.' },
+                    { key: 'system_certificates', label: 'Use the system certificate store', type: 'toggle', default: true,
+                      hint: 'Trusts the certificates your operating system trusts, including a company root certificate for TLS inspection. Turn off to use only the certificates bundled with Lumi.' },
                 ]
             },
             {
                 id: 'api_keys', title: 'API keys', open: false,
+                note: this._secretStorageNote(),
                 fields: [
                     { key: 'anthropic', label: 'Anthropic API key', type: 'password',
-                      hint: 'Stored locally with your other keys. ANTHROPIC_API_KEY is also supported. Usage is billed to your Anthropic account.' },
+                      hint: 'ANTHROPIC_API_KEY is also supported. Usage is billed to your Anthropic account.' },
                     { key: 'openai', label: 'OpenAI API key', type: 'password',
-                      hint: 'Stored locally with your other keys. OPENAI_API_KEY is also supported. Usage is billed to your OpenAI account.' },
+                      hint: 'OPENAI_API_KEY is also supported. Usage is billed to your OpenAI account.' },
                     { key: 'sonn', label: 'SONN API key', type: 'password',
-                      hint: 'Enter your private invitation key. Stored locally in ~/.lumi/settings.json and hidden after saving. SONN_API_KEY is also supported.' },
+                      hint: 'Enter your private invitation key; it is hidden after saving. SONN_API_KEY is also supported.' },
                     { key: 'openrouter', label: 'OpenRouter API key', type: 'password',
-                      hint: 'Stored locally in ~/.lumi/settings.json. OPENROUTER_API_KEY is also supported. API calls use your OpenRouter credits.' },
+                      hint: 'OPENROUTER_API_KEY is also supported. API calls use your OpenRouter credits.' },
                     { key: 'kimi', label: 'Moonshot API key', type: 'password',
-                      hint: 'Stored locally in ~/.lumi/settings.json. MOONSHOT_API_KEY is also supported and takes effect when no stored key exists.' },
+                      hint: 'MOONSHOT_API_KEY is also supported and takes effect when no stored key exists.' },
+                ]
+            },
+            {
+                id: 'privacy', title: 'Before each model request',
+                note: 'Commands the agent runs, hooks and MCP servers never receive Lumi’s model keys, and your saved keys are removed from tool output before it reaches a model.',
+                fields: [
+                    { key: 'secret_scan', label: 'Scan for secrets', type: 'toggle',
+                      hint: 'Also removes well-known credentials — cloud and platform keys, tokens, private keys, passwords in connection strings and .env lines — from tool output and your messages. The model sees [REDACTED …] in their place. Codex and Claude Code read files through their own tools and are not scanned.' },
                 ]
             },
             {
@@ -1394,6 +1425,7 @@ class LumiSettingsView {
             } else if (section.custom) {
                 bodyHtml = `<div class="settings-row"><span class="settings-row-label" style="color:var(--dim)">Configure in settings.json</span></div>`;
             } else if (section.fields) {
+                if (section.note) bodyHtml += `<div class="settings-row settings-section-note"><div class="settings-row-copy"><span class="settings-row-hint">${this.escapeHtml(section.note)}</span></div></div>`;
                 for (const field of section.fields) {
                     const val = data[field.key] ?? field.default ?? '';
                     let input = '';

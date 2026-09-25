@@ -8966,9 +8966,29 @@ class LumiApp {
             this._renderActionContinuationBanner(event);
         } else if (event.kind === 'ollama_exhausted') {
             this._renderOllamaExhaustedChip(event);
+        } else if (event.kind === 'secrets_redacted') {
+            this._renderSecretsRedactedNotice(event);
         }
         // Future kinds get their own renderers; swallow unknown kinds
         // silently rather than confuse the user with unfamiliar text.
+    }
+
+    /**
+     * The engine removed secrets from a request before it left the
+     * machine (lumi/secret_scan.py). The note stays in the transcript so
+     * the user can tell why the model saw [REDACTED …] text.
+     */
+    _renderSecretsRedactedNotice(event) {
+        if (!this.chatMessages) return;
+        const notice = document.createElement('div');
+        notice.className = 'backend-status-banner backend-status-privacy';
+        notice.setAttribute('role', 'status');
+        notice.innerHTML = `
+            <svg class="backend-status-icon" width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M8 1 2 3v5c0 4 3 6 6 7 3-1 6-3 6-7V3z M5.5 8l2 2 3-3.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            <span class="backend-status-text">${this.escapeHtml(event.message || 'Removed secrets before sending to the model.')}</span>
+        `;
+        this.chatMessages.appendChild(notice);
+        this.scrollToBottom();
     }
 
     _renderEmptyResponseRetryBanner(event) {

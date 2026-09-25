@@ -195,6 +195,14 @@ hiddenimports = [
     "clr",
     "clr_loader",
     "pythonnet",
+
+    # Corporate TLS and the OS credential store (lumi/net.py,
+    # lumi/secrets_store.py) are imported lazily. PyInstaller's keyring hook
+    # adds the backends and the entry-point metadata keyring uses to find
+    # them; bundle-policy.json fails the build if that metadata is missing,
+    # because without it keys silently stay in settings.json.
+    "truststore",
+    "keyring",
 ]
 
 # Pull in all submodules of lumi itself so dynamic imports inside

@@ -23,6 +23,10 @@ import sys
 import time
 import zipfile
 from pathlib import Path
+from typing import Any, Iterable
+
+from .. import secret_scan
+from ..secrets_store import PLACEHOLDER
 
 logger = logging.getLogger(__name__)
 
@@ -60,21 +64,55 @@ _SECRET_PATTERNS: tuple[tuple[re.Pattern, str], ...] = (
 )
 
 
-def redact(text: str) -> str:
+# Known values shorter than this are left alone: short strings such as a
+# dummy "ollama" key would otherwise blank out ordinary log text.
+MIN_KNOWN_SECRET_LENGTH = 8
+
+
+def redact(text: str, known: Iterable[str] = ()) -> str:
     """Strip API keys, tokens, and other obvious secrets from `text`.
 
-    Each line is run through every pattern. Order matters slightly — we
-    catch the prefixed forms (sk-…, ghp_…) before the generic
-    JSON / header captures so the more-specific pattern wins.
+    `known` holds the actual secret values (saved keys, sensitive settings,
+    environment keys); every occurrence is replaced whatever its format.
+    Then each line is run through every pattern. Order matters slightly —
+    we catch the prefixed forms (sk-…, ghp_…) before the generic
+    JSON / header captures so the more-specific pattern wins, and the
+    secret-scan formats (private keys, cloud keys, …) run last.
     """
     if not text:
         return text
+    values = {v.strip() for v in known if isinstance(v, str)}
+    for value in sorted((v for v in values if len(v) >= MIN_KNOWN_SECRET_LENGTH), key=len, reverse=True):
+        text = text.replace(value, "[REDACTED]")
     for pattern, replacement in _SECRET_PATTERNS:
         text = pattern.sub(replacement, text)
+    text, _ = secret_scan.redact_text(text, patterns=True, known=())
     return text
 
 
-def _read_redacted(path: Path, *, max_bytes: int = 2 * 1024 * 1024) -> bytes:
+def mask_settings(data: Any, *, sensitive: bool = False) -> Any:
+    """A copy of parsed settings with every credential replaced.
+
+    All of `api_keys` and any field named like a credential (an MCP server's
+    `GITHUB_TOKEN`, an `Authorization` header) keep only whether a value is
+    set, so a triager can still see which providers were configured.
+    """
+    if isinstance(data, dict):
+        return {
+            key: mask_settings(
+                value,
+                sensitive=sensitive or key == "api_keys" or bool(secret_scan.SENSITIVE_NAME.search(str(key))),
+            )
+            for key, value in data.items()
+        }
+    if isinstance(data, list):
+        return [mask_settings(item, sensitive=sensitive) for item in data]
+    if sensitive and isinstance(data, str) and data:
+        return "[in the OS credential store]" if data == PLACEHOLDER else "[REDACTED]"
+    return data
+
+
+def _read_redacted(path: Path, *, max_bytes: int = 2 * 1024 * 1024, known: Iterable[str] = ()) -> bytes:
     """Read up to `max_bytes` bytes from `path`, decode lossily, run
     through `redact`, return as UTF-8 bytes. Truncation is from the
     HEAD (we want the most-recent log lines, which sit at the tail).
@@ -94,7 +132,7 @@ def _read_redacted(path: Path, *, max_bytes: int = 2 * 1024 * 1024) -> bytes:
     text = raw.decode("utf-8", errors="replace")
     if offset > 0:
         text = f"[…truncated head: kept last {max_bytes:,} bytes…]\n" + text
-    return redact(text).encode("utf-8")
+    return redact(text, known).encode("utf-8")
 
 
 # ── Bundle layout ────────────────────────────────────────────────────────
@@ -124,7 +162,7 @@ LATEST_N_ITERS_PER_INTENT = 30
 MAX_BYTES_PER_FILE = 2 * 1024 * 1024  # 2 MB head-truncated
 
 
-def _meta_text(version: str, state_dir: Path) -> str:
+def _meta_text(version: str, state_dir: Path, known: Iterable[str] = ()) -> str:
     """Tiny text manifest at the top of the bundle so a triager has
     everything they need without unzipping (version, platform, env).
     """
@@ -133,7 +171,11 @@ def _meta_text(version: str, state_dir: Path) -> str:
     if settings_path.is_file():
         try:
             settings_blob = settings_path.read_text(encoding="utf-8", errors="replace")
-            settings_blob = redact(settings_blob)
+            try:
+                settings_blob = json.dumps(mask_settings(json.loads(settings_blob)), indent=2)
+            except ValueError:
+                pass  # A damaged file is still useful to a triager; patterns below apply.
+            settings_blob = redact(settings_blob, known)
         except OSError:
             settings_blob = "(settings.json unreadable)"
 
@@ -284,9 +326,14 @@ def build_diagnostics_zip(
     output_dir: Path,
     *,
     version: str = "unknown",
+    known_secrets: Iterable[str] = (),
 ) -> Path:
     """Create a redacted diagnostics ZIP under `output_dir` and return
     its path. Caller must have write access to `output_dir`.
+
+    `known_secrets` are actual credential values (see
+    `secret_scan.secret_values`); they are removed from every file by
+    value, in addition to the pattern-based redaction.
 
     Raises OSError if the output dir doesn't exist and can't be created.
     """
@@ -299,7 +346,8 @@ def build_diagnostics_zip(
 
     with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
         # Top-level manifest.
-        zf.writestr("meta.txt", _meta_text(version, state_dir))
+        known = tuple(known_secrets)
+        zf.writestr("meta.txt", _meta_text(version, state_dir, known))
 
         # Startup logs (rotate as the user runs; capture the latest). A
         # migrated install also has the pre-rebrand resonant-startup.log.
@@ -307,7 +355,7 @@ def build_diagnostics_zip(
             startup_log = logs_dir / startup_name
             if startup_log.is_file():
                 zf.writestr(f"logs/{startup_name}",
-                           _read_redacted(startup_log, max_bytes=MAX_BYTES_PER_FILE))
+                           _read_redacted(startup_log, max_bytes=MAX_BYTES_PER_FILE, known=known))
 
         # v0.5.9a5 — costs.json. Just dates + numbers (no secrets),
         # but still pass through redact() as defense-in-depth in case
@@ -319,7 +367,7 @@ def build_diagnostics_zip(
             try:
                 zf.writestr(
                     "costs.json",
-                    _read_redacted(costs_path, max_bytes=MAX_BYTES_PER_FILE),
+                    _read_redacted(costs_path, max_bytes=MAX_BYTES_PER_FILE, known=known),
                 )
             except OSError:
                 logger.debug("costs.json read failed", exc_info=True)
@@ -333,14 +381,14 @@ def build_diagnostics_zip(
                 arcname = f"logs/{rel.as_posix()}"
             except ValueError:
                 arcname = f"logs/{session_log.name}"
-            zf.writestr(arcname, _read_redacted(session_log, max_bytes=MAX_BYTES_PER_FILE))
+            zf.writestr(arcname, _read_redacted(session_log, max_bytes=MAX_BYTES_PER_FILE, known=known))
 
         # Per-intent specialist audit trails — the gold standard for
         # debugging mission failures since they show every tool call.
         intent_audits = _collect_recent_intent_audits(projects_dir)
         for project_hash, intent_id, audit in intent_audits:
             arcname = f"intents/{project_hash}/{intent_id}/audit.jsonl"
-            zf.writestr(arcname, _read_redacted(audit, max_bytes=MAX_BYTES_PER_FILE))
+            zf.writestr(arcname, _read_redacted(audit, max_bytes=MAX_BYTES_PER_FILE, known=known))
             # v0.5.9a5 — also include the per-iteration metadata
             # snapshots. Each iter's JSON has model, verdict,
             # duration, item_id; the timeline of these is much more
@@ -352,7 +400,7 @@ def build_diagnostics_zip(
                 try:
                     zf.writestr(
                         iter_arc,
-                        _read_redacted(iter_file, max_bytes=MAX_BYTES_PER_FILE),
+                        _read_redacted(iter_file, max_bytes=MAX_BYTES_PER_FILE, known=known),
                     )
                 except OSError:
                     logger.debug(

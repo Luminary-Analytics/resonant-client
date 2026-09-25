@@ -6,6 +6,7 @@ and tool definition factories used across all test modules.
 """
 
 import json
+import os
 import sys
 import tempfile
 from pathlib import Path
@@ -16,6 +17,14 @@ import pytest
 PROJECT_ROOT = Path(__file__).parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
+
+
+# ── Credential store isolation (process-wide) ──────────────────────
+# Settings keep API keys in the OS credential store (lumi/secrets_store.py).
+# Tests must never read or write the developer's real Credential Manager or
+# Keychain, so the store is off for the whole run; keychain tests install an
+# in-memory keyring explicitly.
+os.environ["LUMI_KEYCHAIN"] = "off"
 
 
 # ── Home isolation (process-wide) ──────────────────────────────────

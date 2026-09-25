@@ -169,7 +169,7 @@ Codex and is billed to the API account.
 - **Anthropic or OpenAI Responses proxies:** the same APIs at another URL.
 
 **Test connection** checks credentials and lists models before saving. Each
-connection appears in **Models** under its own name. Connection keys are stored
+connection appears in **Models** under its own name. Connection keys are kept
 with your other API keys and never returned to the page. HTTP (not HTTPS) is
 accepted only for localhost and private-network endpoints.
 
@@ -231,8 +231,9 @@ Use **Settings > Connections > Check connection & refresh models** to verify it.
 Lumi discovers models that support text output and tools from the
 [OpenRouter catalog](https://openrouter.ai/docs/quickstart), excluding batch variants.
 Streaming, native tool calls, reasoning continuation data, and provider-reported
-costs use OpenRouter's API. API keys are stored locally in `~/.lumi/settings.json`
-and are masked in the settings UI and session configuration.
+costs use OpenRouter's API. API keys are kept in your system's credential store
+(see [Keys, network and privacy](#keys-network-and-privacy)) and are masked in the
+settings UI and session configuration.
 
 Search **Astra** in **Models** to select `openai/gpt-6-astra` through OpenRouter.
 Its API usage is billed separately from ChatGPT/Codex subscription usage.
@@ -261,6 +262,31 @@ are not transferred to Codex.
 
 Provider changes are manual and require the current run to finish or stop.
 There is no automatic cross-provider fallback or role routing in this workflow.
+
+## Keys, network and privacy
+
+- **API keys** saved in Settings are kept in Windows Credential Manager, the
+  macOS Keychain or your Linux keyring (service `Lumi`); `settings.json` holds
+  only a placeholder. Where no credential store exists, keys stay in
+  `~/.lumi/settings.json` and Settings says so. Set `LUMI_KEYCHAIN=off` to keep
+  them in the file.
+- **Commands the agent runs**, hooks and MCP servers start without Lumi's
+  model-provider keys (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY` and similar). An MCP
+  server still receives the variables its own entry sets.
+- **Before each model request**, the values of your saved keys are removed from
+  tool output. Turn on **Settings > Privacy & security > Scan for secrets** to
+  also remove well-known credentials (cloud keys, tokens, private keys,
+  passwords in connection strings and `.env` files) from tool output and your
+  messages. The model sees `[REDACTED ...]` instead, and the chat notes what was
+  removed. Codex and Claude Code read files with their own tools and are not
+  scanned.
+- **Corporate networks:** TLS is verified with your operating system's
+  certificate store, so a company root certificate works. Set a proxy and hosts
+  that bypass it under **Settings > Connections > Network**, or use
+  `HTTPS_PROXY`/`NO_PROXY`. Local addresses always connect directly. Proxies that
+  need a user name and password aren't supported yet.
+- **Save diagnostics** removes your actual key values and masks secrets in the
+  bundled `settings.json` before anything is written.
 
 ## Browser Tools
 
@@ -326,6 +352,9 @@ now that browsing works out of the box.
 | `LUMI_OLLAMA_KEEP_ALIVE` | `120m` | Ollama keep-alive |
 | `LUMI_OLLAMA_HTTP_TIMEOUT_SEC` | `360` | Ollama request timeout |
 | `LUMI_OLLAMA_HTTP_READ_TIMEOUT_SEC` | `300` | Ollama stream read timeout |
+| `HTTPS_PROXY` / `HTTP_PROXY` / `NO_PROXY` | none | Proxy for outbound traffic and hosts that bypass it; a proxy set in Settings takes precedence |
+| `LUMI_KEYCHAIN` | `on` | `off` keeps API keys in `settings.json` instead of the OS credential store |
+| `LUMI_KEYCHAIN_SERVICE` | `Lumi` | Service name for keys in the OS credential store |
 
 Persistent configuration lives in `~/.lumi/settings.json` and is managed
 through the desktop Settings view.

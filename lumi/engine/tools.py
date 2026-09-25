@@ -30,6 +30,7 @@ from .truncation import (
     truncate_tail,
 )
 from .editing import EditMatchError, apply_text_edit
+from ..secrets_store import child_env
 
 logger = logging.getLogger(__name__)
 
@@ -1878,6 +1879,9 @@ def _run_subprocess_with_cancel(
         shell=shell,
         cwd=cwd,
         stdin=stdin,
+        # The agent's shell runs model-written commands: keep Lumi's own
+        # model keys out of its reach (secrets_store.PROVIDER_KEY_ENV).
+        env=child_env(),
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=text,

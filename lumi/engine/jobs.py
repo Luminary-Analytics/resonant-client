@@ -17,6 +17,7 @@ import time
 import uuid
 
 from lumi.processes import background_process_kwargs, close_windows_job, windows_kill_job
+from lumi.secrets_store import child_env
 
 
 class JobManager:
@@ -45,7 +46,7 @@ class JobManager:
                     raise ValueError('This project already has a running job; inspect or cancel it first')
             if len(active) >= 8:
                 raise ValueError('Managed job limit reached (8); finish or cancel a job first')
-            process = subprocess.Popen(argv, cwd=root, stdin=subprocess.DEVNULL,
+            process = subprocess.Popen(argv, cwd=root, stdin=subprocess.DEVNULL, env=child_env(),
                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                 **background_process_kwargs(new_process_group=True))
             try:

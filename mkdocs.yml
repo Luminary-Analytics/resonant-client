@@ -84,6 +84,8 @@ nav:
       - Organization policy: enterprise-policy.md
       - Shell sandbox and command guardrails: shell-sandbox.md
       - Deploying on Windows: deploy-windows.md
+      - Deploying on macOS: deploy-macos.md
+      - Lumi on Linux: deploy-linux.md
       - Audit log: audit-log.md
       - Running without a UI: headless.md
       - Scheduled tasks: scheduled-tasks.md
@@ -92,6 +94,7 @@ nav:
   - Extending Lumi:
       - Writing a capability pack: packs.md
       - "Extensions: add a model provider": extensions.md
+      - Accessibility conformance report: accessibility.md
       - Skills: skills.md
       - Creative editors: creative-editors.md
   - Project records:

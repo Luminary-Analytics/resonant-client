@@ -3,7 +3,8 @@
   "not_shipped": {
     "_comment": "Installed as dependencies but excluded from the bundle (packaging/lumi.spec reads this list). The notices leave them out.",
     "mouseinfo": "GPL-3.0-or-later. A PyAutoGUI dependency for its mouseInfo() tool, which Lumi never calls; PyAutoGUI works without it.",
-    "pymsgbox": "GPL-3.0-or-later. A PyAutoGUI dependency for alert/confirm/prompt dialogs, which Lumi never calls; PyAutoGUI works without it."
+    "pymsgbox": "GPL-3.0-or-later. A PyAutoGUI dependency for alert/confirm/prompt dialogs, which Lumi never calls; PyAutoGUI works without it.",
+    "python3-xlib": "GPL-2.0 (Linux only). PyAutoGUI's X11 backend, imported as Xlib; without it the Linux packages have no computer use. Shipping it would need a license review."
   },
   "license_reviews": {
     "_comment": "Python packages with copyleft licenses that were reviewed and may ship: package name to the reason. third_party_notices.py fails the build for any other GPL, AGPL or LGPL package."

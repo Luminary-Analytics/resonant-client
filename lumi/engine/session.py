@@ -35,6 +35,7 @@ from ..content import build_user_content
 from .tools import (
     AGENT_TOOLS,
     BATCH_ALLOWED_TOOL_NAMES,
+    COMPUTER_ACCESS_TOOL_NAMES,
     DESKTOP_TOOL_NAMES,
     DIRECTOR_TOOLS,
     execute_tool,
@@ -884,6 +885,11 @@ class Session:
         is materially worse than not having the tool. Advertising them also
         spends schema budget on every request for a capability that cannot work.
         """
+        if not self.computer_use_enabled:
+            return [
+                tool for tool in tools
+                if (tool.get("function") or {}).get("name") not in COMPUTER_ACCESS_TOOL_NAMES
+            ]
         if self._supports_computer_use():
             return tools
         return [
@@ -1113,8 +1119,13 @@ class Session:
         """Drop steering that can no longer belong to an active run."""
         self._drain_steering()
 
-    def _log_event(self, event: dict) -> None:
-        """Log an event to the JSONL logger if configured."""
+    def _log_event(self, event: dict, *, yielded: bool = False) -> None:
+        """Log an event to the JSONL logger if configured.
+
+        ``yielded`` marks an event the engine logs as it yields it. A client
+        that logs every event it streams (the app does) logs it again, and the
+        trace keeps it once.
+        """
         if self.event_logger:
             try:
                 self.event_logger.log(event)
@@ -1127,9 +1138,23 @@ class Session:
                 pass
         if self.flight_recorder:
             try:
-                self.flight_recorder.record(event, agent_id=self.agent_id)
+                self.flight_recorder.record(event, agent_id=self.agent_id, once=yielded)
             except Exception:
                 pass
+
+    def _begin_trace_turn(self) -> dict | None:
+        """Start this turn's slice of the trace, named on its session.end.
+
+        A delegated worker records into its parent's recorder, inside the
+        parent's turn, so only a top-level turn begins a slice.
+        """
+        if self.is_subagent or not self.flight_recorder:
+            return None
+        try:
+            return {"run_id": self.flight_recorder.run_id, "turn_id": self.flight_recorder.begin_turn()}
+        except Exception:
+            logger.debug("Unable to begin a trace turn", exc_info=True)
+            return None
 
     # Auto-edit runs these without asking in addition to read-only and file
     # tools. They act only through other tools, which are gated themselves:
@@ -1306,9 +1331,10 @@ class Session:
                 f"Tool '{tool_name}' arguments must be a JSON object, got "
                 f"{type(tool_args).__name__}."
             )
-        if tool_name in DESKTOP_TOOL_NAMES and not self.computer_use_enabled:
+        if tool_name in COMPUTER_ACCESS_TOOL_NAMES and not self.computer_use_enabled:
             # Not offered to the model when off, but history or a guess can
-            # still name one.
+            # still name one. That covers the clipboard, screen recording and
+            # accessibility tools too, not only the screen-driving ones.
             raise ToolBoundaryViolation(
                 "Computer use is turned off (Settings > Privacy & security, or your "
                 "organization's policy)."
@@ -1626,6 +1652,7 @@ class Session:
         )
         outcome = "completed"
         written_paths: dict[str, str] = {}
+        trace = self._begin_trace_turn()
         turn = self._run_turn(user_msg, on_permission, on_choice, on_user_input, images)
         try:
             for event in turn:
@@ -1634,6 +1661,9 @@ class Session:
                 if not event.get("_subagent"):
                     if event.get("event") == EngineEvent.ERROR.value:
                         outcome = "error"
+                    elif trace and event.get("event") == EngineEvent.SESSION_END.value:
+                        # Names this turn's trace, so a client can open it.
+                        event = {**event, "trace": trace}
                     self._observe_event(event, common, written_paths)
                 yield event
         except GeneratorExit:
@@ -2144,7 +2174,7 @@ class Session:
                         backend=self.backend.name,
                         model=self.backend.model,
                         tool_mode=tool_mode)
-        self._log_event(_start_event)
+        self._log_event(_start_event, yielded=True)
         yield _start_event
         for artifact in input_artifacts:
             artifact_event = make_event(
@@ -2156,7 +2186,7 @@ class Session:
                 label=artifact.label,
                 path=artifact.path,
             )
-            self._log_event(artifact_event)
+            self._log_event(artifact_event, yielded=True)
             yield artifact_event
 
         if self.hook_runner:
@@ -3029,7 +3059,7 @@ class Session:
                             tool_name=fn_name,
                             sequence=checkpoint.sequence,
                         )
-                        self._log_event(checkpoint_event)
+                        self._log_event(checkpoint_event, yielded=True)
                         yield checkpoint_event
                         if self.hook_runner:
                             self.hook_runner.emit(
@@ -3862,6 +3892,7 @@ class Session:
         # no session.end reads as interrupted. Everything above can still
         # refuse, so the turn starts only now.
         started = time.time()
+        trace = self._begin_trace_turn()
         start_event = make_event(
             EngineEvent.SESSION_START,
             plan_mode=False,
@@ -3870,7 +3901,7 @@ class Session:
             tool_mode=str(getattr(self.backend, "tool_mode", "") or "native"),
             restart_of=agent_id,
         )
-        self._log_event(start_event)
+        self._log_event(start_event, yielded=True)
         yield start_event
         handoff: dict[str, Any] = {}
         steps = 0
@@ -3890,7 +3921,9 @@ class Session:
         end_event = self._restart_end_event(
             assignment["prompt"], handoff, refusal, steps, time.time() - started,
         )
-        self._log_event(end_event)
+        if trace:
+            end_event["trace"] = trace
+        self._log_event(end_event, yielded=True)
         yield end_event
 
     def _restart_end_event(

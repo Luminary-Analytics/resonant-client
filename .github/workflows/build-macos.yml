@@ -1,9 +1,12 @@
 name: macOS build
 
-# Builds Lumi.app and the DMG on Apple silicon with packaging/build_macos.sh,
-# then starts the built app: --version, `lumi updates`, and the GUI server in
-# browser mode with the same HTTP, launch-code and WebSocket probes as
-# build-check.yml on Windows. Uploads the DMG so it can be tried.
+# Builds Lumi.app, the DMG and the PKG on Apple silicon with
+# packaging/build_macos.sh, then starts the built app: --version,
+# `lumi updates`, and the GUI server in browser mode with the same HTTP,
+# launch-code and WebSocket probes as build-check.yml on Windows. Then it
+# installs the PKG as device management would and checks that copy: updates
+# left to the MDM, and a policy from managed preferences, a broken one
+# included. Uploads the DMG and PKG so they can be tried.
 #
 # Signing and notarization run only when the repository has the secrets named
 # in docs/macos.md; without them the app is unsigned and the build says so.
@@ -43,7 +46,7 @@ jobs:
       - name: Install the pinned SBOM tools
         run: python3 -m pip install --require-hashes -r packaging/tools-requirements.txt
 
-      - name: Build Lumi.app and the DMG
+      - name: Build Lumi.app, the DMG and the PKG
         env:
           MACOS_SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
           MACOS_SIGN_P12_BASE64: ${{ secrets.MACOS_SIGN_P12_BASE64 }}
@@ -103,11 +106,55 @@ jobs:
           if grep -E "Traceback|ERROR" gui.log; then echo "--- gui.log ---"; cat gui.log; exit 1; fi
           echo "✓ Startup log clean"
 
-      - name: Upload the DMG and bundle manifest
+      - name: Check the computer-use permission checks
+        run: |
+          # They must answer on a real Mac (True or False), not be missing (None).
+          python3 -c 'import importlib.util as u; s = u.spec_from_file_location("p", "lumi/engine/macos_permissions.py"); m = u.module_from_spec(s); s.loader.exec_module(m); a, b = m.accessibility_allowed(), m.screen_recording_allowed(); print("accessibility:", a, "screen recording:", b); assert a is not None and b is not None'
+
+      - name: Install the PKG and check the managed copy
+        env:
+          LUMI_KEYCHAIN: 'off'
+        run: |
+          set -euo pipefail
+          pkg=$(ls dist/installer/lumi-*.pkg)
+          sudo installer -pkg "$pkg" -target /
+          version=$(python3 -c 'import re,pathlib;print(re.search(r"__version__\s*=\s*\"([^\"]+)\"", pathlib.Path("lumi/__init__.py").read_text()).group(1))')
+          pkgutil --pkg-info com.luminaryanalytics.lumi | tee pkginfo.txt
+          grep -qx "version: $version" pkginfo.txt
+          codesign --verify --deep --strict /Applications/Lumi.app
+          test -f /Applications/Lumi.app/Contents/Resources/lumi-install.json
+          app=/Applications/Lumi.app/Contents/MacOS/lumi
+          export HOME="$(mktemp -d)"
+          "$app" updates | tee installed.json
+          python3 -c 'import json; s = json.load(open("installed.json")); assert s["installed_by"] == "pkg" and s["mode"] == "off", s'
+          echo "✓ The PKG's copy leaves updates to device management"
+
+          # What a configuration profile delivers: the app's managed preferences.
+          prefs="/Library/Managed Preferences/com.luminaryanalytics.lumi.plist"
+          trap 'sudo rm -f "$prefs"' EXIT
+          printf '%s' '{"schema": "lumi.policy/v1", "organization": "CI Org", "settings": {"updates.channel": "beta"}}' > ci-policy.json
+          python3 packaging/policy/make_mobileconfig.py ci-policy.json --plist --out managed.plist
+          python3 packaging/policy/make_mobileconfig.py ci-policy.json --out lumi-policy.mobileconfig
+          plutil -lint managed.plist lumi-policy.mobileconfig
+          sudo mkdir -p "/Library/Managed Preferences"
+          sudo cp managed.plist "$prefs"
+          "$app" updates | tee managed.json
+          python3 -c 'import json; s = json.load(open("managed.json")); assert (s["managed_by"], s["channel"], s["locked"]) == ("CI Org", "beta", ["channel"]), s'
+          echo "✓ A policy in managed preferences applies"
+
+          # A profile whose Policy isn't usable must stop Lumi, not vanish.
+          printf '%s' '<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict><key>Policy</key><string></string></dict></plist>' > broken.plist
+          sudo cp broken.plist "$prefs"
+          "$app" updates | tee broken.json
+          python3 -c 'import json; s = json.load(open("broken.json")); assert any("policy is invalid" in p for p in s["problems"]), s'
+          echo "✓ A broken profile fails closed"
+
+      - name: Upload the DMG, PKG and bundle manifest
         uses: actions/upload-artifact@v4
         with:
           name: lumi-macos
           path: |
             dist/installer/*.dmg
+            dist/installer/*.pkg
             dist/bundle-manifest-macos.json
             dist/lumi-macos-sbom.cdx.json

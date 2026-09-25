@@ -5264,12 +5264,21 @@ body {
     box-sizing: border-box;
 }
 
+/* The tab list: Browser, Plan and Context, without the close button. */
+.preview-tabs {
+    display: flex;
+    align-items: center;
+    min-width: 0;
+}
+
 .preview-tab {
     display: flex;
     align-items: center;
     gap: 6px;
+    margin: 0;
     padding: 0 10px;
     height: 24px;
+    font: inherit;
     font-size: 11.5px;
     color: var(--muted);
     background: var(--bg-elem);
@@ -5282,6 +5291,26 @@ body {
     color: var(--text);
     background: var(--bg-panel);
     border-color: var(--border-strong);
+}
+
+/* The tabs take keyboard focus (arrow keys move between them); it shows
+   as a ring, as elsewhere (WCAG 2.4.7). */
+.preview-tab:focus-visible {
+    position: relative;
+    z-index: 1;
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
+}
+
+/* Read with the Plan tab's name while its update dot shows: "Plan, new
+   updates". It's in the name rather than a live region, so a busy plan
+   never talks over the conversation. */
+.preview-tab-unread-text {
+    display: none;
+}
+
+.preview-tab.has-unread:not(.active) .preview-tab-unread-text {
+    display: block;
 }
 
 /* C2 — unread plan-tab indicator. Pulsing brand-color dot to the right
@@ -5346,6 +5375,14 @@ body {
 .preview-tab-close:hover {
     background: var(--bg-hover);
     color: var(--text);
+}
+
+/* The Browser tab's pane: the chrome, the screenshots and the console. */
+.preview-browser-pane {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-height: 0;
 }
 
 /* ── Browser chrome (nav + URL bar) ── */

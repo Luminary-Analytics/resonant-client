@@ -36,6 +36,10 @@
   - They were used from the keyboard. Saving and "Show more" keep focus on
     their button, and Escape closes the viewer, then Trace, returning focus
     each time.
+- **Also later the same day**: the preview panel's Browser, Plan and Context
+  tabs, while a Mission's plan ran. They were used with real key presses in
+  both themes and at 375 px wide, and their names and states were read from
+  Chrome's accessibility tree.
 
 ## Fixed during this review
 
@@ -47,6 +51,15 @@
   or the arrow keys open it on the current mode, the arrows, Home and End
   move, and Escape closes it and returns focus. The toggle says whether it's
   open and the options say which is chosen.
+- **The preview panel's tabs couldn't be reached from the keyboard** (found
+  later the same day). Browser, Plan and Context took no focus, so someone
+  who left the Plan tab couldn't get back to its Pause button without a
+  mouse. They now follow the WAI-ARIA tabs pattern: the tab list is one stop
+  in the tab order, the arrows, Home and End move between the tabs and show
+  each one's pane, and focus shows a ring. Each tab says whether it's
+  selected. The Plan tab's badge and update dot are read with its name
+  ("Plan 3 steps, new updates"), and the close button is named "Close
+  preview", not "×".
 - **Focus** on the command-palette button was only a faint border change,
   and on the composer's model and reasoning menus only a text color change.
   They now have focus rings.
@@ -96,7 +109,7 @@ Support**, **Not Applicable**, **Not Evaluated**.
 | 1.3.3 Sensory Characteristics | Supports | Supports | Instructions don't depend on shape, size or position alone. |
 | 1.4.1 Use of Color | Partially Supports | Supports | Status in the app pairs color with text (for example "Approved · active"), but some chips and diff lines rely mostly on color. |
 | 1.4.2 Audio Control | Not Applicable | Not Applicable | No sound plays on its own. |
-| 2.1.1 Keyboard | Partially Supports | Supports | Settings, the composer, menus and dialogs work from the keyboard (the permission menu was fixed during this review). Not every panel was walked. Dragging to resize panels has no keyboard alternative. |
+| 2.1.1 Keyboard | Partially Supports | Supports | Settings, the composer, menus, dialogs and the preview panel's tabs work from the keyboard (the permission menu and the tabs were fixed during this review). Not every panel was walked. Dragging to resize panels has no keyboard alternative. |
 | 2.1.2 No Keyboard Trap | Supports | Supports | Dialogs close with Escape and return focus. |
 | 2.1.4 Character Key Shortcuts | Supports | Not Applicable | App shortcuts use a modifier (Ctrl+K, Ctrl+N). Tab only accepts a suggestion inside the composer. |
 | 2.2.1 Timing Adjustable | Supports | Partially Supports | Portal sign-in links last 15 minutes. An organization can end portal sessions after 8 hours to 7 days, which is a security limit. |
@@ -112,7 +125,7 @@ Support**, **Not Applicable**, **Not Evaluated**.
 | 3.3.1 Error Identification | Supports | Supports | Errors are shown in text; the portal uses alerts. |
 | 3.3.2 Labels or Instructions | Supports | Supports | Every visible field has a label in the checked views. |
 | 4.1.1 Parsing | Supports | Supports | No duplicate ids in the checked views. |
-| 4.1.2 Name, Role, Value | Partially Supports | Supports | Names on all controls, and states on the menus fixed here. Custom controls elsewhere in the app haven't been screen-reader tested. |
+| 4.1.2 Name, Role, Value | Partially Supports | Supports | Names on all controls, and roles and states on the menus and the preview panel's tabs fixed here (the tabs checked in Chrome's accessibility tree). Custom controls elsewhere in the app haven't been screen-reader tested. |
 
 ### Level AA
 
@@ -130,13 +143,13 @@ Support**, **Not Applicable**, **Not Evaluated**.
 | 1.4.13 Content on Hover or Focus | Partially Supports | Supports | The app uses native tooltips (`title`) and some hover-only hints. |
 | 2.4.5 Multiple Ways | Supports | Supports | The app has Settings search, the command palette and navigation. The portal has navigation on every page. |
 | 2.4.6 Headings and Labels | Supports | Supports | |
-| 2.4.7 Focus Visible | Supports | Supports | The app was checked by tabbing through its main view, and the command-palette button and the composer's model and reasoning menus were fixed. The portal draws a focus outline on every control (`:focus-visible`); it wasn't walked with the keyboard. |
+| 2.4.7 Focus Visible | Supports | Supports | The app was checked by tabbing through its main view, and the command-palette button, the composer's model and reasoning menus and the preview panel's tabs were fixed. The portal draws a focus outline on every control (`:focus-visible`); it wasn't walked with the keyboard. |
 | 3.1.2 Language of Parts | Not Applicable | Not Applicable | Interface text is English; model output isn't marked up by language. |
 | 3.2.3 Consistent Navigation | Supports | Supports | |
 | 3.2.4 Consistent Identification | Supports | Supports | |
 | 3.3.3 Error Suggestion | Supports | Supports | Errors say how to fix them. |
 | 3.3.4 Error Prevention (Legal, Financial, Data) | Supports | Supports | Removals and approvals ask first; the portal confirms deletes. |
-| 4.1.3 Status Messages | Partially Supports | Supports | Notices and statuses use status roles. The app's streaming answer and live activity haven't been screen-reader tested. |
+| 4.1.3 Status Messages | Partially Supports | Supports | Notices and statuses use status roles. The app's streaming answer and live activity haven't been screen-reader tested. The Plan tab's update dot is read with the tab's name, not announced when it appears, so a busy plan doesn't interrupt. |
 
 ## What's next
 

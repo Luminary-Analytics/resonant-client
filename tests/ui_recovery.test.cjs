@@ -901,6 +901,125 @@ test('model-written plan goals stay inside their attributes', () => {
     assert.equal(canvas.innerHTML.split(UNTRUSTED_AS_TEXT).length - 1, 2, 'goal title and text');
 });
 
+test('the Plan tab badge says what it counts', () => {
+    const dom = fakeDom();
+    const badge = dom.document.createElement('span');
+    const canvas = {innerHTML: '', style: {}, querySelectorAll: () => []};
+    const elements = {'plan-graph-canvas': canvas, 'plan-tab-badge': badge};
+    const window = {};
+    vm.runInContext(
+        fs.readFileSync(path.join(__dirname, '../lumi/gui/static/plan_graph_view.js'), 'utf8'),
+        vm.createContext({window, document: {getElementById: id => elements[id] || null, createElement: dom.document.createElement}, console}),
+    );
+    const node = id => ({id, goal: id, status: 'pending', specialization: 'implement'});
+
+    window.PlanGraphView.render({intent: 'Fix it', intent_id: 'i1', nodes: [node('n1')]});
+    assert.equal(badge.textContent, '1 step');
+    window.PlanGraphView.render({intent: 'Fix it', intent_id: 'i1', nodes: ['n1', 'n2', 'n3'].map(node)});
+    assert.equal(badge.textContent, '3 steps');
+    assert.equal(badge.children[0].className, 'sr-only', 'the number shows; its unit is for screen readers');
+    window.PlanGraphView.render({intent: '', intent_id: '', nodes: []});
+    assert.equal(badge.style.display, 'none');
+});
+
+// The preview panel's tab list, taken from the page, with its three panes.
+function previewTabsApp() {
+    const dom = fakeDom();
+    const doc = dom.document;
+    const page = fs.readFileSync(path.join(__dirname, '../lumi/gui/templates/index.html'), 'utf8');
+    const root = doc.createElement('div');
+    root.innerHTML = /<div class="preview-tabs"[^>]*>[\s\S]*?<\/div>/.exec(page)[0]
+        + '<div id="preview-browser-pane"></div><div id="plan-graph-pane"></div><div id="context-cockpit-pane"></div>';
+    Object.assign(doc, {
+        activeElement: null,
+        getElementById: id => root.querySelector(`[id="${id}"]`),
+        querySelector: selector => root.querySelector(selector),
+        querySelectorAll: selector => root.querySelectorAll(selector),
+    });
+    const element = Object.getPrototypeOf(root);
+    element.focus = function focus() { doc.activeElement = this; };
+    Object.defineProperty(element, 'tabIndex', {
+        get() { return Number(this.getAttribute('tabindex') ?? 0); },
+        set(value) { this.setAttribute('tabindex', value); },
+    });
+    const context = vm.createContext({console, document: doc, CSS: dom.CSS, window: {}});
+    vm.runInContext(source + '\nthis.App = LumiApp;', context);
+    const app = Object.create(context.App.prototype);
+    app.sent = [];
+    app.send = message => app.sent.push(message.command);
+    app.previewOpen = true;
+    app._bindPreviewTabs();
+    const tabList = doc.getElementById('preview-tabs');
+    const tabs = tabList.querySelectorAll('.preview-tab[data-pane]');
+    return {
+        app, doc, tabs,
+        // [pane, aria-selected, tabindex] for each tab, in order.
+        state: () => tabs.map(tab => `${tab.dataset.pane} ${tab.getAttribute('aria-selected')} ${tab.tabIndex}`),
+        shown: () => ['preview-browser-pane', 'plan-graph-pane', 'context-cockpit-pane']
+            .filter(id => doc.getElementById(id).style.display !== 'none'),
+        press(key, modifiers = {}) {
+            let prevented = false;
+            tabList.listeners.keydown({key, altKey: false, ctrlKey: false, metaKey: false, ...modifiers,
+                preventDefault: () => { prevented = true; }});
+            return prevented;
+        },
+    };
+}
+
+test('the preview tabs are one tab stop; arrows, Home and End move to a tab and show its pane', () => {
+    const {app, doc, tabs, state, shown, press} = previewTabsApp();
+    const [browser, plan, context] = tabs;
+    assert.deepEqual(tabs.map(tab => tab.getAttribute('role')), ['tab', 'tab', 'tab']);
+    assert.deepEqual(state(), ['browser true 0', 'plan false -1', 'context false -1']);
+
+    browser.focus();
+    assert.equal(press('ArrowRight'), true);
+    assert.equal(doc.activeElement, plan);
+    assert.deepEqual(state(), ['browser false -1', 'plan true 0', 'context false -1']);
+    assert.deepEqual(shown(), ['plan-graph-pane']);
+
+    press('ArrowRight');
+    assert.equal(doc.activeElement, context);
+    assert.deepEqual(shown(), ['context-cockpit-pane']);
+    assert.deepEqual(app.sent, ['get_context_state', 'context_catalog'], 'the Context pane refreshes when shown');
+
+    press('ArrowRight');
+    assert.equal(doc.activeElement, browser, 'Right wraps to the first tab');
+    assert.deepEqual(shown(), ['preview-browser-pane']);
+    press('ArrowLeft');
+    assert.equal(doc.activeElement, context, 'Left wraps to the last tab');
+    press('Home');
+    assert.equal(doc.activeElement, browser);
+    press('End');
+    assert.equal(doc.activeElement, context);
+
+    for (const [key, modifiers] of [['ArrowLeft', {altKey: true}], ['ArrowRight', {ctrlKey: true}], ['Tab', {}], ['a', {}]]) {
+        assert.equal(press(key, modifiers), false, `${key} is left to the browser`);
+    }
+    assert.equal(doc.activeElement, context);
+    assert.deepEqual(state(), ['browser false -1', 'plan false -1', 'context true 0']);
+
+    plan.listeners.click();  // Enter, Space or a click
+    assert.deepEqual(state(), ['browser false -1', 'plan true 0', 'context false -1']);
+    assert.deepEqual(shown(), ['plan-graph-pane']);
+});
+
+test('a plan that brings its tab forward moves the tab stop, never the focus', () => {
+    const {app, doc, tabs, state, shown} = previewTabsApp();
+    const plan = tabs[1];
+    const composer = doc.createElement('textarea');
+    composer.focus();
+    app._markPlanTabUnread();
+    assert.ok(plan.classList.contains('has-unread'));
+
+    app.openPlanTab(true);  // /plan, or a Mission's Build this roadmap
+
+    assert.equal(doc.activeElement, composer);
+    assert.deepEqual(state(), ['browser false -1', 'plan true 0', 'context false -1']);
+    assert.deepEqual(shown(), ['plan-graph-pane']);
+    assert.equal(plan.classList.contains('has-unread'), false, 'shown, so no longer unread');
+});
+
 // Worker transcripts and controls: the runtime pane that offered them left in
 // v0.14.0. A running worker's controls sit in the run's Sub-tasks list; a
 // stopped worker's block offers its transcript and, unless it completed, a restart.

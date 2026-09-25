@@ -695,6 +695,89 @@ See [dictation](voice-input.md).
   - WebView2's and WKWebView's recognizers;
   - the macOS app.
 
+## September 25 the preview panel's tabs work from the keyboard — source only, not released
+
+**The preview panel's tabs took no keyboard focus.** Browser, Plan and
+Context were `<div>`s with click handlers. `/plan` and a Mission's **Build
+this roadmap** bring the Plan tab forward, but once someone moved to Browser
+or Context, they couldn't get back to the Plan tab's Pause without a mouse.
+
+**They now follow the WAI-ARIA tabs pattern** (`lumi/gui/templates/index.html`;
+`_bindPreviewTabs` and `switchPreviewPane` in `app.js`; `styles.css`):
+
+- `role="tablist"`, `tab` and `tabpanel`, with `aria-selected`,
+  `aria-controls` and `aria-labelledby`. The tabs are buttons with a roving
+  tabindex, so the tab list is one stop in the tab order: the shown pane's
+  tab.
+- Every tab's `tabindex` is explicit, the shown one's `0` included. WebKit,
+  which draws the macOS window, tabs to a button only then, unless macOS
+  keyboard navigation is on (`HTMLFormControlElement::isKeyboardFocusable`).
+  That comes from WebKit's source; the macOS window wasn't tried.
+- Left and Right (wrapping), Home and End move to a tab and show its pane at
+  once. The pattern recommends that when panes show without a wait, as these
+  do. Enter and Space are the buttons' own clicks. Alt, Ctrl and Meta
+  combinations are left to the browser.
+- A switch the person didn't make, such as a plan bringing its tab forward,
+  moves the tab stop to that tab and leaves focus where it is.
+- Keyboard focus shows a 2 px `--accent` ring (`:focus-visible`), like the
+  rings from the accessibility review. A mouse click shows none.
+- The Browser pane's toolbar, screenshots and console sit in one panel,
+  `#preview-browser-pane`. The console moved up in the page to join them;
+  with one pane shown at a time, the panel looks the same.
+
+**The Plan tab's badge and update dot are read with its name.** Chrome names
+the tab "Plan 3 steps , new updates" while it has updates nobody has looked
+at, and "Plan 3 steps" once it's shown. `plan_graph_view.js` gives the badge
+a hidden unit ("1 step", "3 steps"), and the words for the dot show only
+while the dot does. They're part of the name rather than a live region, so a
+busy plan doesn't talk over the conversation.
+
+**Names.** The close button is "Close preview" rather than "×". The Browser
+tab's tooltip says what its pane shows, and the tab goes back to "Browser"
+rather than "Preview" when the session or project changes.
+
+**[The accessibility report](accessibility.md)** lists the fix, and its 2.1.1,
+2.4.7, 4.1.2 and 4.1.3 remarks mention the tabs. No conformance level
+changed. [The desktop workflow](desktop-workflow.md) says how to use the tabs
+from the keyboard.
+
+Validation on September 25, 2026:
+
+- `tests/ui_recovery.test.cjs` has three new tests, which drive the real
+  handlers with key events on the page's own tab list. The arrows, Home and
+  End move and select, with wrapping; modifier combinations, Tab and letters
+  are left alone. One tab stop and `aria-selected` stay in step, the Context
+  pane refreshes when it's shown, and a plan brings its tab forward without
+  taking focus. The badge counts "1 step" and "3 steps". Removing any one of
+  the lines that set the tab stop, `aria-selected` or focus, check modifier
+  keys or call `preventDefault` failed a test.
+- In the browser pane with real key presses, against an isolated fixture
+  (temporary home and state, keychain off, a scripted Ollama-compatible
+  model), on this branch rebased onto the plan-activity merge:
+  - Tab reached the Browser tab from the model menu. The arrows, Home and End
+    moved focus and switched panes, and Shift+Tab came back to the shown
+    pane's tab.
+  - A Mission's Build this roadmap brought the Plan tab forward. It became
+    the tab stop, and focus didn't move into the panel.
+  - With Browser shown, the plan's events set the dot, and focus stayed on
+    the Browser tab when its steps ended. Right moved to Plan and cleared the
+    dot; Tab went to Close preview and then to Pause, and Space pressed it.
+  - Both themes, and 375 px wide. The ring measures 11.6:1 against the dark
+    tab bar and 5.6:1 against the light one.
+- Chrome's own accessibility tree, read over the DevTools protocol from a
+  headless Chrome on the same fixture, named the tab list "Preview panel",
+  the tabs "Browser", "Plan" and "Context" (their tooltips as descriptions,
+  `selected` on the shown one), and each panel after its tab.
+- Seen in the fixture and not changed here:
+  - Pause answers "No active intent to pause." for a Mission's plan, because
+    nothing tells the Plan tab which plan to follow. Draft PR #73 makes it
+    follow one, and #69 makes the server act on Pause.
+  - At 375 px with the panel open, the conversation's "Autonomous" chip
+    overlaps the Browser tab. `main` does the same.
+  - Before the rebase, each plan step's end moved focus from the tab list to
+    the message box. The section "a plan's specialists report under its
+    card" fixed that.
+
 ## September 25 the terminal prints tool and model text as written — source only, not released
 
 **The terminal UI read tool and model text as Rich markup.** `lumi/tui.py`

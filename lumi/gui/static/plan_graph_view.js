@@ -377,6 +377,11 @@
         if (count > 0) {
             badge.style.display = '';
             badge.textContent = String(count);
+            // The badge is part of the Plan tab's name: "Plan 3 steps", not "Plan 3".
+            const unit = document.createElement('span');
+            unit.className = 'sr-only';
+            unit.textContent = count === 1 ? ' step' : ' steps';
+            badge.appendChild(unit);
         } else {
             badge.style.display = 'none';
         }

@@ -87,6 +87,13 @@ project notes, and the browser/design preview panel. Managed previews list
 running project servers; the preview-panel toggle opens the adjacent viewing
 surface. These are separate controls.
 
+The preview panel's **Browser**, **Plan** and **Context** tabs are one stop in
+the tab order: Tab reaches the shown pane's tab, and the arrow keys, Home and
+End move to another tab and show its pane (Unreleased). A plan brings the Plan
+tab forward without moving keyboard focus. While another pane shows, a dot on
+the Plan tab marks updates, and screen readers hear "new updates" with its
+name.
+
 **Compact layout (v0.17.1):** Previews and Project notes become icon buttons
 with accessible names and hover tooltips. Search has dedicated layout space so
 the `Ctrl+K` hint and right-side controls do not overlap. The shortcut hint hides

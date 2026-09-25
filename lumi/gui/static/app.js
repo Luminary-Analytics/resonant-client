@@ -1455,12 +1455,7 @@ class LumiApp {
             this.closePreviewPanel();
         });
 
-        // Preview tab toggle (Browser ↔ Plan)
-        document.querySelectorAll('.preview-tab[data-pane]').forEach((tab) => {
-            tab.addEventListener('click', () => {
-                this.switchPreviewPane(tab.dataset.pane);
-            });
-        });
+        this._bindPreviewTabs();
         document.getElementById('context-cockpit-refresh')?.addEventListener('click', () => {
             this.send({ command: 'get_context_state' });
             this.send({ command: 'context_catalog' });
@@ -6730,25 +6725,58 @@ class LumiApp {
     }
 
     /**
-     * Switch the preview panel between the Browser pane and the Plan pane.
-     * Browser-related elements stay in their existing IDs (preview-chrome,
-     * preview-viewport, preview-console). Plan elements live under
-     * #plan-graph-pane. Mutually exclusive display toggle.
+     * The Browser, Plan and Context tabs follow the WAI-ARIA tabs pattern:
+     * the tab list is one tab stop (the selected tab), and the arrow keys,
+     * Home and End move to another tab and show its pane at once. Panes
+     * show without a wait, so moving selects, as the pattern recommends.
+     * Enter and Space are the buttons' own clicks.
+     */
+    _bindPreviewTabs() {
+        const tabList = document.getElementById('preview-tabs');
+        if (!tabList) return;
+        const tabs = () => [...tabList.querySelectorAll('.preview-tab[data-pane]')];
+        tabs().forEach((tab) => {
+            tab.addEventListener('click', () => this.switchPreviewPane(tab.dataset.pane));
+        });
+        tabList.addEventListener('keydown', (e) => {
+            if (e.altKey || e.ctrlKey || e.metaKey) return;
+            const all = tabs();
+            const index = all.indexOf(document.activeElement);
+            if (index < 0) return;
+            const next = {
+                ArrowRight: all[(index + 1) % all.length],
+                ArrowLeft: all[(index - 1 + all.length) % all.length],
+                Home: all[0],
+                End: all[all.length - 1],
+            }[e.key];
+            if (!next) return;
+            e.preventDefault();
+            this.switchPreviewPane(next.dataset.pane);
+            next.focus();
+        });
+    }
+
+    /**
+     * Switch the preview panel between the Browser, Plan and Context panes
+     * (#preview-browser-pane, #plan-graph-pane, #context-cockpit-pane).
+     * Mutually exclusive display toggle. The selected tab becomes the tab
+     * list's one tab stop; a switch the person didn't make leaves focus
+     * where it is.
      */
     switchPreviewPane(pane) {
         const isPlan = pane === 'plan';
         const isContext = pane === 'context';
         const isBrowser = !isPlan && !isContext;
+        const shown = isPlan ? 'plan' : (isContext ? 'context' : 'browser');
         document.querySelectorAll('.preview-tab[data-pane]').forEach((t) => {
-            t.classList.toggle('active', t.dataset.pane === pane);
+            const selected = t.dataset.pane === shown;
+            t.classList.toggle('active', selected);
+            t.setAttribute('aria-selected', selected ? 'true' : 'false');
+            t.tabIndex = selected ? 0 : -1;
         });
-        const browserChrome = document.querySelector('#preview-panel .preview-chrome');
-        const browserViewport = document.getElementById('preview-viewport');
-        const browserConsole = document.getElementById('preview-console');
+        const browserPane = document.getElementById('preview-browser-pane');
         const planPane = document.getElementById('plan-graph-pane');
-        if (browserChrome) browserChrome.style.display = isBrowser ? '' : 'none';
-        if (browserViewport) browserViewport.style.display = isBrowser ? '' : 'none';
-        if (browserConsole) browserConsole.style.display = isBrowser ? '' : 'none';
+        if (browserPane) browserPane.style.display = isBrowser ? '' : 'none';
         if (planPane) planPane.style.display = isPlan ? 'flex' : 'none';
         const contextPane = document.getElementById('context-cockpit-pane');
         if (contextPane) contextPane.style.display = isContext ? 'flex' : 'none';
@@ -6943,9 +6971,9 @@ class LumiApp {
             `;
         }
 
-        // Reset URL bar & tab
+        // Reset URL bar & tab (the tab's name, as the page first shows it)
         if (this.previewUrlText) this.previewUrlText.textContent = '';
-        if (this.previewTabName) this.previewTabName.textContent = 'Preview';
+        if (this.previewTabName) this.previewTabName.textContent = 'Browser';
 
         // Reset console
         if (this.previewConsoleBody) {

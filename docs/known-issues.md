@@ -4,22 +4,22 @@ Living catalog of known bugs surfaced during real usage. Each entry has reproduc
 
 > **Convention:** issues are numbered chronologically across all sources (dogfood passes, release pipeline, post-release reports). Numbers are stable — even after a fix lands, the issue number stays in this doc as a historical record.
 
-## Desktop views without an entry point (2026-09-25)
+## Desktop views without an entry point (2026-09-25, fixed in source)
 
 v0.14.0 ("conversation-first agent workflow", 8d6d023) removed the Agents pane
-from the page. `app.js` still renders into its elements (`agent-activity-tree`,
-`agent-handoff-detail`), which no longer exist, so these have no desktop entry
-point:
+from the page, and with it the desktop entry point to its views. Each has one
+again (Unreleased):
 
-- flight-recorder traces and their OTLP export (`flight_recorder_*`);
-- the artifact list (`artifact_list`).
+- worker handoffs, transcripts and controls: in the conversation;
+- the checkpoint Timeline: in the chat header;
+- a run's trace, its OTLP export and the files it saved: in its card's work
+  details (`flight_recorder_detail`, `flight_recorder_export`, `artifact_view`);
+- capability packs: in Settings.
 
-Worker handoffs, transcripts and controls are back in the conversation, the
-checkpoint Timeline is in the chat header (both Unreleased), and capability
-packs are in Settings. **Severity:** low: runs still record traces and
-artifacts, but the app can't show them. **Reproduce:** search the page for
-`#agent-activity-tree`; nothing matches. **Fix proposal:** give the remaining
-views a place in the conversation layout, or remove the unused rendering code.
+`app.js` still has rendering for the pane's agents, timeline and packs views
+(`renderRuntimeView`, `renderAgentActivityTree`), drawing into elements that no
+longer exist. **Fix proposal:** remove it, keeping the state the conversation's
+worker blocks use.
 
 ## Current provider and validation limitations (2026-09-14)
 

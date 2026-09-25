@@ -376,9 +376,11 @@ def test_gui_exposes_runtime_control_plane_contract():
     frontend = (root / "lumi" / "gui" / "static" / "app.js").read_text(encoding="utf-8")
     endpoint_source = (root / "lumi" / "gui" / "app.py").read_text(encoding="utf-8")
 
+    # A run card opens its trace and saved files (flight_recorder_detail,
+    # artifact_view); no view lists every artifact anymore.
     for command in (
-        "agent_runtime_control", "session_timeline_restore", "flight_recorder_export",
-        "artifact_list", "capability_pack_list", "context_catalog",
+        "agent_runtime_control", "session_timeline_restore", "flight_recorder_detail",
+        "flight_recorder_export", "artifact_view", "capability_pack_list", "context_catalog",
     ):
         assert command in ws_commands.HANDLERS or command in endpoint_source, command
         assert command in frontend, command

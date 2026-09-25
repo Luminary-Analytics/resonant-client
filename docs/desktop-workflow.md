@@ -363,6 +363,15 @@ original keeps its transcript and is marked restarted. After a reload, a turn
 that Lumi closed during shows as interrupted, with its work under **Work
 details**.
 
+A turn's **Work details** (the "Worked for …" line) end with its records.
+**Trace** lists what happened and when: each step, tool call and result, model
+call and checkpoint, a worker's included. **Save for OpenTelemetry** saves that
+trace as a file for an observability tool, and the dialog shows where. Under
+**Saved** are the files the turn kept: an output too long for the
+conversation, a screenshot. Open one to read it a page at a time, or see the
+image; **Copy path** copies where it's stored. A reply that did no work has no
+work details, so nothing is added to it.
+
 New sessions also get a short task title from the first prompt. A local title
 appears immediately. With native model connections, a small tool-free request
 refines it after the first turn; slow or failed requests keep the local title.

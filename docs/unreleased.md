@@ -8,6 +8,81 @@ The heartbeat remains paused. Documentation maintenance does not resume work,
 spending or grants, and changes no native implementation or installed bundle.
 The dated September 15/18 records below are historical.
 
+## September 25 a run's trace and saved files — source only, not released
+
+- **Trace** (`lumi/gui/static/app.js`, `openRunTrace`;
+  [guide](desktop-workflow.md#conversation-progress-suggestions-and-titles)).
+  - A run card's work details now end with **Trace**. It lists what the turn
+    did and when: each step, tool call and result (how long it took, how long
+    its output was), model call with its tokens, checkpoint and worker. The
+    dialog also names the model and duration.
+  - **Save for OpenTelemetry** saves the turn's OTLP JSON among the saved
+    files, and shows where.
+  - The Traces tab left with the Agents pane in v0.14.0. It listed runs and
+    showed a session's whole trace as raw JSON.
+- **Saved files** (`openArtifact`).
+  - Under **Saved** are the files the turn kept: an output over 50,000
+    characters, or a screenshot.
+  - The viewer shows text a page at a time, or an image, with the file's path.
+  - It reads a file by its id, never by a path from the page
+    (`artifact_view`).
+- **Each turn is its own slice of the session's trace**
+  (`lumi/engine/flight_recorder.py`).
+  - A session's recorder spans its turns. Each top-level turn now begins a
+    slice (`begin_turn`).
+  - The turn's session.end names the slice (`trace: {run_id, turn_id}`), so a
+    card can open it after a reload.
+  - A worker's events belong to the turn that started it.
+- Trace fixes:
+  - The app records every event it streams. Events the engine had already
+    recorded as it yielded them (session.start, checkpoints, attached files)
+    were in the trace twice.
+  - An event's own fields replaced the trace's: a checkpoint's `sequence` was
+    recorded as the event's sequence number.
+  - Reading a trace rewrote the run's manifest, which a session may still be
+    writing. Reading a turn now reads only the events file.
+
+Validation on September 25, 2026:
+
+- `tests/test_run_trace.py` (6 tests) covers:
+  - each turn's slice, with engine-recorded events kept once;
+  - a worker's events in its parent's turn;
+  - the rows the dialog gets, without a call's contents or a result's text;
+  - an unknown trace, and a run id outside the traces folder;
+  - a turn's export, leaving the run's manifest untouched;
+  - the viewer's pages, image and refusals.
+- `tests/ui_recovery.test.cjs` adds 5 tests: row wording, a run's saved
+  files, errors in their dialogs, paging, and the export flow. The four UI
+  node suites: 80 passed after merging `main`. `ruff check` clean.
+- Full `pytest` after merging `main`: 4,400 passed, 5 skipped.
+- In the browser pane, with an isolated home and a scripted local model whose
+  turn printed about 70,000 characters:
+  - The card's work details showed Trace and "Saved: bash result · 50 KB",
+    after a reload too.
+  - Trace listed 12 rows, from "Started with stub:latest" to "Finished:
+    answered". They included the command, the checkpoint, "bash finished in
+    556 ms · 51,164 characters · saved “bash result”" and each model call's
+    tokens. session.start appeared once.
+  - Save for OpenTelemetry saved the JSON in the home's artifacts folder.
+    Open showed it, and Show more added the next 16,000 characters.
+  - The saved output opened as "terminal · 50 KB". A plain answer got no work
+    details.
+  - With the run's trace folder moved away, Trace said "This run's trace is
+    no longer saved.", with no error in the chat.
+  - By keyboard: Enter opened Trace with focus on Close. Saving kept focus on
+    its button, then moved it to Open. Escape closed only the file viewer, then
+    Trace, returning focus each time. At 375px nothing scrolled sideways.
+  - Fixes from this run:
+    - A shared style pushed the records' buttons apart.
+    - Re-rendering a dialog dropped keyboard focus to the page.
+    - A row said "1 tokens".
+  - After merging the accessibility review: text contrast in both dialogs,
+    both themes, an error row and the striped rows included. The lowest was
+    5.89:1. [The accessibility report](accessibility.md) lists both dialogs.
+
+Not exercised: a stopped turn's Trace, a screenshot artifact (it needs a
+browser tool), a worker's rows in the app (pytest only), a packaged build.
+
 ## September 25 Evidence results after their group closed — source only, not released
 
 **Reads and searches could keep a pulsing "…" for good.** The engine
@@ -857,8 +932,8 @@ their own tool loops), macOS and Linux.
 - "Opening *file*…" showed "â€¦" instead of an ellipsis.
 - The runtime guide and [known issues](known-issues.md) now name the views
   that lost their entry point with the Agents pane: the checkpoint Timeline,
-  traces and the artifact list. (Worker transcripts and controls, and the
-  checkpoint Timeline, are back; see their sections above.)
+  traces and the artifact list. (Each is back; see worker transcripts and
+  controls, the checkpoint Timeline, and a run's trace and saved files above.)
 
 Validation on September 25, 2026:
 

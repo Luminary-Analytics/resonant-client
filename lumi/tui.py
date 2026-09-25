@@ -1190,11 +1190,12 @@ def build_session(settings, backend, *, project: str, mode: str, max_tokens: Opt
     instructions, notes and policy allow rules apply only if the project is
     trusted in the app: the terminal never trusts one itself.
 
-    Unlike ``lumi run``, someone is at the terminal. The person's own hooks
-    (``hooks`` in settings.json) run as they do in the app: a guard they set
-    up must not be skipped because they typed in a terminal. Computer use
-    follows Settings, which a policy can lock off. Capability packs aren't
-    loaded here, so neither are their hooks, skills or MCP servers.
+    The person's own hooks (``hooks`` in settings.json) run, as in the app and
+    ``lumi run``: a guard they set up must not be skipped because they typed
+    in a terminal. Unlike in ``lumi run``, someone is at the terminal, so
+    computer use follows Settings, which a policy can lock off. Capability
+    packs aren't loaded here, so neither are their hooks, skills or MCP
+    servers.
     """
     from .engine.hooks import HookRunner
     from .headless import scope_session

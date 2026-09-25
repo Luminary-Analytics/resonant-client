@@ -138,6 +138,8 @@ def _validate_bounds(x: int, y: int) -> Optional[str]:
 
 
 def _draw_cursor_crosshair(img, offset_x: int, offset_y: int, ratio: float) -> None:
+    # ``ratio`` is image pixels per screen coordinate, the space the cursor
+    # position is in.
     """
     Draw a red crosshair at the current cursor position (in image space).
 
@@ -186,18 +188,27 @@ def _take_screenshot(region: dict = None) -> tuple[bytes, int, int]:
         return _grab(region)
 
 
-def _finish_capture(img, offset_x: int, offset_y: int) -> tuple[bytes, int, int]:
-    """Downscale to API limits, draw the cursor crosshair, remember geometry."""
+def _finish_capture(img, offset_x: int, offset_y: int, screen_w: int | None = None,
+                    screen_h: int | None = None) -> tuple[bytes, int, int]:
+    """Downscale to API limits, draw the cursor crosshair, remember geometry.
+
+    ``screen_w`` and ``screen_h`` are the captured area's size in the
+    coordinates clicks use, when that differs from the image's pixels. On a
+    Retina Mac a 1440 x 900 point screen captures as 2880 x 1800 pixels, and
+    pyautogui clicks in points: mapping through the pixel size would put every
+    click twice as far from the corner as the model meant.
+    """
     from PIL import Image
 
-    real_w, real_h = img.size
-    ratio = _api_scale_ratio(real_w, real_h)
+    pixel_w, pixel_h = img.size
+    screen_w, screen_h = screen_w or pixel_w, screen_h or pixel_h
+    ratio = _api_scale_ratio(pixel_w, pixel_h)
     if ratio < 1.0:
-        img = img.resize((int(real_w * ratio), int(real_h * ratio)), Image.LANCZOS)
+        img = img.resize((int(pixel_w * ratio), int(pixel_h * ratio)), Image.LANCZOS)
     w, h = img.size
 
-    _draw_cursor_crosshair(img, offset_x, offset_y, ratio)
-    _remember_capture(real_w, real_h, w, h, offset_x, offset_y)
+    _draw_cursor_crosshair(img, offset_x, offset_y, w / screen_w)
+    _remember_capture(screen_w, screen_h, w, h, offset_x, offset_y)
 
     buf = io.BytesIO()
     img.save(buf, format="PNG", optimize=True)
@@ -222,7 +233,8 @@ def _grab(region: dict = None) -> tuple[bytes, int, int]:
 
             sct_img = sct.grab(monitor)
             img = Image.frombytes("RGB", sct_img.size, sct_img.bgra, "raw", "BGRX")
-            return _finish_capture(img, monitor["left"], monitor["top"])
+            # mss sizes monitors in screen coordinates (points on macOS).
+            return _finish_capture(img, monitor["left"], monitor["top"], monitor["width"], monitor["height"])
 
     except ImportError:
         pass
@@ -236,7 +248,8 @@ def _grab(region: dict = None) -> tuple[bytes, int, int]:
         )
         offset_x = region["x"] if region else 0
         offset_y = region["y"] if region else 0
-        return _finish_capture(screenshot, offset_x, offset_y)
+        screen_w, screen_h = (region["width"], region["height"]) if region else pyautogui.size()
+        return _finish_capture(screenshot, offset_x, offset_y, screen_w, screen_h)
 
     except ImportError:
         raise ImportError("Neither 'mss' nor 'pyautogui' installed. Run: pip install mss pyautogui Pillow")

@@ -18,7 +18,7 @@ Lumi uses the first of these that exists:
 | --- | --- |
 | Windows | Registry `HKLM\SOFTWARE\Policies\Luminary Analytics\Lumi`: value `Policy` (the JSON document) or `PolicyFile` (a path; environment variables are expanded). Set them with the ADMX template below, Intune or any registry tool. |
 | Windows | `%ProgramData%\Lumi\policy.json` |
-| macOS | The `Policy` key of the `com.luminaryanalytics.lumi` managed preferences, from a configuration profile (`packaging/policy/lumi-policy.mobileconfig`) |
+| macOS | The `Policy` key of the `com.luminaryanalytics.lumi` managed preferences, from a device-scope configuration profile (`packaging/policy/make_mobileconfig.py` makes one; see [Deploying on macOS](deploy-macos.md)) |
 | macOS | `/Library/Application Support/Lumi/policy.json` |
 | Linux | `/etc/lumi/policy.json` |
 
@@ -65,7 +65,7 @@ optional.
 | `permissions.allowed_modes` | Which of `ask`, `auto-edit`, `plan` and `bypass` people may choose. Others are hidden, and a saved default outside the list becomes the first allowed mode. The [terminal UI](terminal-ui.md) starts in the first allowed mode it has when Bypass, its default, isn't allowed. |
 | `models.allowed`, `models.blocked` | `provider:model` patterns, for example `anthropic:*`, `ollama:qwen*` or `conn-gateway:*` for a custom connection. Blocked wins. Other models are removed from the model menu and refused if selected. |
 | `files.exclude` | Gitignore-style patterns added to every project's file exclusions (see the README's *Keys, network and privacy*). |
-| `shell.rules` | Execution-policy rules (`tool_pattern`, `action` allow, prompt or deny, `arg_patterns` regular expressions or `arg_globs` wildcards per argument, `reason`). They are checked before Lumi's built-in and repository rules, so nothing can loosen them, including a repository `lumi-policy.json` with mistakes. An `allow` here doesn't skip an approval prompt: only a trusted repository's own `allow` rule does that, in Auto-edit, when no rule here denies the call or asks about it. A rule Lumi can't apply as written, such as `arg_patterns` that isn't an object of regular expressions, makes the whole policy invalid (see [When something is wrong](#when-something-is-wrong)). |
+| `shell.rules` | Execution-policy rules (`tool_pattern`, `action` allow, prompt or deny, `arg_patterns` regular expressions or `arg_globs` wildcards per argument, `reason`). They are checked before Lumi's built-in and repository rules, so nothing can loosen them, including a repository `lumi-policy.json` with mistakes. An `allow` here doesn't skip an approval prompt: only a trusted repository's own `allow` rule does that, in Auto-edit, when no rule here denies the call or asks about it. A `prompt` here needs a person's answer: where nobody can be asked, as in `lumi run` or a scheduled task, the call is refused, and a person's own `permission_request` hook can't answer it for them. A rule Lumi can't apply as written, such as `arg_patterns` that isn't an object of regular expressions, makes the whole policy invalid (see [When something is wrong](#when-something-is-wrong)). |
 | `mcp.allowed_servers`, `mcp.allow_stdio` | MCP server name patterns that may connect; `allow_stdio: false` refuses command-based servers. |
 | `extensions.allowed_packs` | Capability pack id patterns; other packs stay off even if approved. |
 | `extensions.trusted_publishers` | Capability pack publishers the organization trusts: a list of `{"name", "public_key"}`, where the key is the base64 Ed25519 public key from `lumi extension keygen`. Packs they signed show under that name. See [Signing a pack](extensions.md#signing-a-pack). |
@@ -170,6 +170,11 @@ three machine policies under **Lumi** in the Group Policy editor:
 Copy the ADMX to `%SystemRoot%\PolicyDefinitions` or the central store, and
 the ADML to its `en-US` folder. For Intune, import the ADMX as a custom
 administrative template, or set the registry values with a script.
+
+On macOS, a configuration profile carries the policy (`Policy`) and, if
+needed, the trusted signing keys (`PolicyKeys`) for Jamf Pro, Intune or
+another MDM. `packaging/policy/make_mobileconfig.py` makes the profile from
+your policy file and checks it first. See [Deploying on macOS](deploy-macos.md).
 
 ## What policy doesn't cover yet
 

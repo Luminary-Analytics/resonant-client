@@ -175,6 +175,45 @@ class TestComputerUseSwitch:
         names = {t["function"]["name"] for t in session._without_unsupported_desktop_tools(session.tools)}
         assert "computer_screenshot" not in names
 
+    def test_off_also_covers_the_clipboard_recording_and_accessibility_tools(self, tmp_path):
+        from lumi.engine.tools import COMPUTER_ACCESS_TOOL_NAMES, DESKTOP_TOOL_NAMES
+
+        session = _session(_project(tmp_path))
+        offered = {t["function"]["name"] for t in session._without_unsupported_desktop_tools(session.tools)}
+        others = COMPUTER_ACCESS_TOOL_NAMES - DESKTOP_TOOL_NAMES
+        assert others <= offered  # on: offered (these don't need screenshots)
+        session.computer_use_enabled = False
+        for name in sorted(others):
+            with pytest.raises(ToolBoundaryViolation, match="Computer use is turned off"):
+                session._prepare_workspace_tool_args(name, {})
+        offered = {t["function"]["name"] for t in session._without_unsupported_desktop_tools(session.tools)}
+        assert not (COMPUTER_ACCESS_TOOL_NAMES & offered)
+
+    def test_a_model_that_cant_see_keeps_the_tools_that_need_no_screenshots(self, tmp_path):
+        from lumi.engine.tools import COMPUTER_ACCESS_TOOL_NAMES, DESKTOP_TOOL_NAMES
+
+        session = _session(_project(tmp_path))
+        session.backend.capability_profile = type("Profile", (), {"supports": lambda self, name: False})()
+        offered = {t["function"]["name"] for t in session._without_unsupported_desktop_tools(session.tools)}
+        assert not (DESKTOP_TOOL_NAMES & offered)
+        assert (COMPUTER_ACCESS_TOOL_NAMES - DESKTOP_TOOL_NAMES) <= offered
+
+    def test_a_window_title_reaches_applescript_as_an_argument(self, monkeypatch):
+        from lumi.engine import computer_use
+
+        calls = []
+
+        def run(args, **kwargs):
+            calls.append(args)
+            return subprocess.CompletedProcess(args, 0, "", "")
+
+        monkeypatch.setattr(subprocess, "run", run)
+        title = 'Notes" to true\nend tell\ndo shell script "touch /tmp/pwned'
+        assert computer_use._focus_window_macos(title) == f"Focused window: {title}"
+        [args] = calls
+        assert args[:2] == ["osascript", "-e"] and args[3] == title
+        assert "do shell script" not in args[2] and "item 1 of argv" in args[2]
+
 
 def _load_app(monkeypatch, cwd: Path):
     monkeypatch.setattr(Path, "home", lambda: cwd)

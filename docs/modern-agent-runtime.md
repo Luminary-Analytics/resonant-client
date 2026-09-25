@@ -186,15 +186,20 @@ such a call as an `approval` by `project_policy`.
 When approval is required, the user's answer is final and only an explicit
 `true` approves. A PERMISSION_REQUEST hook can neither run a call the user
 denied nor block one they allowed. Only when no prompt is available (background
-runs, or delegated work without a parent prompt) does an explicit allow or deny
-from a matching PERMISSION_REQUEST hook settle the call. No answer fails
-closed. Arguments that such a hook rewrites are checked against the policy
-again. Delegated workers ask through the parent's prompt, one question at a
-time. The GUI binds every prompt to a request id and ignores answers for a
-prompt that is no longer waiting. A refused call's result is the reason it
-didn't run (a hook, a policy rule, a tool boundary, a second approver, an
-approval nobody could answer). The GUI shows that reason under the call's
-row, as text. The user's own Deny reads just "denied".
+runs, delegated work without a parent prompt, or `lumi run`, whose sessions
+carry the person's Settings hooks) does an explicit allow or deny from a
+matching PERMISSION_REQUEST hook settle the call. No answer fails closed. The
+hook answers for the person, so it is not asked in the read-only `suggest`
+tier (or an unknown tier) or about a call an organization `prompt` rule
+(`PolicyRule.source` `organization`) asks a person about: those calls are
+refused (`Session._permission_hook_decision`). Arguments that such a hook
+rewrites are checked against the policy again, and refused if they reach a
+deny or an organization prompt. Delegated workers ask through the parent's
+prompt, one question at a time. The GUI binds every prompt to a request id and
+ignores answers for a prompt that is no longer waiting. A refused call's
+result is the reason it didn't run (a hook, a policy rule, a tool boundary, a
+second approver, an approval nobody could answer). The GUI shows that reason
+under the call's row, as text. The user's own Deny reads just "denied".
 
 | Mode | Tier | Runs without asking |
 |---|---|---|
@@ -217,14 +222,26 @@ policy, including a run in progress.
 
 ## Flight recorder and evaluation
 
-Every GUI run receives a manifest containing backend/model role, prompt/system
-and tool-schema hashes, provider options, capability profile, checkpoint IDs,
+A session's recorder (`FlightRecorder`, one run for as long as the session is
+built) keeps a manifest containing backend/model role, prompt/system and
+tool-schema hashes, provider options, capability profile, checkpoint IDs,
 artifact IDs, and status. The event stream is append-only and fingerprints
-causal content while excluding clocks and elapsed time.
+causal content while excluding clocks, elapsed time and trace bookkeeping.
 
-The Traces UI lists runs, opens their complete trajectory, compares two runs at
-the first causal divergence, and exports dependency-free OTLP-compatible JSON
-as a trace artifact. This is the basis for deterministic cross-model regression
+Each top-level turn begins its own slice of the run (`begin_turn`). Its
+events, a delegated worker's included, carry the turn's `turn_id`, and the
+turn's session.end names the slice as `trace: {run_id, turn_id}`. The app
+records every event it streams; an event the engine records as it yields it
+(session.start, checkpoints, attached files) is recorded once.
+
+A run card's work details open that turn's trace (`flight_recorder_detail`
+with `turn_id`): a row for what happened and when, never a call's arguments or
+a result's text. **Save for OpenTelemetry** stores the turn's dependency-free
+OTLP-compatible JSON as a trace artifact (`flight_recorder_export`). Reading
+or exporting a turn reads the events file only (`read_turn`), since
+`open_run` rewrites the manifest of a run a session may still be recording.
+`FlightRecorder.compare` finds two runs' first causal divergence; no view
+offers it yet. This is the basis for deterministic cross-model regression
 tasks and replay-from-checkpoint evaluation.
 
 ## Context broker and code intelligence
@@ -320,6 +337,11 @@ sub-agent handoffs, and exported traces. Its capability negotiation returns:
 
 Future audio, video, document, DOM, accessibility, and vision processors plug
 into this boundary. Unsupported evidence is never silently discarded.
+
+A run card lists the artifacts its tool results saved (`metadata.artifact`: an
+output over 50,000 characters, a screenshot). The viewer (`artifact_view`)
+opens one by its manifest id, never by a path from the page: text in pages of
+16,000 characters, or an image up to 8 MB.
 
 ## Verification rules
 

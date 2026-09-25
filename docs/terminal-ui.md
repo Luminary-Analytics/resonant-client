@@ -68,8 +68,9 @@ stops the terminal before it starts.
   The terminal never trusts a project itself; its banner says when a
   project's own instructions and allow rules are off.
 - **Hooks.** The hooks in your settings (`hooks` in `settings.json`) run as
-  they do in the app, so a guard you set up applies here too. Capability
-  packs aren't loaded in the terminal: no pack hooks, skills or MCP servers.
+  they do in the app and in [`lumi run`](headless.md#hooks), so a guard you
+  set up applies here too. Capability packs aren't loaded in the terminal:
+  no pack hooks, skills or MCP servers.
 
 `/cd FOLDER` moves to another project. The conversation continues, and the
 new folder's trust, exclusions, rules and sandbox apply.

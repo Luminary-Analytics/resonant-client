@@ -311,25 +311,29 @@ def _conversation_checkpoints(ctx: CommandContext, *, required: bool = False) ->
     return store
 
 
-def _timeline_item(checkpoint: Any) -> dict[str, Any]:
-    """One checkpoint as the Timeline shows it.
+def _call_target(arguments: Any, keys: tuple[str, ...] = ("path", "command", "branch", "message")) -> str:
+    """What a tool call acted on, in one line: its path, command, and so on.
 
-    A write's arguments hold the whole file, so only what the call acted on
-    (a path, a command, a branch, a commit message) goes to the page.
+    A write's arguments hold the whole file, so the page gets this instead of
+    a call's arguments.
     """
+    if not isinstance(arguments, dict):
+        return ""
+    target = next((str(arguments[key]) for key in keys if arguments.get(key)), "")
+    lines = target.strip().splitlines()
+    return lines[0][:200] if lines else ""
+
+
+def _timeline_item(checkpoint: Any) -> dict[str, Any]:
+    """One checkpoint as the Timeline shows it (only what its call acted on)."""
     metadata = checkpoint.metadata if isinstance(checkpoint.metadata, dict) else {}
-    arguments = metadata.get("arguments") if isinstance(metadata.get("arguments"), dict) else {}
-    target = next(
-        (str(arguments[key]) for key in ("path", "command", "branch", "message") if arguments.get(key)),
-        "",
-    )
     return {
         "id": checkpoint.id,
         "sequence": checkpoint.sequence,
         "created_at": checkpoint.created_at,
         "reason": checkpoint.reason,
         "tool_name": checkpoint.tool_name,
-        "target": target.splitlines()[0][:200] if target else "",
+        "target": _call_target(metadata.get("arguments")),
         "snapshot": "git" if checkpoint.workspace_ref else ("archive" if checkpoint.workspace_archive else ""),
         # A worker's snapshot holds the worker's conversation: files only.
         "subagent": bool(metadata.get("subagent")),
@@ -442,18 +446,109 @@ async def _flight_recorder_list(ctx: CommandContext) -> None:
     })
 
 
+_TRACE_HIDDEN = frozenset({"text.delta", "thinking.delta", "context.state", "session.meta"})
+_TRACE_ROW_LIMIT = 1500
+_TRACE_GONE = "This run's trace is no longer saved."
+
+
+def _trace_rows(events: list[dict[str, Any]]) -> dict[str, Any]:
+    """One turn's trace as the run card's Trace dialog shows it.
+
+    Each row says what happened and when, relative to the turn's start. A
+    call's arguments and a result's text stay on disk: a row names only what
+    the call acted on (``_call_target``) and how long its result is.
+    """
+    from .. import usage
+
+    started = float(events[0].get("timestamp") or 0) if events else 0.0
+    start = next((event for event in events if event.get("event") == "session.start"), {})
+    end = next((event for event in reversed(events) if event.get("event") == "session.end"), {})
+    main_agent = str(start.get("agent_id") or "")
+    rows: list[dict[str, Any]] = []
+    shown = [event for event in events if event.get("event") not in _TRACE_HIDDEN]
+    for event in shown[:_TRACE_ROW_LIMIT]:
+        kind = str(event.get("event") or "")
+        row: dict[str, Any] = {
+            "seq": event.get("sequence"),
+            "at": round(max(0.0, float(event.get("timestamp") or started) - started), 3),
+            "event": kind,
+        }
+        # A worker's events: tagged when its parent passed them on, or
+        # recorded by the worker itself under its own agent id.
+        agent = str(event.get("agent_id") or "")
+        if event.get("_subagent"):
+            row["worker"] = str(event.get("_agent_type") or "worker")
+        elif main_agent and agent and agent != main_agent:
+            row["worker"] = "worker"
+        for key in ("name", "step", "elapsed", "is_error", "denied", "outcome", "checkpoint_id",
+                    "model", "backend", "agent_type", "total_steps", "total_elapsed", "steps"):
+            value = event.get(key)
+            if value not in (None, "", [], {}):
+                row[key] = value
+        if kind in {"tool.call", "tool_permission"}:
+            row["target"] = _call_target(
+                event.get("arguments"),
+                ("path", "command", "url", "pattern", "query", "branch", "message", "prompt"),
+            )
+        elif kind == "tool.result":
+            row["chars"] = len(str(event.get("output") or ""))
+            saved = (event.get("metadata") or {}).get("artifact")
+            if isinstance(saved, dict) and saved.get("id"):
+                row["artifact"] = str(saved.get("label") or saved["id"])
+        elif kind == "step.start" and event.get("label"):
+            row["detail"] = str(event["label"])[:200]
+        elif kind == "text.done":
+            row["chars"] = len(str(event.get("text") or ""))
+        elif kind == "status":
+            counts = usage.token_counts(event.get("stats") or {})
+            row["tokens"] = [counts["input_tokens"], counts["output_tokens"]]
+        elif kind == "artifact.created":
+            row["artifact"] = str(event.get("label") or event.get("artifact_id") or "")
+        elif kind == "error":
+            lines = str(event.get("message") or "").strip().splitlines()
+            row["message"] = lines[0][:300] if lines else ""
+        rows.append(row)
+    return {
+        "model": str(start.get("model") or ""),
+        "backend": str(start.get("backend") or ""),
+        "started_at": started,
+        "duration": round(max(0.0, float(events[-1].get("timestamp") or started) - started), 3) if events else 0.0,
+        "outcome": str(end.get("outcome") or ""),
+        "events": len(events),
+        "rows": rows,
+        "truncated": len(shown) > _TRACE_ROW_LIMIT,
+    }
+
+
 @command("flight_recorder_detail")
 async def _flight_recorder_detail(ctx: CommandContext) -> None:
+    turn_id = str(ctx.msg.get("turn_id") or "")
     try:
         from ..engine.flight_recorder import FlightRecorder
-        recorder = FlightRecorder.open_run(ctx.project_path, str(ctx.msg.get("run_id") or ""))
+        run_id = str(ctx.msg.get("run_id") or "")
+        if turn_id:
+            # One turn, for its run card's Trace dialog.
+            try:
+                events = await _in_executor(FlightRecorder.read_turn, ctx.project_path, run_id, turn_id)
+            except KeyError:
+                events = []
+            if not events:
+                raise LookupError(_TRACE_GONE)
+            await ctx.send({
+                "event": "flight.recorder_detail",
+                "run_id": run_id,
+                "turn_id": turn_id,
+                "trace": _trace_rows(events),
+            })
+            return
+        recorder = FlightRecorder.open_run(ctx.project_path, run_id)
         await ctx.send({
             "event": "flight.recorder_detail",
             "manifest": recorder.manifest.to_dict(),
             "events": recorder.events(),
         })
     except Exception as exc:
-        await ctx.send_error(str(exc))
+        await ctx.send({"event": "error", "message": str(exc), "source": "trace", "turn_id": turn_id})
 
 
 @command("flight_recorder_compare")
@@ -469,17 +564,35 @@ async def _flight_recorder_compare(ctx: CommandContext) -> None:
 
 @command("flight_recorder_export")
 async def _flight_recorder_export(ctx: CommandContext) -> None:
+    """Save a run's trace, or one turn's, as OTLP JSON among the saved files."""
+    turn_id = str(ctx.msg.get("turn_id") or "")
     try:
         from ..engine.flight_recorder import FlightRecorder
-        recorder = FlightRecorder.open_run(ctx.project_path, str(ctx.msg.get("run_id") or ""))
-        artifact = ctx.state.session.artifact_store.put_text(
-            json.dumps(recorder.export_otel(), indent=2),
-            kind="trace", label=f"{recorder.run_id} OTLP export", source=recorder.run_id,
-            media_type="application/json",
+        store = ctx.session_attr("artifact_store")
+        if store is None:
+            raise RuntimeError("This conversation can't save files.")
+        run_id = str(ctx.msg.get("run_id") or "")
+        if turn_id:
+            try:
+                events = await _in_executor(FlightRecorder.read_turn, ctx.project_path, run_id, turn_id)
+            except KeyError:
+                events = []
+            if not events:
+                raise LookupError(_TRACE_GONE)
+            payload = FlightRecorder.otel_payload(run_id, events, turn_id=turn_id)
+            label = "Trace (OpenTelemetry JSON)"
+        else:
+            recorder = FlightRecorder.open_run(ctx.project_path, run_id)
+            payload = recorder.export_otel()
+            label = f"{recorder.run_id} OTLP export"
+        artifact = store.put_bytes(
+            json.dumps(payload, indent=2).encode("utf-8"),
+            kind="trace", label=label, source=run_id, media_type="application/json",
+            suffix=".json", metadata={"run_id": run_id, "turn_id": turn_id},
         )
-        await ctx.send({"event": "artifact.created", "artifact": artifact.to_dict()})
+        await ctx.send({"event": "artifact.created", "artifact": artifact.to_dict(), "turn_id": turn_id})
     except Exception as exc:
-        await ctx.send_error(str(exc))
+        await ctx.send({"event": "error", "message": str(exc), "source": "trace", "turn_id": turn_id})
 
 
 # ---------------------------------------------------------------------------
@@ -494,6 +607,52 @@ async def _artifact_list(ctx: CommandContext) -> None:
         "event": "artifact.list",
         "artifacts": [item.to_dict() for item in reversed(store.list())] if store else [],
     })
+
+
+_ARTIFACT_PAGE = 16000
+_ARTIFACT_IMAGE_LIMIT = 8 * 1024 * 1024
+
+
+def _artifact_preview(store: Any, artifact: Any, offset: int) -> dict[str, Any]:
+    """What the saved-file viewer shows: a page of text, or an image."""
+    import base64
+
+    if artifact.kind in store.TEXT_KINDS:
+        page, more = store.read_text(artifact.id, offset, _ARTIFACT_PAGE)
+        return {"text": page, "offset": offset, "next_offset": offset + len(page) if more else None}
+    if artifact.kind == "image" and str(artifact.media_type).startswith("image/"):
+        if artifact.size > _ARTIFACT_IMAGE_LIMIT:
+            return {"note": "This image is too large to show here."}
+        encoded = base64.b64encode(Path(artifact.path).read_bytes()).decode("ascii")
+        return {"image": f"data:{artifact.media_type};base64,{encoded}"}
+    return {"note": "Lumi can't show this kind of file."}
+
+
+@command("artifact_view")
+async def _artifact_view(ctx: CommandContext) -> None:
+    """Show one of a run's saved files (a long output, a screenshot).
+
+    Looked up by its id in the project's artifact manifest, never by a path
+    from the page.
+    """
+    artifact_id = str(ctx.msg.get("artifact_id") or "")
+    try:
+        store = ctx.session_attr("artifact_store")
+        artifact = store.get(artifact_id) if store is not None and artifact_id else None
+        if artifact is None or not Path(artifact.path).is_file():
+            raise LookupError("This file is no longer saved.")
+        offset = max(0, int(ctx.msg.get("offset") or 0))
+        view = await _in_executor(_artifact_preview, store, artifact, offset)
+        await ctx.send({
+            "event": "artifact.view",
+            "artifact": {
+                key: getattr(artifact, key)
+                for key in ("id", "kind", "label", "media_type", "size", "created_at", "path")
+            },
+            **view,
+        })
+    except Exception as exc:
+        await ctx.send({"event": "error", "message": str(exc), "source": "artifact", "artifact_id": artifact_id})
 
 
 @command("capability_pack_list")
@@ -3289,9 +3448,13 @@ async def _cmd_set_project(ctx: CommandContext) -> None:
 
 def _update_check_message(info: dict, started: bool) -> str:
     """What Check for updates tells people, from ``updater.status()``."""
+    from ..update_channels import MANAGED_INSTALLERS
+
     pending = info.get("pending") or {}
-    if info.get("installed_by") == "msi":
-        return "This copy was installed from the MSI package, so your organization's device management updates it."
+    installer = MANAGED_INSTALLERS.get(str(info.get("installed_by") or ""))
+    if installer:
+        package, updater = installer
+        return f"This copy was installed from {package}, so {updater} updates it."
     if info.get("mode") == "off":
         if pending and pending.get("mode") != "off":
             return "Updates are off until Lumi restarts with your new update settings."

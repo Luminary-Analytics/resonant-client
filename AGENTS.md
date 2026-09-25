@@ -114,7 +114,9 @@ host enrollment and actual packaged/learned-benefit qualification remain open.
 - Updates: `update_channels.py` picks the feed from `updates.mode`, `channel` and
   `pin` (Settings or policy, read at startup); `appcast.xml` keeps its address
   because every earlier install polls it. Running from source never loads
-  WinSparkle, and an MSI install (`lumi-install.json`) never updates itself.
+  WinSparkle, and an MSI, PKG, deb or rpm install (`lumi-install.json`) never
+  updates itself. A macOS configuration profile that can't be used fails closed like
+  any machine policy (`policy.managed_preferences_policy`).
   Never change `packaging/lumi.wxs`'s UpgradeCode. Publishing a release or
   feed needs the user's go-ahead.
 - Lumi Cloud (`cloud.py`): the sign-in's refresh token and the device's private
@@ -132,12 +134,26 @@ host enrollment and actual packaged/learned-benefit qualification remain open.
   `headless.scope_session`, at start, on `/cd` and when `/approve` changes the
   tier; it never trusts a repository itself. It checks `policy.current()` for
   modes and models, and runs the person's Settings hooks, as the app does.
+- Computer use: `security.computer_use` (and policy) gates every tool in
+  `tools.COMPUTER_ACCESS_TOOL_NAMES`: the screen, input, other apps'
+  interfaces and the clipboard, not only the screen-driving
+  `DESKTOP_TOOL_NAMES`. A new tool that reaches outside the project must join
+  that set. Never write model-supplied text into AppleScript or other script
+  source; pass it as an argument (`on run argv`).
 - Scheduled tasks (`schedules.py`) run `lumi schedule run <id>`, which is a
   `lumi run`; a schedule never passes `--trust-project`. Only `save`,
   `set_enabled` and `remove` touch the OS scheduler (schtasks, launchctl,
   crontab), and tests use `set_registrar_for_tests`: never register real
   tasks from tests or fixtures. A run writes only its results folder, and
   `running.json` keeps a schedule from running twice at once.
+- Every session `headless.build_session` builds (`lumi run`, scheduled tasks,
+  model comparisons' runs, the chat gateway, tasks from chat) runs the
+  person's Settings hooks, as the app does. They are the person's own
+  configuration, not repository content, so they need no trust, and no run
+  option leaves them out. Capability-pack hooks stay in the app, which loads
+  approved packs. A `permission_request` hook settles only approvals the
+  person could give: never in the read-only `suggest` tier, and never for an
+  organization `prompt` rule (`policies.ORGANIZATION`), which needs a person.
 
 ## Working in the codebase
 
@@ -197,7 +213,10 @@ host enrollment and actual packaged/learned-benefit qualification remain open.
   identity must never supply the SONN profile. Echo is optional, respects reduced motion,
   and must not introduce model calls, polling, or completion claims.
 - Use accessible names, tooltips, visible keyboard focus, and reliable targets
-  for icon buttons. Session dates are hover details in the compact sidebar;
+  for icon buttons. Text color tokens keep 4.5:1 on every surface in both
+  themes; menus and popups work from the keyboard (arrows, Escape returning
+  focus). Update [the accessibility report](docs/accessibility.md) when that
+  changes. Session dates are hover details in the compact sidebar;
   retain working/needs-input states and pinned-session visibility.
 - Codex receives a text handoff of instructions, project notes, recent history,
   and retained summaries. It does not receive the original native provider

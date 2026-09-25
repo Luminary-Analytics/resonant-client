@@ -50,6 +50,7 @@ guide belongs in that navigation; historical records stay out of it.
 - [Skills and learning](skills.md)
 - [Writing a capability pack: the manifest, hooks, trust and sharing](packs.md)
 - [Extensions: add a model provider with the Extension SDK (manifest, protocol, template, checker)](extensions.md)
+- [Accessibility conformance report (draft, self-assessed WCAG 2.1 AA)](accessibility.md)
 - [Blender, Unity, and Unreal Engine 5 setup](creative-editors.md)
 - [Known limitations and historical bug ledger](known-issues.md)
 
@@ -70,6 +71,8 @@ guide belongs in that navigation; historical records stay out of it.
 - [Updates: channels, pins and turning them off](updates.md)
 - [Deploying on Windows: the MSI, Intune, Configuration Manager and Group Policy](deploy-windows.md)
 - [Lumi on macOS: building, signing and notarizing the app](macos.md)
+- [Deploying on macOS: the PKG, Jamf Pro, Intune and configuration profiles](deploy-macos.md)
+- [Lumi on Linux: the .deb, .rpm, AppImage and tarball, the desktop app in the browser, and servers](deploy-linux.md)
 - [Product and engineering priorities](agentic-harness-north-star.md)
 - [Model execution and prompt architecture](model-prompt-architecture.md)
 - [Durable runtime services](modern-agent-runtime.md)

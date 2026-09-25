@@ -76,6 +76,8 @@ SCHEMA = "lumi.policy/v1"
 ADMIN_TEXT = "utf-8-sig"
 REGISTRY_KEY = r"SOFTWARE\Policies\Luminary Analytics\Lumi"
 MAC_DOMAIN = "com.luminaryanalytics.lumi"
+# Where macOS puts device-scope configuration profile settings, per preference domain.
+MAC_MANAGED_PREFERENCES = Path("/Library/Managed Preferences")
 PERMISSION_MODES = ("ask", "auto-edit", "plan", "bypass")
 
 
@@ -517,23 +519,53 @@ def _registry_policy() -> tuple[str, str] | None:
 
 
 def _macos_managed_policy() -> tuple[str, str] | None:
+    """(json text, source) from a configuration profile (Jamf, Intune, any MDM), if one sets it."""
     if sys.platform != "darwin":
         return None
-    path = Path("/Library/Managed Preferences") / f"{MAC_DOMAIN}.plist"
+    return managed_preferences_policy(MAC_MANAGED_PREFERENCES / f"{MAC_DOMAIN}.plist")
+
+
+def managed_preferences_policy(path: Path) -> tuple[str, str] | None:
+    """The ``Policy`` key of a managed preferences plist: a JSON string or a dictionary.
+
+    A profile with no ``Policy`` key sets no policy. One that can't be read, or
+    whose ``Policy`` is empty or another type, raises ValueError, so the policy
+    fails closed (load) rather than reading as "no policy".
+    """
     if not path.is_file():
         return None
+    import plistlib
+
+    source = f"configuration profile ({MAC_DOMAIN})"
+    try:
+        data = plistlib.loads(path.read_bytes())
+    except Exception as exc:
+        raise ValueError(f"The {source} couldn't be read from {path}: {exc}") from exc
+    if not isinstance(data, dict) or "Policy" not in data:
+        return None
+    value = data["Policy"]
+    if isinstance(value, dict):
+        return json.dumps(value), source
+    if isinstance(value, str) and value.strip():
+        return value, source
+    kind = "an empty string" if isinstance(value, str) else type(value).__name__
+    raise ValueError(f"The {source} sets Policy to {kind}; it must be the policy's JSON text or a dictionary.")
+
+
+def managed_preferences_keys(path: Path) -> str:
+    """The ``PolicyKeys`` of a managed preferences plist as JSON text, or "" (like the registry's)."""
+    if not path.is_file():
+        return ""
     import plistlib
 
     try:
         data = plistlib.loads(path.read_bytes())
     except Exception:
-        return None
-    value = data.get("Policy") if isinstance(data, dict) else None
-    if isinstance(value, str) and value.strip():
-        return value, f"configuration profile ({MAC_DOMAIN})"
+        return ""  # managed_preferences_policy reports a profile that can't be read
+    value = data.get("PolicyKeys") if isinstance(data, dict) else None
     if isinstance(value, dict):
-        return json.dumps(value), f"configuration profile ({MAC_DOMAIN})"
-    return None
+        return json.dumps(value)
+    return value if isinstance(value, str) else ""
 
 
 def machine_policy_file() -> Path:
@@ -565,7 +597,8 @@ def _load_text() -> tuple[str, str] | None:
 
 
 def machine_keys() -> dict[str, str]:
-    """Signing keys an administrator trusts: registry ``PolicyKeys`` or policy-keys.json."""
+    """Signing keys an administrator trusts: ``PolicyKeys`` in the registry or a configuration
+    profile, or policy-keys.json beside the machine policy file."""
     texts: list[str] = []
     if sys.platform == "win32":
         try:
@@ -576,6 +609,10 @@ def machine_keys() -> dict[str, str]:
                 texts.append(str(value))
         except (ImportError, OSError):
             pass
+    if sys.platform == "darwin":
+        profile_keys = managed_preferences_keys(MAC_MANAGED_PREFERENCES / f"{MAC_DOMAIN}.plist")
+        if profile_keys:
+            texts.append(profile_keys)
     keys_file = machine_policy_file().with_name("policy-keys.json")
     if keys_file.is_file():
         try:

@@ -85,6 +85,7 @@ nav:
       - Shell sandbox and command guardrails: shell-sandbox.md
       - Deploying on Windows: deploy-windows.md
       - Deploying on macOS: deploy-macos.md
+      - Lumi on Linux: deploy-linux.md
       - Audit log: audit-log.md
       - Running without a UI: headless.md
       - Scheduled tasks: scheduled-tasks.md

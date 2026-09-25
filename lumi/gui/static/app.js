@@ -2954,7 +2954,7 @@ class LumiApp {
         this.activeTerminals.delete(callId);
 
         // Update the list entry to show done state
-        const el = document.querySelector(`.terminal-entry[data-call-id="${callId}"]`);
+        const el = document.querySelector(`.terminal-entry[data-call-id="${CSS.escape(callId)}"]`);
         if (el) {
             const spinner = el.querySelector('.terminal-entry-spinner');
             if (spinner) {
@@ -3001,7 +3001,7 @@ class LumiApp {
                 </div>
                 <div style="display:flex;align-items:center;gap:6px;">
                     <span class="terminal-entry-elapsed">${elapsed}s</span>
-                    <button class="terminal-entry-stop" title="Cancel current run" data-call-id="${callId}">
+                    <button class="terminal-entry-stop" title="Cancel current run" data-call-id="${this.escapeHtml(callId)}">
                         <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
                             <rect x="1.5" y="1.5" width="7" height="7" rx="1" fill="currentColor"/>
                         </svg>
@@ -3032,7 +3032,7 @@ class LumiApp {
             }
             // Update elapsed times in the list
             for (const [callId, info] of this.activeTerminals) {
-                const el = document.querySelector(`.terminal-entry[data-call-id="${callId}"] .terminal-entry-elapsed`);
+                const el = document.querySelector(`.terminal-entry[data-call-id="${CSS.escape(callId)}"] .terminal-entry-elapsed`);
                 if (el) {
                     el.textContent = ((Date.now() - info.startTime) / 1000).toFixed(1) + 's';
                 }
@@ -4436,7 +4436,7 @@ class LumiApp {
                         <div class="backend-card-info">
                             <div class="backend-card-name">${this.escapeHtml(item.model)}</div>
                             <div class="backend-card-detail">${this.escapeHtml(detail)}</div>
-                            <div class="backend-card-pills"><span class="backend-pill backend-pill-ok">${provider}</span></div>
+                            <div class="backend-card-pills"><span class="backend-pill backend-pill-ok">${this.escapeHtml(provider)}</span></div>
                         </div>
                         <div class="backend-card-dot"></div>`;
                     row.addEventListener('click', () => this.selectBackend(item.backend, item.model));
@@ -5520,9 +5520,11 @@ class LumiApp {
             this.trackTerminalStart(callId, name, event.arguments || {});
         }
 
+        // A call is not a change: it counts once its own result succeeds
+        // (handleToolResult). Sub-agent calls returned above and never count.
         const renderKind = event.presentation?.kind || '';
         if (renderKind === 'edit' || renderKind === 'write' || name === 'file_edit' || name === 'file_write') {
-            this._recordAgentFileChange(name, event.arguments || {}, event);
+            this._rememberFileChangeCall(event);
         }
 
         // CLI backends: group ALL tool calls into a collapsible activity panel
@@ -5611,6 +5613,8 @@ class LumiApp {
             this.renderToolResult(event);
             return;
         }
+
+        this._settleFileChangeCall(event);
 
         // If a screenshot comes back with an image, force step to render (don't collapse)
         if (hasImage && this.stepIsInlineOnly) {
@@ -5709,7 +5713,7 @@ class LumiApp {
                 break;
             case 'computer_click':
                 const ct = args.clicks === 2 ? 'Double-click' : 'Click';
-                desc = `${ct} (${args.x}, ${args.y})`;
+                desc = `${ct} (${this.escapeHtml(args.x)}, ${this.escapeHtml(args.y)})`;
                 meta = args.button || 'left';
                 break;
             case 'computer_type':
@@ -5722,10 +5726,10 @@ class LumiApp {
                 }
                 break;
             case 'computer_scroll':
-                desc = `Scroll ${args.direction || 'down'} ×${args.amount || 3}`;
+                desc = `Scroll ${this.escapeHtml(args.direction || 'down')} ×${this.escapeHtml(args.amount || 3)}`;
                 break;
             default:
-                desc = info.label;
+                desc = this.escapeHtml(info.label);
         }
 
         const el = document.createElement('div');
@@ -5929,7 +5933,7 @@ class LumiApp {
     renderInlineToolResult(name, output, isError, elapsed, meta) {
         // Find the last matching inline tool and add status
         const target = this.getRenderTarget();
-        const tools = target.querySelectorAll(`.tool-inline[data-tool="${name}"]`);
+        const tools = target.querySelectorAll(`.tool-inline[data-tool="${CSS.escape(name)}"]`);
         const last = tools[tools.length - 1];
         if (!last) return;
 
@@ -5994,7 +5998,7 @@ class LumiApp {
             row = this._blockToolRows.get(callId);
             this._blockToolRows.delete(callId);
         } else {
-            const all = this.getRenderTarget().querySelectorAll(`.tool-row[data-tool="${name}"]`);
+            const all = this.getRenderTarget().querySelectorAll(`.tool-row[data-tool="${CSS.escape(name)}"]`);
             row = all[all.length - 1] || null;
         }
         if (!row) return;
@@ -6077,7 +6081,7 @@ class LumiApp {
             row = this._blockToolRows.get(callId);
             this._blockToolRows.delete(callId);
         } else {
-            const all = this.getRenderTarget().querySelectorAll(`.tool-row[data-tool="${name}"]`);
+            const all = this.getRenderTarget().querySelectorAll(`.tool-row[data-tool="${CSS.escape(name)}"]`);
             row = all[all.length - 1] || null;
         }
         if (!row) return;
@@ -6157,7 +6161,7 @@ class LumiApp {
         const overlay = document.createElement('div');
         overlay.className = 'lightbox-overlay';
         overlay.innerHTML = `
-            <img class="lightbox-img" src="${src}" alt="Screenshot">
+            <img class="lightbox-img" src="${this.escapeHtml(src)}" alt="Screenshot">
             <button class="lightbox-close">&times;</button>
         `;
         overlay.addEventListener('click', (e) => {
@@ -7023,7 +7027,7 @@ class LumiApp {
             return;
         }
         container.innerHTML = cmds.map((c, i) => `
-            <div class="cmd-palette-item${i === 0 ? ' active' : ''}" data-cmd-id="${c.id}">
+            <div class="cmd-palette-item${i === 0 ? ' active' : ''}" data-cmd-id="${this.escapeHtml(c.id)}">
                 <span class="cmd-palette-item-icon">${this.escapeHtml(c.icon)}</span>
                 <span class="cmd-palette-item-label">${this.escapeHtml(c.label)}</span>
                 ${c.hint ? `<span class="cmd-palette-item-hint">${this.escapeHtml(c.hint)}</span>` : ''}
@@ -7125,6 +7129,35 @@ class LumiApp {
         if (!t) return '';
         if (t.length <= 72) return t;
         return t.slice(0, 69) + '…';
+    }
+
+    /**
+     * Hold a file-changing call until its result arrives. "Changed files" and
+     * the "review these changes" suggestion describe edits that happened: a
+     * call the user rejects, a policy blocks, that fails, or that a cancel
+     * stops before it runs leaves the file as it was.
+     */
+    _rememberFileChangeCall(event) {
+        if (!this._agentRunSummary) {
+            this._agentRunSummary = { title: '', fileChanges: [], todos: null };
+        }
+        (this._agentRunSummary.pendingFileChanges ||= []).push(event);
+    }
+
+    /** Count a remembered call's change only when its own result succeeded. */
+    _settleFileChangeCall(result) {
+        const pending = this._agentRunSummary?.pendingFileChanges;
+        if (!pending?.length) return;
+        const callId = result.call_id || '';
+        // Match by call id. Calls run in order, so a backend that sends no id
+        // is answered by its oldest id-less call of the same tool.
+        const index = pending.findIndex((call) => (callId
+            ? call.call_id === callId
+            : !call.call_id && call.name === result.name));
+        if (index < 0) return;
+        const [call] = pending.splice(index, 1);
+        if (result.is_error || result.denied) return;
+        this._recordAgentFileChange(call.name || '', call.arguments || {}, call);
     }
 
     _recordAgentFileChange(name, args, event) {

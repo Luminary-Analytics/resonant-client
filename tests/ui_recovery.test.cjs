@@ -213,6 +213,90 @@ test('completion suggestions preserve drafts and skip replay, errors, and queued
     assert.equal(app.userInput.value, '');
 });
 
+// Tool events drive the run's changed files; rendering is not under test.
+function toolEventApp(fields = {}) {
+    const app = setup(() => {});
+    const noop = () => {};
+    Object.assign(app, {
+        removeThinking: noop, _setLiveRunPhase: noop, _finalizeLiveCollapsedGroup: noop,
+        ensureStepRendered: noop, renderToolCall: noop, renderToolResult: noop,
+        addToToolActivityGroup: noop, flushCollapsedGroup: noop, clearTerminals: noop,
+        setRunning: noop, scrollToBottom: noop,
+        _liveRunToolActivity: () => ({active: 'Editing', completed: 'Edited'}),
+        activeTerminals: new Map(), subagentContainers: new Map(), subagentStreams: new Map(),
+        handlesTools: false, _agentRunSummary: {title: '', fileChanges: [], todos: null},
+    }, fields);
+    app.play = (...events) => events.forEach(e => e.event === 'tool.call' ? app.handleToolCall(e) : app.handleToolResult(e));
+    app.changes = () => Array.from(app._agentRunSummary.fileChanges, change => `${change.path}: ${change.detail}`);
+    return app;
+}
+// As the server sends them: file_edit calls carry the diff of old_text to new_text.
+const editCall = (callId, path) => ({event: 'tool.call', name: 'file_edit', call_id: callId,
+    arguments: {path, old_text: 'alpha', new_text: 'beta'}, presentation: {kind: 'edit', locations: [path]},
+    diff_lines: ['--- ', '+++ ', '@@ -1 +1 @@', '-alpha', '+beta']});
+const toolResult = (call, fields = {}) => ({event: 'tool.result', name: call.name, call_id: call.call_id,
+    output: 'ok', is_error: false, denied: false, ...fields});
+
+test('a file change counts only when its own call succeeds', () => {
+    const app = toolEventApp();
+    const answer = text => ({resultEl: {querySelectorAll: () => [{innerText: text}]}});
+    const rejected = editCall('call_1', 'notes.txt');
+    const blocked = editCall('call_2', 'notes.txt');
+    const failed = editCall('call_3', 'notes.txt');
+    app.play(rejected, toolResult(rejected, {output: 'Tool execution denied by user.', denied: true}),
+        blocked, toolResult(blocked, {output: 'Blocked by policy: denied', is_error: true, denied: true}),
+        failed, toolResult(failed, {output: 'Error: old_text not found', is_error: true}),
+        editCall('call_4', 'stopped.txt'));  // cancelled before it ran: no result
+    assert.deepEqual(app.changes(), []);
+    app._offerPromptSuggestion({outcome: 'incomplete'}, answer('The edit was rejected.'));
+    assert.doesNotMatch(app._promptSuggestion.text, /these changes/);
+
+    const accepted = editCall('call_5', 'notes.txt');
+    const write = {event: 'tool.call', name: 'file_write', call_id: 'call_6',
+        arguments: {path: 'docs/new.md', content: 'one\ntwo'}, presentation: {kind: 'write', locations: ['docs/new.md']}};
+    app.play(accepted, write, toolResult(accepted), toolResult(write));
+    assert.deepEqual(app.changes(), ['notes.txt: Diff +1 −1', 'docs/new.md: Wrote 2 lines']);
+    app._offerPromptSuggestion({outcome: 'changed_unverified'}, answer('Updated the file.'));
+    assert.match(app._promptSuggestion.text, /Review these changes/);
+
+    // Without call ids, results answer calls in order.
+    const idless = toolEventApp();
+    const first = editCall('', 'first.txt'), second = editCall('', 'second.txt');
+    idless.play(first, second, toolResult(first, {denied: true}), toolResult(second));
+    assert.deepEqual(idless.changes(), ['second.txt: Diff +1 −1']);
+});
+
+test('CLI and worker tool events count only the run\'s own successful changes', () => {
+    const cli = toolEventApp({handlesTools: true});
+    const codex = (callId, path) => ({event: 'tool.call', name: 'codex_file_change', call_id: callId, external: true,
+        arguments: {paths: [path]}, presentation: {kind: 'edit', locations: [path]}});
+    const failed = codex('codex_1', 'src/a.py'), applied = codex('codex_2', 'src/b.py');
+    cli.play(failed, toolResult(failed, {is_error: true}), applied, toolResult(applied, {changed_files: ['src/b.py']}));
+    assert.deepEqual(cli.changes(), ['src/b.py: Edited']);
+
+    // A worker's events can reuse the parent's call id; they settle nothing.
+    const app = toolEventApp();
+    const parent = editCall('call_1', 'parent.txt');
+    const worker = {...editCall('call_1', 'worker.txt'), _subagent: true, _agent_id: 'w1'};
+    app.play(parent, worker, {...toolResult(worker), _subagent: true, _agent_id: 'w1'});
+    assert.deepEqual(app.changes(), []);
+    app.play(toolResult(parent, {denied: true}));
+    assert.deepEqual(app.changes(), []);
+    const retry = editCall('call_1', 'parent.txt');  // same arguments, same id
+    app.play(retry, toolResult(retry));
+    assert.deepEqual(app.changes(), ['parent.txt: Diff +1 −1']);
+});
+
+test('replay rebuilds changed files from saved results, not saved calls', () => {
+    const app = toolEventApp();
+    const rejected = editCall('call_1', 'notes.txt'), accepted = editCall('call_2', 'notes.txt');
+    const interrupted = editCall('call_3', 'late.txt');
+    app.replayDisplayEvents([rejected, toolResult(rejected, {denied: true}), interrupted]);
+    assert.deepEqual(app.changes(), []);
+    app.replayDisplayEvents([rejected, toolResult(rejected, {denied: true}), accepted, toolResult(accepted)]);
+    assert.deepEqual(app.changes(), ['notes.txt: Diff +1 −1']);
+});
+
 // The application account must never inherit another provider's identity.
 function accountView(settings = {}, sonnAccount, document = {}) {
     const context = vm.createContext({window: {}, document});
@@ -533,4 +617,104 @@ test('escaped text is safe inside attribute values', () => {
     assert.equal(app.escapeHtml(null), '');
     assert.equal(app.escapeHtml(undefined), '');
     assert.equal(app.escapeHtml(3), '3');
+});
+
+
+// ── Untrusted text renders as text ────────────────────────────────────
+// Repository contents (commit messages, branch and file names), model output
+// (tool arguments, plan goals) and MCP tool names all reach innerHTML. Each
+// must stay text: no new elements, and no way out of an attribute value.
+
+const UNTRUSTED = 'x" onmouseover="window.pwned=1"><img src=x onerror="window.pwned=1">';
+const UNTRUSTED_AS_TEXT = 'x&quot; onmouseover=&quot;window.pwned=1&quot;&gt;&lt;img src=x onerror=&quot;window.pwned=1&quot;&gt;';
+
+function assertRenderedAsText(html, where) {
+    assert.ok(!/<img/i.test(html), `${where}: untrusted text became an element`);
+    assert.ok(!html.includes('" onmouseover="') && !html.includes('onerror="'), `${where}: untrusted text became an attribute`);
+    assert.ok(html.includes(UNTRUSTED_AS_TEXT), `${where}: untrusted text should still be shown`);
+}
+
+// Serializes like a browser's text node: & < > only, never quotes.
+function browserTextElement() {
+    let text = '';
+    return {
+        set textContent(value) { text = String(value); },
+        get innerHTML() { return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); },
+    };
+}
+
+test('repository text in the Git panel and hook commands renders as text', () => {
+    const body = {innerHTML: ''};
+    const app = accountView({}, null, {getElementById: id => (id === 'git-popover-body' ? body : null)});
+    // The settings view is mixed into the app, which supplies escapeHtml.
+    app.escapeHtml = setup(() => {}).escapeHtml;
+    app.gitData = {
+        is_repo: true,
+        branch: UNTRUSTED,
+        changes: [{status: 'M', file: UNTRUSTED}],
+        commits: [{hash: UNTRUSTED, message: UNTRUSTED}],
+    };
+
+    app._renderGitPopoverTab('changes');
+    assertRenderedAsText(body.innerHTML, 'changed file');
+    app._renderGitPopoverTab('commits');
+    assert.equal(body.innerHTML.split(UNTRUSTED_AS_TEXT).length - 1, 2, 'commit hash and message');
+    assertRenderedAsText(body.innerHTML, 'commit');
+    assertRenderedAsText(app._gitPopoverHtml(app.gitData), 'branch');
+    assertRenderedAsText(app._renderHooksList([{hook_type: 'pre_tool_use', name: UNTRUSTED, command: UNTRUSTED, enabled: true}]), 'hook');
+});
+
+test('tool names and arguments from a model or MCP server render as text', () => {
+    const rows = [];
+    const document = {
+        getElementById: () => null,
+        createElement: () => {
+            const element = {innerHTML: '', className: '', setAttribute() {}};
+            rows.push(element);
+            return element;
+        },
+    };
+    const app = setup(() => {}, {document});
+    app.getRenderTarget = () => ({appendChild() {}});
+    app.scrollToBottom = () => {};
+
+    app.renderToolCall({name: UNTRUSTED, arguments: {}});
+    app.renderToolCall({name: 'computer_click', arguments: {x: UNTRUSTED, y: UNTRUSTED}});
+    app.renderToolCall({name: 'computer_scroll', arguments: {direction: UNTRUSTED, amount: UNTRUSTED}});
+    assert.equal(rows.length, 3);
+    rows.forEach((row, index) => assertRenderedAsText(row.innerHTML, `native tool row ${index}`));
+
+    // CLI providers report tool names too, including their MCP tools.
+    const context = vm.createContext({console, document, window: {}});
+    vm.runInContext(source + '\nthis.App = LumiApp;', context);
+    vm.runInContext(fs.readFileSync(path.join(__dirname, '../lumi/gui/static/run_cards.js'), 'utf8'), context);
+    const cards = Object.create(context.window.LumiRunCards.prototype);
+    cards.escapeHtml = context.App.prototype.escapeHtml;
+    cards.scrollToBottom = () => {};
+    cards.activeToolGroupCount = 0;
+    cards.activeToolGroupCounts = {};
+    cards.activeToolGroup = {querySelector: () => ({appendChild() {}})};
+    rows.length = 0;
+    cards.addToToolActivityGroup({name: UNTRUSTED, arguments: {}});
+    assertRenderedAsText(rows[0].innerHTML, 'CLI tool activity');
+});
+
+test('model-written plan goals stay inside their attributes', () => {
+    const canvas = {innerHTML: '', style: {}, querySelectorAll: () => []};
+    const document = {
+        getElementById: id => (id === 'plan-graph-canvas' ? canvas : null),
+        createElement: () => browserTextElement(),
+    };
+    const window = {};
+    vm.runInContext(
+        fs.readFileSync(path.join(__dirname, '../lumi/gui/static/plan_graph_view.js'), 'utf8'),
+        vm.createContext({window, document, console}),
+    );
+
+    window.PlanGraphView.render({intent: 'Fix it', intent_id: 'i1', nodes: [
+        {id: 'n1', goal: UNTRUSTED, status: 'running', specialization: 'implement'},
+    ]});
+
+    assertRenderedAsText(canvas.innerHTML, 'plan node');
+    assert.equal(canvas.innerHTML.split(UNTRUSTED_AS_TEXT).length - 1, 2, 'goal title and text');
 });

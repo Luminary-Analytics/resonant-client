@@ -248,6 +248,8 @@ def test_computer_use_follows_settings_for_specialists(project, monkeypatch, ena
         return ToolResult(output="(a screenshot)")
 
     monkeypatch.setattr("lumi.engine.computer.exec_computer_screenshot", screenshot)
+    # On a Mac without Screen Recording access the tool stops earlier (engine/macos_permissions.py).
+    monkeypatch.setattr("lumi.engine.macos_permissions.missing_permission", lambda tool_name: "")
     settings = Settings({"security.computer_use": enabled, "general.computer_use_indicator": False})
 
     _, [result], _ = _run_specialist(project, [("computer_screenshot", {})], settings=settings,

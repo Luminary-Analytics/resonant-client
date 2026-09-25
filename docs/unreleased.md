@@ -65,6 +65,12 @@ Validation on September 25, 2026:
 - The full `pytest` run passes (4369 passed, 5 skipped). `ruff check .` is
   clean, the 63 Node tests in AGENTS.md pass, and `git diff --check` is
   clean.
+- After merging main (#63 to #76), 701 tests of the areas both touch pass:
+  - the runner, intents, missions and autonomous sessions;
+  - the WebSocket commands and the Timeline UI;
+  - computer use, LSP, trust and policy.
+- Also after the merge, `ruff` is clean and the 88 Node tests pass. The full
+  suite wasn't rerun locally; CI runs it.
 - `tests/test_specialist_exclusions_trust_modes.py` (19 tests) runs
   `LocalSpecialistRunner` with a scripted model and the real `Session`, and
   records every model request:

@@ -13,7 +13,9 @@ name: Release
 #   3. Signs the installer with the EdDSA private key (from EDDSA_PRIVATE_KEY secret)
 #   4. Creates a GitHub Release with the installer, SBOM and notices
 #   5. Copies the installer to the GitHub Pages site (downloads/vX.Y.Z/),
-#      keeps the newest three installers and updates appcast.xml to point there
+#      prunes old installers and adds the release to the update feeds: a
+#      stable tag to appcast.xml, the beta feed and its release line's feed;
+#      a beta tag (vX.Y.Z-beta.N) to the beta feed only
 #   6. Publishes gh-pages as one fresh commit. WinSparkle in installed copies
 #      picks up the release within 24h (or on next launch if the check is stale)
 
@@ -189,19 +191,18 @@ jobs:
             dist/lumi-${{ steps.version.outputs.version }}-sbom.cdx.json
             dist/lumi-${{ steps.version.outputs.version }}-THIRD_PARTY_NOTICES.txt
 
-      # Installed apps poll the GitHub Pages feed and download installers
+      # Installed apps poll the GitHub Pages feeds and download installers
       # anonymously. The source repository may be private, so Release assets
       # are not reachable for them; the Pages site hosts the newest installers
-      # too. Pre-release tags are not published to the feed.
+      # too. Pre-release tags reach only the beta feed (appcast-beta.xml), so
+      # installs on the stable channel never see them.
       - name: Checkout gh-pages branch
-        if: ${{ !contains(steps.version.outputs.version, '-') }}
         uses: actions/checkout@v4
         with:
           ref: gh-pages
           path: gh-pages-checkout
 
       - name: Publish installer and appcast to the Pages site
-        if: ${{ !contains(steps.version.outputs.version, '-') }}
         shell: pwsh
         run: |
           $owner = "${{ github.repository_owner }}".ToLowerInvariant()
@@ -220,14 +221,13 @@ jobs:
               --installer $installer `
               --signature "${{ steps.sign.outputs.signature }}" `
               --notes $notes `
-              --appcast "gh-pages-checkout/appcast.xml" `
+              --site "gh-pages-checkout" `
               --download-base "$pages/downloads"
           if ($LASTEXITCODE -ne 0) { throw "update_appcast.py failed" }
 
       # Publish gh-pages as one fresh commit so removed installers do not
       # accumulate in branch history. appcast.xml keeps the version history.
       - name: Push the Pages site
-        if: ${{ !contains(steps.version.outputs.version, '-') }}
         shell: bash
         working-directory: gh-pages-checkout
         run: |

@@ -118,7 +118,9 @@ Download the latest `lumi-setup-X.Y.Z.exe` from the
 
 - Installs without an administrator prompt
 - Adds a Start Menu shortcut
-- Checks the signed appcast for future updates
+- Checks the signed appcast for future updates. **Settings > Updates** picks
+  the stable or beta channel, pins a release line, or checks only when asked or
+  never; see [Updates](docs/updates.md)
 
 Windows SmartScreen may show "Unrecognized publisher" for the v0.x line. Code
 signing is planned for v1.0.

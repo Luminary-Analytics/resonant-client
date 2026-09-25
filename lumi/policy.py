@@ -222,6 +222,12 @@ def parse(data: Any, *, source: str, trusted_keys: dict[str, str] | None = None,
     settings = document.get("settings") or {}
     if not isinstance(settings, dict) or not all(isinstance(k, str) and "." in k for k in settings):
         raise PolicyError("'settings' must map 'section.key' names to values.")
+    from .update_channels import validate_policy_settings
+
+    try:
+        validate_policy_settings(settings)
+    except ValueError as exc:
+        raise PolicyError(str(exc)) from exc
     permissions = document.get("permissions") or {}
     modes = permissions.get("allowed_modes")
     allowed_modes = _patterns(modes, "permissions.allowed_modes") if modes is not None else None

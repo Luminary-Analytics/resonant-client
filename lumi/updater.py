@@ -14,6 +14,10 @@ Architecture
 - WinSparkle runs its own background thread for periodic checks; we
   fire-and-forget the init.
 
+- Which feed, and whether WinSparkle checks at all, comes from the update
+  mode, channel and pin (lumi/update_channels.py): Settings > Updates or the
+  organization's policy, read once at startup.
+
 Usage
 -----
     from lumi.updater import init_updater, check_for_updates_now
@@ -21,19 +25,21 @@ Usage
     init_updater()                # called once at startup (safe no-op if DLL missing)
     check_for_updates_now()       # menu / button trigger for explicit check
 
-If WinSparkle.dll isn't present (running from source on dev machines, or
-on non-Windows), every function becomes a no-op. The app still works,
-just without auto-update.
+If WinSparkle.dll isn't present, the copy runs from source (unless
+LUMI_UPDATER_FROM_SOURCE=1), or it isn't Windows, every function becomes a
+no-op. The app still works, just without auto-update.
 """
 
 from __future__ import annotations
 
 import ctypes
 import logging
+import os
 import sys
 from pathlib import Path
 
 from lumi import __version__
+from lumi.update_channels import UpdatePreferences, read as read_update_preferences
 
 logger = logging.getLogger(__name__)
 
@@ -50,7 +56,8 @@ EDDSA_PUBLIC_KEY = "HgNb0s7xavpa1bFyX/8B24AnuUdgekpvgO6HQU+zv8k="
 # polls it, so the first Lumi releases must be published here. Moving the feed
 # to a Lumi domain takes a bridge release whose binary points at the new URL,
 # published here first. Rename the repository only after that (GitHub does not
-# redirect Pages project sites after a rename).
+# redirect Pages project sites after a rename). This is the stable feed; the
+# beta channel and pinned release lines have their own (lumi/update_channels.py).
 APPCAST_URL = "https://luminary-analytics.github.io/resonant-client/appcast.xml"
 COMPANY_NAME = "Luminary Analytics"
 APP_NAME = "Lumi"
@@ -68,6 +75,8 @@ UPDATE_CHECK_INTERVAL_SEC = 24 * 60 * 60
 
 _dll: ctypes.CDLL | None = None
 _initialized = False
+# The update settings applied at startup; a change in Settings waits for a restart.
+_preferences: UpdatePreferences | None = None
 
 
 def _find_dll() -> Path | None:
@@ -97,6 +106,12 @@ def _load_dll() -> ctypes.CDLL | None:
     """Load WinSparkle.dll and configure ctypes signatures. Returns None on failure."""
     if sys.platform != "win32":
         logger.debug("WinSparkle is Windows-only; updater disabled on %s", sys.platform)
+        return None
+    # A copy running from source can't update itself (the installer replaces
+    # Program Files, not the checkout), and WinSparkle would still write the
+    # real HKCU key and could show dialogs during tests and fixtures.
+    if not getattr(sys, "frozen", False) and os.environ.get("LUMI_UPDATER_FROM_SOURCE") != "1":
+        logger.debug("Running from source; the updater stays off (LUMI_UPDATER_FROM_SOURCE=1 tries it)")
         return None
 
     dll_path = _find_dll()
@@ -146,34 +161,46 @@ def _load_dll() -> ctypes.CDLL | None:
     dll.win_sparkle_check_update_without_ui.argtypes = []
     dll.win_sparkle_check_update_without_ui.restype = None
 
+    dll.win_sparkle_get_last_check_time.argtypes = []
+    dll.win_sparkle_get_last_check_time.restype = ctypes.c_int64  # time_t, -1 before the first check
+
     return dll
 
 
 # ---- Public API --------------------------------------------------------------
 
 
-def init_updater() -> bool:
+def init_updater(preferences: UpdatePreferences | None = None) -> bool:
     """
     Initialize WinSparkle and start its background update-check thread.
 
     Safe to call multiple times — idempotent. Safe on non-Windows or when
-    the DLL isn't bundled — becomes a no-op.
+    the DLL isn't bundled — becomes a no-op. With the update mode ``off``
+    WinSparkle isn't loaded at all, so nothing checks or prompts.
 
     Returns True if WinSparkle is now active, False if disabled/unavailable.
     """
-    global _dll, _initialized
+    global _dll, _initialized, _preferences
 
     if _initialized:
         return _dll is not None
 
     _initialized = True
+    try:
+        _preferences = preferences or read_update_preferences()
+    except Exception:
+        logger.exception("Couldn't read the update settings; checking only when asked")
+        _preferences = UpdatePreferences(mode="manual")
+    if _preferences.mode == "off":
+        logger.info("Updates are off%s", f" (managed by {_preferences.managed_by})" if _preferences.managed_by else "")
+        return False
     _dll = _load_dll()
     if _dll is None:
         return False
 
     try:
         # Order matters: appcast URL + pubkey + app details MUST be set before init().
-        _dll.win_sparkle_set_appcast_url(APPCAST_URL.encode("utf-8"))
+        _dll.win_sparkle_set_appcast_url(_preferences.feed_url.encode("utf-8"))
 
         result = _dll.win_sparkle_set_eddsa_public_key(EDDSA_PUBLIC_KEY.encode("utf-8"))
         if result != 1:  # WinSparkle returns 1 on success, 0 on failure
@@ -182,15 +209,17 @@ def init_updater() -> bool:
 
         _dll.win_sparkle_set_app_details(COMPANY_NAME, APP_NAME, __version__)
         _dll.win_sparkle_set_registry_path(REGISTRY_PATH.encode("utf-8"))
-        _dll.win_sparkle_set_automatic_check_for_updates(1)
+        # Set every start, so the mode in Settings (or the policy) wins over
+        # the checkbox in WinSparkle's own dialog.
+        _dll.win_sparkle_set_automatic_check_for_updates(1 if _preferences.mode == "automatic" else 0)
         _dll.win_sparkle_set_update_check_interval(UPDATE_CHECK_INTERVAL_SEC)
 
         # Init kicks off the background thread.
         _dll.win_sparkle_init()
 
         logger.info(
-            "WinSparkle initialized: appcast=%s version=%s",
-            APPCAST_URL, __version__
+            "WinSparkle initialized: appcast=%s mode=%s version=%s",
+            _preferences.feed_url, _preferences.mode, __version__
         )
         return True
     except (OSError, AttributeError) as exc:
@@ -211,7 +240,7 @@ def check_for_updates_now(silent: bool = False) -> bool:
     if not _initialized:
         init_updater()
     if _dll is None:
-        logger.debug("Update check requested but WinSparkle is unavailable")
+        logger.debug("Update check requested but WinSparkle is unavailable or updates are off")
         return False
 
     try:
@@ -223,6 +252,43 @@ def check_for_updates_now(silent: bool = False) -> bool:
     except OSError as exc:
         logger.error("Update check failed: %s", exc)
         return False
+
+
+def status() -> dict:
+    """What Settings shows: the update settings in effect and the last check.
+
+    ``pending`` holds settings saved since startup, which apply after a
+    restart; ``available`` is False when this copy can't update itself
+    (running from source, not on Windows, or updates are off).
+    """
+    if not _initialized:
+        init_updater()
+    active = _preferences or UpdatePreferences()
+    try:
+        saved = read_update_preferences()
+    except Exception:
+        saved = active
+    last_check = None
+    if _dll is not None:
+        try:
+            value = int(_dll.win_sparkle_get_last_check_time())
+            last_check = value if value > 0 else None
+        except (OSError, AttributeError, ValueError):
+            last_check = None
+    # Only what changes behavior counts: with updates off, or a pin that
+    # makes the channel moot, a saved change isn't waiting for anything.
+    def effect(prefs: UpdatePreferences) -> tuple:
+        return ("off",) if prefs.mode == "off" else (prefs.mode, prefs.feed_url)
+
+    changed = effect(saved) != effect(active)
+    return {**active.as_dict(), "version": __version__, "available": _dll is not None,
+            "last_check": last_check, "pending": saved.as_dict() if changed else None}
+
+
+def reset_for_tests() -> None:
+    """Forget the startup state (tests only). From source WinSparkle never loads."""
+    global _dll, _initialized, _preferences
+    _dll, _initialized, _preferences = None, False, None
 
 
 def cleanup_updater() -> None:

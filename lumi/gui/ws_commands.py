@@ -2749,23 +2749,39 @@ async def _cmd_set_project(ctx: CommandContext) -> None:
 
 
 
+def _update_check_message(info: dict, started: bool) -> str:
+    """What Check for updates tells people, from ``updater.status()``."""
+    pending = info.get("pending") or {}
+    if info.get("mode") == "off":
+        if pending and pending.get("mode") != "off":
+            return "Updates are off until Lumi restarts with your new update settings."
+        if info.get("managed_by") and "mode" in (info.get("locked") or []):
+            return f"Updates are turned off by {info['managed_by']}."
+        return "Updates are turned off in Settings > Updates."
+    if not started:
+        return "This copy of Lumi doesn't update itself (it runs from source or outside Windows)."
+    message = f"Checking {info.get('describe') or 'for updates'}."
+    if pending:
+        message += " Your changed update settings apply after Lumi restarts."
+    return message
+
+
+@command("update_status")
+async def _cmd_update_status(ctx: CommandContext) -> None:
+    from lumi.updater import status as update_status
+
+    await ctx.send({"event": "update_status", "data": await asyncio.to_thread(update_status)})
+
+
 @command("check_updates")
 async def _cmd_check_updates(ctx: CommandContext) -> None:
     try:
-        from lumi.updater import check_for_updates_now
+        from lumi.updater import check_for_updates_now, status as update_status
 
-        started = await asyncio.get_event_loop().run_in_executor(
-            None,
-            lambda: check_for_updates_now(silent=False),
-        )
-        await ctx.send({
-            "event": "status_msg",
-            "message": (
-                "Update checker opened."
-                if started
-                else "Update checker is unavailable in this build."
-            ),
-        })
+        info = await asyncio.to_thread(update_status)
+        started = info.get("mode") != "off" and await asyncio.to_thread(
+            lambda: check_for_updates_now(silent=False))
+        await ctx.send({"event": "status_msg", "message": _update_check_message(info, bool(started))})
     except Exception as exc:
         logger.exception("check_updates failed")
         await ctx.send({
@@ -3014,6 +3030,7 @@ _SOCKET_SETTING_KEYS: dict[str, frozenset[str]] = {
     }),
     "audit": frozenset({"otlp_endpoint", "otlp_auth_header"}),
     "security": frozenset({"cli_adapters", "computer_use", "chat_gateway"}),
+    "updates": frozenset({"mode", "channel", "pin"}),
     "model_favorites": frozenset({"models"}),
 }
 
@@ -3063,6 +3080,10 @@ def _socket_setting_value(section: Any, key: Any, value: Any) -> Any:
         not isinstance(value, str) or value not in PERMISSION_MODES
     ):
         raise ValueError("Choose a permission mode: ask, auto-edit, plan or bypass.")
+    if section == "updates":
+        from ..update_channels import normalize
+
+        return normalize(key, value)
     if (section, key) in {
         ("network", "system_certificates"), ("privacy", "secret_scan"), ("privacy", "audit_log"),
     } or section == "security":
@@ -3199,6 +3220,11 @@ async def _cmd_update_settings(ctx: CommandContext) -> None:
         ctx.state.sonn_account_revision = getattr(ctx.state, "sonn_account_revision", 0) + 1
         await ctx.send({"event": "sonn_account", "data": None})
     await ctx.send({"event": "settings", "data": data})
+    if section == "updates":
+        # Settings > Updates says what changes after a restart.
+        from lumi.updater import status as update_status
+
+        await ctx.send({"event": "update_status", "data": await asyncio.to_thread(update_status)})
     await ctx.send(ctx.state.get_init_data(refresh_only=True))
 
 

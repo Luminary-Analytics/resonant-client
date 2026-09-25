@@ -8,6 +8,73 @@ The heartbeat remains paused. Documentation maintenance does not resume work,
 spending or grants, and changes no native implementation or installed bundle.
 The dated September 15/18 records below are historical.
 
+## September 25 update channels, pins and turning updates off — source only, not released
+
+- **Settings > Updates** ([guide](updates.md), `lumi/update_channels.py`), under
+  Advanced:
+  - **Check for updates:** automatically (once a day and on demand), only
+    when asked, or never;
+  - **Channel:** stable or beta;
+  - **Stay on release line:** a pin such as `0.20`, which takes only that
+    line's stable releases.
+
+  These are read at startup like the policy. The page shows the installed
+  version, the feed in use, the last check, and what applies after a restart.
+- **Policy:** `updates.mode`, `updates.channel` and `updates.pin` can be locked.
+  A value Lumi can't apply makes the policy invalid. An invalid machine policy
+  pauses automatic checks.
+- **Check for updates** says why nothing happens: updates are turned off by
+  the organization or in Settings, will start after a restart, or this copy
+  runs from source.
+- **Running from source** no longer loads WinSparkle. Before, development runs
+  and fixtures wrote the real HKCU WinSparkle key and could show its dialogs.
+  `LUMI_UPDATER_FROM_SOURCE=1` restores the old behavior for testing the
+  updater.
+- **Release pipeline:**
+  - `update_appcast.py` now writes `appcast.xml` (stable, unchanged address),
+    `appcast-beta.xml`, and `appcast-X.Y.xml` for the four newest release lines.
+  - Beta tags (`vX.Y.Z-beta.N`, `-alpha.N`, `-rc.N`) reach only the beta feed.
+    Before this change they weren't published to Pages at all.
+  - `publish_pages.py` keeps the newest installer of each recent line, so
+    pinned installs can download their update, and always links the newest
+    stable release.
+- Settings text fields, like multi-line ones, keep typed text after a refused
+  save so it can be corrected.
+
+Validation on September 25, 2026:
+
+- 28 tests in `test_updates.py`:
+  - pins, feeds, settings.json values and their mistakes;
+  - policy locks and invalid policy values;
+  - the WinSparkle calls for each mode, run against a recording stand-in for
+    the DLL;
+  - status and restart-pending reporting;
+  - the from-source guard;
+  - Settings commands and messages.
+- 6 tests in `test_update_feeds.py`:
+  - version ordering (alpha < beta < rc < release);
+  - a stable release in every feed, with idempotent re-runs;
+  - betas only in the beta feed and retired by their release;
+  - line feeds, including a fix for an older line;
+  - refusal of unsigned releases and bad versions;
+  - agreement between the feeds the client reads and those the script writes.
+- `test_publish_pages.py` gained tests for line retention and betas.
+- Full `pytest`: 3,810 passed, 2 skipped.
+- In the browser pane, with an isolated home and a pilot policy from "Example
+  Corp" that locks the channel:
+  - Ctrl+, opened Settings, and searching "beta" found only Updates;
+  - the channel showed "Managed by Example Corp" and was disabled;
+  - the status read "Lumi 0.19.2.dev11 · Automatic, from the stable channel ·
+    managed by Example Corp", noted that a copy running from source doesn't
+    update itself, and disabled Check for updates;
+  - the pin "latest" was refused with the reason and stayed in the field;
+    "0.20" saved;
+  - "After Lumi restarts" changed with each save, including while the mode
+    select kept focus;
+  - Help > Check for Updates said the copy doesn't update itself.
+- No release has been published with these feeds. The WinSparkle calls were
+  exercised against a stand-in, not the real DLL.
+
 ## September 25 enterprise sign-in for connections — source only, not released
 
 - **Sign-in instead of a key** ([guide](connection-sign-in.md),

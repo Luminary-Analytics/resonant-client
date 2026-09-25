@@ -3837,7 +3837,7 @@ class LumiApp {
             case 'settings':
                 this.settings = event.data || {};
                 this.settingsError = '';
-                this._linesDrafts = {};
+                this._settingsDrafts = {};
                 // A save succeeded: an earlier refusal no longer applies, even
                 // while the re-render waits for the field being edited.
                 document.querySelector('.settings-error-banner')?.remove();
@@ -3970,6 +3970,10 @@ class LumiApp {
             case 'audit_status':
                 this.auditStatus = event;
                 if (this.currentView === 'settings') this.renderSettingsView();
+                break;
+            case 'update_status':
+                this.updateStatus = event.data;
+                if (this.currentView === 'settings' && !this.refreshUpdateStatus()) this.renderSettingsView();
                 break;
             case 'project_trust':
                 this.projectTrust = event;

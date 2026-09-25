@@ -253,6 +253,41 @@ class LumiSettingsView {
             <div class="settings-row"><div class="settings-row-copy"><span class="settings-row-label">OpenTelemetry export</span><div class="settings-row-hint">${exported}</div></div></div>`;
     }
 
+    _bindUpdateCheck() {
+        document.getElementById('update-check')?.addEventListener('click', () => {
+            this.showStatusMessage('Checking for updates...');
+            this.send({command: 'check_updates'});
+        });
+    }
+
+    /** Redraw only the status block, so it stays current while a field keeps focus. */
+    refreshUpdateStatus() {
+        const body = this.settingsBody?.querySelector('[data-settings-section="update_status"] .settings-section-body');
+        if (!body) return false;
+        body.innerHTML = this._renderUpdateStatus();
+        this._bindUpdateCheck();
+        return true;
+    }
+
+    _renderUpdateStatus() {
+        const status = this.updateStatus;
+        if (!status) return '<p class="editor-help">Loading…</p>';
+        const esc = value => this.escapeHtml(String(value ?? ''));
+        const modes = { automatic: 'Automatic', manual: 'Only when you check', off: 'Off' };
+        const describe = s => `${esc(modes[s.mode] || s.mode)}${s.mode === 'off' ? '' : `, from ${esc(s.describe)}`}`;
+        const managed = status.managed_by ? ` · managed by ${esc(status.managed_by)}` : '';
+        const checking = status.mode !== 'off' && status.available;
+        const hints = [
+            status.mode !== 'off' && !status.available ? 'This copy of Lumi doesn’t update itself: it runs from source or outside Windows.' : '',
+            ...(status.problems || []),
+        ].filter(Boolean).map(text => `<div class="settings-row-hint">${esc(text)}</div>`).join('');
+        const lastCheck = status.last_check ? new Date(status.last_check * 1000).toLocaleString() : 'Not yet';
+        return `<div class="settings-row"><div class="settings-row-copy"><span class="settings-row-label">Lumi ${esc(status.version)}</span><div class="settings-row-hint">${describe(status)}${managed}</div>${hints}</div>
+                <div class="settings-row-value"><button type="button" class="btn-sm" id="update-check"${checking ? '' : ' disabled'}>Check for updates</button></div></div>
+            ${checking ? `<div class="settings-row"><div class="settings-row-copy"><span class="settings-row-label">Last checked</span><div class="settings-row-hint">${esc(lastCheck)}</div></div></div>` : ''}
+            ${status.pending ? `<div class="settings-row"><div class="settings-row-copy"><span class="settings-row-label">After Lumi restarts</span><div class="settings-row-hint" role="status">${describe(status.pending)}</div></div></div>` : ''}`;
+    }
+
     _renderOrgPolicy() {
         const meta = this.settings?._meta?.policy || {};
         const esc = value => this.escapeHtml(String(value ?? ''));
@@ -1088,6 +1123,7 @@ class LumiSettingsView {
             {id:'prompt_inspector', title:'Prompt inspector', group:'Advanced', icon:'book', description:'Inspect the instructions used by the active model.', sections:['prompt_inspector']},
             {id:'model_evaluations', title:'Model evaluations', group:'Advanced', icon:'chart', description:'Review model quality and runtime diagnostics.', sections:['model_evaluations']},
             {id:'iteration_checkpoints', title:'Checkpoints & recovery', group:'Advanced', icon:'history', description:'Inspect saved iterations and recovery options.', sections:['iteration_checkpoints']},
+            {id:'updates', title:'Updates', group:'Advanced', icon:'history', description:'Choose how Lumi updates itself and which releases it takes.', sections:['updates','update_status'], keywords:'update upgrade version release beta channel pin stable automatic manual off'},
         ];
     }
 
@@ -1180,7 +1216,7 @@ class LumiSettingsView {
             this.send({command: 'project_trust_list'});
             this.send({command: 'audit_status'});
         }
-        const command = {creative_editors:'editor_list', capability_packs:'capability_pack_list', cost_tracking:'get_costs', model_evaluations:'evaluation_list', iteration_checkpoints:'checkpoint_list'}[page];
+        const command = {creative_editors:'editor_list', capability_packs:'capability_pack_list', cost_tracking:'get_costs', model_evaluations:'evaluation_list', iteration_checkpoints:'checkpoint_list', updates:'update_status'}[page];
         if (command) this.send({command});
     }
 
@@ -1389,6 +1425,28 @@ class LumiSettingsView {
             { id: 'audit_status', title: 'Audit log status', custom: true },
             { id: 'project_trust', title: 'Project trust', custom: true },
             {
+                id: 'updates', title: 'Updates',
+                note: 'Changes apply the next time Lumi starts. Your organization’s policy can set these for you.',
+                fields: [
+                    { key: 'mode', label: 'Check for updates', type: 'select', default: 'automatic',
+                      options: [
+                          { value: 'automatic', label: 'Automatically' },
+                          { value: 'manual', label: 'Only when I check' },
+                          { value: 'off', label: 'Never' },
+                      ],
+                      hint: 'Automatically checks once a day. Never is for organizations that deploy Lumi themselves.' },
+                    { key: 'channel', label: 'Channel', type: 'select', default: 'stable',
+                      options: [
+                          { value: 'stable', label: 'Stable' },
+                          { value: 'beta', label: 'Beta' },
+                      ],
+                      hint: 'Beta releases arrive first and may have rough edges. The beta channel also gets every stable release.' },
+                    { key: 'pin', label: 'Stay on release line', type: 'text', placeholder: 'e.g. 0.20',
+                      hint: 'Take only fixes for this line (0.20.x, say) and nothing newer. A pin wins over the channel. Empty follows the channel.' },
+                ]
+            },
+            { id: 'update_status', title: 'This installation', custom: true },
+            {
                 id: 'engram', title: 'Memory (Engram)',
                 fields: [
                     { key: 'enabled', label: 'Enable memory', type: 'toggle' },
@@ -1460,6 +1518,8 @@ class LumiSettingsView {
                 bodyHtml = this._renderEditorIntegrations();
             } else if (section.id === 'audit_status') {
                 bodyHtml = this._renderAuditStatus();
+            } else if (section.id === 'update_status') {
+                bodyHtml = this._renderUpdateStatus();
             } else if (section.id === 'org_policy') {
                 bodyHtml = this._renderOrgPolicy();
             } else if (section.id === 'file_exclusions') {
@@ -1664,15 +1724,17 @@ class LumiSettingsView {
                         `;
                     } else if (field.type === 'lines') {
                         // Typed lines stay until a save succeeds, so a refused save can be fixed.
-                        const draft = this._linesDrafts?.[`${store}.${field.key}`];
+                        const draft = this._settingsDrafts?.[`${store}.${field.key}`];
                         const text = draft ?? (Array.isArray(val) ? val.join('\n') : String(val || ''));
                         const ph = field.placeholder ? ` placeholder="${this.escapeHtml(field.placeholder)}"` : '';
                         input = `<textarea class="settings-input settings-textarea settings-lines" rows="3" spellcheck="false" data-section="${store}" data-key="${field.key}" aria-label="${this.escapeHtml(field.label)}"${ph}${lock}>${this.escapeHtml(text)}</textarea>`;
                     } else if (field.type === 'number') {
                         input = `<input class="settings-input" type="number" value="${val || ''}" data-section="${store}" data-key="${field.key}" aria-label="${this.escapeHtml(field.label)}" placeholder="None" style="width:80px"${lock} />`;
                     } else {
+                        // Like lines, typed text stays until a save succeeds.
+                        const draft = this._settingsDrafts?.[`${store}.${field.key}`];
                         const ph = field.placeholder ? ` placeholder="${this.escapeHtml(field.placeholder)}"` : '';
-                        input = `<input class="settings-input" type="text" value="${this.escapeHtml(String(val))}" data-section="${store}" data-key="${field.key}" aria-label="${this.escapeHtml(field.label)}"${ph}${lock} />`;
+                        input = `<input class="settings-input" type="text" value="${this.escapeHtml(String(draft ?? val))}" data-section="${store}" data-key="${field.key}" aria-label="${this.escapeHtml(field.label)}"${ph}${lock} />`;
                     }
                     const managed = lockedBy ? `<div class="settings-row-hint settings-managed">Managed by ${this.escapeHtml(lockedBy)}</div>` : '';
                     const hint = field.hint ? `<div class="settings-row-hint">${this.escapeHtml(field.hint)}</div>` : '';
@@ -1706,6 +1768,7 @@ class LumiSettingsView {
             exclusions.focus();
         });
         document.getElementById('audit-verify')?.addEventListener('click', () => this.send({command: 'audit_status'}));
+        this._bindUpdateCheck();
         this.settingsBody.querySelectorAll('[data-trust-decision]').forEach(button => {
             button.addEventListener('click', () => {
                 button.disabled = true;
@@ -1719,9 +1782,14 @@ class LumiSettingsView {
                 this.send({command: 'provider_connection', provider: btn.dataset.provider, action: btn.dataset.providerAction});
             });
         });
+        this.settingsBody.querySelectorAll('input.settings-input[type="text"][data-section]').forEach(input => {
+            input.addEventListener('input', () => {
+                this._settingsDrafts = {...(this._settingsDrafts || {}), [`${input.dataset.section}.${input.dataset.key}`]: input.value};
+            });
+        });
         this.settingsBody.querySelectorAll('textarea.settings-lines').forEach(area => {
             area.addEventListener('input', () => {
-                this._linesDrafts = {...(this._linesDrafts || {}), [`${area.dataset.section}.${area.dataset.key}`]: area.value};
+                this._settingsDrafts = {...(this._settingsDrafts || {}), [`${area.dataset.section}.${area.dataset.key}`]: area.value};
             });
             area.addEventListener('blur', () => {
                 const lines = area.value.split('\n').map(line => line.trim()).filter(Boolean);

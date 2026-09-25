@@ -80,13 +80,22 @@ produce an EdDSA signature of the installer. The matching public key lives in
 `lumi/updater.py`. The private key must never enter source control,
 logs, documentation, or fixtures.
 
-The workflow publishes the installer as a GitHub Release asset. For stable
-tags, `packaging/publish_pages.py` copies it to `gh-pages/downloads/vX.Y.Z/`,
-keeps the newest three installers and regenerates the download page. Then
-`packaging/update_appcast.py` adds an entry to `gh-pages/appcast.xml` whose URL
-points at that Pages copy, with byte length, notes and signature. The branch is
-pushed as one fresh commit so old installers do not accumulate in its history;
-the appcast file itself keeps the version history. The Pages copy exists because
+The workflow publishes the installer as a GitHub Release asset. Then
+`packaging/publish_pages.py` copies it to `gh-pages/downloads/vX.Y.Z/`. It keeps
+the newest three installers, the newest installer of each of the four newest
+release lines (for installs pinned to one), and betas newer than the newest
+stable release. A stable tag also regenerates the download page.
+
+`packaging/update_appcast.py` then adds the release to the update feeds, with
+byte length, notes and signature, pointing at that Pages copy:
+
+- a stable tag goes into `appcast.xml`, and the beta feed and release-line
+  feeds are rebuilt from it;
+- a beta tag (`vX.Y.Z-beta.N`) goes into `appcast-beta.xml` only.
+
+[Updates](updates.md#how-the-feeds-work) describes the feeds and how installs
+choose one. The branch is pushed as one fresh commit so old installers do not
+accumulate in its history; `appcast.xml` itself keeps the version history. The Pages copy exists because
 the source repository may be private, which puts Release assets behind sign-in.
 The live feed URL is:
 
@@ -127,8 +136,8 @@ ordinary CI. Keep mocked wire-contract tests distinct from live model evidence.
 | `packaging/sign_windows.ps1` | Authenticode signing when configured |
 | `packaging/check_bundle.py`, `packaging/bundle-policy.json` | Bundle contents and size gate |
 | `packaging/installer.iss` | Windows installer |
-| `packaging/update_appcast.py` | Versioned update-feed entries |
-| `lumi/updater.py` | WinSparkle client and verification key |
+| `packaging/update_appcast.py` | Stable, beta and release-line update feeds |
+| `lumi/updater.py`, `lumi/update_channels.py` | WinSparkle client and verification key; update mode, channel and pin |
 
 Paths are relative to the repository root. See the
 [documentation index](README.md) for release records and current guides.

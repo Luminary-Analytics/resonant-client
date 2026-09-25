@@ -263,7 +263,7 @@ class LumiRunCards {
         item.className = 'tool-activity-item';
         item.innerHTML = `
             <span class="ta-icon" style="color:var(--${info.color})">${info.icon}</span>
-            <span class="ta-name">${info.label}</span>
+            <span class="ta-name">${this.escapeHtml(info.label)}</span>
             <span class="ta-detail">${this.escapeHtml(detail)}</span>
         `;
 

@@ -618,3 +618,103 @@ test('escaped text is safe inside attribute values', () => {
     assert.equal(app.escapeHtml(undefined), '');
     assert.equal(app.escapeHtml(3), '3');
 });
+
+
+// ── Untrusted text renders as text ────────────────────────────────────
+// Repository contents (commit messages, branch and file names), model output
+// (tool arguments, plan goals) and MCP tool names all reach innerHTML. Each
+// must stay text: no new elements, and no way out of an attribute value.
+
+const UNTRUSTED = 'x" onmouseover="window.pwned=1"><img src=x onerror="window.pwned=1">';
+const UNTRUSTED_AS_TEXT = 'x&quot; onmouseover=&quot;window.pwned=1&quot;&gt;&lt;img src=x onerror=&quot;window.pwned=1&quot;&gt;';
+
+function assertRenderedAsText(html, where) {
+    assert.ok(!/<img/i.test(html), `${where}: untrusted text became an element`);
+    assert.ok(!html.includes('" onmouseover="') && !html.includes('onerror="'), `${where}: untrusted text became an attribute`);
+    assert.ok(html.includes(UNTRUSTED_AS_TEXT), `${where}: untrusted text should still be shown`);
+}
+
+// Serializes like a browser's text node: & < > only, never quotes.
+function browserTextElement() {
+    let text = '';
+    return {
+        set textContent(value) { text = String(value); },
+        get innerHTML() { return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); },
+    };
+}
+
+test('repository text in the Git panel and hook commands renders as text', () => {
+    const body = {innerHTML: ''};
+    const app = accountView({}, null, {getElementById: id => (id === 'git-popover-body' ? body : null)});
+    // The settings view is mixed into the app, which supplies escapeHtml.
+    app.escapeHtml = setup(() => {}).escapeHtml;
+    app.gitData = {
+        is_repo: true,
+        branch: UNTRUSTED,
+        changes: [{status: 'M', file: UNTRUSTED}],
+        commits: [{hash: UNTRUSTED, message: UNTRUSTED}],
+    };
+
+    app._renderGitPopoverTab('changes');
+    assertRenderedAsText(body.innerHTML, 'changed file');
+    app._renderGitPopoverTab('commits');
+    assert.equal(body.innerHTML.split(UNTRUSTED_AS_TEXT).length - 1, 2, 'commit hash and message');
+    assertRenderedAsText(body.innerHTML, 'commit');
+    assertRenderedAsText(app._gitPopoverHtml(app.gitData), 'branch');
+    assertRenderedAsText(app._renderHooksList([{hook_type: 'pre_tool_use', name: UNTRUSTED, command: UNTRUSTED, enabled: true}]), 'hook');
+});
+
+test('tool names and arguments from a model or MCP server render as text', () => {
+    const rows = [];
+    const document = {
+        getElementById: () => null,
+        createElement: () => {
+            const element = {innerHTML: '', className: '', setAttribute() {}};
+            rows.push(element);
+            return element;
+        },
+    };
+    const app = setup(() => {}, {document});
+    app.getRenderTarget = () => ({appendChild() {}});
+    app.scrollToBottom = () => {};
+
+    app.renderToolCall({name: UNTRUSTED, arguments: {}});
+    app.renderToolCall({name: 'computer_click', arguments: {x: UNTRUSTED, y: UNTRUSTED}});
+    app.renderToolCall({name: 'computer_scroll', arguments: {direction: UNTRUSTED, amount: UNTRUSTED}});
+    assert.equal(rows.length, 3);
+    rows.forEach((row, index) => assertRenderedAsText(row.innerHTML, `native tool row ${index}`));
+
+    // CLI providers report tool names too, including their MCP tools.
+    const context = vm.createContext({console, document, window: {}});
+    vm.runInContext(source + '\nthis.App = LumiApp;', context);
+    vm.runInContext(fs.readFileSync(path.join(__dirname, '../lumi/gui/static/run_cards.js'), 'utf8'), context);
+    const cards = Object.create(context.window.LumiRunCards.prototype);
+    cards.escapeHtml = context.App.prototype.escapeHtml;
+    cards.scrollToBottom = () => {};
+    cards.activeToolGroupCount = 0;
+    cards.activeToolGroupCounts = {};
+    cards.activeToolGroup = {querySelector: () => ({appendChild() {}})};
+    rows.length = 0;
+    cards.addToToolActivityGroup({name: UNTRUSTED, arguments: {}});
+    assertRenderedAsText(rows[0].innerHTML, 'CLI tool activity');
+});
+
+test('model-written plan goals stay inside their attributes', () => {
+    const canvas = {innerHTML: '', style: {}, querySelectorAll: () => []};
+    const document = {
+        getElementById: id => (id === 'plan-graph-canvas' ? canvas : null),
+        createElement: () => browserTextElement(),
+    };
+    const window = {};
+    vm.runInContext(
+        fs.readFileSync(path.join(__dirname, '../lumi/gui/static/plan_graph_view.js'), 'utf8'),
+        vm.createContext({window, document, console}),
+    );
+
+    window.PlanGraphView.render({intent: 'Fix it', intent_id: 'i1', nodes: [
+        {id: 'n1', goal: UNTRUSTED, status: 'running', specialization: 'implement'},
+    ]});
+
+    assertRenderedAsText(canvas.innerHTML, 'plan node');
+    assert.equal(canvas.innerHTML.split(UNTRUSTED_AS_TEXT).length - 1, 2, 'goal title and text');
+});

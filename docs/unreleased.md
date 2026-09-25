@@ -133,6 +133,66 @@ organization-prompt limit; both were tested only at the engine and function
 level. Also not exercised: Codex or Claude Code (their tools never reach tool
 hooks), real Telegram, Slack or Lumi Cloud, and hooks on macOS or Linux.
 
+## September 25 Linux packages — source only, not released
+
+- **A .deb, an .rpm, an AppImage and a tarball** for x86_64
+  ([guide](deploy-linux.md)).
+  - `packaging/build_linux.sh` builds the bundle with PyInstaller, from the
+    hash-pinned release lock, behind a Linux bundle policy.
+  - `packaging/linux_packages.py` makes the packages:
+    - the .deb, written in Python;
+    - the .rpm, through rpmbuild with stripping off;
+    - the AppImage folder, packed by appimagetool 1.9.1 with the type2
+      runtime 20251108, both pinned by the SHA-256 digests GitHub published;
+    - the tarball.
+  - Built on Ubuntu 22.04, the packages need glibc 2.35 or later. RHEL 9
+    (2.34) isn't supported yet.
+- **The .deb and .rpm install in `/opt/lumi`**, with `/usr/bin/lumi`, a
+  desktop entry and an icon.
+  - `lumi-install.json` marks their copy: Lumi leaves updates to the package
+    manager, and `lumi updates` and Settings say so
+    (`update_channels.MANAGED_INSTALLERS` gains `deb` and `rpm`).
+  - The same bundle gives byte-identical packages (`SOURCE_DATE_EPOCH`).
+- **The desktop app opens in the browser on Linux.** The packages bundle no
+  GTK or Qt window.
+  - `lumi gui` used to print only a one-time link when pywebview couldn't
+    open a window, so the menu entry showed nothing. It now opens the page in
+    the default browser where there's a display. It also forgets the window
+    that never opened, so the folder picker doesn't wait 20 seconds on it
+    (`gui/server.py`).
+  - Without a display, it still prints the link and opens nothing, so no
+    console browser takes over the terminal.
+- **Kept out of the Linux bundle:** python3-xlib, which is GPL-2.0, is
+  PyAutoGUI's X11 backend (`not_shipped`, and `Xlib` in the spec's
+  excludes). So the Linux packages have no computer use.
+- **Servers.** The guide covers `lumi run`, cron for scheduled tasks, a
+  systemd unit for the chat gateway, and `/etc/lumi/policy.json`.
+
+Validation on September 25, 2026:
+
+- `tests/test_linux_packages.py` (9 tests) covers:
+  - version mapping;
+  - the .deb's structure: control fields, modes, root ownership, the
+    `/usr/bin/lumi` symlink, md5sums and identical rebuilds;
+  - the .rpm spec with stripping off, the AppImage folder and the tarball;
+  - the browser fallback, with and without a display.
+  `tests/test_release_supply_chain.py` checks the not-shipped list and the
+  Linux policy.
+- The .deb writer was run in WSL's Ubuntu 20.04 on a test bundle. dpkg-deb
+  read its fields and listed and extracted its contents, and the launcher
+  ran. `dpkg --compare-versions` put `0.19.2~dev11` before `0.19.2`, and a
+  rebuild was identical.
+- The Linux CI job (`build-linux.yml`, new) builds everything on Ubuntu 22.04.
+  Then:
+  - it smoke-tests the bundle, including the GUI server checks and the
+    fallback;
+  - it installs the .deb with apt, checks updates and `/etc/lumi` policy,
+    and removes it;
+  - it installs the .rpm with dnf in a Fedora 41 container;
+  - it runs the AppImage without FUSE.
+
+  See the pull request for its result.
+
 ## September 25 an installer package and profiles for managed Macs — source only, not released
 
 - **`lumi-X.Y.Z.pkg`** for Jamf Pro, Intune and other device management

@@ -379,8 +379,12 @@ test('Settings say device management updates an MSI or PKG copy', () => {
     assert.match(app._renderUpdateStatus(), /installed from the MSI package, so/);
     app.updateStatus = {...app.updateStatus, installed_by: 'someday', managed_by: 'Acme'};
     assert.match(app._renderUpdateStatus(), /managed by Acme/);
+    app.updateStatus.installed_by = 'deb';
+    assert.match(app._renderUpdateStatus(), /installed from the Debian package, so your package manager updates it/);
     app.aboutInfo = {version: '0.20.0', license: 'MIT', installed_by: 'pkg'};
-    assert.match(app._renderAbout(), /Installed by your organization’s device management\./);
+    assert.match(app._renderAbout(), /Installed from the macOS installer package; your organization’s device management updates it\./);
+    app.aboutInfo.installed_by = 'rpm';
+    assert.match(app._renderAbout(), /Installed from the RPM package; your package manager updates it\./);
 });
 
 test('Settings shortcut works from a composer draft without sending or clearing it', () => {

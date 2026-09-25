@@ -863,13 +863,66 @@ class AppState:
         packs = manager.discover()
         # Rediscovery may find an approved pack edited on disk; stop its servers.
         self._reconcile_pack_mcp_servers(manager.mcp_servers())
+        plugins = self.settings.get("plugins") or {}
+
+        def described(pack) -> dict:
+            entry = pack.to_dict()
+            source = (plugins.get(pack.id) or {}).get("source") if isinstance(plugins.get(pack.id), dict) else None
+            # Only a personal pack at its install folder shows where git put it.
+            entry["source"] = source if isinstance(source, dict) and pack.scope == "user" else None
+            return entry
+
         return {
             "event": "capability.pack_list",
             "project_path": str(manager.project_path),
-            "packs": [pack.to_dict() for pack in packs],
+            "packs": [described(pack) for pack in packs],
             "pending": self.capability_packs_pending(),
             "catalog": manager.context_catalog(),
         }
+
+    def install_capability_pack(self, url: str, ref: str, subdir: str = "") -> tuple[dict, dict]:
+        """Install a pack from a git repository at one commit; it still needs approval."""
+        from .. import audit
+        from ..engine import pack_install
+        from ..policy import current as current_policy
+
+        policy = current_policy()
+        allowed = policy.sources_allowed if policy else None
+        commit = pack_install.resolve(url, ref)
+        installed = pack_install.install_from_git(url, commit, subdir=subdir, allowed_sources=allowed)
+        plugins = dict(self.settings.get("plugins") or {})
+        entry = dict(plugins.get(installed.id) or {}) if isinstance(plugins.get(installed.id), dict) else {}
+        # A reinstall is new content: drop old approvals so it must be reviewed.
+        for key in ("approvals", "trust", "sha256", "enabled"):
+            entry.pop(key, None)
+        entry["source"] = pack_install.source_record(installed)
+        plugins[installed.id] = entry
+        self.settings.set("plugins", None, plugins)
+        audit.record("extension.install", pack=installed.id, version=installed.version,
+                     url=installed.url, commit=installed.commit)
+        self.refresh_capability_packs()
+        return self.capability_pack_payload(), {"id": installed.id, "name": installed.name,
+                                                 "commit": installed.commit, "url": installed.url}
+
+    def remove_capability_pack(self, pack_id: str) -> dict:
+        """Delete a pack installed from git, with its approvals."""
+        from .. import audit
+        from ..engine import pack_install
+
+        plugins = dict(self.settings.get("plugins") or {})
+        entry = plugins.get(pack_id) if isinstance(plugins.get(pack_id), dict) else {}
+        source = entry.get("source") if isinstance(entry, dict) else None
+        if not isinstance(source, dict) or source.get("type") != "git":
+            raise pack_install.PackInstallError("Only packs installed from Git can be removed here.")
+        pack_install.remove(pack_id)
+        plugins.pop(pack_id, None)
+        self.settings.set("plugins", None, plugins)
+        audit.record("extension.remove", pack=pack_id, url=source.get("url", ""), commit=source.get("commit", ""))
+        self.refresh_capability_packs()
+        if self.session is not None:
+            root = getattr(self.session, "project_path", None) or self.project.project_path
+            self._attach_capability_packs(self.session, self._capability_packs_for(root))
+        return self.capability_pack_payload()
 
     def capability_packs_pending(self) -> list[dict]:
         """Packs in the open project waiting for the user's decision."""

@@ -8,6 +8,37 @@ The heartbeat remains paused. Documentation maintenance does not resume work,
 spending or grants, and changes no native implementation or installed bundle.
 The dated September 15/18 records below are historical.
 
+## September 25 capability packs from Git — source only, not released
+
+- **Settings > Capability packs > Install from Git** (`lumi/engine/pack_install.py`, [guide](desktop-workflow.md)):
+  - installs a pack from a public https repository, pinned to one commit;
+  - a tag or branch is resolved to the commit it names now;
+  - only that commit is fetched (depth 1, no submodules, no credential
+    helper or prompt, links checked out as plain files);
+  - the pack arrives turned off in `~/.lumi/packs/<id>` and runs only after
+    the usual review and approval;
+  - reinstalling at another commit drops the earlier approval, and **Remove**
+    deletes a pack installed this way;
+  - `plugins[<id>].source` records the URL, commit and folder.
+- **Policy:** `extensions.allowed_sources` limits the repositories packs may
+  come from.
+- **Audit:** `extension.install` and `extension.remove`, with the commit.
+- Refused: non-https addresses, credentials in the URL, folders with `..`,
+  manifests without an `id`, and symbolic links.
+
+Validation on September 25, 2026:
+
+- 18 tests in `test_pack_install.py` (one is skipped on Windows), against
+  local git repositories:
+  - addresses and allowed sources;
+  - lightweight and annotated tags, branches and commits resolving;
+  - a pinned install that ignores newer commits, leaves no `.git` or scratch
+    folders, and is discovered untrusted;
+  - refusals;
+  - a pack in a subfolder;
+  - the Settings flow through the socket: install, approve, reinstall (back
+    to needing approval), remove, and the audit records.
+
 ## September 25 macOS app and DMG — source only, not released
 
 - **`Lumi.app` in `lumi-X.Y.Z.dmg`** for Apple silicon ([guide](macos.md)):

@@ -68,6 +68,7 @@ optional.
 | `shell.rules` | Execution-policy rules (`tool_pattern`, `action` allow, prompt or deny, `arg_patterns`, `reason`). They are checked before Lumi's built-in and repository rules, so nothing can loosen them. |
 | `mcp.allowed_servers`, `mcp.allow_stdio` | MCP server name patterns that may connect; `allow_stdio: false` refuses command-based servers. |
 | `extensions.allowed_packs` | Capability pack id patterns; other packs stay off even if approved. |
+| `extensions.allowed_sources` | Repository URL patterns that packs may be installed from (Settings > Capability packs > Install from Git), for example `https://github.com/example-corp/*`. Other repositories are refused. |
 | `models.capabilities` | Stated capabilities per model pattern (context window, vision, tools, reasoning, computer use, concurrency) that win over inference and provider reports. See [capability overrides](models.md#capability-overrides-for-administrators). |
 | `budgets` | Spending rules per user, project or turn: an alert, a question before continuing, and a stop (`warn_usd`, `approve_usd`, `block_usd`), plus `block_unpriced`. See [budgets](usage-and-costs.md#budgets). |
 | `pricing.prices` | Negotiated prices in USD per million tokens by `provider:model` pattern (`input`, `output`, optional `cached_input` and `cache_write`). They win over users' prices and Lumi's list; see [usage records and prices](usage-and-costs.md). |

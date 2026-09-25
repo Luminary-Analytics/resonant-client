@@ -3985,6 +3985,11 @@ class LumiApp {
             case 'capability.pack_list':
                 this.runtimePacks = event.packs || [];
                 this.capabilityPacks = event;
+                // An install finished: keep what was typed only if it failed.
+                if (this._packInstalling) {
+                    this._packInstalling = false;
+                    if (!event.error) this._packInstallDraft = {};
+                }
                 this.renderRuntimeView();
                 if (this.currentView === 'settings') this.renderSettingsView();
                 if (Array.isArray(event.pending) && this._runtimeBannerState) {

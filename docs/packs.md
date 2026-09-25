@@ -1,0 +1,112 @@
+# Writing a capability pack
+
+A capability pack bundles things Lumi can use: agents, skills, lifecycle hooks
+and MCP servers, plus metadata. It is a folder with a `lumi-pack.json`
+manifest. Code: `lumi/engine/capability_packs.py`.
+
+Nothing in a pack runs until a person approves it, and a manifest can't
+approve itself. See [how trust works](#trust) below.
+
+## Where packs live
+
+| Location | Scope |
+|---|---|
+| `<project>/.lumi/packs/<pack>/` | The project. The repository ships it; each person approves it at that location. |
+| `~/.lumi/packs/<pack>/` | Personal: yours in every project. **Install from Git** puts packs here. |
+| A folder named by `plugins.<id>.path` in settings.json | Personal |
+
+## The manifest
+
+```json
+{
+  "id": "review-helpers",
+  "name": "Review helpers",
+  "version": "1.2.0",
+  "description": "A reviewer agent, a review skill and a start hook.",
+  "agents": ["agents/reviewer.md"],
+  "skills": ["skills/review.md"],
+  "hooks": [
+    {"hook_type": "session_start", "command": "python hooks/start.py"},
+    {"hook_type": "pre_tool_use", "tool_name": "bash", "command": "python hooks/check.py",
+     "input_format": "json", "timeout_seconds": 10}
+  ],
+  "mcp_servers": {"docs": {"command": "python", "args": ["servers/docs.py"]}},
+  "permissions": ["read_project"],
+  "commands": [], "recipes": [], "ui_panels": [],
+  "metadata": {"homepage": "https://example.com/review-helpers"}
+}
+```
+
+| Field | Meaning |
+|---|---|
+| `id` | Letters, digits, `.`, `_` and `-`, up to 80 characters. It names the pack in settings, in policy (`extensions.allowed_packs`) and as its folder when installed from Git (required there). |
+| `name`, `version`, `description` | Shown in Settings > Capability packs. |
+| `agents` | Paths inside the pack to agent files, described below. The `task` tool can delegate to them by name. |
+| `skills` | Paths to skill files. Skills that match the conversation are offered to the model, which loads them with `skill_view`. |
+| `hooks` | Commands run at lifecycle events, described below. |
+| `mcp_servers` | Named MCP servers, `{"command", "args", "env"}` or `{"url"}`. They are registered as `<pack id>-<name>`. |
+| `permissions`, `commands`, `recipes`, `ui_panels`, `metadata` | Shown for review and listed in the pack catalog. They grant nothing by themselves. |
+
+A pack's files may not reach outside its folder. Agents and skills are read
+only from inside the pack, and symbolic links make it unverifiable.
+
+### Agent files
+
+Markdown with front matter:
+
+```markdown
+---
+name: pack-reviewer
+description: Reviews a change for bugs and missing tests
+tools: [file_read, grep, git_diff]
+model_role: review
+max_steps: 20
+---
+You review changes independently. Report file:line, severity and a fix.
+```
+
+`tools` limits what the agent may call. `model_role` picks a model from
+Models for roles. `isolation` and `model` are optional.
+
+### Skill files
+
+Plain Markdown. A `description:` line near the top is what the model sees
+first, and the rest loads on demand.
+
+### Hooks
+
+| Field | Meaning |
+|---|---|
+| `hook_type` | `session_start`, `session_end`, `user_prompt_submit`, `pre_tool_use`, `post_tool_use`, `pre_tool_batch`, `post_tool_batch`, `before_model`, `after_model`, `permission_request`, `subagent_start`, `subagent_stop`, `task_created`, `task_completed`, `pre_compact`, `post_compact`, `checkpoint_created`, `checkpoint_restored`, `validation_complete`, `user_input_request`, `worktree_create`, `worktree_remove`, `session_error` |
+| `command` | The shell command, run in the project. |
+| `tool_name`, `matcher` | For tool hooks: which tool triggers it. |
+| `input_format` | `env` (default; event values in environment variables) or `json` (the event on standard input). |
+| `timeout_seconds` | Default 30. |
+
+With `json`, a hook may answer with JSON on standard output: `decision`
+(`allow`, `ask` or `deny`), `reason`, and `additional_context` for the model. A
+`pre_tool_use` hook that exits non-zero blocks the call.
+
+Hook commands get a clean environment without Lumi's model keys.
+
+## Trust
+
+- **Approval pins content.** Settings > Capability packs shows what a pack would
+  run: its hooks, its MCP servers, and repository files its commands name.
+  Approving it records a digest of every file in the pack plus those files.
+- **Any change turns it off.** Before each hook runs and before the pack
+  contributes skills, agents or servers, Lumi checks the digest again. A
+  changed pack stays off until it is reviewed again.
+- **Location-bound.** An approval covers the pack at that folder only. Copying a
+  pack elsewhere needs a new approval.
+- **Organization limits.** A policy can limit packs by id
+  (`extensions.allowed_packs`) and Git sources by URL
+  (`extensions.allowed_sources`). See [Organization policy](enterprise-policy.md).
+
+## Sharing a pack
+
+Put the pack in a public Git repository, with `lumi-pack.json` at the root or
+in a folder. Anyone can then install it with **Settings > Capability packs >
+Install from Git**, pinned to a commit, tag or branch. The pack arrives turned
+off, and installing a newer commit asks for a new review. See the
+[desktop workflow](desktop-workflow.md).

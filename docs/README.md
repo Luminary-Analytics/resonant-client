@@ -25,6 +25,11 @@ point in time; they are not instructions to restore an old design.
 The [documentation status catalog](documentation-status.md) identifies active
 guides, historical plans, and dated evidence, with links to current replacements.
 
+The user and administrator guides also build as a site, starting from
+[its home page](index.md); `mkdocs.yml` holds its navigation. Preview it with
+`pip install -r packaging/docs-requirements.txt` and `mkdocs serve`. A new
+guide belongs in that navigation; historical records stay out of it.
+
 ## Using Lumi
 
 - [Install, configure providers, and run](../README.md)
@@ -32,6 +37,7 @@ guides, historical plans, and dated evidence, with links to current replacements
 - [Projects, sessions, search, and provider selection](desktop-workflow.md)
 - [Previews, project notes, skills, and named acceptance checks](priority-improvements.md)
 - [Skills and learning](skills.md)
+- [Writing a capability pack: the manifest, hooks, trust and sharing](packs.md)
 - [Blender, Unity, and Unreal Engine 5 setup](creative-editors.md)
 - [Known limitations and historical bug ledger](known-issues.md)
 

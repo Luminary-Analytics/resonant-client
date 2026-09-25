@@ -54,3 +54,6 @@ Thumbs.db
 # Packaging build artifacts and downloaded source archive
 # (We vendor the extracted WinSparkle binaries but skip the .zip itself.)
 packaging/winsparkle/WinSparkle.zip
+
+# The documentation site (mkdocs build)
+site/

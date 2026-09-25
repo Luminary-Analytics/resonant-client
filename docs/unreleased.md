@@ -41,13 +41,14 @@ Validation on September 25, 2026:
     `test_pack_install.py` test ran out of paging file starting git;
   - each of those tests passed alone.
   - After merging `main` at #76 it wasn't rerun locally, to spare memory
-    with about 12 sessions running.
-- After merging `main` at #76: `ruff check` clean; the four UI node suites
-  89 passed.
+    with about 12 sessions running. CI passed it there, and again after
+    `main` at #74.
+- After merging `main` at #77, which gives each turn's footer its own model
+  and tokens: `ruff check` clean; the four UI node suites 92 passed.
 - The three new tests fail against the `app.js` from before the Timeline
   with the reported numbers: "Worked for 2s · 8 actions", "8 tools" and
   "▣ 4.0s" for the second turn, and "Worked for 5s · 10 actions" for the
-  failed one. Against `main`'s `app.js`, at #68 and at #76, only the
+  failed one. Against `main`'s `app.js`, at #68, #76 and #77, only the
   `!command` test fails ("6 actions"). They also fail if the new totals
   start before the interrupted card is settled, or if a refreshed turn
   loses its replayed calls.

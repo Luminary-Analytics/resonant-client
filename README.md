@@ -312,8 +312,10 @@ There is no automatic cross-provider fallback or role routing in this workflow.
 - **Usage and cost:** one record per model call, with tokens, cost and
   purpose, priced from what the provider reports, your organization's or
   your own prices, or a dated list of Anthropic and OpenAI prices. Models
-  without a price show as unpriced, never $0. See **Settings > Usage &
-  cost** or run `lumi usage`, and [Usage records and prices](docs/usage-and-costs.md).
+  without a price show as unpriced, never $0. Budgets alert, ask before
+  continuing, or stop a turn, per day, month, project or turn, from your
+  settings or your organization's policy. See **Settings > Usage & cost**
+  or run `lumi usage`, and [Usage records and prices](docs/usage-and-costs.md).
 
 ## Browser Tools
 

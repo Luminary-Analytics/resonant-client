@@ -8,6 +8,52 @@ The heartbeat remains paused. Documentation maintenance does not resume work,
 spending or grants, and changes no native implementation or installed bundle.
 The dated September 15/18 records below are historical.
 
+## September 25 budgets — source only, not released
+
+- **Budgets** (`lumi/budgets.py`, [guide](usage-and-costs.md#budgets)) act on
+  the priced spend in the usage records. There are three thresholds:
+  - an alert, shown once per period as a notice in the conversation;
+  - an approval point, where Lumi asks "…continue anyway?" before the next
+    model request. It asks once per period, or once per turn for a per-turn
+    budget. **Stop**, or a run that can't ask (the gateway, a delegated
+    worker), stops the turn;
+  - a stop. A spent day or month budget refuses new turns up front, and a
+    per-turn cap stops before the next request with "send Continue to go on".
+- **Your limits:** **Settings > Usage & cost** adds **Ask before spending more
+  than ($ per day)** and **Stop a turn after spending ($)** beside the existing
+  daily alert. The alert is now enforced by the engine for the GUI, terminal UI
+  and gateway alike; it used to be a GUI-only message. The page lists every
+  budget with this period's spend and refreshes after a save.
+- **Organization budgets:** policy `budgets` apply per user, per project (a
+  folder glob) or per turn, by day or month. `block_unpriced` refuses unpriced
+  models while that budget applies. Alerts, answers and stops are audited as
+  `budget.warning`, `budget.approval` and `budget.block`.
+- **Prompt fix:** the "needs your input" card kept only the sentences with a
+  question mark, and split them at decimal points. A question with "$0.27" or
+  "Python 3.12" showed only its tail. Sentences now end only at punctuation
+  followed by a space.
+
+Validation on September 25, 2026:
+
+- 12 new tests in `test_budgets.py`:
+  - rule parsing, and settings turned into rules;
+  - levels by scope, user and project;
+  - real `Session.run` turns: an alert shown once, the question answered with
+    Continue, Stop, or unanswerable, a spent budget refusing a turn, the
+    per-turn cap, and `block_unpriced`;
+  - limit validation, and the budgets in the costs payload.
+
+  One new node test covers the prompt's question text.
+- Full `pytest`: 3,719 passed, 2 skipped.
+- In the browser pane, with an isolated home, a policy budget and prices set
+  so each stub call cost $0.07–$0.10:
+  - the first turn showed "Today's spend is $0.07, past your $0.05 alert.";
+  - the next turn asked "Today's spend is $0.27, past your $0.20 limit —
+    continue anyway?". Continue resumed it; Stop ended it with "Stopped at your
+    request…";
+  - Usage & cost listed the organization's and the person's budgets with
+    spend, and showed a new per-turn limit after it was saved.
+
 ## September 25 usage records and prices — source only, not released
 
 - **Usage records** (`lumi/usage.py`, [guide](usage-and-costs.md)): one JSON

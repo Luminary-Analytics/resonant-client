@@ -66,7 +66,7 @@ def token_counts(stats: dict) -> dict:
     }
 
 
-def _user() -> str:
+def current_user() -> str:
     try:
         return getpass.getuser()
     except Exception:
@@ -106,7 +106,7 @@ class UsageLedger:
             "v": 1,
             "id": uuid.uuid4().hex,
             "ts": ts,
-            "user": _user(),
+            "user": current_user(),
             "project": str(project or ""),
             "session": str(session or ""),
             "agent": str(agent or ""),

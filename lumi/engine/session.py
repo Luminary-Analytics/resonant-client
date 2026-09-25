@@ -1556,6 +1556,9 @@ class Session:
         from .. import audit
 
         started = time.time()
+        # Budgets count this turn's priced spend and key per-turn approvals.
+        self._turn_token = _uuid.uuid4().hex
+        self._turn_spend = 0.0
         common = self._audit_fields()
         audit.record(
             "turn.start",
@@ -1591,6 +1594,67 @@ class Session:
             if self.cancel_requested:
                 outcome = "cancelled"
             audit.record("turn.end", **common, outcome=outcome, elapsed=round(time.time() - started, 3))
+
+    def _budget_refusal(self, provider: str, model: str) -> str:
+        """Why a turn can't start under the budgets in effect (lumi/budgets.py), or ''."""
+        from .. import budgets
+
+        project = self.project_path or ""
+        try:
+            refusal = budgets.unpriced_refusal(project, provider, model)
+            if refusal:
+                return refusal
+            for verdict in budgets.evaluate(project):
+                if verdict.level == "block" and verdict.rule.scope != "turn":
+                    fix = ("Ask your administrator to raise it." if verdict.rule.owner
+                           else "Raise it under Settings > Usage & cost to continue.")
+                    return f"{verdict.message} {fix}"
+        except Exception:
+            logger.debug("Budget check failed", exc_info=True)
+        return ""
+
+    def _budget_checkpoint(self, on_user_input: Optional[Callable]) -> Iterator[dict]:
+        """Before a model request: warn, ask or stop as budgets require.
+
+        Yields warning events; returns the reason to stop, or ''.
+        """
+        from .. import audit, budgets
+
+        turn = getattr(self, "_turn_token", "")
+        try:
+            verdicts = budgets.evaluate(self.project_path or "", turn_spend=getattr(self, "_turn_spend", 0.0))
+        except Exception:
+            logger.debug("Budget check failed", exc_info=True)
+            return ""
+        common = self._audit_fields()
+        for verdict in sorted(verdicts, key=lambda v: budgets.LEVELS.index(v.level), reverse=True):
+            details = {**common, "owner": verdict.rule.owner, "scope": verdict.rule.scope,
+                       "period": verdict.rule.period, "spent_usd": round(verdict.spent, 6),
+                       "threshold_usd": verdict.threshold}
+            if verdict.level == "block":
+                audit.record("budget.block", **details)
+                if verdict.rule.scope == "turn":
+                    return f"Stopped: {verdict.message} Work is kept; send Continue to go on with a new turn."
+                return f"Stopped: {verdict.message}"
+            if verdict.level == "approve" and not budgets.approved(verdict, turn):
+                answer = ""
+                if on_user_input is not None:
+                    # One sentence, so the prompt shows the amounts with the question.
+                    question = f"{verdict.message.rstrip('.')} — continue anyway?"
+                    answer = str(on_user_input(question, ["Continue", "Stop"]) or "")
+                if answer.strip().lower().startswith(("continue", "yes")):
+                    budgets.approve(verdict, turn)
+                    audit.record("budget.approval", **details, decision="approved")
+                    continue
+                audit.record("budget.approval", **details,
+                             decision="declined" if on_user_input is not None else "unavailable")
+                if on_user_input is None:
+                    return f"Stopped: {verdict.message} Continuing needs approval, which this run can't ask for."
+                return f"Stopped at your request: {verdict.message}"
+            if verdict.level == "warn" and budgets.warned(verdict, turn):
+                audit.record("budget.warning", **details)
+                yield make_event(EngineEvent.BACKEND_STATUS, kind="budget_warning", message=verdict.message)
+        return ""
 
     def _audit_fields(self) -> dict:
         return {
@@ -1642,6 +1706,8 @@ class Session:
             purpose = "subagent" if self.is_subagent else "turn"
             record = usage.record(provider=provider, model=model, stats=stats, purpose=purpose,
                                   elapsed=elapsed, **common)
+            if record is not None and isinstance(record.get("cost_usd"), (int, float)):
+                self._turn_spend = getattr(self, "_turn_spend", 0.0) + float(record["cost_usd"])
             if record is not None:
                 # Consumers (the GUI's cost display) read the priced cost from
                 # the event; None means the model is unpriced, not free.
@@ -1718,6 +1784,10 @@ class Session:
             )
         if refusal:
             yield make_event(EngineEvent.ERROR, message=refusal)
+            return
+        refusal = self._budget_refusal(backend_name, str(last_done_model or ""))
+        if refusal:
+            yield make_event(EngineEvent.ERROR, message=refusal, code="budget_exceeded", recoverable=True)
             return
 
         if self.director_run is not None and not self.is_subagent:
@@ -1816,6 +1886,7 @@ class Session:
         step_limit_reached = False
         model_requests = 0
         request_limit_reached = False
+        budget_stop = ""
         implementation_started = False
         cli_tool_starts = {}
 
@@ -2062,6 +2133,9 @@ class Session:
         while True:
             if self.max_model_requests is not None and model_requests >= self.max_model_requests:
                 request_limit_reached = True
+                break
+            budget_stop = yield from self._budget_checkpoint(on_user_input)
+            if budget_stop:
                 break
             if self.max_steps is not None and iteration >= self.max_steps:
                 step_limit_reached = True
@@ -3409,6 +3483,9 @@ class Session:
         if step_limit_reached:
             terminal_error = f"Reached {self.max_steps} step limit. Work is retained; send Continue to resume."
             yield make_event(EngineEvent.ERROR, message=terminal_error)
+
+        if budget_stop:
+            yield make_event(EngineEvent.ERROR, message=budget_stop, code="budget_exceeded", recoverable=True)
 
         if request_limit_reached:
             terminal_error = (

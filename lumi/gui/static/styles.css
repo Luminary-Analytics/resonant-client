@@ -5801,6 +5801,8 @@ body {
 .cost-dashboard-note { margin: 10px 2px 0; color: var(--dim); font-size: 10.5px; line-height: 1.45; }
 .cost-history-row .cost-model-name { overflow: hidden; color: var(--muted); text-align: left; text-overflow: ellipsis; white-space: nowrap; }
 .cost-prices { margin-top: 14px; }
+.cost-budgets { margin-top: 12px; display: grid; gap: 8px; }
+.cost-budgets .cost-history-title { padding-left: 0; text-align: left; }
 .settings-error-banner { margin: 0 0 14px; padding: 10px 12px; border: 1px solid color-mix(in srgb, var(--err) 45%, transparent); border-radius: var(--radius-sm); background: color-mix(in srgb, var(--err) 10%, transparent); color: var(--text); font-size: 12px; line-height: 1.45; overflow-wrap: anywhere; }
 .cost-prices .cost-history-title { padding-left: 0; text-align: left; }
 .cost-price-list { margin: 4px 0 10px 18px; padding: 0; color: var(--dim); font-size: 11px; }
@@ -9703,6 +9705,17 @@ body {
 
 .backend-status-privacy .backend-status-icon {
     color: var(--accent);
+}
+
+/* A spending alert (lumi/budgets.py). */
+.backend-status-budget {
+    background: color-mix(in srgb, var(--warn) 10%, var(--bg-secondary, transparent));
+    border: 1px solid color-mix(in srgb, var(--warn) 40%, transparent);
+    color: var(--text);
+}
+
+.backend-status-budget .backend-status-icon {
+    color: var(--warn);
 }
 
 /* ── v0.6.4 (F2): persistent retry-exhausted chip ─────────────── */

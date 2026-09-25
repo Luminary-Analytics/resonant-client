@@ -41,7 +41,7 @@ def test_everyday_commands_are_not(command):
     assert guardrails.blocked(command) == ""
 
 
-@pytest.mark.parametrize("tier", ["suggest", "auto-edit", "full-auto"])
+@pytest.mark.parametrize("tier", ["suggest", "ask", "auto-edit", "full-auto"])
 def test_every_tier_refuses_them_before_asking(tier):
     policy = policy_for_tier(tier)
     call = {"command": "rm -rf ~"}

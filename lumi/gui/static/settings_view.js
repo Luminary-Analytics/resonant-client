@@ -1662,7 +1662,7 @@ class LumiSettingsView {
                     { key: 'default_permission_mode', label: 'Default permission mode', type: 'select',
                       options: [
                           { value: 'bypass', label: 'Full-auto (sandboxed)' },
-                          { value: 'ask', label: 'Suggest (read-only)' },
+                          { value: 'ask', label: 'Ask permissions (ask before every change)' },
                           { value: 'auto-edit', label: 'Auto-edit (file edits OK, other actions ask)' },
                           { value: 'plan', label: 'Plan mode' },
                       ]
@@ -2092,17 +2092,7 @@ class LumiSettingsView {
                     ${comparison ? `<div class="checkpoint-comparison"><strong>Changes since checkpoint</strong><pre>${this.escapeHtml(comparison.name_status || 'No changes')}</pre><pre>${this.escapeHtml(comparison.stat || '')}</pre></div>` : ''}
                 `;
             } else if (section.id === 'hooks') {
-                const hooks = Array.isArray(data) ? data : [];
-                if (hooks.length === 0) {
-                    bodyHtml = `<div class="settings-row"><span class="settings-row-label" style="color:var(--dim)">No hooks configured</span></div>`;
-                } else {
-                    bodyHtml = hooks.map((h, i) => `
-                        <div class="settings-row">
-                            <span class="settings-row-label">${h.name || h.hook_type}: <code style="font-size:11px">${h.command}</code></span>
-                            <span style="color:${h.enabled ? 'var(--ok)' : 'var(--muted)'}">${h.enabled ? '●' : '○'}</span>
-                        </div>
-                    `).join('');
-                }
+                bodyHtml = this._renderHooksList(Array.isArray(data) ? data : []);
                 bodyHtml += `<div class="settings-row" style="margin-top:8px"><span class="settings-row-label" style="color:var(--dim);font-size:11px">Edit hooks in ~/.lumi/settings.json</span></div>`;
             } else if (section.id === 'mcp_servers') {
                 const servers = typeof data === 'object' && !Array.isArray(data)
@@ -2681,18 +2671,7 @@ class LumiSettingsView {
         const popover = document.createElement('div');
         popover.className = 'git-popover';
 
-        const data = this.gitData;
-        popover.innerHTML = `
-            <div class="git-popover-header">
-                <span>${data.branch}</span>
-                <button class="icon-btn git-popover-close">&times;</button>
-            </div>
-            <div class="git-popover-tabs">
-                <button class="git-popover-tab active" data-tab="changes">Changes (${data.changes.length})</button>
-                <button class="git-popover-tab" data-tab="commits">Commits</button>
-            </div>
-            <div class="git-popover-body" id="git-popover-body"></div>
-        `;
+        popover.innerHTML = this._gitPopoverHtml(this.gitData);
 
         document.getElementById('main').appendChild(popover);
 
@@ -2726,6 +2705,34 @@ class LumiSettingsView {
     }
 
 
+    /** Configured hooks. Commands routinely contain <, > and quotes. */
+    _renderHooksList(hooks) {
+        if (hooks.length === 0) {
+            return `<div class="settings-row"><span class="settings-row-label" style="color:var(--dim)">No hooks configured</span></div>`;
+        }
+        return hooks.map(h => `
+            <div class="settings-row">
+                <span class="settings-row-label">${this.escapeHtml(h.name || h.hook_type)}: <code style="font-size:11px">${this.escapeHtml(h.command)}</code></span>
+                <span style="color:${h.enabled ? 'var(--ok)' : 'var(--muted)'}">${h.enabled ? '●' : '○'}</span>
+            </div>
+        `).join('');
+    }
+
+    /** Branch names, file names and commit messages come from the repository. */
+    _gitPopoverHtml(data) {
+        return `
+            <div class="git-popover-header">
+                <span>${this.escapeHtml(data.branch)}</span>
+                <button class="icon-btn git-popover-close">&times;</button>
+            </div>
+            <div class="git-popover-tabs">
+                <button class="git-popover-tab active" data-tab="changes">Changes (${(data.changes || []).length})</button>
+                <button class="git-popover-tab" data-tab="commits">Commits</button>
+            </div>
+            <div class="git-popover-body" id="git-popover-body"></div>
+        `;
+    }
+
     _renderGitPopoverTab(tab) {
         const body = document.getElementById('git-popover-body');
         if (!body || !this.gitData) return;
@@ -2741,15 +2748,15 @@ class LumiSettingsView {
                 if (c.status === 'D') statusClass = 'deleted';
                 if (c.status === '??') statusClass = 'untracked';
                 return `<div class="git-file-item">
-                    <span class="git-status-code ${statusClass}">${c.status}</span>
-                    <span>${c.file}</span>
+                    <span class="git-status-code ${statusClass}">${this.escapeHtml(c.status)}</span>
+                    <span>${this.escapeHtml(c.file)}</span>
                 </div>`;
             }).join('');
         } else {
             body.innerHTML = (this.gitData.commits || []).map(c =>
                 `<div class="git-commit-item">
-                    <span class="git-commit-hash">${c.hash}</span>
-                    <span class="git-commit-msg">${c.message}</span>
+                    <span class="git-commit-hash">${this.escapeHtml(c.hash)}</span>
+                    <span class="git-commit-msg">${this.escapeHtml(c.message)}</span>
                 </div>`
             ).join('');
         }

@@ -102,7 +102,7 @@ assets, compile modified Blueprints, and verify the result in PIE.”
   are not edited. These CLI handoffs occur only in **Full-auto** because their
   non-interactive adapters cannot relay editor-action approvals to Lumi.
   The CLIs retain ownership of their own tool execution and policies.
-- Suggest and Auto-edit modes require approval for native MCP actions; Full-auto
+- Ask and Auto-edit modes require approval for native MCP actions; Full-auto
   uses the existing auto-approval behavior. Editor scripts run with the editor's
   filesystem access, **outside Lumi's project path sandbox**.
 - The agent receives bounded instructions to identify the project before edits,

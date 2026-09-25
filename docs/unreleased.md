@@ -35,8 +35,8 @@ The dated September 15/18 records below are historical.
   one response. A hand edit between two identical writes could not be
   restored. Each response now starts afresh.
 
-Validation on September 25, 2026: full `pytest` 4,052 passed, 4 skipped;
-`node --test` 47 passed, including `vscode_extension.test.cjs` (8 tests), which
+Validation on September 25, 2026, after merging main: full `pytest` 4,076 passed, 4 skipped;
+`node --test` 51 passed, including `vscode_extension.test.cjs` (8 tests), which
 runs the extension against a simulated VS Code API and a stand-in bridge.
 `test_editor_bridge.py` (11) covers the token and file checks, line ranges,
 and changes against git snapshots, snapshot archives and the last commit,
@@ -73,6 +73,128 @@ The packed .vsix installed with VS Code 1.125's `code --install-extension`
 into a temporary extensions folder and user-data folder, where it was listed
 as `luminary-analytics.lumi-vscode` 0.1.0. The extension was not run inside
 VS Code, and no JetBrains IDE was run.
+
+## September 25 untrusted text in the Git panel, tool rows and plan graph — source only, not released
+
+The escaping fix below (quotes) covered `escapeHtml`, but some views never
+called it or used an escaper of their own:
+
+- **Git panel:** the branch, changed file names, commit hashes and commit
+  messages came from the repository and went into the page as HTML. A cloned
+  repository's commit message could therefore run script in the app window,
+  which holds the app's authenticated connection. All four are escaped now.
+- **Tool rows:** a tool name the app doesn't know went into the row as HTML;
+  so did desktop click and scroll arguments. MCP servers name their own tools,
+  and a model chooses tool arguments. The CLI providers' activity rows showed
+  raw tool names the same way. These are escaped now.
+- Finding a tool's row by its name built a CSS selector from that name. A
+  quote in the name threw an exception, and the row kept showing "running".
+  These selectors use `CSS.escape` now.
+- **Plan graph:** its own escaper left quotes, so a model-written goal could
+  leave its `title` attribute. It escapes quotes now.
+- Also escaped: hook names and commands under **Settings > Hooks** (commands
+  with `<`, `>` or `&` also displayed wrongly), terminal call ids, the
+  screenshot viewer's source, command palette ids and the backend label.
+
+Validation on September 25, 2026:
+
+- Three new tests in `ui_recovery.test.cjs` failed on main before the fix,
+  one for each area: the Git panel (plus hooks), tool rows (native and CLI),
+  and the plan graph. The plan graph test uses a text serializer that behaves
+  like a browser's. After merging main, all 43 tests in the three Node test
+  files pass, as do `ruff` and `git diff --check`. The full `pytest` run had
+  4,054 passed and 5 skipped; the vendored-asset test skips when the
+  gitignored assets are absent.
+- In the browser pane, with an isolated home and a stub model: the fixture
+  repository's last commit message was
+  `x" onmouseover="window.pwned=1"><img src=x onerror="window.pwned=1">`, and
+  the stub model called a tool with the same name.
+  - The tool row showed the name as text. Its failure status arrived through
+    the escaped selector.
+  - The Git panel, opened from the command palette, showed the commit
+    message and a changed file named `notes & 'quotes'.txt` as text.
+  - Injecting the replaced commit template into the same page ran the
+    image's `onerror` handler; the fixed renderer did not.
+  - The real home and credential store were unchanged.
+- Windows cannot create branch or file names containing `"`, `<` or `>`, so
+  those Git cases are covered only by the unit test. So are the hooks list and
+  the plan graph.
+
+## September 25 Ask asks before changes — source only, not released
+
+**Ask never asked about writes or shell commands.** The composer describes Ask
+as "Always ask before making changes". But the app ran it on the read-only
+`suggest` tier, whose built-in policy denies `file_write`, `file_edit`, `bash`
+and `batch`. A deny is final, so no approval appeared: a model's `file_edit`
+came back "Blocked by policy: Write operations blocked in suggest mode". Other
+actions, such as `check_run`, did ask. The defect dates back at least to
+commit 3cd7922.
+
+- **Ask has its own `ask` tier** (`lumi/engine/policies.py`,
+  `default_ask_policy`). Reads run. File writes, edits, shell commands and
+  every other action show the approval prompt, and the answer decides.
+  **Deny** stays final.
+- **Still refused without asking:** a recursive `rm`, `chmod` on a system
+  path, a download piped into a shell, and the guardrails. These are checked
+  before a repository's `lumi-policy.json`, and organization shell rules still
+  come first.
+- **Nothing can switch Ask's approvals off.** Neither a repository's nor an
+  organization's `allow` rule skips the prompt, because the tier asks before
+  anything that isn't read-only. A repository can still forbid a change
+  outright.
+- **Delegated workers** inherit Ask and ask through the conversation's prompt.
+  Work with no approval dialog, such as background sprint roles, still skips
+  changes. As in Auto-edit, a PERMISSION_REQUEST hook can explicitly allow
+  them.
+- **Unchanged:** `lumi run --mode ask`, and so scheduled tasks and model
+  comparisons set to **Read only (ask)**, keep the read-only `suggest` tier,
+  since nobody can answer a prompt there. Codex and Claude Code still only
+  read under Ask; they can't pass an approval request to Lumi.
+- **The edit card is visible while the run waits** (`static/app.js`). Before a
+  file edit or new file, the approval card with its diff went into the running
+  task's activity list. The UI hides that list until the live status is
+  opened, so the turn waited on a card nobody could see. The card now goes in
+  the conversation, like an `await_user` question, including for a worker's
+  edit. The dialog for commands was already visible.
+- **Settings > General > Default permission mode** calls the mode **Ask
+  permissions (ask before every change)** instead of "Suggest (read-only)".
+
+Validation on September 25, 2026:
+
+- Full `pytest` after merging main: 4,038 passed, 5 skipped. `ruff check .`
+  clean, 36 Node UI tests pass, `git diff --check` clean.
+- New tests drive real turns:
+  - `test_permission_decisions.py` runs `Session.run` with an `on_permission`
+    callback. It covers allow and deny for a new file, an edit and a command,
+    reads without asking, a refused recursive `rm`, no prompt (fails closed),
+    a repository's `allow` not skipping the prompt, `suggest` staying read-only,
+    a worker asking through the parent, and the policy layer order.
+  - `test_gui_permission_modes.py` runs the GUI's own run loop and `approve`
+    handler, for allow and deny in Ask and a trusted repository's `allow *`.
+  - `ui_recovery.test.cjs` checks the card's placement.
+- On the unfixed code, 11 of the new and updated cases failed; every GUI case
+  failed because no prompt appeared. Mutations were caught:
+  - dropping the dangerous-command denies from Ask failed 5 tests;
+  - letting the ask tier approve file writes failed 5;
+  - the old card placement failed the UI test.
+- In the browser pane, from an isolated home with the scripted Ollama stub,
+  after choosing **Ask permissions** in the composer's mode menu:
+  - a `file_edit` showed its card in the conversation. **Reject** left the
+    file unchanged, and the model read "Tool execution denied by user.";
+    **Accept** changed it;
+  - `echo ran > ran.txt` opened the command dialog. **Escape** denied it (no
+    file) and **Allow** ran it;
+  - `rm -rf build` was refused without a prompt, and `build/` was intact;
+  - a delegated worker's `file_write` asked through the conversation. Its card
+    showed in the conversation, not inside the worker's block, and **Accept**
+    wrote the file;
+  - at 375 px the card fit with no horizontal scroll. **Shift+Tab** from the
+    composer reached **Accept**, then **Reject**, with a visible focus ring;
+    **Enter** on **Reject** left the file unchanged;
+  - Settings listed **Ask permissions (ask before every change)**.
+
+Not exercised: a live model, a packaged build, Codex or Claude Code, macOS and
+Linux.
 
 ## September 25 pull requests on GitLab, Bitbucket and Azure DevOps — source only, not released
 

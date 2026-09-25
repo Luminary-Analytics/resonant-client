@@ -340,10 +340,12 @@
 
     // ── Utilities ────────────────────────────────────────────────
 
+    // Goals and summaries are model-written and land in attribute values
+    // (title="...") as well as text, so quotes are escaped too. A DOM
+    // text node's serialization leaves quotes alone.
+    const _ENTITIES = {'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'};
     function _escape(s) {
-        const div = document.createElement('div');
-        div.textContent = String(s ?? '');
-        return div.innerHTML;
+        return String(s ?? '').replace(/[&<>"']/g, (ch) => _ENTITIES[ch]);
     }
 
     function _normalizeSnapshot(s) {

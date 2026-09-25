@@ -609,8 +609,9 @@ class Session:
         self._steering_lock = threading.Lock()
         self.project_path: Optional[str] = None  # Set externally for path resolution
         self.browser_session_name: str = ""
-        # Three-tier autonomy: suggest (read-only) | auto-edit (files ok) | full-auto (sandboxed).
-        # The tier alone decides which calls need approval; auto_approve is a view of it.
+        # Autonomy tiers: suggest (read-only) | ask (asks before changes) |
+        # auto-edit (files ok) | full-auto (sandboxed). The tier alone decides
+        # which calls need approval; auto_approve is a view of it.
         self.autonomy_tier: str = "full-auto" if auto_approve else "suggest"
         # The approval prompt of the turn in progress, lent to delegated workers.
         self._permission_prompt: Optional[Callable] = None
@@ -1129,8 +1130,10 @@ class Session:
         """
         Determine if a tool should be auto-approved based on the autonomy tier.
 
-        Three-tier model (inspired by Codex CLI):
-        - suggest: only read-only tools (file_read, glob, grep) are auto-approved
+        Tiers (inspired by Codex CLI):
+        - suggest and ask: only read-only tools (file_read, glob, grep) are
+          auto-approved. Their built-in policies (engine/policies.py) differ:
+          suggest refuses file writes and shell commands, ask asks about them.
         - auto-edit: read-only and file-editing tools are auto-approved; shell,
           MCP, browser, desktop, REPL, process and git actions ask
         - full-auto: everything auto-approved (sandbox enforces safety)

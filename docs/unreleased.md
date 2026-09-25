@@ -89,6 +89,50 @@ app (a Node test covers the image path) and a worker's lane in the app (worker
 calls are never grouped). Unchanged: a call that never ran because the turn
 was stopped first still reads "…".
 
+## September 25 accessibility review and conformance report — source only, not released
+
+- **[`docs/accessibility.md`](accessibility.md)** reports conformance with
+  WCAG 2.1 A and AA in the VPAT 2.5 format, for the app and Lumi Cloud's
+  portal.
+  - It's a self-assessed draft, not independently verified.
+  - It says what was checked and how. Screen readers haven't been tried.
+- **Fixed during the review:**
+  - **Contrast.** The dark theme's secondary text (`--dim`) reached 3.0:1 on
+    some surfaces, and the light theme's 3.7:1. The light theme's `--muted`
+    reached 4.34:1. Every text token now reaches 4.5:1 on every surface in
+    both themes, hover included (`styles.css`).
+  - **The permission-mode menu couldn't be used from the keyboard.** Its
+    options were plain elements. It's now a menu of radio items: Enter,
+    Space or the arrows open it on the current mode, the arrows, Home and
+    End move, and Escape closes it and returns focus. `aria-expanded` and
+    `aria-checked` report its state.
+  - **A skip control**, "Skip to the message box" (or "Skip to the Settings
+    page"), is the first thing in the tab order. It's a button because the
+    launch code travels in the URL fragment.
+  - **Window titles** name the screen: "Settings · Lumi".
+  - **Focus rings** on the command-palette button, which showed only hover's
+    faint border, and on the composer's model and reasoning menus, which
+    showed only a text color change.
+  - **The daily budget field** in Usage & cost has a label.
+
+Validation on September 25, 2026, in the browser pane. A checker ran on
+rendered pages in each theme, rendered from load. It covered names, labels,
+duplicate ids, headings, language, landmarks and composited text contrast:
+
+- The app: the main view and all 25 Settings pages, clean after the fixes.
+- The portal: 21 pages as an owner, clean.
+- With real key presses: the Tab order, focus rings, the permission menu
+  (open, move, choose, Escape), the command palette and model picker
+  returning focus, and the skip control.
+- After merging the checkpoint Timeline: the Timeline dialog (opened from the
+  command palette, with no checkpoints in it) in both themes, focus moving to
+  Close and returning on Escape, the permission menu again, and the model
+  menu's focus ring in both themes.
+- Switching themes in place left CSS transitions half-done in the hidden
+  pane and gave false contrast results, so each theme was rendered from load.
+
+The full suite and the node UI tests pass.
+
 ## September 25 refused tool calls say why — source only, not released
 
 **A refused call's row said only "denied".** When a hook, a policy rule, a
@@ -183,6 +227,83 @@ Not exercised: a live model, a packaged build, Codex or Claude Code, the
 text) and a second approver's refusal (it takes the same path, with the
 approval's message as the reason). The terminal UI shows the reason too; see
 the next section.
+
+## September 25 a mistyped organization policy no longer counts as no policy — source only, not released
+
+**A typo in an administrator's policy could switch the whole policy off.** A
+section of the wrong type made the first `lumi.policy.load()` raise instead of
+reporting an invalid policy. Examples are `"permissions": "ask only"`,
+`"models": [...]`, `"mcp": 5` and `"trusted_keys": [...]`. A policy file that
+isn't UTF-8 text did the same, such as the UTF-16 that Windows PowerShell
+5.1's `Out-File` writes, and so did JSON nested too deeply. In the app, the
+first caller was the updater, which logged the error as its own and carried
+on. Every later call then saw no policy and no error: nothing was enforced,
+model requests weren't refused, and a command the organization's shell rules
+deny ran. Some values also loosened what they control when written as text:
+`"allow_stdio": "no"` allowed command-based MCP servers,
+`"require_signed": "true"` stopped requiring signed capability packs, and
+`"registry_only": "true"` let packs outside the organization's registry run.
+
+- **`load()` never raises** (`lumi/policy.py`). A policy that exists but
+  can't be read or used is an error state on the first call and every later
+  one. Model requests are refused until IT fixes it (`blocked_reason`).
+  Failures `parse()` doesn't anticipate fail closed too.
+- **`parse()` checks each section's type.** `settings`, `permissions`,
+  `models`, `mcp`, `extensions`, `files`, `pricing`, `shell`, `approvals` and
+  `cloud` must be objects. `trusted_keys` must map key ids to text.
+  `grace_days` must be a whole number; text such as `"3"` still works. A
+  missing or `null` section counts as empty.
+- **True-or-false values must be `true` or `false`:** `mcp.allow_stdio`,
+  `extensions.require_signed` and `extensions.registry_only`.
+- **A policy file may start with a UTF-8 byte order mark.** Windows PowerShell
+  5.1 writes one for `-Encoding utf8`, and it used to make the policy
+  invalid. This covers the machine policy file, `LUMI_POLICY_FILE`, Group
+  Policy's `PolicyFile` and `policy-keys.json`.
+- **Lumi Cloud:** a downloaded policy with such a mistake isn't applied. It
+  fails with "The organization's policy wasn't applied: permissions must be
+  an object" instead of an `AttributeError` in the check-in. A stored policy
+  Lumi can't use is reported in Settings, whatever the failure. The machine
+  policy applies instead, or none for an organization joined in the app, as
+  for other unusable downloads.
+- **Not changed:** a budget rule's `block_unpriced` still counts only a
+  literal `true` (`lumi/budgets.py`, which Settings' budgets share).
+
+Validation on September 25, 2026:
+
+- Full `pytest` after merging main (the pack registry and checkpoint
+  Timeline): 4,380 passed, 5 skipped. `ruff check .` clean, the 66 Node tests
+  in AGENTS.md pass, `git diff --check` clean.
+- New tests in `test_policy.py` and `test_cloud.py`:
+  - each mistyped section and value, and null sections still parsing;
+  - a machine policy with a mistyped section, a UTF-16 file, `trusted_keys`
+    as a list, `grace_days` as a list, or JSON nested 100,000 deep. The
+    first and a later `load()` both return the error, and model requests are
+    refused;
+  - a failure `parse()` doesn't anticipate, or one reading the policy text,
+    fails closed. One in a Lumi Cloud policy leaves the machine policy in
+    force;
+  - a file with a UTF-8 byte order mark applies;
+  - a downloaded Lumi Cloud policy with a mistyped section isn't applied,
+    and a stored one is reported, not raised.
+- Against main before this change, 27 of the 29 new cases fail. The other two
+  pass there too: `parse()` already refused a list for `trusted_keys` (it was
+  `load()` that crashed first), and null sections already parsed.
+- In the browser pane, from an isolated home with the scripted Ollama stub.
+  The `LUMI_POLICY_FILE` policy had `"permissions": "ask only"` and a shell
+  rule denying one command:
+  - on main before this change, the updater logged the `AttributeError` at
+    startup and no error showed. In Full-auto, the denied command ran and
+    wrote its file;
+  - with this change, the same message failed with "The organization policy
+    at … is invalid: permissions must be an object. Ask your administrator to
+    fix it." The model received no request, and no file was written.
+    Settings > Privacy & security > Organization policy showed the same
+    error;
+  - the real `~/.resonant` was unchanged, and no `~/.lumi` or Lumi credential
+    entries appeared.
+
+Not exercised: a real Group Policy registry value or macOS configuration
+profile, a packaged build, macOS and Linux.
 
 ## September 25 the terminal says why a tool call was refused — source only, not released
 

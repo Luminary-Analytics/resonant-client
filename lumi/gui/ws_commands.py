@@ -299,19 +299,57 @@ async def _agent_runtime_control(ctx: CommandContext) -> None:
 # ---------------------------------------------------------------------------
 
 
+def _conversation_checkpoints(ctx: CommandContext, *, required: bool = False) -> Any:
+    """The open conversation's checkpoint store (AppState.bind_conversation_checkpoints)."""
+    bind = getattr(ctx.state, "bind_conversation_checkpoints", None)
+    if callable(bind) and getattr(ctx.state, "session", None) is not None:
+        store = bind(ctx.state.session)
+    else:
+        store = ctx.session_attr("checkpoint_store")
+    if store is None and required:
+        raise RuntimeError("This conversation has no checkpoints.")
+    return store
+
+
+def _timeline_item(checkpoint: Any) -> dict[str, Any]:
+    """One checkpoint as the Timeline shows it.
+
+    A write's arguments hold the whole file, so only what the call acted on
+    (a path, a command, a branch, a commit message) goes to the page.
+    """
+    metadata = checkpoint.metadata if isinstance(checkpoint.metadata, dict) else {}
+    arguments = metadata.get("arguments") if isinstance(metadata.get("arguments"), dict) else {}
+    target = next(
+        (str(arguments[key]) for key in ("path", "command", "branch", "message") if arguments.get(key)),
+        "",
+    )
+    return {
+        "id": checkpoint.id,
+        "sequence": checkpoint.sequence,
+        "created_at": checkpoint.created_at,
+        "reason": checkpoint.reason,
+        "tool_name": checkpoint.tool_name,
+        "target": target.splitlines()[0][:200] if target else "",
+        "snapshot": "git" if checkpoint.workspace_ref else ("archive" if checkpoint.workspace_archive else ""),
+        # A worker's snapshot holds the worker's conversation: files only.
+        "subagent": bool(metadata.get("subagent")),
+    }
+
+
 @command("session_timeline_list")
 async def _session_timeline_list(ctx: CommandContext) -> None:
-    store = ctx.session_attr("checkpoint_store")
-    values = [item.to_dict() for item in store.list()] if store else []
+    store = _conversation_checkpoints(ctx)
+    values = [_timeline_item(item) for item in store.list()] if store else []
     await ctx.send({"event": "session.timeline_list", "checkpoints": values})
 
 
 @command("session_timeline_compare")
 async def _session_timeline_compare(ctx: CommandContext) -> None:
     try:
-        store = ctx.session_attr("checkpoint_store")
-        data = await _in_executor(store.compare, str(ctx.msg.get("checkpoint_id") or ""))
-        await ctx.send({"event": "session.timeline_comparison", "data": data})
+        store = _conversation_checkpoints(ctx, required=True)
+        checkpoint_id = str(ctx.msg.get("checkpoint_id") or "")
+        data = await _in_executor(store.compare, checkpoint_id)
+        await ctx.send({"event": "session.timeline_comparison", "checkpoint_id": checkpoint_id, "data": data})
     except Exception as exc:
         await ctx.send_error(str(exc))
 
@@ -322,43 +360,63 @@ async def _session_timeline_restore(ctx: CommandContext) -> None:
     try:
         if ctx.runs is not None and ctx.runs.busy:
             raise RuntimeError("Stop the active run before restoring a checkpoint")
-        store = ctx.session_attr("checkpoint_store")
+        store = _conversation_checkpoints(ctx, required=True)
         checkpoint_id = str(ctx.msg.get("checkpoint_id") or "")
         mode = str(ctx.msg.get("mode") or "both")
+        item = _timeline_item(store.get(checkpoint_id))
+        if mode in {"conversation", "both"} and item["subagent"]:
+            raise RuntimeError(
+                "A worker's checkpoint holds the worker's conversation, not this one. "
+                "Restore its files only."
+            )
         data = await _in_executor(store.restore, checkpoint_id, mode)
-        if mode in {"conversation", "both"}:
+        restores_conversation = mode in {"conversation", "both"}
+        if restores_conversation:
             state.session.conversation_history = data.get("conversation_history") or []
-            if state.project.current_session:
-                state.project.current_session.conversation_history = list(state.session.conversation_history)
-                state.project.current_session.display_events = list(data.get("display_events") or [])
-                state.project.current_session.save()
+        # The chat marks where it was restored: a restored conversation often
+        # ends in the middle of a turn, which would otherwise replay as a turn
+        # that crashed. Display only; the model's conversation never sees it.
+        marker = {"event": "timeline.restored", "mode": mode, "checkpoint": item}
+        record = state.project.current_session
+        if record and restores_conversation:
+            record.conversation_history = list(state.session.conversation_history)
+            record.display_events = [*(data.get("display_events") or []), marker]
+            record.save()
+        elif record:
+            record.append_display_events([marker])
         if state.session.hook_runner:
             from ..engine.hooks import HookType
             state.session.hook_runner.emit(
                 HookType.CHECKPOINT_RESTORED,
                 {"checkpoint_id": checkpoint_id, "mode": mode, "project_path": ctx.project_path},
             )
-        record = state.project.current_session
         if record:
             snapshot = record.history_snapshot()
             history_page = snapshot["page"]
             display_events = history_page["events"]
             projections = snapshot["projections"]
-        else:
-            display_events = list(data.get("display_events") or [])[-240:]
+        elif restores_conversation:
+            restored_events = [*(data.get("display_events") or []), marker]
+            display_events = restored_events[-240:]
             history_page = {
                 "events": display_events,
                 "start_seq": None,
                 "end_seq": None,
-                "has_more": len(data.get("display_events") or []) > len(display_events),
-                "total_events": len(data.get("display_events") or []),
+                "has_more": len(restored_events) > len(display_events),
+                "total_events": len(restored_events),
                 "as_of_seq": -1,
             }
+            projections = {}
+        else:
+            # Files only, and no saved conversation to redraw: the chat stays.
+            display_events = history_page = None
             projections = {}
         public_data = {
             key: value for key, value in data.items()
             if key not in {"conversation_history", "display_events"}
         }
+        # The page names the checkpoint; a write's full arguments stay here.
+        public_data["checkpoint"] = item
         await ctx.send({
             "event": "session.timeline_restored",
             "data": public_data,

@@ -41,6 +41,11 @@ const COLLAPSIBLE_TOOLS = new Set([
 
 const BLOCK_TOOLS = new Set(['bash', 'file_write', 'file_edit', 'browser_js']);
 
+// The result the engine gives the model when the person answers Deny
+// (Session._resolve_tool_permission). A refused call's row shows why it
+// didn't run, except for this one: "denied" already says it.
+const USER_DENIAL_OUTPUT = 'Tool execution denied by user.';
+
 function shouldGroupAsEvidence(name, args = {}) {
     if (COLLAPSIBLE_TOOLS.has(name)) return true;
     if (name !== 'bash') return false;
@@ -1040,6 +1045,8 @@ class LumiApp {
         if (missionToggle) {
             missionToggle.addEventListener('click', () => this.openMissionComposer());
         }
+        const timelineButton = document.getElementById('timeline-button');
+        timelineButton?.addEventListener('click', () => this.openTimeline(timelineButton));
         // The composer's entry to autonomous sessions (shown when Settings
         // turns them on); the header toggle above is hidden in this layout.
         document.getElementById('composer-autonomous-btn')
@@ -3401,6 +3408,12 @@ class LumiApp {
                     break;
                 }
                 if (event.request_id && event.request_id === this._newSessionRequestId) this._releaseNewSessionGuard();
+                if (this._timelinePending) {
+                    // The server refused the restore (a run started, or the
+                    // checkpoint can't restore that): the user can try again.
+                    this._timelinePending = '';
+                    this._renderTimeline();
+                }
                 if (
                     projectSwitchId
                     && projectSwitchId === this._pendingProjectSwitchId
@@ -4014,25 +4027,28 @@ class LumiApp {
                 break;
             case 'session.timeline_list':
                 this.runtimeTimeline = event.checkpoints || [];
-                this.renderRuntimeView();
+                this._renderTimeline();
                 break;
             case 'session.timeline_comparison':
-                this.showRuntimePayload('Checkpoint comparison', event.data || {});
+                this._timelineComparison = { id: event.checkpoint_id || '', data: event.data || {} };
+                this._renderTimeline();
                 break;
             case 'session.timeline_restored':
-                this.showStatusMessage('Checkpoint restored');
-                this._historyPage = event.history_page || null;
-                this._loadedHistoryEvents = Array.isArray(event.display_events)
-                    ? event.display_events.slice()
-                    : [];
-                this._historyLoading = false;
-                this._historyWindowDroppedTail = false;
-                if (event.display_events) {
+                this._timelinePending = '';
+                this.closeTimeline();
+                this.showStatusMessage(this._timelineRestoredMessage(event.data || {}));
+                // Without a saved conversation, a files-only restore leaves
+                // the chat as it is (no events to redraw it from).
+                if (Array.isArray(event.display_events)) {
+                    this._historyPage = event.history_page || null;
+                    this._loadedHistoryEvents = event.display_events.slice();
+                    this._historyLoading = false;
+                    this._historyWindowDroppedTail = false;
                     this.chatMessages.innerHTML = '';
                     this._resetTaskCardState();
                     this.replayDisplayEvents(event.display_events);
+                    this._renderHistoryPageControl();
                 }
-                this._renderHistoryPageControl();
                 this.send({ command: 'session_timeline_list' });
                 break;
             case 'flight.recorder_list':
@@ -5316,10 +5332,13 @@ class LumiApp {
 
         const meta = resultEvent.metadata || {};
         const isError = resultEvent.is_error || false;
-        const output = String(resultEvent.output || '');
+        // A refused call never ran, so its output is the reason why.
+        const denied = Boolean(resultEvent.denied);
+        const output = denied ? this._toolDenialReason(resultEvent) : String(resultEvent.output || '');
 
         let metaText = '';
-        if (name === 'file_read' && meta.lines) metaText = `${meta.lines} lines`;
+        if (denied) metaText = output ? 'not run' : 'denied';
+        else if (name === 'file_read' && meta.lines) metaText = `${meta.lines} lines`;
         else if (name === 'glob' && meta.count != null) metaText = `${meta.count} files`;
         else if (name === 'grep' && meta.count != null) metaText = `${meta.count} matches`;
         else if (name === 'code_intel' && meta.code_intel) {
@@ -5336,8 +5355,8 @@ class LumiApp {
 
         const statusEl = line.querySelector('.tool-status');
         if (statusEl) {
-            statusEl.textContent = isError ? '✗' : '✓';
-            statusEl.style.color = isError ? 'var(--err)' : 'var(--ok)';
+            statusEl.textContent = isError || denied ? '✗' : '✓';
+            statusEl.style.color = denied ? 'var(--warn)' : (isError ? 'var(--err)' : 'var(--ok)');
         }
         line.classList.remove('pending');
         if (output) {
@@ -5349,15 +5368,18 @@ class LumiApp {
             line.appendChild(preview);
             line.classList.add('has-output');
         }
-        if (isError) {
-            live.errorCount += 1;
-            line.classList.add('is-error', 'show-output');
-            const errorIcon = live.header.querySelector('.collapsed-icon');
-            if (errorIcon) errorIcon.textContent = '\u25be';
-            live.container.classList.add('has-errors', 'expanded');
+        if (isError || denied) {
+            // Open what needs attention: an error's output or a refusal's reason.
+            if (denied) live.deniedCount = (live.deniedCount || 0) + 1;
+            else live.errorCount += 1;
+            line.classList.add(denied ? 'is-denied' : 'is-error');
+            if (output) line.classList.add('show-output');
             const icon = live.header.querySelector('.collapsed-icon');
-            if (icon) icon.textContent = 'â–¾';
+            if (icon) icon.textContent = '▾';
+            live.container.classList.add('expanded');
+            if (!denied) live.container.classList.add('has-errors');
         }
+        if (output) line.setAttribute('aria-expanded', String(line.classList.contains('show-output')));
         this._updateLiveCollapsedHeader();
     }
 
@@ -5384,6 +5406,7 @@ class LumiApp {
             const action = inferActionLabel(live.toolCounts);
             const parts = ['Evidence', action];
             if (live.errorCount) parts.push(`${live.errorCount} failed`);
+            if (live.deniedCount) parts.push(`${live.deniedCount} not run`);
             summaryEl.textContent = parts.join(' \u00b7 ');
         }
         if (metaEl) {
@@ -5766,7 +5789,7 @@ class LumiApp {
         if (BLOCK_TOOLS.has(name)) {
             this.renderBlockToolCall(name, args, info, category, event);
         } else {
-            this.renderInlineToolCall(name, args, info, category);
+            this.renderInlineToolCall(name, args, info, category, event);
         }
         this.scrollToBottom();
     }
@@ -5780,7 +5803,7 @@ class LumiApp {
         return (task && task.activityEl) || this.chatMessages;
     }
 
-    renderInlineToolCall(name, args, info, category) {
+    renderInlineToolCall(name, args, info, category, event = {}) {
         let desc = '';
         let meta = '';
 
@@ -5849,6 +5872,8 @@ class LumiApp {
         const el = document.createElement('div');
         el.className = `tool-inline ${category}`;
         el.setAttribute('data-tool', name);
+        // Its result finds this row by call id when a step calls the tool twice.
+        if (event.call_id) el.setAttribute('data-call-id', event.call_id);
         el.innerHTML = `
             <span class="tool-icon" style="color:var(--${info.color})">${info.icon}</span>
             <span class="tool-desc">${desc}</span>
@@ -5949,6 +5974,7 @@ class LumiApp {
         const detail = el.querySelector('[data-detail]');
         if (!detail || detail.dataset.rendered === 'true') return;
         const kind = el.dataset.detailKind || '';
+        const noOutput = el.dataset.denied === 'true' ? '(not run)' : '(no output)';
 
         if (kind === 'bash') {
             const cmd = el.dataset.fullCommand || '';
@@ -5959,7 +5985,7 @@ class LumiApp {
                 <pre class="tool-row-detail-output ${isError ? 'err' : ''}"></pre>
             `;
             detail.querySelector('code').textContent = cmd;
-            detail.querySelector('pre').textContent = output || '(no output)';
+            detail.querySelector('pre').textContent = output || noOutput;
         } else if (kind === 'file_write') {
             const content = el.dataset.fullContent || '';
             detail.innerHTML = `<pre class="tool-row-detail-content"></pre>`;
@@ -5984,7 +6010,7 @@ class LumiApp {
                 <pre class="tool-row-detail-output"></pre>
             `;
             detail.querySelector('.tool-row-detail-content').textContent = code;
-            detail.querySelector('.tool-row-detail-output').textContent = output || '(no output)';
+            detail.querySelector('.tool-row-detail-output').textContent = output || noOutput;
         }
 
         detail.dataset.rendered = 'true';
@@ -6020,20 +6046,20 @@ class LumiApp {
         const image = event.image || null;
 
         if (denied) {
-            if (BLOCK_TOOLS.has(name)) this._settleDeniedBlockRow(name, event.call_id);
-            this.appendToolStatus(name, '✗ denied', 'warn');
+            this._settleDeniedToolRow(event);
+            this.scrollToBottom();
             return;
         }
 
-        // Splice call_id into meta so the block-row lookup can match the
-        // exact call (multiple parallel calls of the same tool exist with
-        // tool batching). Inline result path doesn't need this.
+        // Splice call_id into meta so the row lookup can match the exact
+        // call (multiple parallel calls of the same tool exist with tool
+        // batching).
         const metaWithId = event.call_id ? { ...meta, _call_id: event.call_id } : meta;
 
         if (BLOCK_TOOLS.has(name)) {
             this.renderBlockToolResult(name, output, isError, elapsed, metaWithId);
         } else {
-            this.renderInlineToolResult(name, output, isError, elapsed, meta);
+            this.renderInlineToolResult(name, output, isError, elapsed, metaWithId);
         }
 
         // Render screenshot image if present
@@ -6044,11 +6070,33 @@ class LumiApp {
         this.scrollToBottom();
     }
 
+    /**
+     * The inline row a result belongs to: the one for its call id, or else
+     * the last row of its tool that has no call id. A row for another call
+     * is never the answer, even when a step calls the same tool twice.
+     */
+    _inlineToolRow(name, callId) {
+        // Only this lane's own rows. A worker's rows sit inside the parent's
+        // activity, and a worker can reuse one of the parent's call ids.
+        const rows = Array.from(this.getRenderTarget().children || []).filter((row) =>
+            row.classList.contains('tool-inline') && row.getAttribute('data-tool') === name);
+        // A backend that derives the id from the call gives a repeated call
+        // the same id: the latest row with it is the one still waiting.
+        const own = callId ? rows.filter((row) => row.getAttribute('data-call-id') === callId) : [];
+        const candidates = own.length ? own : rows.filter((row) => !row.hasAttribute('data-call-id'));
+        return candidates[candidates.length - 1] || null;
+    }
+
+    _setInlineToolStatus(row, text, statusClass) {
+        const status = document.createElement('span');
+        status.className = `tool-status ${statusClass}`;
+        status.textContent = text;
+        row.querySelector('.tool-status')?.remove();
+        row.appendChild(status);
+    }
+
     renderInlineToolResult(name, output, isError, elapsed, meta) {
-        // Find the last matching inline tool and add status
-        const target = this.getRenderTarget();
-        const tools = target.querySelectorAll(`.tool-inline[data-tool="${CSS.escape(name)}"]`);
-        const last = tools[tools.length - 1];
+        const last = this._inlineToolRow(name, meta._call_id);
         if (!last) return;
 
         let statusText = '';
@@ -6083,14 +6131,7 @@ class LumiApp {
                 statusText = isError ? '✗' : '✓';
         }
 
-        const status = document.createElement('span');
-        status.className = `tool-status ${statusClass}`;
-        status.textContent = statusText;
-
-        // Remove existing status if any
-        const existing = last.querySelector('.tool-status');
-        if (existing) existing.remove();
-        last.appendChild(status);
+        this._setInlineToolStatus(last, statusText, statusClass);
     }
 
     /**
@@ -6188,8 +6229,47 @@ class LumiApp {
         }
     }
 
+    /**
+     * Why a refused call didn't run, as the model was told: a hook's message,
+     * a policy rule, a tool boundary, an approval nobody could answer. Empty
+     * for the person's own Deny, which needs no explanation.
+     */
+    _toolDenialReason(event) {
+        const reason = String(event.output ?? '').trim();
+        return reason === USER_DENIAL_OUTPUT ? '' : reason;
+    }
+
+    /**
+     * A refused call never ran. Its row stops reading "running…", says
+     * "denied" or "not run", and shows the reason under it. The reason can
+     * come from a hook, a policy, a repository or the model, so it is only
+     * ever set as text.
+     */
+    _settleDeniedToolRow(event) {
+        const name = event.name || '';
+        const reason = this._toolDenialReason(event);
+        const label = reason ? 'not run' : 'denied';
+        let row = BLOCK_TOOLS.has(name)
+            ? this._settleDeniedBlockRow(name, event.call_id, label)
+            : this._settleDeniedInlineRow(name, event.call_id, label);
+        if (!row) {
+            // The call has no row here; the refusal still gets a line.
+            row = document.createElement('div');
+            row.className = 'tool-inline is-denied';
+            this._setInlineToolStatus(row, `✗ ${label}`, 'denied');
+            this.getRenderTarget().appendChild(row);
+        }
+        row.querySelector('.tool-denial-reason')?.remove();
+        if (!reason) return;
+        const why = document.createElement('div');
+        why.className = 'tool-denial-reason';
+        why.textContent = reason;
+        // A block row's reason sits above its expandable detail.
+        row.insertBefore(why, row.querySelector('[data-detail]'));
+    }
+
     /** A denied call never ran; its row must not keep reading "running…". */
-    _settleDeniedBlockRow(name, callId) {
+    _settleDeniedBlockRow(name, callId, label) {
         let row = null;
         if (callId && this._blockToolRows && this._blockToolRows.has(callId)) {
             row = this._blockToolRows.get(callId);
@@ -6198,23 +6278,26 @@ class LumiApp {
             const all = this.getRenderTarget().querySelectorAll(`.tool-row[data-tool="${CSS.escape(name)}"]`);
             row = all[all.length - 1] || null;
         }
-        if (!row) return;
+        if (!row) return null;
         const statusEl = row.querySelector('[data-status]');
         if (statusEl) {
             statusEl.classList.remove('pending');
-            statusEl.classList.add('err');
+            statusEl.classList.add('denied');
             statusEl.textContent = '✗';
         }
         const metaEl = row.querySelector('[data-meta]');
-        if (metaEl) metaEl.textContent = 'not run';
-        row.dataset.isError = 'true';
+        if (metaEl) metaEl.textContent = label;
+        row.classList.add('denied');
+        row.dataset.denied = 'true';
+        return row;
     }
 
-    appendToolStatus(name, text, color) {
-        const el = document.createElement('div');
-        el.className = 'tool-inline';
-        el.innerHTML = `<span class="tool-status" style="color:var(--${color})">${text}</span>`;
-        this.getRenderTarget().appendChild(el);
+    _settleDeniedInlineRow(name, callId, label) {
+        const row = this._inlineToolRow(name, callId);
+        if (!row) return null;
+        row.classList.add('is-denied');
+        this._setInlineToolStatus(row, `✗ ${label}`, 'denied');
+        return row;
     }
 
     // ── Screenshot Image ────────────────────────────────────────
@@ -7057,6 +7140,7 @@ class LumiApp {
             { id: 'settings',   icon: '\u2699', label: 'Open Settings',            hint: 'Ctrl+,', action: () => this.switchView('settings') },
             { id: 'sessions',   icon: '\u2190', label: 'Back to Sessions',         hint: 'Alt+1',  action: () => this.switchView('agents') },
             { id: 'git',        icon: '\u2387', label: 'Git changes & commits',    hint: '',       action: () => { if (this.gitData?.is_repo) this.toggleGitPopover(); else this.showStatusMessage('Not a git repository.'); } },
+            { id: 'timeline',   icon: '\u27f2', label: 'Timeline: restore a checkpoint', hint: '', action: () => this.openTimeline() },
             { id: 'preview',    icon: '\u25A1', label: 'Toggle preview panel',     hint: '',        action: () => document.getElementById('preview-toggle')?.click() },
             { id: 'sidebar',    icon: '\u2261', label: 'Toggle sidebar',           hint: 'Ctrl+Shift+D', action: () => document.getElementById('sidebar-toggle')?.click() },
             { id: 'shortcuts',  icon: '\u2328', label: 'Keyboard shortcuts',       hint: 'Ctrl+/', action: () => this.toggleShortcutsOverlay() },
@@ -7696,22 +7780,6 @@ class LumiApp {
         if (count) count.textContent = `${items.length} ${this.runtimeView}`;
         if (!items.length) {
             tree.innerHTML = `<div class="agent-activity-empty">No ${this.escapeHtml(this.runtimeView)} recorded yet.</div>`;
-            return;
-        }
-        if (this.runtimeView === 'timeline') {
-            tree.innerHTML = items.map((item) => `
-                <article class="runtime-card" data-checkpoint-id="${this.escapeHtml(item.id)}">
-                    <div><strong>${this.escapeHtml(item.reason || item.id)}</strong><small>#${Number(item.sequence || 0)} · ${new Date(Number(item.created_at || 0) * 1000).toLocaleString()}</small></div>
-                    <span>${this.escapeHtml(item.tool_name || (item.workspace_ref ? 'git snapshot' : 'archive snapshot'))}</span>
-                    <div class="runtime-actions"><button data-action="compare">Compare</button><button data-action="conversation">Restore chat</button><button data-action="files">Restore files</button><button data-action="both">Restore both</button></div>
-                </article>`).join('');
-            tree.querySelectorAll('.runtime-card').forEach((card) => {
-                card.querySelectorAll('[data-action]').forEach((button) => button.addEventListener('click', () => {
-                    const action = button.dataset.action;
-                    if (action === 'compare') this.send({ command: 'session_timeline_compare', checkpoint_id: card.dataset.checkpointId });
-                    else this.send({ command: 'session_timeline_restore', checkpoint_id: card.dataset.checkpointId, mode: action });
-                }));
-            });
             return;
         }
         if (this.runtimeView === 'traces') {
@@ -8360,6 +8428,213 @@ class LumiApp {
         this.send({ command: 'agent_runtime_control', agent_id: this._workerSteerFor, action: 'steer', text });
         this.showStatusMessage('Sent. The worker reads it before its next step.');
         this.closeWorkerSteer();
+    }
+
+    // ── Timeline ────────────────────────────────────────────────
+    // Before each change it makes, Lumi saves a checkpoint of the project's
+    // files and this conversation (engine/checkpoint_timeline.py). The
+    // Timeline view that restored them left the page in v0.14.0; this dialog
+    // lists the open conversation's checkpoints and restores the files, the
+    // conversation or both (session_timeline_list/compare/restore).
+
+    openTimeline(returnFocus = null) {
+        const dialog = document.getElementById('timeline-dialog');
+        if (!dialog) return;
+        this._timelineOpen = true;
+        this._timelineConfirm = null;
+        this._timelineComparison = null;
+        this._timelinePending = '';
+        this._timelineReturnFocus = returnFocus || document.activeElement;
+        this.runtimeTimeline = null;
+        dialog.style.display = 'flex';
+        this._wireDialog(dialog, 'timeline-dialog-close', () => this.closeTimeline());
+        if (!dialog.dataset.timelineWired) {
+            const body = document.getElementById('timeline-dialog-body');
+            body?.addEventListener('click', (event) => {
+                const button = event.target.closest('[data-timeline-action]');
+                if (button) this._onTimelineAction(button);
+            });
+            body?.addEventListener('change', (event) => {
+                if (event.target.name === 'timeline-restore-mode' && this._timelineConfirm) {
+                    this._timelineConfirm.mode = event.target.value;
+                    this._renderTimeline();
+                    document.querySelector(`#timeline-dialog-body input[value="${event.target.value}"]`)?.focus();
+                }
+            });
+            dialog.dataset.timelineWired = '1';
+        }
+        this._renderTimeline();
+        document.getElementById('timeline-dialog-close')?.focus();
+        this.send({ command: 'session_timeline_list' });
+    }
+
+    closeTimeline() {
+        const dialog = document.getElementById('timeline-dialog');
+        if (!dialog || !this._timelineOpen) return;
+        dialog.style.display = 'none';
+        this._timelineOpen = false;
+        this._timelineConfirm = null;
+        const back = this._timelineReturnFocus;
+        (back && back.isConnected && !back.closest('[hidden]') ? back : this.userInput)?.focus?.();
+    }
+
+    /**
+     * Checkpoints come from Lumi's own tool loop. Codex and Claude Code run
+     * their own tools, so their changes have none.
+     */
+    _timelineIntro() {
+        const backend = String(this.modelSelector?.value || '').split(':', 1)[0];
+        const cli = { codex: 'Codex', 'claude-code': 'Claude Code' }[backend];
+        return cli
+            ? `${cli} changes files with its own tools, so Lumi saves no checkpoints of its changes. Turns with a native model connection have them.`
+            : 'Before each change it makes, Lumi saves a checkpoint of your files and this conversation. Newest first.';
+    }
+
+    /** What a checkpoint was saved before, in words. */
+    _timelineLabel(item = {}) {
+        const target = String(item.target || '').trim();
+        const short = target.length > 60 ? `${target.slice(0, 57)}…` : target;
+        const path = target ? this.shortenPath(target) : '';
+        switch (item.tool_name) {
+            case 'file_write': return path ? `Before writing ${path}` : 'Before writing a file';
+            case 'file_edit':
+            case 'file_replace': return path ? `Before editing ${path}` : 'Before editing a file';
+            case 'bash': return short ? `Before running ${short}` : 'Before running a command';
+            case 'git_commit': return 'Before committing';
+            case 'git_branch_create': return short ? `Before creating branch ${short}` : 'Before creating a branch';
+            case 'batch': return 'Before a batch of changes';
+            default: return item.reason || 'Checkpoint';
+        }
+    }
+
+    /**
+     * What a checkpoint can put back. A worker's snapshot holds the worker's
+     * own conversation, so it restores files only; one without a workspace
+     * snapshot restores the conversation only.
+     */
+    _timelineRestoreModes(item = {}) {
+        const modes = [];
+        if (item.snapshot) modes.push('files');
+        if (!item.subagent) modes.push('conversation');
+        if (item.snapshot && !item.subagent) modes.push('both');
+        return modes;
+    }
+
+    /** What restoring does, said before the user confirms it. */
+    _timelineRestoreNote(item = {}, mode = 'files') {
+        const kept = item.snapshot === 'git'
+            ? 'Your current files are kept first, on a lumi-recovery branch.'
+            : 'Your current files are kept first, in a recovery archive.';
+        const files = `The project's files go back to how they were at this point. ${kept}`;
+        const conversation = 'The conversation goes back to this point; later messages leave it.';
+        if (mode === 'conversation') return `${conversation} Your files don't change.`;
+        if (mode === 'both') return `${files} ${conversation}`;
+        return `${files} The conversation doesn't change.`;
+    }
+
+    _timelineRestoredMessage(data = {}) {
+        const what = { files: 'Files', conversation: 'Conversation', both: 'Files and conversation' }[data.mode] || 'Checkpoint';
+        const point = this._timelineLabel(data.checkpoint || {}).replace(/^Before /, 'before ');
+        const workspace = data.workspace || {};
+        const kept = workspace.recovery_branch
+            ? ` Your previous files are on ${workspace.recovery_branch}.`
+            : workspace.recovery_archive ? ' Your previous files are in a recovery archive.' : '';
+        return `${what} restored to ${point}.${kept}`;
+    }
+
+    /** The chat's record of a restore, where it happened. */
+    _addTimelineRestoredNote(event = {}) {
+        const note = document.createElement('div');
+        note.className = 'timeline-restored-note';
+        note.textContent = this._timelineRestoredMessage({ mode: event.mode, checkpoint: event.checkpoint });
+        this.chatMessages.appendChild(note);
+    }
+
+    _onTimelineAction(button) {
+        const action = button.dataset.timelineAction || '';
+        const id = button.closest('[data-checkpoint-id]')?.dataset.checkpointId || '';
+        const item = (this.runtimeTimeline || []).find((entry) => entry.id === id);
+        if (!item) return;
+        if (action === 'compare') {
+            this._timelineComparison = { id, data: null };
+            this._renderTimeline();
+            this.send({ command: 'session_timeline_compare', checkpoint_id: id });
+        } else if (action === 'restore') {
+            this._timelineConfirm = { id, mode: this._timelineRestoreModes(item)[0] || '' };
+            this._renderTimeline();
+            document.querySelector('#timeline-dialog-body input[name="timeline-restore-mode"]:checked')?.focus();
+        } else if (action === 'cancel') {
+            this._timelineConfirm = null;
+            this._renderTimeline();
+            document.querySelector(`#timeline-dialog-body [data-checkpoint-id="${CSS.escape(id)}"] [data-timeline-action="restore"]`)?.focus();
+        } else if (action === 'confirm' && this._timelineConfirm?.id === id) {
+            if (this.isRunning) {
+                this.showStatusMessage('Stop the current run before restoring a checkpoint.');
+                return;
+            }
+            this._timelinePending = id;
+            this._renderTimeline();
+            this.send({ command: 'session_timeline_restore', checkpoint_id: id, mode: this._timelineConfirm.mode });
+        }
+    }
+
+    _renderTimeline() {
+        const body = document.getElementById('timeline-dialog-body');
+        if (!body || !this._timelineOpen) return;
+        const esc = (value) => this.escapeHtml(value);
+        const items = this.runtimeTimeline;
+        if (!Array.isArray(items)) {
+            body.innerHTML = '<p class="share-note">Loading…</p>';
+            return;
+        }
+        const intro = `<p class="share-note">${esc(this._timelineIntro())}</p>`;
+        if (!items.length) {
+            body.innerHTML = `${intro}<p class="share-note">No checkpoints yet.</p>`;
+            return;
+        }
+        const running = Boolean(this.isRunning);
+        const modeNames = { files: 'Files', conversation: 'Conversation', both: 'Files and conversation' };
+        const rows = items.map((item) => {
+            const when = Number(item.created_at || 0)
+                ? new Date(Number(item.created_at) * 1000).toLocaleString()
+                : '';
+            const meta = [
+                when,
+                item.subagent ? 'by a worker' : '',
+                item.snapshot === 'git' ? 'Git snapshot' : item.snapshot === 'archive' ? 'file snapshot' : 'conversation only',
+            ].filter(Boolean).join(' · ');
+            const modes = this._timelineRestoreModes(item);
+            const pending = this._timelinePending === item.id;
+            const confirming = this._timelineConfirm?.id === item.id;
+            const comparison = this._timelineComparison?.id === item.id ? this._timelineComparison.data : undefined;
+            let detail = '';
+            if (comparison !== undefined) {
+                const text = comparison === null
+                    ? 'Comparing…'
+                    : comparison.message || [comparison.name_status, comparison.stat].filter(Boolean).join('\n') || 'No changes since this checkpoint.';
+                detail += `<div class="timeline-comparison"><span>Changes since this checkpoint</span><pre>${esc(text)}</pre></div>`;
+            }
+            if (confirming) {
+                const mode = this._timelineConfirm.mode;
+                const choices = modes.map((value) => `<label class="timeline-mode"><input type="radio" name="timeline-restore-mode" value="${value}"${value === mode ? ' checked' : ''}> ${modeNames[value]}</label>`).join('');
+                detail += `<fieldset class="timeline-confirm"><legend>Restore</legend>${choices}`
+                    + `<p class="timeline-confirm-note">${esc(this._timelineRestoreNote(item, mode))}</p>`
+                    + `<div class="timeline-confirm-actions">`
+                    + `<button type="button" class="dialog-btn deny" data-timeline-action="cancel">Cancel</button>`
+                    + `<button type="button" class="dialog-btn allow" data-timeline-action="confirm"${running || pending ? ' disabled' : ''}>${pending ? 'Restoring…' : 'Restore'}</button>`
+                    + `</div>${running ? '<p class="timeline-confirm-note">Stop the current run to restore.</p>' : ''}</fieldset>`;
+            }
+            const label = this._timelineLabel(item);
+            // Checkpoints often share a label; the time tells their buttons apart.
+            const named = when ? `${label}, ${when}` : label;
+            return `<li class="timeline-item" data-checkpoint-id="${esc(item.id)}">`
+                + `<div class="timeline-item-head"><div class="timeline-item-copy"><strong>${esc(label)}</strong><small>${esc(meta)}</small></div>`
+                + `<div class="timeline-item-actions">`
+                + (item.snapshot === 'git' ? `<button type="button" class="subagent-action" data-timeline-action="compare" aria-label="${esc(`Compare the files with: ${named}`)}">Compare</button>` : '')
+                + (modes.length ? `<button type="button" class="subagent-action" data-timeline-action="restore" aria-label="${esc(`Restore: ${named}`)}" aria-expanded="${confirming}"${pending ? ' disabled' : ''}>Restore…</button>` : '')
+                + `</div></div>${detail}</li>`;
+        });
+        body.innerHTML = `${intro}<ol class="timeline-list">${rows.join('')}</ol>`;
     }
 
     handleSubagentError(event) {
@@ -10393,9 +10668,20 @@ class LumiApp {
                 // A card still running here belongs to a turn that never
                 // ended (Lumi closed during it).
                 this._settleInterruptedCard();
+                // Each turn counts its own steps and tools, as a live turn
+                // does (_prepareTurnUI).
+                this._currentTurn = this._freshTurnAggregate();
                 this._resetAgentRunSummary(event.text || '');
                 // Replay user message bubble
                 this.addUserMessage(event.text);
+                continue;
+            }
+
+            if (type === 'timeline.restored') {
+                // A restored conversation can end mid-turn: that turn
+                // stopped at the checkpoint, it didn't crash.
+                this._settleInterruptedCard('Restored');
+                this._addTimelineRestoredNote(event);
                 continue;
             }
 
@@ -10472,7 +10758,7 @@ class LumiApp {
         if (userIndex < 0) return null;
 
         const turn = tail.slice(userIndex + 1);
-        const terminal = new Set(['session.end', 'text.done', 'error', 'await_user']);
+        const terminal = new Set(['session.end', 'text.done', 'error', 'await_user', 'timeline.restored']);
         if (turn.some((event) => terminal.has(event?.event))) return null;
 
         const started = turn.some((event) => event?.event === 'step.start');
@@ -10501,6 +10787,9 @@ class LumiApp {
             task.stateEl.className = 'task-card-state is-stopped';
             task.stateEl.textContent = label;
         }
+        // The replayed step's "thinking" indicator would otherwise keep
+        // ticking inside the collapsed details.
+        this.removeThinking();
         this._collapseTaskActivity({});
     }
 
@@ -11059,6 +11348,9 @@ class LumiApp {
             <button type="button" role="menuitem" class="ctx-item" data-action="rename">&#9998; Rename</button>
             <button type="button" role="menuitem" class="ctx-item" data-action="share">&#128279; Share…</button>
             <button type="button" role="menuitem" class="ctx-item" data-action="handoff">&#8618; Hand off…</button>
+            ${session.id === this.currentSessionId
+                ? '<button type="button" role="menuitem" class="ctx-item" data-action="timeline">&#10226; Timeline…</button>'
+                : ''}
             <button type="button" role="menuitem" class="ctx-item" data-action="replay">&#9654; Replay</button>
             <div class="ctx-separator"></div>
             <button type="button" role="menuitem" class="ctx-item danger" data-action="delete">&#128465; Delete</button>
@@ -11100,6 +11392,10 @@ class LumiApp {
             } else if (action === 'handoff') {
                 menu.remove();
                 this.openHandoffDialog(session, returnFocus);
+                return;
+            } else if (action === 'timeline') {
+                menu.remove();
+                this.openTimeline(returnFocus);
                 return;
             } else if (action === 'replay') {
                 this.send({

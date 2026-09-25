@@ -79,6 +79,246 @@ steps also show in the conversation as ordinary turns, with "Needs
 attention", Retry and a suggested next prompt, and each step's end moves
 keyboard focus to the composer.
 
+## September 25 refused tool calls say why — source only, not released
+
+**A refused call's row said only "denied".** When a hook, a policy rule, a
+tool boundary, a second approver or an approval nobody could answer stops a
+tool call, the model gets the reason as the call's result. The app added a
+line reading "✗ denied" (and "not run" on a command's row) and dropped the
+reason. A guard hook that timed out looked the same as the user's own Deny.
+
+- **The reason shows under the call's row** (`lumi/gui/static/app.js`,
+  `_settleDeniedToolRow`), always set as text, since it can come from a hook,
+  a policy, a repository or the model.
+  - A command, edit or write row reads "✗ … not run" with the reason above its
+    expandable detail. Expanded, a command that never ran shows "(not run)"
+    rather than "(no output)".
+  - Other rows read "✗ not run", with the reason on the line below.
+  - A refusal whose call has no row gets a line of its own. The separate
+    "✗ denied" line is gone.
+  - The user's own Deny still reads just "denied".
+  - Refusals are amber and errors red: a refused call didn't run, so it
+    didn't fail.
+- **A refused Evidence call no longer reads ✓.** Reads, searches and check
+  commands in the collapsed Evidence group showed ✓ when the refusal wasn't
+  also marked as an error (a hook, an approval). They show ✗ with the reason
+  open. The group's header counts "N not run", and the group stays open
+  without the error styling.
+- **A worker's refused calls** get the same, in the worker's own rows.
+  **Codex and Claude Code** rows are unchanged: those CLIs run their own tools
+  and approvals, and Lumi forwards their observations with `denied` false, so
+  there is no refusal to show.
+- **Fixed along the way:**
+  - An inline result went to the last row of its tool, so a tool called twice
+    in a step could put its status or reason on the other call's row. A result
+    now finds the row with its own call id, among its own lane's rows only, so
+    a worker that reuses one of the parent's call ids doesn't reach the
+    parent's row.
+  - An Evidence call's output, once opened, sat beside its row and squeezed
+    the pattern or path to nothing. It takes a line of its own, like a reason.
+
+Validation on September 25, 2026:
+
+- Four tests in `tests/ui_recovery.test.cjs` drive the real `handleEvent`,
+  `renderToolCall` and `renderToolResult`, and the Evidence group from
+  `run_cards.js`, in a small DOM that parses the rows' markup and keeps every
+  `innerHTML` write:
+  - command rows refused by a timed-out hook and by a policy, and one the user
+    denied;
+  - inline rows whose tool name, call id and reason are hostile markup: the
+    reason stays text, no markup write carries it, and each result reaches its
+    own row;
+  - a refusal whose call has no row;
+  - a refused Evidence call next to a passing one and a denied one;
+  - a worker's refused write and `task` in its lane, while the parent's `task`
+    with the same call id succeeds.
+- On the previous `app.js` and `run_cards.js`, all four failed: six rows for
+  three calls (the extra "✗ denied" lines), ✓ for the refused Evidence call,
+  and no reason in the worker's row.
+- After rebasing on main (with gate hooks failing closed, second approvals
+  and worker transcripts): full `pytest` 4,294 passed, 5 skipped.
+  `ruff check .` clean, `node --check` passes for `app.js` and
+  `settings_view.js`, the four Node UI test files pass (65 tests),
+  `git diff --check` clean.
+- In the browser pane, from an isolated home with a scripted Ollama stub, in
+  Ask mode, with two `pre_tool_use` hooks in `settings.json` (one exits 1 with
+  a message on stderr, one sleeps past `timeout_seconds: 2`) and the built-in
+  recursive-delete deny:
+  - A `grep` the hook refused read ✗ "not run" with the hook's message open,
+    under a `grep` that found "2 matches ✓". The group read "Evidence ·
+    Searching codebase · 1 not run".
+  - `git push` refused by the hook, `rm -rf build` refused by the policy
+    ("Blocked by policy: Recursive delete blocked — use a safer alternative")
+    and a `task` refused by the hook each read "not run" with their reason.
+  - `npm publish`, denied in the approval dialog with Escape and, in a second
+    run, with **Deny**, read just "denied". Focus went back to the message box.
+  - The hook that never answered: `make release` read "not run" with "Blocked
+    by hook: pre_tool_use hook \`slow-guard\` timed out after 2 s; gate hooks
+    block when they give no answer. Raise its timeout_seconds if it needs
+    longer."
+  - The model's closing message listed the same reasons it had been given.
+    After a reload, the replayed session showed the same rows, and so did a
+    last run on the branch rebased over worker transcripts.
+  - At 375 px there was no horizontal scroll, including for reasons with 120
+    to 160 character unbroken tokens, which wrapped inside their rows.
+  - On a refused Evidence call, Enter closed the reason and Space opened it
+    again. `aria-expanded` followed and focus stayed on the item.
+  - The real `~/.resonant` was unchanged, no `~/.lumi` was created, and no Lumi
+    credential was stored. `~/.codex` changed during the run while the user's
+    own Codex was running; the fixture never started Codex, so those writes
+    are unattributed.
+
+Not exercised: a live model, a packaged build, Codex or Claude Code, the
+"no approval prompt is available" refusal in the app (a Node test covers its
+text) and a second approver's refusal (it takes the same path, with the
+approval's message as the reason). The terminal UI shows the reason too; see
+the next section.
+
+## September 25 the terminal says why a tool call was refused — source only, not released
+
+**A refused call printed only "✗ denied".** When a hook, a policy rule, a tool
+boundary, the session's allowlist, malformed arguments or an approval nobody
+could answer stops a tool call, the model gets the reason as the call's result.
+The terminal UI (`lumi/tui.py`) dropped it, so a guard hook that timed out
+looked the same as the person's own Deny.
+
+- **The reason prints under the call** (`_render_tool_result`), which now reads
+  "✗ not run". The reason is dimmed, and wrapped to the terminal's width inside
+  the call's gutter. It can come from a hook, a policy, a repository or the
+  model, so it is escaped (`rich.markup.escape`) and printed without emoji
+  codes or highlighting: `[bold]`, `[/]` or `:x:` in it print as written.
+- The person's own Deny ("Tool execution denied by user.") still reads just
+  "✗ denied".
+- **A refused read or search no longer looks like a result.** The terminal
+  collapses a step of only reads and searches to one line per call. There, a
+  refused `grep` read "0 matches", a `glob` "0 files", and a `file_read`
+  showed nothing. They read "✗ not run", with the reason under them.
+
+Validation on September 25, 2026:
+
+- `tests/test_tui.py` (14 tests) captures the TUI's console as plain text, 72
+  columns wide:
+  - each refusal text the engine gives (a hook that timed out, a policy rule,
+    a tool boundary, the allowlist, malformed arguments, no approval prompt, a
+    task batch hook) prints "✗ not run" and the reason word for word, every
+    line inside the gutter and the width;
+  - the person's Deny, and an empty result, print "✗ denied" alone;
+  - a reason with `[/]`, `[bold red]…[/bold red]`, a link tag, `:x:` and a
+    trailing backslash prints exactly as written;
+  - a reason with a 164-character path folds inside the gutter, nothing lost;
+  - two real sessions (the streaming stub) run through `run_embedded`, as the
+    TUI runs each message. A `pre_tool_use` hook that exits 1 with a bracketed
+    message refuses a `grep` in a collapsed step and a command: both read
+    "✗ not run" with the message the model was given, and the command didn't
+    run. With approvals on (`--approve`), the TUI's own "Allow bash? [Y/n]"
+    prompt, answered "n" through prompt_toolkit's pipe input, reads "✗ denied"
+    alone and the command didn't run; answered "y" in a throwaway copy, it ran.
+- On the previous `tui.py`, 10 of the 14 failed. The four Deny tests passed, as
+  they should.
+- On main at 1d1ffbe: full `pytest` 4,353 passed, 5 skipped. `ruff check .`
+  clean (ruff 0.12.12; `pyproject.toml` pins the rule set), `node --check`
+  passes for `app.js` and `settings_view.js`, the four Node UI test files pass
+  (61 tests), and `git diff --check` is clean. `tests/test_tui.py` also passes
+  with Rich 15.0.0, the release lock's version (14.0.0 is installed here).
+  A first full run ended at 22% with exit code 127 and no failure reported,
+  in `tests/test_computer_use_upgrades.py`; that file passed alone (25 tests),
+  and the full rerun passed.
+- Rebased on main at 3e74b97 (the organization's pack registry): full `pytest`
+  4,359 passed, 5 skipped. `ruff check .`, both `node --check` runs, the four
+  Node UI test files (61 tests) and `git diff --check` passed again.
+- Real sessions from an isolated home, rendered through `consume_events` into a
+  recorded Rich console at 80 and 52 columns: a refused `grep` under one that
+  found "2 matches", a `pre_tool_use` hook that timed out after 2 s on
+  `git push origin main`, and `npm publish` denied by the approval callback.
+  The reasons wrapped inside the gutter at both widths, and the Deny read
+  "✗ denied". The real `~/.resonant` was unchanged and no `~/.lumi` was
+  created.
+
+Not exercised: the TUI in a terminal window with a live model; the console was
+captured instead. The `lumi` TUI builds its session without hooks or an
+execution policy (`tui.py` `main`), so from it a hook or policy refusal can't
+happen today. The tests give the session they pass to `run_embedded` a hook.
+
+## September 25 checkpoint Timeline — source only, not released
+
+- **The Timeline is back** (`lumi/gui/static/app.js`, `openTimeline`;
+  [guide](desktop-workflow.md#undoing-changes-the-timeline)).
+  - **Timeline** in the chat header lists the open conversation's
+    checkpoints, newest first, by what each was saved before, for example
+    "Before writing notes.txt". The command palette and the session's menu
+    open it too.
+  - **Compare** (Git projects) shows what changed since a checkpoint.
+  - **Restore…** asks for Files, Conversation, or Files and conversation. It
+    says what each does and where your current files will be kept, and it
+    waits for the current run to stop.
+  - The Timeline left the page with the Agents pane in v0.14.0, so restoring
+    a conversation or a non-Git snapshot had no desktop control.
+- **Checkpoints belong to the saved conversation**
+  (`AppState.bind_conversation_checkpoints`). They were filed under a random
+  id for each session build, so an app restart, or a draft's first message,
+  started an empty Timeline.
+- **A worker's checkpoint restores files only.** It holds the worker's
+  conversation. Checkpoints now record whether a worker saved them
+  (`metadata.subagent`), and the server refuses the other modes.
+- **The list sends only what each call acted on**: a path, or a command's
+  first line. It sent each checkpoint's full arguments, including a write's
+  whole file.
+- **Each restore is marked in the chat** by a display-only `timeline.restored`
+  event. Without it, a conversation restored mid-turn showed "Response didn't
+  start" and Retry, as if the turn had crashed, after every reload. The
+  model's conversation never contains the event.
+- For Codex and Claude Code conversations, the Timeline says that their own
+  changes have no checkpoints.
+- Replay fixes found on the way:
+  - A replayed turn that never ended kept a ticking "thinking" row inside its
+    **Work details**.
+  - A reloaded conversation counted each turn's tools on top of the earlier
+    turns', for example "2 actions" for a turn with one.
+
+Validation on September 25, 2026:
+
+- Full `pytest` 4,351 passed, 5 skipped, after merging `main`; `ruff check`
+  clean.
+- `tests/test_checkpoint_timeline_ui.py` (6 tests) covers:
+  - the list without a call's contents;
+  - a worker's checkpoint, refused for the conversation, restored for files;
+  - checkpoints that outlive a rebuilt session, and a draft's first turn
+    saving to its conversation;
+  - the worker flag on checkpoints;
+  - the chat marker after a files and a conversation restore, kept out of the
+    model's conversation.
+- `tests/ui_recovery.test.cjs` adds 5 Timeline tests: labels, restore choices
+  and messages, the confirm flow, CLI connections, and a restored
+  conversation's replay. The three UI node suites: 58 passed.
+- In the browser pane, with an isolated home and a scripted local model:
+  - A non-Git project, where two turns wrote `notes.txt`. The Timeline listed
+    two "Before writing notes.txt" file snapshots. **Files** put back the
+    original and kept the replaced copy in a recovery archive.
+    **Conversation**, chosen and confirmed with the keyboard, rewound the
+    chat.
+  - After an app restart, the Timeline still listed them. **Files and
+    conversation** put back the first turn's file and ended the chat with
+    "Files and conversation restored to before writing notes.txt", with no
+    crash banner, after a reload too. A new message carried on from there
+    and saved a third checkpoint.
+  - The header button, the palette and the session menu each opened it.
+    Escape returned focus to the Timeline button. At 375px nothing scrolled
+    sideways.
+  - A Git project. **Compare** listed `M notes.txt` with its diff stat.
+    **Files** put the file back and kept the replaced copy on a
+    `lumi-recovery/…` branch.
+  - Fixes from this run:
+    - The header button was hidden while autonomous sessions are off, because
+      it shared their CSS class.
+    - A restored conversation showed the crash banner.
+    - The thinking row and the tool counts in replays.
+    - The Restore buttons had identical accessible names; they now include
+      the checkpoint's time.
+    - At 375px the checkpoint details were cut off.
+
+Not exercised: a Codex or Claude Code conversation (its Timeline text is
+tested only in node); a packaged build.
+
 ## September 25 the organization's pack registry — source only, not released
 
 - **The registry in policy** (`lumi/policy.py`, `lumi/engine/capability_packs.py`,
@@ -486,8 +726,8 @@ their own tool loops), macOS and Linux.
 - "Opening *file*…" showed "â€¦" instead of an ellipsis.
 - The runtime guide and [known issues](known-issues.md) now name the views
   that lost their entry point with the Agents pane: the checkpoint Timeline,
-  traces and the artifact list. (Worker transcripts and controls are back;
-  see "worker transcripts and controls" above.)
+  traces and the artifact list. (Worker transcripts and controls, and the
+  checkpoint Timeline, are back; see their sections above.)
 
 Validation on September 25, 2026:
 
@@ -565,9 +805,9 @@ blocks. Set its `timeout_seconds` (default 30) above the time its work takes,
 in the hook's entry in `settings.json` (`hooks`) or in its pack's manifest
 ([capability packs](packs.md#gate-hooks-fail-closed)). On Linux an `env` hook
 can't start for a call whose arguments exceed 128 KiB, so a gate hook blocks
-that call; `"input_format": "json"` avoids it. The app still shows a refused
-call only as "denied": the reason reaches the model and the turn's events, not
-the tool row.
+that call; `"input_format": "json"` avoids it. The tool row showed a refused
+call only as "denied" until "refused tool calls say why" (above) put the
+reason under it.
 
 Validation on September 25, 2026:
 

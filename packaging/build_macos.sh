@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Build Lumi.app and lumi-X.Y.Z.dmg on macOS (docs/macos.md).
+# Build Lumi.app, lumi-X.Y.Z.dmg and lumi-X.Y.Z.pkg on macOS (docs/macos.md;
+# the PKG is for device management, docs/deploy-macos.md).
 #
 #   packaging/build_macos.sh [--sbom dist/lumi-macos-sbom.cdx.json]
 #
@@ -15,6 +16,8 @@
 #   MACOS_SIGN_P12_BASE64    the certificate and key, exported as .p12, base64
 #   MACOS_SIGN_P12_PASSWORD  its password
 #   APPLE_ID, APPLE_TEAM_ID, APPLE_APP_PASSWORD   for notarytool
+#   MACOS_INSTALLER_IDENTITY "Developer ID Installer: Luminary Analytics (TEAMID)",
+#                            in the same .p12, to sign the PKG
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -93,3 +96,48 @@ elif [[ -n "${MACOS_SIGN_IDENTITY:-}" ]]; then
   echo "WARNING: APPLE_ID, APPLE_TEAM_ID or APPLE_APP_PASSWORD isn't set; the DMG isn't notarized" >&2
 fi
 echo "DMG: $DMG ($(du -h "$DMG" | cut -f1))"
+
+# The installer package for device management: the same app, marked as
+# installed by the package so it leaves updates to the MDM
+# (packaging/macos_pkg.py). The marker changes the bundle, so the staged copy
+# is signed again: with the Developer ID when there is one, else ad hoc, as
+# PyInstaller left it.
+PKG_ROOT="$(dirname "$VENV")/pkg-root"
+PKG_WORK="$(dirname "$VENV")/pkg-work"
+mkdir -p "$PKG_ROOT/Applications" "$PKG_WORK"
+ditto dist/Lumi.app "$PKG_ROOT/Applications/Lumi.app"
+python3 packaging/macos_pkg.py marker "$PKG_ROOT/Applications/Lumi.app"
+if [[ -n "${MACOS_SIGN_IDENTITY:-}" && -n "${MACOS_SIGN_P12_BASE64:-}" ]]; then
+  codesign --force --deep --options runtime --timestamp \
+    --entitlements packaging/macos/entitlements.plist \
+    --sign "$MACOS_SIGN_IDENTITY" "$PKG_ROOT/Applications/Lumi.app"
+else
+  codesign --force --deep --sign - "$PKG_ROOT/Applications/Lumi.app"
+fi
+codesign --verify --deep --strict --verbose=2 "$PKG_ROOT/Applications/Lumi.app"
+pkgbuild --analyze --root "$PKG_ROOT" "$PKG_WORK/component.plist"
+python3 packaging/macos_pkg.py component "$PKG_WORK/component.plist"
+pkgbuild --root "$PKG_ROOT" --component-plist "$PKG_WORK/component.plist" \
+  --identifier com.luminaryanalytics.lumi --version "$VERSION" --install-location / \
+  "$PKG_WORK/lumi-component.pkg"
+python3 packaging/macos_pkg.py distribution --version "$VERSION" --arch "$(uname -m)" \
+  --out "$PKG_WORK/distribution.xml"
+PKG="dist/installer/lumi-$VERSION.pkg"
+rm -f "$PKG"
+if [[ -n "${MACOS_INSTALLER_IDENTITY:-}" && -n "${MACOS_SIGN_P12_BASE64:-}" ]]; then
+  productbuild --distribution "$PKG_WORK/distribution.xml" --package-path "$PKG_WORK" \
+    --sign "$MACOS_INSTALLER_IDENTITY" "$PKG"
+  pkgutil --check-signature "$PKG"
+  if [[ -n "${APPLE_ID:-}" && -n "${APPLE_TEAM_ID:-}" && -n "${APPLE_APP_PASSWORD:-}" ]]; then
+    xcrun notarytool submit "$PKG" --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" \
+      --password "$APPLE_APP_PASSWORD" --wait
+    xcrun stapler staple "$PKG"
+    echo "Notarized and stapled $PKG"
+  else
+    echo "WARNING: APPLE_ID, APPLE_TEAM_ID or APPLE_APP_PASSWORD isn't set; the PKG isn't notarized" >&2
+  fi
+else
+  productbuild --distribution "$PKG_WORK/distribution.xml" --package-path "$PKG_WORK" "$PKG"
+  echo "WARNING: MACOS_INSTALLER_IDENTITY isn't configured; the PKG is unsigned (see docs/deploy-macos.md)" >&2
+fi
+echo "PKG: $PKG ($(du -h "$PKG" | cut -f1))"

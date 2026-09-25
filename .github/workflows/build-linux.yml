@@ -1,0 +1,178 @@
+name: Linux build
+
+# Builds the Linux bundle and its packages with packaging/build_linux.sh on
+# Ubuntu 22.04, then checks them:
+# - the bundle: --version, `lumi updates`, and the GUI server with the same
+#   HTTP, launch-code and WebSocket probes as the Windows and macOS builds;
+#   `lumi gui` without a native window falls back to the browser page;
+# - the .deb installed with apt: the package manager's copy leaves updates
+#   to it, a policy in /etc/lumi applies, and removing it removes the files;
+# - the .rpm installed with dnf in a Fedora container;
+# - the AppImage run without FUSE.
+# Uploads the packages so they can be tried. Nothing is published from here.
+
+on:
+  pull_request:
+    paths:
+      - 'lumi/**'
+      - 'packaging/**'
+      - 'pyproject.toml'
+      - '.github/workflows/build-linux.yml'
+  push:
+    branches:
+      - main
+    paths:
+      - 'lumi/**'
+      - 'packaging/**'
+      - 'pyproject.toml'
+  workflow_dispatch:
+
+jobs:
+  linux-build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 40
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          cache: 'pip'
+
+      - name: Install rpmbuild
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends rpm
+
+      - name: Install the pinned SBOM tools
+        run: python3 -m pip install --require-hashes -r packaging/tools-requirements.txt
+
+      - name: Build the bundle and packages
+        run: bash packaging/build_linux.sh --sbom dist/lumi-linux-sbom.cdx.json
+
+      - name: Smoke-test the bundle
+        env:
+          LUMI_KEYCHAIN: 'off'
+        run: |
+          set -euo pipefail
+          app=dist/lumi/lumi
+          export HOME="$(mktemp -d)"
+          "$app" --version | tee version.txt
+          grep -qE "^lumi [0-9]+\.[0-9]+\.[0-9]+" version.txt
+          "$app" updates | tee updates.json
+          python3 -c 'import json; s = json.load(open("updates.json")); assert s["installed_by"] == "" and s["mode"] == "automatic", s'
+
+          probe() {  # port, log: the page, the launch code and the WebSocket
+            local port=$1 log=$2 size code token refused accepted
+            for i in $(seq 1 60); do
+              if curl -fsS "http://127.0.0.1:$port/" -o index.html 2>/dev/null; then break; fi
+              sleep 1
+            done
+            size=$(wc -c < index.html)
+            if [ "$size" -lt 10000 ]; then echo "GET / returned only $size bytes"; cat "$log"; exit 1; fi
+            code=""
+            for i in $(seq 1 15); do
+              code=$(grep -oE '#lumi-launch=[A-Za-z0-9_-]+' "$log" | tail -1 | cut -d= -f2 || true)
+              if [ -n "$code" ]; then break; fi
+              sleep 1
+            done
+            if [ -z "$code" ]; then echo "No one-time launch link"; cat "$log"; exit 1; fi
+            token=$(curl -fsS -X POST "http://127.0.0.1:$port/api/access" -H "Origin: http://127.0.0.1:$port" \
+              -H "Content-Type: application/json" -d "{\"code\": \"$code\"}" |
+              python3 -c 'import json, sys; print(json.load(sys.stdin)["token"])')
+            ws() {
+              curl -s -o /dev/null -w '%{http_code}' --http1.1 --max-time 5 \
+                -H "Connection: Upgrade" -H "Upgrade: websocket" -H "Sec-WebSocket-Version: 13" \
+                -H "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==" -H "Origin: http://127.0.0.1:$port" \
+                "$@" "http://127.0.0.1:$port/ws" || true
+            }
+            refused=$(ws)
+            if [ "$refused" != "403" ]; then echo "WS without the token returned $refused, expected 403"; exit 1; fi
+            accepted=$(ws -H "Sec-WebSocket-Protocol: lumi.v1, lumi.access.$token")
+            if [ "$accepted" != "101" ]; then echo "WS returned $accepted, expected 101"; cat "$log"; exit 1; fi
+            echo "✓ port $port: HTTP / $size bytes, launch code redeemed, WS 403 without the token and 101 with it"
+          }
+
+          "$app" gui --browser --port 8975 > gui.log 2>&1 &
+          pid=$!
+          probe 8975 gui.log
+          kill $pid
+
+          # Without --browser: no GTK or Qt in the bundle, so it falls back to
+          # the browser page. With no display here it prints the link.
+          "$app" gui --port 8976 > fallback.log 2>&1 &
+          pid=$!
+          probe 8976 fallback.log
+          kill $pid
+          if grep -q "Opened Lumi in your browser" fallback.log; then echo "Opened a browser without a display"; exit 1; fi
+          echo "✓ lumi gui falls back to the browser page"
+
+      - name: Install the .deb and check it
+        env:
+          LUMI_KEYCHAIN: 'off'
+        run: |
+          set -euo pipefail
+          deb=$(ls dist/installer/lumi_*_amd64.deb)
+          dpkg-deb --info "$deb"
+          sudo apt-get install -y "./$deb"
+          dpkg -s lumi | grep -qx "Status: install ok installed"
+          test -f /opt/lumi/lumi-install.json && test -f /usr/share/applications/lumi.desktop
+          export HOME="$(mktemp -d)"
+          lumi --version
+          lumi run --help > /dev/null
+          lumi updates | tee deb.json
+          python3 -c 'import json; s = json.load(open("deb.json")); assert s["installed_by"] == "deb" and s["mode"] == "off", s'
+          echo "✓ The .deb's copy leaves updates to the package manager"
+
+          # A machine policy in /etc/lumi applies to the installed copy.
+          sudo mkdir -p /etc/lumi
+          printf '%s' '{"schema": "lumi.policy/v1", "organization": "CI Org", "settings": {"updates.channel": "beta"}}' |
+            sudo tee /etc/lumi/policy.json > /dev/null
+          lumi updates | tee policy.json
+          python3 -c 'import json; s = json.load(open("policy.json")); assert (s["managed_by"], s["channel"]) == ("CI Org", "beta"), s'
+          sudo rm -rf /etc/lumi
+          echo "✓ /etc/lumi/policy.json applies"
+
+          sudo apt-get remove -y lumi
+          if [ -e /opt/lumi/lumi ] || [ -e /usr/bin/lumi ]; then echo "Files left after removal"; exit 1; fi
+          echo "✓ Removing the .deb removes Lumi"
+
+      - name: Install the .rpm on Fedora and check it
+        run: |
+          set -euo pipefail
+          rpm=$(ls dist/installer/lumi-*.x86_64.rpm)
+          rpm -qip "$rpm"
+          docker run --rm -v "$PWD/dist/installer:/pkgs:ro" fedora:41 sh -c '
+            set -e
+            dnf install -y /pkgs/lumi-*.x86_64.rpm > /dev/null
+            export HOME="$(mktemp -d)" LUMI_KEYCHAIN=off
+            lumi --version
+            lumi updates' | tee rpm.txt
+          python3 -c 'import json; text = open("rpm.txt").read(); s = json.loads(text[text.index("{"):]); assert s["installed_by"] == "rpm" and s["mode"] == "off", s'
+          echo "✓ The .rpm installs on Fedora and leaves updates to the package manager"
+
+      - name: Run the AppImage
+        env:
+          LUMI_KEYCHAIN: 'off'
+        run: |
+          set -euo pipefail
+          image=$(ls dist/installer/lumi-*-x86_64.AppImage)
+          chmod +x "$image"
+          export HOME="$(mktemp -d)"
+          "$image" --appimage-extract-and-run --version
+          "$image" --appimage-extract-and-run updates | tee appimage.json
+          python3 -c 'import json; s = json.load(open("appimage.json")); assert s["installed_by"] == "", s'
+          echo "✓ The AppImage runs"
+
+      - name: Upload the packages and bundle manifest
+        uses: actions/upload-artifact@v4
+        with:
+          name: lumi-linux
+          path: |
+            dist/installer/*.deb
+            dist/installer/*.rpm
+            dist/installer/*.AppImage
+            dist/installer/*.tar.gz
+            dist/bundle-manifest-linux.json
+            dist/lumi-linux-sbom.cdx.json

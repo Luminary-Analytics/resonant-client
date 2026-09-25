@@ -87,6 +87,493 @@ person typed or the local Ollama server sent, not a turn's. The prompt_toolkit
 prompts build `HTML(...)` from the working folder's name and the tool's name
 unescaped: a folder named `R&D` or `a<b` makes `HTML` raise `ExpatError`.
 
+## September 25 Linux packages — source only, not released
+
+- **A .deb, an .rpm, an AppImage and a tarball** for x86_64
+  ([guide](deploy-linux.md)).
+  - `packaging/build_linux.sh` builds the bundle with PyInstaller, from the
+    hash-pinned release lock, behind a Linux bundle policy.
+  - `packaging/linux_packages.py` makes the packages:
+    - the .deb, written in Python;
+    - the .rpm, through rpmbuild with stripping off;
+    - the AppImage folder, packed by appimagetool 1.9.1 with the type2
+      runtime 20251108, both pinned by the SHA-256 digests GitHub published;
+    - the tarball.
+  - Built on Ubuntu 22.04, the packages need glibc 2.35 or later. RHEL 9
+    (2.34) isn't supported yet.
+- **The .deb and .rpm install in `/opt/lumi`**, with `/usr/bin/lumi`, a
+  desktop entry and an icon.
+  - `lumi-install.json` marks their copy: Lumi leaves updates to the package
+    manager, and `lumi updates` and Settings say so
+    (`update_channels.MANAGED_INSTALLERS` gains `deb` and `rpm`).
+  - The same bundle gives byte-identical packages (`SOURCE_DATE_EPOCH`).
+- **The desktop app opens in the browser on Linux.** The packages bundle no
+  GTK or Qt window.
+  - `lumi gui` used to print only a one-time link when pywebview couldn't
+    open a window, so the menu entry showed nothing. It now opens the page in
+    the default browser where there's a display. It also forgets the window
+    that never opened, so the folder picker doesn't wait 20 seconds on it
+    (`gui/server.py`).
+  - Without a display, it still prints the link and opens nothing, so no
+    console browser takes over the terminal.
+- **Kept out of the Linux bundle:** python3-xlib, which is GPL-2.0, is
+  PyAutoGUI's X11 backend (`not_shipped`, and `Xlib` in the spec's
+  excludes). So the Linux packages have no computer use.
+- **Servers.** The guide covers `lumi run`, cron for scheduled tasks, a
+  systemd unit for the chat gateway, and `/etc/lumi/policy.json`.
+
+Validation on September 25, 2026:
+
+- `tests/test_linux_packages.py` (9 tests) covers:
+  - version mapping;
+  - the .deb's structure: control fields, modes, root ownership, the
+    `/usr/bin/lumi` symlink, md5sums and identical rebuilds;
+  - the .rpm spec with stripping off, the AppImage folder and the tarball;
+  - the browser fallback, with and without a display.
+  `tests/test_release_supply_chain.py` checks the not-shipped list and the
+  Linux policy.
+- The .deb writer was run in WSL's Ubuntu 20.04 on a test bundle. dpkg-deb
+  read its fields and listed and extracted its contents, and the launcher
+  ran. `dpkg --compare-versions` put `0.19.2~dev11` before `0.19.2`, and a
+  rebuild was identical.
+- The Linux CI job (`build-linux.yml`, new) builds everything on Ubuntu 22.04.
+  Then:
+  - it smoke-tests the bundle, including the GUI server checks and the
+    fallback;
+  - it installs the .deb with apt, checks updates and `/etc/lumi` policy,
+    and removes it;
+  - it installs the .rpm with dnf in a Fedora 41 container;
+  - it runs the AppImage without FUSE.
+
+  See the pull request for its result.
+
+## September 25 an installer package and profiles for managed Macs — source only, not released
+
+- **`lumi-X.Y.Z.pkg`** for Jamf Pro, Intune and other device management
+  ([guide](deploy-macos.md)). `packaging/build_macos.sh` makes it after the
+  DMG, with Apple's pkgbuild and productbuild and `packaging/macos_pkg.py`.
+  - It installs `/Applications/Lumi.app` for every user.
+  - It has no choices and no scripts.
+  - It refuses Intel Macs and macOS before 12.
+  - Every version has the package id `com.luminaryanalytics.lumi` and upgrades
+    in place: the app isn't relocatable.
+  - With `MACOS_INSTALLER_IDENTITY`, it's signed, notarized and stapled.
+- **A PKG copy never updates itself**, like an MSI copy.
+  - `Lumi.app/Contents/Resources/lumi-install.json` marks it, inside what the
+    signature covers. The build signs the staged copy again: with the
+    Developer ID, or ad hoc.
+  - `lumi updates` reports `"installed_by": "pkg"`.
+  - Settings > Updates, About and Check for Updates say it came from the
+    installer package (`update_channels.MANAGED_INSTALLERS`).
+- **`packaging/policy/make_mobileconfig.py`** turns a policy file into a
+  configuration profile.
+  - It checks the policy with the app's parser first, and with `--keys` also
+    a signed policy's signature.
+  - UUIDs come from the contents.
+  - `--plist` writes the bare preferences, for Jamf's Custom Settings or an
+    Intune preference file.
+- **Profiles can carry trusted signing keys** (`PolicyKeys`), as the registry
+  does on Windows (`policy.machine_keys`). A signed policy and its keys then
+  deploy together.
+- **A profile that can't be used fails closed.** Lumi refuses model requests,
+  as for any invalid machine policy, when:
+  - its plist can't be read;
+  - its `Policy` is empty;
+  - its `Policy` is neither text nor a dictionary.
+
+  Before, each of these read as "no policy" (`policy.managed_preferences_policy`).
+
+Validation on September 25, 2026:
+
+- `tests/test_macos_pkg.py` (9 tests) covers:
+  - the marker and the installed-by check on an app bundle's layout;
+  - the non-relocatable component list, and the distribution file against
+    `lumi.spec`'s bundle id and minimum macOS;
+  - the command line;
+  - generated profiles read back by the app's reader;
+  - the generator refusing an invalid policy, a bad signature and a keys file
+    that isn't an object;
+  - a signed policy and its keys applying through managed preferences;
+  - the reader failing closed.
+- The policy, MSI and Lumi Cloud tests pass.
+- Not run locally: pkgbuild, productbuild and installer need a Mac. The macOS
+  CI job builds the PKG, installs it with `sudo installer`, and checks the
+  installed copy. It checks updates left to the MDM, a policy from managed
+  preferences made by the generator, and an empty `Policy` failing closed.
+  See the pull request for its result.
+
+## September 25 a run's trace and saved files — source only, not released
+
+- **Trace** (`lumi/gui/static/app.js`, `openRunTrace`;
+  [guide](desktop-workflow.md#conversation-progress-suggestions-and-titles)).
+  - A run card's work details now end with **Trace**. It lists what the turn
+    did and when: each step, tool call and result (how long it took, how long
+    its output was), model call with its tokens, checkpoint and worker. The
+    dialog also names the model and duration.
+  - **Save for OpenTelemetry** saves the turn's OTLP JSON among the saved
+    files, and shows where.
+  - The Traces tab left with the Agents pane in v0.14.0. It listed runs and
+    showed a session's whole trace as raw JSON.
+- **Saved files** (`openArtifact`).
+  - Under **Saved** are the files the turn kept: an output over 50,000
+    characters, or a screenshot.
+  - The viewer shows text a page at a time, or an image, with the file's path.
+  - It reads a file by its id, never by a path from the page
+    (`artifact_view`).
+- **Each turn is its own slice of the session's trace**
+  (`lumi/engine/flight_recorder.py`).
+  - A session's recorder spans its turns. Each top-level turn now begins a
+    slice (`begin_turn`).
+  - The turn's session.end names the slice (`trace: {run_id, turn_id}`), so a
+    card can open it after a reload.
+  - A worker's events belong to the turn that started it.
+- Trace fixes:
+  - The app records every event it streams. Events the engine had already
+    recorded as it yielded them (session.start, checkpoints, attached files)
+    were in the trace twice.
+  - An event's own fields replaced the trace's: a checkpoint's `sequence` was
+    recorded as the event's sequence number.
+  - Reading a trace rewrote the run's manifest, which a session may still be
+    writing. Reading a turn now reads only the events file.
+
+Validation on September 25, 2026:
+
+- `tests/test_run_trace.py` (6 tests) covers:
+  - each turn's slice, with engine-recorded events kept once;
+  - a worker's events in its parent's turn;
+  - the rows the dialog gets, without a call's contents or a result's text;
+  - an unknown trace, and a run id outside the traces folder;
+  - a turn's export, leaving the run's manifest untouched;
+  - the viewer's pages, image and refusals.
+- `tests/ui_recovery.test.cjs` adds 5 tests: row wording, a run's saved
+  files, errors in their dialogs, paging, and the export flow. The four UI
+  node suites: 80 passed after merging `main`. `ruff check` clean.
+- Full `pytest` after merging `main`: 4,400 passed, 5 skipped.
+- In the browser pane, with an isolated home and a scripted local model whose
+  turn printed about 70,000 characters:
+  - The card's work details showed Trace and "Saved: bash result · 50 KB",
+    after a reload too.
+  - Trace listed 12 rows, from "Started with stub:latest" to "Finished:
+    answered". They included the command, the checkpoint, "bash finished in
+    556 ms · 51,164 characters · saved “bash result”" and each model call's
+    tokens. session.start appeared once.
+  - Save for OpenTelemetry saved the JSON in the home's artifacts folder.
+    Open showed it, and Show more added the next 16,000 characters.
+  - The saved output opened as "terminal · 50 KB". A plain answer got no work
+    details.
+  - With the run's trace folder moved away, Trace said "This run's trace is
+    no longer saved.", with no error in the chat.
+  - By keyboard: Enter opened Trace with focus on Close. Saving kept focus on
+    its button, then moved it to Open. Escape closed only the file viewer, then
+    Trace, returning focus each time. At 375px nothing scrolled sideways.
+  - Fixes from this run:
+    - A shared style pushed the records' buttons apart.
+    - Re-rendering a dialog dropped keyboard focus to the page.
+    - A row said "1 tokens".
+  - After merging the accessibility review: text contrast in both dialogs,
+    both themes, an error row and the striped rows included. The lowest was
+    5.89:1. [The accessibility report](accessibility.md) lists both dialogs.
+
+Not exercised: a stopped turn's Trace, a screenshot artifact (it needs a
+browser tool), a worker's rows in the app (pytest only), a packaged build.
+
+## September 25 Evidence results after their group closed — source only, not released
+
+**Reads and searches could keep a pulsing "…" for good.** The engine
+announces every tool call of a model response before it runs any of them.
+When a command, an edit or a write followed a read, a search or a check
+command in the same response, the command's row closed the collapsed Evidence
+group, and the earlier calls' results arrived after that. They found no row, so their
+items kept "…" with no count or output. A refused one got a "✗ not run" line
+of its own at the end of the activity, and the header never counted it.
+
+- **A result settles its own item after the group closed**
+  (`lumi/gui/static/run_cards.js` `_finalizeLiveCollapsedGroup`,
+  `lumi/gui/static/app.js` `_settleClosedEvidenceItem`). A group that closes
+  while calls in it still wait to run is kept for the rest of the turn. Their
+  results update their items as they would have in the open group: status,
+  count, output, a refusal's reason (open), and the header's "N failed" and
+  "N not run". A group with a failure or a refusal opens again.
+- **A screenshot's item settles too.** An image in its result closes the group
+  so the picture can show; the screenshot's own item kept "…".
+- **Only in its own card and lane.** A closed group answers only results drawn
+  where it is. An earlier turn's card and a worker's lane never take a result,
+  even when a backend that derives call ids from the call (Ollama) gives a
+  repeated call the same id.
+- **Fixed along the way:** a late Evidence command (`pytest`, `git status`) put
+  its status, exit code and output on the last command row instead, such as
+  the command after it that hadn't run yet.
+
+Validation on September 25, 2026:
+
+- Five tests in `tests/ui_recovery.test.cjs` drive the real handlers through
+  step start and end, with the Evidence group from `run_cards.js`:
+  - a search answered after a command closed a group spanning two steps (the
+    header keeps "steps 1–2 · 2 calls" and no failure count);
+  - a failing `pytest` answered after `make deploy` closed its group: its item
+    opens with the output and the header counts "1 failed", while the waiting
+    `make deploy` row and an earlier `npm install` row keep their own results;
+  - a policy's refusal and the user's own Deny answered after the group
+    closed: reasons on their items, "2 not run", no lines of their own;
+  - a screenshot whose image closes its group, and one whose group a later
+    `browser_js` closed;
+  - a closed group from an earlier turn doesn't take a later turn's result with
+    the same call id.
+- On the previous `app.js` and `run_cards.js`, the first four failed: items
+  still "…", `pytest`'s result on the waiting `make deploy` row, and four rows
+  for a group and one command. The fifth passed there; without the fix's
+  card-and-lane check it fails. Taking out any other part of the fix (keeping
+  closed groups, the check in `renderToolResult`, a closed group's header
+  counts, the screenshot's image) fails at least one of the others.
+- Full `pytest` 4,294 passed, 5 skipped. `ruff check .` clean, `node --check`
+  passes for `app.js` and `settings_view.js`, the four Node UI test files pass
+  (70 tests), `git diff --check` clean.
+- In the browser pane, from an isolated home with a scripted Ollama stub, in
+  Full-auto: one response called `git status --short`, grep `TODO`, grep
+  `FORBIDDEN` (refused by the project's `lumi-policy.json`) and
+  `echo built> build.txt`.
+  - Before the fix, all three Evidence items kept "…" with no output, the
+    refusal read "✗ not run" with its reason on a line after the build
+    command, and the header read "Evidence · Searching codebase".
+  - After the fix, a reload replayed the same saved turn with ✓ and output on
+    `git status --short` and `TODO` ("1 matches"), ✗ "not run" with the
+    policy's reason open on `FORBIDDEN`, "Evidence · Searching codebase ·
+    1 not run", and no line of its own.
+  - A live run, recorded after each event: the build call closed the group
+    with three waiting items, each result then settled its own item while the
+    build row still waited, and the refusal opened the group again. Its calls
+    had the first turn's ids (the adapter derives them from the call); the
+    first turn's items kept one output each.
+  - Enter and Space opened and closed a late item's output and a refusal's
+    reason, with `aria-expanded` following. At 375 px there was no horizontal
+    scroll. A response with only a search still settled it in the open group.
+  - The real `~/.resonant` was unchanged, no `~/.lumi` was created, and no Lumi
+    credential was stored. `~/.codex` changed during the run, as it had before
+    it started; the fixture pointed `CODEX_HOME` at its own home and never
+    started Codex, so those writes are unattributed.
+
+Not exercised: a live model, a packaged build, Codex or Claude Code (their
+tools use the activity panel, not Evidence groups), a real screenshot in the
+app (a Node test covers the image path) and a worker's lane in the app (worker
+calls are never grouped). Unchanged: a call that never ran because the turn
+was stopped first still reads "…".
+
+## September 25 accessibility review and conformance report — source only, not released
+
+- **[`docs/accessibility.md`](accessibility.md)** reports conformance with
+  WCAG 2.1 A and AA in the VPAT 2.5 format, for the app and Lumi Cloud's
+  portal.
+  - It's a self-assessed draft, not independently verified.
+  - It says what was checked and how. Screen readers haven't been tried.
+- **Fixed during the review:**
+  - **Contrast.** The dark theme's secondary text (`--dim`) reached 3.0:1 on
+    some surfaces, and the light theme's 3.7:1. The light theme's `--muted`
+    reached 4.34:1. Every text token now reaches 4.5:1 on every surface in
+    both themes, hover included (`styles.css`).
+  - **The permission-mode menu couldn't be used from the keyboard.** Its
+    options were plain elements. It's now a menu of radio items: Enter,
+    Space or the arrows open it on the current mode, the arrows, Home and
+    End move, and Escape closes it and returns focus. `aria-expanded` and
+    `aria-checked` report its state.
+  - **A skip control**, "Skip to the message box" (or "Skip to the Settings
+    page"), is the first thing in the tab order. It's a button because the
+    launch code travels in the URL fragment.
+  - **Window titles** name the screen: "Settings · Lumi".
+  - **Focus rings** on the command-palette button, which showed only hover's
+    faint border, and on the composer's model and reasoning menus, which
+    showed only a text color change.
+  - **The daily budget field** in Usage & cost has a label.
+
+Validation on September 25, 2026, in the browser pane. A checker ran on
+rendered pages in each theme, rendered from load. It covered names, labels,
+duplicate ids, headings, language, landmarks and composited text contrast:
+
+- The app: the main view and all 25 Settings pages, clean after the fixes.
+- The portal: 21 pages as an owner, clean.
+- With real key presses: the Tab order, focus rings, the permission menu
+  (open, move, choose, Escape), the command palette and model picker
+  returning focus, and the skip control.
+- After merging the checkpoint Timeline: the Timeline dialog (opened from the
+  command palette, with no checkpoints in it) in both themes, focus moving to
+  Close and returning on Escape, the permission menu again, and the model
+  menu's focus ring in both themes.
+- Switching themes in place left CSS transitions half-done in the hidden
+  pane and gave false contrast results, so each theme was rendered from load.
+
+The full suite and the node UI tests pass.
+
+## September 25 refused tool calls say why — source only, not released
+
+**A refused call's row said only "denied".** When a hook, a policy rule, a
+tool boundary, a second approver or an approval nobody could answer stops a
+tool call, the model gets the reason as the call's result. The app added a
+line reading "✗ denied" (and "not run" on a command's row) and dropped the
+reason. A guard hook that timed out looked the same as the user's own Deny.
+
+- **The reason shows under the call's row** (`lumi/gui/static/app.js`,
+  `_settleDeniedToolRow`), always set as text, since it can come from a hook,
+  a policy, a repository or the model.
+  - A command, edit or write row reads "✗ … not run" with the reason above its
+    expandable detail. Expanded, a command that never ran shows "(not run)"
+    rather than "(no output)".
+  - Other rows read "✗ not run", with the reason on the line below.
+  - A refusal whose call has no row gets a line of its own. The separate
+    "✗ denied" line is gone.
+  - The user's own Deny still reads just "denied".
+  - Refusals are amber and errors red: a refused call didn't run, so it
+    didn't fail.
+- **A refused Evidence call no longer reads ✓.** Reads, searches and check
+  commands in the collapsed Evidence group showed ✓ when the refusal wasn't
+  also marked as an error (a hook, an approval). They show ✗ with the reason
+  open. The group's header counts "N not run", and the group stays open
+  without the error styling.
+- **A worker's refused calls** get the same, in the worker's own rows.
+  **Codex and Claude Code** rows are unchanged: those CLIs run their own tools
+  and approvals, and Lumi forwards their observations with `denied` false, so
+  there is no refusal to show.
+- **Fixed along the way:**
+  - An inline result went to the last row of its tool, so a tool called twice
+    in a step could put its status or reason on the other call's row. A result
+    now finds the row with its own call id, among its own lane's rows only, so
+    a worker that reuses one of the parent's call ids doesn't reach the
+    parent's row.
+  - An Evidence call's output, once opened, sat beside its row and squeezed
+    the pattern or path to nothing. It takes a line of its own, like a reason.
+
+Validation on September 25, 2026:
+
+- Four tests in `tests/ui_recovery.test.cjs` drive the real `handleEvent`,
+  `renderToolCall` and `renderToolResult`, and the Evidence group from
+  `run_cards.js`, in a small DOM that parses the rows' markup and keeps every
+  `innerHTML` write:
+  - command rows refused by a timed-out hook and by a policy, and one the user
+    denied;
+  - inline rows whose tool name, call id and reason are hostile markup: the
+    reason stays text, no markup write carries it, and each result reaches its
+    own row;
+  - a refusal whose call has no row;
+  - a refused Evidence call next to a passing one and a denied one;
+  - a worker's refused write and `task` in its lane, while the parent's `task`
+    with the same call id succeeds.
+- On the previous `app.js` and `run_cards.js`, all four failed: six rows for
+  three calls (the extra "✗ denied" lines), ✓ for the refused Evidence call,
+  and no reason in the worker's row.
+- After rebasing on main (with gate hooks failing closed, second approvals
+  and worker transcripts): full `pytest` 4,294 passed, 5 skipped.
+  `ruff check .` clean, `node --check` passes for `app.js` and
+  `settings_view.js`, the four Node UI test files pass (65 tests),
+  `git diff --check` clean.
+- In the browser pane, from an isolated home with a scripted Ollama stub, in
+  Ask mode, with two `pre_tool_use` hooks in `settings.json` (one exits 1 with
+  a message on stderr, one sleeps past `timeout_seconds: 2`) and the built-in
+  recursive-delete deny:
+  - A `grep` the hook refused read ✗ "not run" with the hook's message open,
+    under a `grep` that found "2 matches ✓". The group read "Evidence ·
+    Searching codebase · 1 not run".
+  - `git push` refused by the hook, `rm -rf build` refused by the policy
+    ("Blocked by policy: Recursive delete blocked — use a safer alternative")
+    and a `task` refused by the hook each read "not run" with their reason.
+  - `npm publish`, denied in the approval dialog with Escape and, in a second
+    run, with **Deny**, read just "denied". Focus went back to the message box.
+  - The hook that never answered: `make release` read "not run" with "Blocked
+    by hook: pre_tool_use hook \`slow-guard\` timed out after 2 s; gate hooks
+    block when they give no answer. Raise its timeout_seconds if it needs
+    longer."
+  - The model's closing message listed the same reasons it had been given.
+    After a reload, the replayed session showed the same rows, and so did a
+    last run on the branch rebased over worker transcripts.
+  - At 375 px there was no horizontal scroll, including for reasons with 120
+    to 160 character unbroken tokens, which wrapped inside their rows.
+  - On a refused Evidence call, Enter closed the reason and Space opened it
+    again. `aria-expanded` followed and focus stayed on the item.
+  - The real `~/.resonant` was unchanged, no `~/.lumi` was created, and no Lumi
+    credential was stored. `~/.codex` changed during the run while the user's
+    own Codex was running; the fixture never started Codex, so those writes
+    are unattributed.
+
+Not exercised: a live model, a packaged build, Codex or Claude Code, the
+"no approval prompt is available" refusal in the app (a Node test covers its
+text) and a second approver's refusal (it takes the same path, with the
+approval's message as the reason). The terminal UI shows the reason too; see
+the next section.
+
+## September 25 a mistyped organization policy no longer counts as no policy — source only, not released
+
+**A typo in an administrator's policy could switch the whole policy off.** A
+section of the wrong type made the first `lumi.policy.load()` raise instead of
+reporting an invalid policy. Examples are `"permissions": "ask only"`,
+`"models": [...]`, `"mcp": 5` and `"trusted_keys": [...]`. A policy file that
+isn't UTF-8 text did the same, such as the UTF-16 that Windows PowerShell
+5.1's `Out-File` writes, and so did JSON nested too deeply. In the app, the
+first caller was the updater, which logged the error as its own and carried
+on. Every later call then saw no policy and no error: nothing was enforced,
+model requests weren't refused, and a command the organization's shell rules
+deny ran. Some values also loosened what they control when written as text:
+`"allow_stdio": "no"` allowed command-based MCP servers,
+`"require_signed": "true"` stopped requiring signed capability packs, and
+`"registry_only": "true"` let packs outside the organization's registry run.
+
+- **`load()` never raises** (`lumi/policy.py`). A policy that exists but
+  can't be read or used is an error state on the first call and every later
+  one. Model requests are refused until IT fixes it (`blocked_reason`).
+  Failures `parse()` doesn't anticipate fail closed too.
+- **`parse()` checks each section's type.** `settings`, `permissions`,
+  `models`, `mcp`, `extensions`, `files`, `pricing`, `shell`, `approvals` and
+  `cloud` must be objects. `trusted_keys` must map key ids to text.
+  `grace_days` must be a whole number; text such as `"3"` still works. A
+  missing or `null` section counts as empty.
+- **True-or-false values must be `true` or `false`:** `mcp.allow_stdio`,
+  `extensions.require_signed` and `extensions.registry_only`.
+- **A policy file may start with a UTF-8 byte order mark.** Windows PowerShell
+  5.1 writes one for `-Encoding utf8`, and it used to make the policy
+  invalid. This covers the machine policy file, `LUMI_POLICY_FILE`, Group
+  Policy's `PolicyFile` and `policy-keys.json`.
+- **Lumi Cloud:** a downloaded policy with such a mistake isn't applied. It
+  fails with "The organization's policy wasn't applied: permissions must be
+  an object" instead of an `AttributeError` in the check-in. A stored policy
+  Lumi can't use is reported in Settings, whatever the failure. The machine
+  policy applies instead, or none for an organization joined in the app, as
+  for other unusable downloads.
+- **Not changed:** a budget rule's `block_unpriced` still counts only a
+  literal `true` (`lumi/budgets.py`, which Settings' budgets share).
+
+Validation on September 25, 2026:
+
+- Full `pytest` after merging main (the pack registry and checkpoint
+  Timeline): 4,380 passed, 5 skipped. `ruff check .` clean, the 66 Node tests
+  in AGENTS.md pass, `git diff --check` clean.
+- New tests in `test_policy.py` and `test_cloud.py`:
+  - each mistyped section and value, and null sections still parsing;
+  - a machine policy with a mistyped section, a UTF-16 file, `trusted_keys`
+    as a list, `grace_days` as a list, or JSON nested 100,000 deep. The
+    first and a later `load()` both return the error, and model requests are
+    refused;
+  - a failure `parse()` doesn't anticipate, or one reading the policy text,
+    fails closed. One in a Lumi Cloud policy leaves the machine policy in
+    force;
+  - a file with a UTF-8 byte order mark applies;
+  - a downloaded Lumi Cloud policy with a mistyped section isn't applied,
+    and a stored one is reported, not raised.
+- Against main before this change, 27 of the 29 new cases fail. The other two
+  pass there too: `parse()` already refused a list for `trusted_keys` (it was
+  `load()` that crashed first), and null sections already parsed.
+- In the browser pane, from an isolated home with the scripted Ollama stub.
+  The `LUMI_POLICY_FILE` policy had `"permissions": "ask only"` and a shell
+  rule denying one command:
+  - on main before this change, the updater logged the `AttributeError` at
+    startup and no error showed. In Full-auto, the denied command ran and
+    wrote its file;
+  - with this change, the same message failed with "The organization policy
+    at … is invalid: permissions must be an object. Ask your administrator to
+    fix it." The model received no request, and no file was written.
+    Settings > Privacy & security > Organization policy showed the same
+    error;
+  - the real `~/.resonant` was unchanged, and no `~/.lumi` or Lumi credential
+    entries appeared.
+
+Not exercised: a real Group Policy registry value or macOS configuration
+profile, a packaged build, macOS and Linux.
+
 ## September 25 the terminal says why a tool call was refused — source only, not released
 
 **A refused call printed only "✗ denied".** When a hook, a policy rule, a tool
@@ -639,8 +1126,8 @@ their own tool loops), macOS and Linux.
 - "Opening *file*…" showed "â€¦" instead of an ellipsis.
 - The runtime guide and [known issues](known-issues.md) now name the views
   that lost their entry point with the Agents pane: the checkpoint Timeline,
-  traces and the artifact list. (Worker transcripts and controls, and the
-  checkpoint Timeline, are back; see their sections above.)
+  traces and the artifact list. (Each is back; see worker transcripts and
+  controls, the checkpoint Timeline, and a run's trace and saved files above.)
 
 Validation on September 25, 2026:
 
@@ -718,9 +1205,9 @@ blocks. Set its `timeout_seconds` (default 30) above the time its work takes,
 in the hook's entry in `settings.json` (`hooks`) or in its pack's manifest
 ([capability packs](packs.md#gate-hooks-fail-closed)). On Linux an `env` hook
 can't start for a call whose arguments exceed 128 KiB, so a gate hook blocks
-that call; `"input_format": "json"` avoids it. The app still shows a refused
-call only as "denied": the reason reaches the model and the turn's events, not
-the tool row.
+that call; `"input_format": "json"` avoids it. The tool row showed a refused
+call only as "denied" until "refused tool calls say why" (above) put the
+reason under it.
 
 Validation on September 25, 2026:
 

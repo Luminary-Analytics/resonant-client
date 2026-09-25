@@ -41,6 +41,11 @@ const COLLAPSIBLE_TOOLS = new Set([
 
 const BLOCK_TOOLS = new Set(['bash', 'file_write', 'file_edit', 'browser_js']);
 
+// The result the engine gives the model when the person answers Deny
+// (Session._resolve_tool_permission). A refused call's row shows why it
+// didn't run, except for this one: "denied" already says it.
+const USER_DENIAL_OUTPUT = 'Tool execution denied by user.';
+
 function shouldGroupAsEvidence(name, args = {}) {
     if (COLLAPSIBLE_TOOLS.has(name)) return true;
     if (name !== 'bash') return false;
@@ -227,6 +232,9 @@ class LumiApp {
         this.stepRendered = false;
         this.collapsedGroup = [];
         this._liveCollapsedGroup = null;  // live-rendering DOM tracker for inline-only streaks
+        // Evidence groups that closed while calls in them still waited to
+        // run; those calls' results settle their items for the rest of the turn.
+        this._closedEvidenceGroups = [];
         this.lastModel = '';
         this.lastStats = null;
 
@@ -276,8 +284,6 @@ class LumiApp {
         this.runtimeView = 'agents';
         this.runtimeAgents = [];
         this.runtimeTimeline = [];
-        this.runtimeTraces = [];
-        this.runtimeArtifacts = [];
         this.runtimePacks = [];
         this.agentActivityOrder = [];
         this.agentActivityStack = [];
@@ -1188,19 +1194,67 @@ class LumiApp {
             });
         }
 
+        // The skip button goes to where the work is: the message box, or the Settings page.
+        document.getElementById('skip-to-main')?.addEventListener('click', () => {
+            const target = this.currentView === 'settings' ? this.settingsBody : document.getElementById('user-input');
+            if (!target) return;
+            if (target === this.settingsBody) target.setAttribute('tabindex', '-1');
+            target.focus();
+        });
+
         // Permission dropdown
         this.permissionMode = 'bypass'; // default: bypass permissions
         const permToggle = document.getElementById('permission-toggle');
         const permMenu = document.getElementById('permission-menu');
 
+        // A menu of radio items (WAI-ARIA menu button): Enter, Space or the
+        // arrow keys open it on the current mode, arrows move, Escape returns.
+        const options = () => [...permMenu.querySelectorAll('.perm-option')].filter(option => !option.hidden);
+        const setOpen = (open, {focus = null} = {}) => {
+            permMenu.classList.toggle('open', open);
+            permToggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+            if (open && focus) {
+                const items = options();
+                const target = focus === 'last' ? items[items.length - 1]
+                    : items.find(item => item.dataset.mode === this.permissionMode) || items[0];
+                target?.focus();
+            } else if (!open && focus === 'toggle') {
+                permToggle.focus();
+            }
+        };
         permToggle.addEventListener('click', (e) => {
             e.stopPropagation();
-            permMenu.classList.toggle('open');
+            // detail is 0 for a click made with Enter or Space: move into the menu then.
+            setOpen(!permMenu.classList.contains('open'), {focus: e.detail === 0 ? 'current' : null});
+        });
+        permToggle.addEventListener('keydown', (e) => {
+            if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+                e.preventDefault();
+                setOpen(true, {focus: e.key === 'ArrowUp' ? 'last' : 'current'});
+            }
+        });
+        permMenu.addEventListener('keydown', (e) => {
+            const items = options();
+            const index = items.indexOf(document.activeElement);
+            if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+                e.preventDefault();
+                const step = e.key === 'ArrowDown' ? 1 : -1;
+                items[(index + step + items.length) % items.length]?.focus();
+            } else if (e.key === 'Home' || e.key === 'End') {
+                e.preventDefault();
+                (e.key === 'Home' ? items[0] : items[items.length - 1])?.focus();
+            } else if (e.key === 'Escape') {
+                e.preventDefault();
+                e.stopPropagation();
+                setOpen(false, {focus: 'toggle'});
+            } else if (e.key === 'Tab') {
+                setOpen(false);
+            }
         });
 
         document.addEventListener('click', (e) => {
-            if (!permMenu.contains(e.target) && e.target !== permToggle) {
-                permMenu.classList.remove('open');
+            if (!permMenu.contains(e.target) && !permToggle.contains(e.target)) {
+                setOpen(false);
             }
         });
 
@@ -1209,7 +1263,7 @@ class LumiApp {
             if (!option) return;
             const mode = option.dataset.mode;
             this.setPermissionMode(mode);
-            permMenu.classList.remove('open');
+            setOpen(false, {focus: e.detail === 0 ? 'toggle' : null});
         });
     }
 
@@ -1623,6 +1677,7 @@ class LumiApp {
         this.stepRendered = false;
         this.collapsedGroup = [];
         this._liveCollapsedGroup = null;
+        this._closedEvidenceGroups = [];
         this._currentTurn = this._freshTurnAggregate();
         this._resetTaskCardState();
         this.addUserMessage(text, images);
@@ -2902,7 +2957,7 @@ class LumiApp {
         this._setLiveRunPhase('Stopping', 'Draining the active session');
     }
 
-    _finishCancelledTask() {
+    _finishCancelledTask(event = {}) {
         const task = this._activeTask;
         if (task) {
             task.card.classList.remove('task-card-running');
@@ -2910,7 +2965,8 @@ class LumiApp {
             task.stateEl.className = 'task-card-state is-stopped';
             task.stateEl.textContent = 'Stopped';
             this._completeLiveRun(true);
-            this._collapseTaskActivity({});
+            // A stopped turn's session.end still names its trace.
+            this._collapseTaskActivity({ trace: event.trace });
             this._setActiveTask(null);
         }
         this.removeThinking();
@@ -3385,6 +3441,11 @@ class LumiApp {
                     this.settingsError = event.message || 'That setting could not be saved.';
                     this._pricePending = false;
                     this.renderSettingsView({force: true});
+                    break;
+                }
+                // A trace or saved file that can't be read says so in its dialog.
+                if (event.source === 'trace' || event.source === 'artifact') {
+                    this._runRecordError(event);
                     break;
                 }
                 if (event.request_id && event.request_id === this._newSessionRequestId) this._releaseNewSessionGuard();
@@ -4015,23 +4076,24 @@ class LumiApp {
                 }
                 this.send({ command: 'session_timeline_list' });
                 break;
-            case 'flight.recorder_list':
-                this.runtimeTraces = event.runs || [];
-                this.renderRuntimeView();
-                break;
             case 'flight.recorder_detail':
-                this.showRuntimePayload('Run trace', { manifest: event.manifest, events: event.events });
-                break;
-            case 'flight.recorder_comparison':
-                this.showRuntimePayload('Trajectory comparison', event.data || {});
-                break;
-            case 'artifact.list':
-                this.runtimeArtifacts = event.artifacts || [];
-                this.renderRuntimeView();
+                if (this._runTrace && event.turn_id && event.turn_id === this._runTrace.turn_id) {
+                    this._runTrace.data = event.trace || null;
+                    this._renderRunTrace();
+                }
                 break;
             case 'artifact.created':
-                if (event.artifact) this.runtimeArtifacts.unshift(event.artifact);
-                this.renderRuntimeView();
+                // A trace saved from its Trace dialog. (A run's own
+                // artifact.created events carry `artifact_id` instead.)
+                if (this._runTrace && event.artifact && event.turn_id === this._runTrace.turn_id) {
+                    this._runTrace.exporting = false;
+                    this._runTrace.exported = event.artifact;
+                    this._renderRunTrace();
+                    this._focusIn('run-trace-body', '[data-trace-action="open"]');
+                }
+                break;
+            case 'artifact.view':
+                this._receiveArtifactView(event);
                 break;
             case 'audit_status':
                 this.auditStatus = event;
@@ -4783,6 +4845,7 @@ class LumiApp {
         document.querySelectorAll('.perm-option').forEach(opt => {
             const isActive = opt.dataset.mode === mode;
             opt.classList.toggle('active', isActive);
+            opt.setAttribute('aria-checked', isActive ? 'true' : 'false');
             // Remove existing checkmarks
             const existingCheck = opt.querySelector('.perm-check');
             if (existingCheck) existingCheck.remove();
@@ -4790,6 +4853,7 @@ class LumiApp {
             if (isActive) {
                 const check = document.createElement('span');
                 check.className = 'perm-check';
+                check.setAttribute('aria-hidden', 'true');  // aria-checked says it
                 check.textContent = '✓';
                 opt.appendChild(check);
             }
@@ -5276,10 +5340,48 @@ class LumiApp {
         t.footerEl = el;
     }
 
-    /** Update an in-flight live item with result metadata (line counts, error state). */
-    _updateLiveCollapsedItemResult(resultEvent) {
-        if (!this._liveCollapsedGroup) return;
-        const live = this._liveCollapsedGroup;
+    /**
+     * Whether a result answers one of a group's items still waiting for it:
+     * the item for its call id, or else the last item of its tool when that
+     * call came without an id.
+     */
+    _collapsedGroupAwaits(group, resultEvent) {
+        const callId = resultEvent.call_id || '';
+        if (callId && group.callIdToItem.has(callId)) return true;
+        return Boolean(group._lastItem) && group._lastItemTool === (resultEvent.name || '');
+    }
+
+    /**
+     * Settle the item of a call that ran after its Evidence group closed.
+     * The engine announces every call of a response before it runs any, so
+     * a later command or edit in the same response, or a screenshot's image,
+     * closes the group first (_finalizeLiveCollapsedGroup keeps such groups
+     * for the rest of the turn). Only a group where the result would draw
+     * can answer it, so an earlier turn's card or a worker's lane never
+     * takes a result, even when a backend that derives ids from the call
+     * repeats one. False when no closed group was waiting for this result.
+     */
+    _settleClosedEvidenceItem(resultEvent) {
+        const groups = this._closedEvidenceGroups || [];
+        if (!groups.length) return false;
+        const target = this.getRenderTarget();
+        for (let i = groups.length - 1; i >= 0; i--) {
+            const group = groups[i];
+            if (group.container.parentNode !== target || !this._collapsedGroupAwaits(group, resultEvent)) continue;
+            this._updateLiveCollapsedItemResult(resultEvent, group);
+            if (!group.callIdToItem.size && !group._lastItem) groups.splice(i, 1);
+            return true;
+        }
+        return false;
+    }
+
+    /**
+     * Update a group's item with its call's result: metadata (line counts,
+     * matches), error or refusal. The live group's by default; a closed
+     * group's for a call that ran after it closed.
+     */
+    _updateLiveCollapsedItemResult(resultEvent, live = this._liveCollapsedGroup) {
+        if (!live) return;
         const name = resultEvent.name || '';
         const callId = resultEvent.call_id || '';
 
@@ -5296,10 +5398,13 @@ class LumiApp {
 
         const meta = resultEvent.metadata || {};
         const isError = resultEvent.is_error || false;
-        const output = String(resultEvent.output || '');
+        // A refused call never ran, so its output is the reason why.
+        const denied = Boolean(resultEvent.denied);
+        const output = denied ? this._toolDenialReason(resultEvent) : String(resultEvent.output || '');
 
         let metaText = '';
-        if (name === 'file_read' && meta.lines) metaText = `${meta.lines} lines`;
+        if (denied) metaText = output ? 'not run' : 'denied';
+        else if (name === 'file_read' && meta.lines) metaText = `${meta.lines} lines`;
         else if (name === 'glob' && meta.count != null) metaText = `${meta.count} files`;
         else if (name === 'grep' && meta.count != null) metaText = `${meta.count} matches`;
         else if (name === 'code_intel' && meta.code_intel) {
@@ -5316,8 +5421,8 @@ class LumiApp {
 
         const statusEl = line.querySelector('.tool-status');
         if (statusEl) {
-            statusEl.textContent = isError ? '✗' : '✓';
-            statusEl.style.color = isError ? 'var(--err)' : 'var(--ok)';
+            statusEl.textContent = isError || denied ? '✗' : '✓';
+            statusEl.style.color = denied ? 'var(--warn)' : (isError ? 'var(--err)' : 'var(--ok)');
         }
         line.classList.remove('pending');
         if (output) {
@@ -5329,41 +5434,31 @@ class LumiApp {
             line.appendChild(preview);
             line.classList.add('has-output');
         }
-        if (isError) {
-            live.errorCount += 1;
-            line.classList.add('is-error', 'show-output');
-            const errorIcon = live.header.querySelector('.collapsed-icon');
-            if (errorIcon) errorIcon.textContent = '\u25be';
-            live.container.classList.add('has-errors', 'expanded');
+        if (isError || denied) {
+            // Open what needs attention: an error's output or a refusal's reason.
+            if (denied) live.deniedCount = (live.deniedCount || 0) + 1;
+            else live.errorCount += 1;
+            line.classList.add(denied ? 'is-denied' : 'is-error');
+            if (output) line.classList.add('show-output');
             const icon = live.header.querySelector('.collapsed-icon');
-            if (icon) icon.textContent = 'â–¾';
+            if (icon) icon.textContent = '▾';
+            live.container.classList.add('expanded');
+            if (!denied) live.container.classList.add('has-errors');
         }
-        this._updateLiveCollapsedHeader();
+        if (output) line.setAttribute('aria-expanded', String(line.classList.contains('show-output')));
+        this._updateLiveCollapsedHeader(live);
     }
 
-    /** Refresh the live group's summary label, step range, and call count. */
-    _updateLiveCollapsedHeader() {
-        if (!this._liveCollapsedGroup) return;
-        const live = this._liveCollapsedGroup;
+    /** Refresh a group's summary label, step range, and call count: the live group's by default. */
+    _updateLiveCollapsedHeader(live = this._liveCollapsedGroup) {
+        if (!live) return;
         const summaryEl = live.header.querySelector('.collapsed-summary');
         const metaEl = live.header.querySelector('.collapsed-meta');
         if (summaryEl) {
             const action = inferActionLabel(live.toolCounts);
-            summaryEl.textContent = live.errorCount
-                ? `Evidence · ${action} · ${live.errorCount} failed`
-                : `Evidence · ${action}`;
-            summaryEl.textContent = `◆ ${action}`;
-        }
-        if (summaryEl) {
-            const action = inferActionLabel(live.toolCounts);
-            summaryEl.textContent = live.errorCount
-                ? `Evidence · ${action} · ${live.errorCount} failed`
-                : `Evidence · ${action}`;
-        }
-        if (summaryEl) {
-            const action = inferActionLabel(live.toolCounts);
             const parts = ['Evidence', action];
             if (live.errorCount) parts.push(`${live.errorCount} failed`);
+            if (live.deniedCount) parts.push(`${live.deniedCount} not run`);
             summaryEl.textContent = parts.join(' \u00b7 ');
         }
         if (metaEl) {
@@ -5654,6 +5749,10 @@ class LumiApp {
 
     handleToolResult(event) {
         if (event.metadata?.preview && !this.isReplaying) this.send({command: 'preview_list'});
+        // A long output or a screenshot the run saved (engine/artifacts.py),
+        // a worker's included: listed at the end of the card's work details.
+        const saved = event.metadata?.artifact;
+        if (saved?.id && this._activeTask) (this._activeTask.artifacts ||= []).push(saved);
         const check = event.metadata?.check;
         if (check && this._liveRun) {
             const run = this._liveRun;
@@ -5722,16 +5821,15 @@ class LumiApp {
         }
 
         const liveOwnsResult = Boolean(
-            this._liveCollapsedGroup && (
-                (callId && this._liveCollapsedGroup.callIdToItem.has(callId))
-                || (this._liveCollapsedGroup._lastItemTool === name)
-            )
+            this._liveCollapsedGroup && this._collapsedGroupAwaits(this._liveCollapsedGroup, event)
         );
         if (this.stepIsInlineOnly && liveOwnsResult) {
             // Update the live item with status + metadata (e.g. "5 matches")
             this._updateLiveCollapsedItemResult(event);
             this.stepToolResults.push(event);
         } else {
+            // A call whose group already closed settles its item there
+            // (renderToolResult → _settleClosedEvidenceItem).
             if (!this.stepRendered) this.ensureStepRendered();
             this.renderToolResult(event);
         }
@@ -5746,7 +5844,7 @@ class LumiApp {
         if (BLOCK_TOOLS.has(name)) {
             this.renderBlockToolCall(name, args, info, category, event);
         } else {
-            this.renderInlineToolCall(name, args, info, category);
+            this.renderInlineToolCall(name, args, info, category, event);
         }
         this.scrollToBottom();
     }
@@ -5760,7 +5858,7 @@ class LumiApp {
         return (task && task.activityEl) || this.chatMessages;
     }
 
-    renderInlineToolCall(name, args, info, category) {
+    renderInlineToolCall(name, args, info, category, event = {}) {
         let desc = '';
         let meta = '';
 
@@ -5829,6 +5927,8 @@ class LumiApp {
         const el = document.createElement('div');
         el.className = `tool-inline ${category}`;
         el.setAttribute('data-tool', name);
+        // Its result finds this row by call id when a step calls the tool twice.
+        if (event.call_id) el.setAttribute('data-call-id', event.call_id);
         el.innerHTML = `
             <span class="tool-icon" style="color:var(--${info.color})">${info.icon}</span>
             <span class="tool-desc">${desc}</span>
@@ -5929,6 +6029,7 @@ class LumiApp {
         const detail = el.querySelector('[data-detail]');
         if (!detail || detail.dataset.rendered === 'true') return;
         const kind = el.dataset.detailKind || '';
+        const noOutput = el.dataset.denied === 'true' ? '(not run)' : '(no output)';
 
         if (kind === 'bash') {
             const cmd = el.dataset.fullCommand || '';
@@ -5939,7 +6040,7 @@ class LumiApp {
                 <pre class="tool-row-detail-output ${isError ? 'err' : ''}"></pre>
             `;
             detail.querySelector('code').textContent = cmd;
-            detail.querySelector('pre').textContent = output || '(no output)';
+            detail.querySelector('pre').textContent = output || noOutput;
         } else if (kind === 'file_write') {
             const content = el.dataset.fullContent || '';
             detail.innerHTML = `<pre class="tool-row-detail-content"></pre>`;
@@ -5964,7 +6065,7 @@ class LumiApp {
                 <pre class="tool-row-detail-output"></pre>
             `;
             detail.querySelector('.tool-row-detail-content').textContent = code;
-            detail.querySelector('.tool-row-detail-output').textContent = output || '(no output)';
+            detail.querySelector('.tool-row-detail-output').textContent = output || noOutput;
         }
 
         detail.dataset.rendered = 'true';
@@ -5999,21 +6100,29 @@ class LumiApp {
         const denied = event.denied || false;
         const image = event.image || null;
 
-        if (denied) {
-            if (BLOCK_TOOLS.has(name)) this._settleDeniedBlockRow(name, event.call_id);
-            this.appendToolStatus(name, '✗ denied', 'warn');
+        // A call that ran after its Evidence group closed: its result, or
+        // its refusal's reason, goes on its own item there.
+        if (this._settleClosedEvidenceItem(event)) {
+            if (image && image.data) this.renderScreenshotImage(image.data, image.media_type || 'image/png', name);
+            this.scrollToBottom();
             return;
         }
 
-        // Splice call_id into meta so the block-row lookup can match the
-        // exact call (multiple parallel calls of the same tool exist with
-        // tool batching). Inline result path doesn't need this.
+        if (denied) {
+            this._settleDeniedToolRow(event);
+            this.scrollToBottom();
+            return;
+        }
+
+        // Splice call_id into meta so the row lookup can match the exact
+        // call (multiple parallel calls of the same tool exist with tool
+        // batching).
         const metaWithId = event.call_id ? { ...meta, _call_id: event.call_id } : meta;
 
         if (BLOCK_TOOLS.has(name)) {
             this.renderBlockToolResult(name, output, isError, elapsed, metaWithId);
         } else {
-            this.renderInlineToolResult(name, output, isError, elapsed, meta);
+            this.renderInlineToolResult(name, output, isError, elapsed, metaWithId);
         }
 
         // Render screenshot image if present
@@ -6024,11 +6133,33 @@ class LumiApp {
         this.scrollToBottom();
     }
 
+    /**
+     * The inline row a result belongs to: the one for its call id, or else
+     * the last row of its tool that has no call id. A row for another call
+     * is never the answer, even when a step calls the same tool twice.
+     */
+    _inlineToolRow(name, callId) {
+        // Only this lane's own rows. A worker's rows sit inside the parent's
+        // activity, and a worker can reuse one of the parent's call ids.
+        const rows = Array.from(this.getRenderTarget().children || []).filter((row) =>
+            row.classList.contains('tool-inline') && row.getAttribute('data-tool') === name);
+        // A backend that derives the id from the call gives a repeated call
+        // the same id: the latest row with it is the one still waiting.
+        const own = callId ? rows.filter((row) => row.getAttribute('data-call-id') === callId) : [];
+        const candidates = own.length ? own : rows.filter((row) => !row.hasAttribute('data-call-id'));
+        return candidates[candidates.length - 1] || null;
+    }
+
+    _setInlineToolStatus(row, text, statusClass) {
+        const status = document.createElement('span');
+        status.className = `tool-status ${statusClass}`;
+        status.textContent = text;
+        row.querySelector('.tool-status')?.remove();
+        row.appendChild(status);
+    }
+
     renderInlineToolResult(name, output, isError, elapsed, meta) {
-        // Find the last matching inline tool and add status
-        const target = this.getRenderTarget();
-        const tools = target.querySelectorAll(`.tool-inline[data-tool="${CSS.escape(name)}"]`);
-        const last = tools[tools.length - 1];
+        const last = this._inlineToolRow(name, meta._call_id);
         if (!last) return;
 
         let statusText = '';
@@ -6063,14 +6194,7 @@ class LumiApp {
                 statusText = isError ? '✗' : '✓';
         }
 
-        const status = document.createElement('span');
-        status.className = `tool-status ${statusClass}`;
-        status.textContent = statusText;
-
-        // Remove existing status if any
-        const existing = last.querySelector('.tool-status');
-        if (existing) existing.remove();
-        last.appendChild(status);
+        this._setInlineToolStatus(last, statusText, statusClass);
     }
 
     /**
@@ -6168,8 +6292,47 @@ class LumiApp {
         }
     }
 
+    /**
+     * Why a refused call didn't run, as the model was told: a hook's message,
+     * a policy rule, a tool boundary, an approval nobody could answer. Empty
+     * for the person's own Deny, which needs no explanation.
+     */
+    _toolDenialReason(event) {
+        const reason = String(event.output ?? '').trim();
+        return reason === USER_DENIAL_OUTPUT ? '' : reason;
+    }
+
+    /**
+     * A refused call never ran. Its row stops reading "running…", says
+     * "denied" or "not run", and shows the reason under it. The reason can
+     * come from a hook, a policy, a repository or the model, so it is only
+     * ever set as text.
+     */
+    _settleDeniedToolRow(event) {
+        const name = event.name || '';
+        const reason = this._toolDenialReason(event);
+        const label = reason ? 'not run' : 'denied';
+        let row = BLOCK_TOOLS.has(name)
+            ? this._settleDeniedBlockRow(name, event.call_id, label)
+            : this._settleDeniedInlineRow(name, event.call_id, label);
+        if (!row) {
+            // The call has no row here; the refusal still gets a line.
+            row = document.createElement('div');
+            row.className = 'tool-inline is-denied';
+            this._setInlineToolStatus(row, `✗ ${label}`, 'denied');
+            this.getRenderTarget().appendChild(row);
+        }
+        row.querySelector('.tool-denial-reason')?.remove();
+        if (!reason) return;
+        const why = document.createElement('div');
+        why.className = 'tool-denial-reason';
+        why.textContent = reason;
+        // A block row's reason sits above its expandable detail.
+        row.insertBefore(why, row.querySelector('[data-detail]'));
+    }
+
     /** A denied call never ran; its row must not keep reading "running…". */
-    _settleDeniedBlockRow(name, callId) {
+    _settleDeniedBlockRow(name, callId, label) {
         let row = null;
         if (callId && this._blockToolRows && this._blockToolRows.has(callId)) {
             row = this._blockToolRows.get(callId);
@@ -6178,23 +6341,26 @@ class LumiApp {
             const all = this.getRenderTarget().querySelectorAll(`.tool-row[data-tool="${CSS.escape(name)}"]`);
             row = all[all.length - 1] || null;
         }
-        if (!row) return;
+        if (!row) return null;
         const statusEl = row.querySelector('[data-status]');
         if (statusEl) {
             statusEl.classList.remove('pending');
-            statusEl.classList.add('err');
+            statusEl.classList.add('denied');
             statusEl.textContent = '✗';
         }
         const metaEl = row.querySelector('[data-meta]');
-        if (metaEl) metaEl.textContent = 'not run';
-        row.dataset.isError = 'true';
+        if (metaEl) metaEl.textContent = label;
+        row.classList.add('denied');
+        row.dataset.denied = 'true';
+        return row;
     }
 
-    appendToolStatus(name, text, color) {
-        const el = document.createElement('div');
-        el.className = 'tool-inline';
-        el.innerHTML = `<span class="tool-status" style="color:var(--${color})">${text}</span>`;
-        this.getRenderTarget().appendChild(el);
+    _settleDeniedInlineRow(name, callId, label) {
+        const row = this._inlineToolRow(name, callId);
+        if (!row) return null;
+        row.classList.add('is-denied');
+        this._setInlineToolStatus(row, `✗ ${label}`, 'denied');
+        return row;
     }
 
     // ── Screenshot Image ────────────────────────────────────────
@@ -6506,8 +6672,6 @@ class LumiApp {
         this.contextState = null;
         this.runtimeAgents = [];
         this.runtimeTimeline = [];
-        this.runtimeTraces = [];
-        this.runtimeArtifacts = [];
         this.runtimePacks = [];
         this.renderAgentActivityTree();
         this.renderContextCockpit();
@@ -6550,6 +6714,10 @@ class LumiApp {
         if (viewName === 'settings' && this.currentView !== 'settings') this._settingsLoadedPage = null;
         this.currentView = viewName;
         document.body.classList.toggle('settings-open', viewName === 'settings');
+        // The window title names the screen, for window switchers and screen readers (WCAG 2.4.2).
+        document.title = viewName === 'settings' ? 'Settings · Lumi' : 'Lumi';
+        const skip = document.getElementById('skip-to-main');
+        if (skip) skip.textContent = viewName === 'settings' ? 'Skip to the Settings page' : 'Skip to the message box';
 
         // Hide all views
         this.welcomeScreen.style.display = 'none';
@@ -6630,7 +6798,7 @@ class LumiApp {
             <div class="settings-row">
                 <span class="settings-row-label">Daily budget alert ($)</span>
                 <div class="settings-row-value">
-                    <input class="settings-input" type="number" min="0" step="0.01" value="${budget || ''}" data-section="cost_tracking" data-key="budget_alert_usd" placeholder="None" />
+                    <input class="settings-input" type="number" min="0" step="0.01" value="${budget || ''}" data-section="cost_tracking" data-key="budget_alert_usd" placeholder="None" aria-label="Daily budget alert, in dollars" />
                     <div class="settings-row-hint">Shows an alert after tracked daily spend crosses this amount.</div>
                 </div>
             </div>
@@ -7381,6 +7549,7 @@ class LumiApp {
         while (activity.firstChild) {
             details.appendChild(activity.firstChild);
         }
+        this._appendRunRecords(details, task, event.trace);
         activity.appendChild(details);
     }
 
@@ -7405,9 +7574,11 @@ class LumiApp {
 
         // Flush collapsed group
         this.flushCollapsedGroup();
+        // The turn is over; nothing will answer its calls now.
+        this._closedEvidenceGroups = [];
 
         if (this._cancelInFlight || this._cancelInterrupted) {
-            this._finishCancelledTask();
+            this._finishCancelledTask(event);
             this._cancelInterrupted = false;
             this.scrollToBottom();
             return;
@@ -7622,8 +7793,6 @@ class LumiApp {
         const commands = {
             agents: 'agent_runtime_list',
             timeline: 'session_timeline_list',
-            traces: 'flight_recorder_list',
-            artifacts: 'artifact_list',
             packs: 'capability_pack_list',
         };
         this.send({ command: commands[this.runtimeView] || commands.agents });
@@ -7669,8 +7838,6 @@ class LumiApp {
         }
         const collections = {
             timeline: this.runtimeTimeline,
-            traces: this.runtimeTraces,
-            artifacts: this.runtimeArtifacts,
             packs: this.runtimePacks,
         };
         const items = collections[this.runtimeView] || [];
@@ -7679,41 +7846,12 @@ class LumiApp {
             tree.innerHTML = `<div class="agent-activity-empty">No ${this.escapeHtml(this.runtimeView)} recorded yet.</div>`;
             return;
         }
-        if (this.runtimeView === 'traces') {
-            tree.innerHTML = items.map((item) => `
-                <article class="runtime-card" data-run-id="${this.escapeHtml(item.run_id)}">
-                    <div><strong>${this.escapeHtml(item.model || item.run_id)}</strong><small>${this.escapeHtml(item.model_role || 'primary')} · ${this.escapeHtml(item.status || '')}</small></div>
-                    <span>${new Date(Number(item.updated_at || 0) * 1000).toLocaleString()}</span>
-                    <div class="runtime-actions"><button data-action="inspect">Inspect</button><button data-action="export">Export OTLP</button></div>
-                </article>`).join('');
-            tree.querySelectorAll('.runtime-card').forEach((card) => {
-                card.querySelector('[data-action="inspect"]')?.addEventListener('click', () => this.send({ command: 'flight_recorder_detail', run_id: card.dataset.runId }));
-                card.querySelector('[data-action="export"]')?.addEventListener('click', () => this.send({ command: 'flight_recorder_export', run_id: card.dataset.runId }));
-            });
-            return;
-        }
-        if (this.runtimeView === 'artifacts') {
-            tree.innerHTML = items.map((item) => `
-                <article class="runtime-card">
-                    <div><strong>${this.escapeHtml(item.label || item.id)}</strong><small>${this.escapeHtml(item.kind || '')} · ${Number(item.size || 0).toLocaleString()} bytes</small></div>
-                    <span title="${this.escapeHtml(item.path || '')}">${this.escapeHtml((item.path || '').split(/[\\/]/).pop() || '')}</span>
-                </article>`).join('');
-            return;
-        }
         tree.innerHTML = items.map((item) => `
             <article class="runtime-card">
                 <div><strong>${this.escapeHtml(item.name || item.id)}</strong><small>v${this.escapeHtml(item.version || '0.0.0')}</small></div>
                 <span>${this.escapeHtml(item.description || '')}</span>
                 <div class="runtime-badges"><b class="${item.enabled ? 'is-on' : ''}">${item.enabled ? 'enabled' : 'disabled'}</b><b class="${item.trusted ? 'is-on' : ''}">${item.trusted ? 'trusted' : 'untrusted'}</b><b>${(item.agents || []).length} agents</b><b>${(item.skills || []).length} skills</b></div>
             </article>`).join('');
-    }
-
-    showRuntimePayload(title, payload) {
-        const detail = document.getElementById('agent-handoff-detail');
-        if (!detail) return;
-        detail.innerHTML = `<div class="agent-handoff-header"><strong>${this.escapeHtml(title)}</strong><button class="agent-handoff-close" type="button">×</button></div><pre>${this.escapeHtml(JSON.stringify(payload, null, 2))}</pre>`;
-        detail.style.display = 'block';
-        detail.querySelector('.agent-handoff-close')?.addEventListener('click', () => { detail.style.display = 'none'; });
     }
 
     renderAgentActivityTree() {
@@ -8534,6 +8672,320 @@ class LumiApp {
         body.innerHTML = `${intro}<ol class="timeline-list">${rows.join('')}</ol>`;
     }
 
+    // ── A run's trace and saved files ───────────────────────────
+    // A finished run card's work details end with its trace (the flight
+    // recorder's slice for that turn, which its session.end names) and the
+    // files the run saved: a long output, a screenshot (engine/artifacts.py).
+
+    _appendRunRecords(details, task, trace) {
+        const artifacts = Array.isArray(task?.artifacts) ? task.artifacts : [];
+        const hasTrace = Boolean(trace?.run_id && trace?.turn_id);
+        if (!details || (!hasTrace && !artifacts.length)) return;
+        const row = document.createElement('div');
+        row.className = 'task-run-records';
+        const button = (text, title, onClick) => {
+            const el = document.createElement('button');
+            el.type = 'button';
+            el.className = 'task-review-btn';
+            el.textContent = text;
+            el.title = title;
+            el.addEventListener('click', (event) => {
+                event.stopPropagation();
+                onClick(el);
+            });
+            return el;
+        };
+        if (hasTrace) {
+            row.appendChild(button('Trace', "This run's steps, timings and model", (el) => this.openRunTrace(trace, el)));
+        }
+        if (artifacts.length) {
+            const label = document.createElement('span');
+            label.className = 'task-run-records-label';
+            label.textContent = 'Saved';
+            row.appendChild(label);
+            for (const artifact of artifacts) {
+                const name = this._artifactName(artifact);
+                row.appendChild(button(name, `Open ${name}`, (el) => this.openArtifact(artifact, el)));
+            }
+        }
+        details.appendChild(row);
+    }
+
+    _artifactName(artifact = {}) {
+        const size = this._formatBytes(artifact.size);
+        return `${artifact.label || artifact.id || 'Saved file'}${size ? ` · ${size}` : ''}`;
+    }
+
+    _formatBytes(size) {
+        const bytes = Number(size || 0);
+        if (!(bytes > 0)) return '';
+        if (bytes < 1024) return `${bytes} B`;
+        if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
+        return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+    }
+
+    openRunTrace(trace, returnFocus = null) {
+        const dialog = document.getElementById('run-trace-dialog');
+        if (!dialog || !trace?.run_id || !trace?.turn_id) return;
+        this._runTrace = { run_id: trace.run_id, turn_id: trace.turn_id, data: null, error: '' };
+        this._runTraceReturnFocus = returnFocus || document.activeElement;
+        dialog.style.display = 'flex';
+        this._wireDialog(dialog, 'run-trace-close', () => this.closeRunTrace());
+        if (!dialog.dataset.traceWired) {
+            document.getElementById('run-trace-body')?.addEventListener('click', (event) => {
+                const action = event.target.closest('[data-trace-action]')?.dataset.traceAction;
+                if (action) this._onRunTraceAction(action, event.target.closest('button'));
+            });
+            dialog.dataset.traceWired = '1';
+        }
+        this._renderRunTrace();
+        document.getElementById('run-trace-close')?.focus();
+        this.send({ command: 'flight_recorder_detail', run_id: trace.run_id, turn_id: trace.turn_id });
+    }
+
+    closeRunTrace() {
+        const dialog = document.getElementById('run-trace-dialog');
+        if (!dialog || !this._runTrace) return;
+        dialog.style.display = 'none';
+        this._runTrace = null;
+        const back = this._runTraceReturnFocus;
+        (back && back.isConnected ? back : this.userInput)?.focus?.();
+    }
+
+    _onRunTraceAction(action, button) {
+        const view = this._runTrace;
+        if (!view) return;
+        if (action === 'export' && !view.exporting) {
+            view.exporting = true;
+            view.exportError = '';
+            this._renderRunTrace();
+            this._focusIn('run-trace-body', '[data-trace-action="export"]');
+            this.send({ command: 'flight_recorder_export', run_id: view.run_id, turn_id: view.turn_id });
+        } else if (action === 'copy' && view.exported?.path) {
+            this._copyPath(view.exported.path);
+        } else if (action === 'open' && view.exported) {
+            this.openArtifact(view.exported, button);
+        }
+    }
+
+    /**
+     * Re-rendering a dialog replaces the button that was just used: keep
+     * keyboard focus on its successor instead of letting it fall to the page.
+     */
+    _focusIn(bodyId, selector) {
+        document.getElementById(bodyId)?.querySelector(selector)?.focus();
+    }
+
+    _copyPath(path) {
+        Promise.resolve()
+            .then(() => navigator.clipboard.writeText(path))
+            .then(() => this.showStatusMessage('Path copied.'))
+            .catch(() => this.showStatusMessage("Couldn't copy the path; select it instead."));
+    }
+
+    _traceTime(seconds) {
+        return `+${this._traceDuration(seconds, true)}`;
+    }
+
+    /** A trace's durations are short and precise (_formatRunDuration rounds to seconds). */
+    _traceDuration(seconds, offset = false) {
+        const s = Math.max(0, Number(seconds || 0));
+        if (s < 1 && !offset) return `${Math.round(s * 1000)} ms`;
+        if (s < 60) return `${s.toFixed(2)}s`;
+        return `${Math.floor(s / 60)}m ${Math.round(s % 60)}s`;
+    }
+
+    /** One trace row (ws_commands._trace_rows) in words. */
+    _traceRowLabel(row = {}) {
+        const name = row.name || 'a tool';
+        const target = row.target ? `: ${row.target}` : '';
+        const took = Number(row.elapsed) > 0 ? ` in ${this._traceDuration(row.elapsed)}` : '';
+        const outcomes = {
+            answered: 'answered', changed_verified: 'changed, named checks passed',
+            changed_unverified: 'changed, not verified', no_changes_needed: 'no changes needed',
+            needs_input: 'needs input', incomplete: 'incomplete', failed: 'failed',
+        };
+        switch (row.event) {
+            case 'session.start': return row.model ? `Started with ${row.model}` : 'Started';
+            case 'session.end': return row.outcome ? `Finished: ${outcomes[row.outcome] || row.outcome}` : 'Finished';
+            case 'step.start': return `Step ${row.step || 1}${row.detail ? ` (${row.detail})` : ''}`;
+            case 'step.end': return `Step ${row.step || 1} done${took}`;
+            case 'tool.call': return `Called ${name}${target}`;
+            case 'tool_permission': return `Asked to approve ${name}${target}`;
+            case 'tool.result': {
+                const how = row.denied ? 'was refused' : row.is_error ? `failed${took}` : `finished${took}`;
+                const size = Number(row.chars) > 0 ? ` · ${Number(row.chars).toLocaleString()} characters` : '';
+                return `${name} ${how}${size}${row.artifact ? ` · saved “${row.artifact}”` : ''}`;
+            }
+            case 'status': {
+                const [inTokens, outTokens] = Array.isArray(row.tokens) ? row.tokens.map(Number) : [0, 0];
+                return inTokens || outTokens
+                    ? `Model call: ${inTokens.toLocaleString()} token${inTokens === 1 ? '' : 's'} in, ${outTokens.toLocaleString()} out`
+                    : 'Model call';
+            }
+            case 'text.done': return Number(row.chars) > 0 ? `Replied (${Number(row.chars).toLocaleString()} characters)` : 'Replied';
+            case 'checkpoint.created': return 'Checkpoint saved';
+            case 'artifact.created': return row.artifact ? `Saved “${row.artifact}”` : 'Saved a file';
+            case 'subagent.start': return `Started a ${row.agent_type || 'worker'} worker`;
+            case 'subagent.end': return `Worker finished${Number(row.steps) > 0 ? ` after ${row.steps} steps` : ''}`;
+            case 'error': return `Error: ${row.message || 'unknown'}`;
+            default: return row.event || 'Event';
+        }
+    }
+
+    _renderRunTrace() {
+        const body = document.getElementById('run-trace-body');
+        const view = this._runTrace;
+        if (!body || !view) return;
+        const esc = (value) => this.escapeHtml(value);
+        const data = view.data;
+        if (view.error || !data) {
+            body.innerHTML = `<p class="share-note">${esc(view.error || 'Loading…')}</p>`;
+            return;
+        }
+        const when = Number(data.started_at) ? new Date(Number(data.started_at) * 1000).toLocaleString() : '';
+        const meta = [
+            data.model,
+            data.backend,
+            when,
+            Number(data.duration) > 0 ? this._traceDuration(data.duration) : '',
+            `${Number(data.events || 0).toLocaleString()} events recorded`,
+        ].filter(Boolean).join(' · ');
+        const rows = (data.rows || []).map((row) => {
+            const failed = row.event === 'error' || row.is_error || row.denied;
+            return `<li class="run-trace-row${failed ? ' is-error' : ''}">`
+                + `<span class="run-trace-at">${esc(this._traceTime(row.at))}</span>`
+                + `<span class="run-trace-text">${row.worker ? `<b>${esc(row.worker)}</b> ` : ''}${esc(this._traceRowLabel(row))}</span></li>`;
+        }).join('');
+        const exported = view.exported;
+        const actions = exported
+            ? `<p class="run-trace-saved">Saved as <code>${esc(exported.path || exported.id)}</code></p>`
+                + `<button type="button" class="task-review-btn" data-trace-action="open">Open</button>`
+                + `<button type="button" class="task-review-btn" data-trace-action="copy">Copy path</button>`
+            // aria-disabled, not disabled: a disabled button drops keyboard focus.
+            : `<button type="button" class="task-review-btn" data-trace-action="export" aria-disabled="${Boolean(view.exporting)}">`
+                + `${view.exporting ? 'Saving…' : 'Save for OpenTelemetry'}</button>`
+                + (view.exportError ? `<p class="share-note">${esc(view.exportError)}</p>` : '');
+        body.innerHTML = `<p class="share-note">${esc(meta)}</p>`
+            + `<ol class="run-trace-list">${rows}</ol>`
+            + (data.truncated ? `<p class="share-note">Showing the first ${(data.rows || []).length.toLocaleString()} events.</p>` : '')
+            + `<div class="run-trace-actions">${actions}</div>`;
+    }
+
+    openArtifact(artifact, returnFocus = null) {
+        const dialog = document.getElementById('artifact-dialog');
+        if (!dialog || !artifact?.id) return;
+        this._artifactView = { id: artifact.id, artifact, text: null, next: null, image: '', note: '', error: '', loading: true };
+        this._artifactReturnFocus = returnFocus || document.activeElement;
+        dialog.style.display = 'flex';
+        this._wireDialog(dialog, 'artifact-dialog-close', () => this.closeArtifact());
+        if (!dialog.dataset.artifactWired) {
+            document.getElementById('artifact-dialog-body')?.addEventListener('click', (event) => {
+                const action = event.target.closest('[data-artifact-action]')?.dataset.artifactAction;
+                if (action) this._onArtifactAction(action);
+            });
+            dialog.dataset.artifactWired = '1';
+        }
+        this._renderArtifact();
+        document.getElementById('artifact-dialog-close')?.focus();
+        this.send({ command: 'artifact_view', artifact_id: artifact.id });
+    }
+
+    closeArtifact() {
+        const dialog = document.getElementById('artifact-dialog');
+        if (!dialog || !this._artifactView) return;
+        dialog.style.display = 'none';
+        this._artifactView = null;
+        const back = this._artifactReturnFocus;
+        (back && back.isConnected ? back : this.userInput)?.focus?.();
+    }
+
+    _onArtifactAction(action) {
+        const view = this._artifactView;
+        if (!view) return;
+        if (action === 'more' && view.next != null && !view.loading) {
+            view.loading = true;
+            this._renderArtifact();
+            this._focusIn('artifact-dialog-body', '[data-artifact-action="more"]');
+            this.send({ command: 'artifact_view', artifact_id: view.id, offset: view.next });
+        } else if (action === 'copy' && view.artifact?.path) {
+            this._copyPath(view.artifact.path);
+        }
+    }
+
+    _receiveArtifactView(event) {
+        const view = this._artifactView;
+        if (!view || event.artifact?.id !== view.id) return;
+        view.artifact = { ...view.artifact, ...event.artifact };
+        view.loading = false;
+        const morePage = Number(event.offset) > 0 && Boolean(view.text);
+        if (typeof event.text === 'string') {
+            // "Show more" asks for the next page; the first page replaces.
+            view.text = morePage ? view.text + event.text : event.text;
+            view.next = event.next_offset ?? null;
+        }
+        view.image = event.image || '';
+        view.note = event.note || '';
+        this._renderArtifact();
+        // After "Show more", stay on it, or on the text once it's all shown.
+        if (morePage) this._focusIn('artifact-dialog-body', view.next != null ? '[data-artifact-action="more"]' : '.artifact-text');
+    }
+
+    _runRecordError(event) {
+        const message = event.message || "This couldn't be read.";
+        if (event.source === 'trace' && this._runTrace && (!event.turn_id || event.turn_id === this._runTrace.turn_id)) {
+            // Saving an export failed, or the trace itself can't be read.
+            const exporting = this._runTrace.exporting;
+            if (exporting) {
+                this._runTrace.exporting = false;
+                this._runTrace.exportError = message;
+            } else {
+                this._runTrace.error = message;
+            }
+            this._renderRunTrace();
+            if (exporting) this._focusIn('run-trace-body', '[data-trace-action="export"]');
+        } else if (event.source === 'artifact' && this._artifactView
+            && (!event.artifact_id || event.artifact_id === this._artifactView.id)) {
+            this._artifactView.loading = false;
+            this._artifactView.error = message;
+            this._renderArtifact();
+        }
+    }
+
+    _renderArtifact() {
+        const body = document.getElementById('artifact-dialog-body');
+        const view = this._artifactView;
+        if (!body || !view) return;
+        const esc = (value) => this.escapeHtml(value);
+        const artifact = view.artifact || {};
+        const title = document.getElementById('artifact-dialog-title');
+        if (title) title.textContent = artifact.label || 'Saved file';
+        const meta = [
+            artifact.kind,
+            this._formatBytes(artifact.size),
+            Number(artifact.created_at) ? new Date(Number(artifact.created_at) * 1000).toLocaleString() : '',
+        ].filter(Boolean).join(' · ');
+        let content;
+        if (view.error) {
+            content = `<p class="share-note">${esc(view.error)}</p>`;
+        } else if (view.image) {
+            content = `<img class="artifact-image" src="${esc(view.image)}" alt="${esc(artifact.label || 'Saved image')}">`;
+        } else if (typeof view.text === 'string') {
+            // The text scrolls on its own, so it takes focus for the keyboard.
+            content = `<pre class="artifact-text" tabindex="0">${esc(view.text)}</pre>`
+                + (view.next != null
+                    ? `<button type="button" class="task-review-btn" data-artifact-action="more" aria-disabled="${Boolean(view.loading)}">${view.loading ? 'Loading…' : 'Show more'}</button>`
+                    : '');
+        } else {
+            content = `<p class="share-note">${esc(view.note || (view.loading ? 'Loading…' : ''))}</p>`;
+        }
+        const path = artifact.path
+            ? `<p class="artifact-path"><code>${esc(artifact.path)}</code></p>`
+                + '<button type="button" class="task-review-btn" data-artifact-action="copy">Copy path</button>'
+            : '';
+        body.innerHTML = `<p class="share-note">${esc(meta)}</p>${content}<div class="artifact-actions">${path}</div>`;
+    }
+
     handleSubagentError(event) {
         // Worker failures are activity within the current user turn. Promoting
         // them through handleError() creates a second top-level failure card,
@@ -9041,6 +9493,7 @@ class LumiApp {
             this.stepRendered = false;
             this.collapsedGroup = [];
             this._liveCollapsedGroup = null;
+            this._closedEvidenceGroups = [];
         }
     }
 
@@ -10538,6 +10991,7 @@ class LumiApp {
         this.stepRendered = false;
         this.collapsedGroup = [];
         this._liveCollapsedGroup = null;
+        this._closedEvidenceGroups = [];
         this._currentTurn = this._freshTurnAggregate();
         this._blockToolRows = new Map();
         this.subagentDepth = 0;

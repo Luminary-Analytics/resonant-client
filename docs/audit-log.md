@@ -38,6 +38,9 @@ day. `LUMI_STATE_HOME` moves the whole folder.
 | `trust.decision` | A project is trusted, restricted or forgotten | project, decision |
 | `model.fallback` | A request failed and the turn continued with a [fallback model](models.md) | from and to model, reason by capture level |
 | `budget.warning`, `budget.approval`, `budget.block` | A [budget](usage-and-costs.md#budgets) alerts, asks (with the answer) or stops a turn | owner, scope, period, spend, threshold, `decision` |
+| `update.check` | An [update](updates.md) check finishes | `result` (`found`, `none`, `error`), version, feed |
+| `update.deferred`, `update.install` | An update waits for a running agent turn, or its installer starts and Lumi closes | version, feed, `reason` |
+| `update.skipped`, `update.postponed`, `update.cancelled` | You skip an update, choose to be reminded later, or close the update window | version, feed |
 | `error` | A turn reports an error | code, message by capture level |
 
 Turns from the chat gateway name their chat as `gateway:<chat id>`. A

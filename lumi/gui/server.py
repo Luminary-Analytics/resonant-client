@@ -119,6 +119,26 @@ def launch_gui(
 
     print(f"  Lumi GUI running at {url}")
 
+    # An update installs only between agent turns, and then closes Lumi
+    # itself so the installer can replace its files (lumi/updater.py).
+    def _turn_running() -> bool:
+        from .app import state as app_state
+
+        runs = getattr(app_state, "_chat_run_loop", None)
+        return bool(runs and runs.busy)
+
+    def _close_for_update() -> None:
+        import lumi.gui.app as gui_app
+
+        server.should_exit = True
+        window = getattr(gui_app, "_webview_window", None)
+        if window is not None:
+            window.destroy()
+
+    from lumi.updater import set_host
+
+    set_host(busy=_turn_running, shutdown=_close_for_update)
+
     def _run_in_browser():
         # The page is useless without this launch's access token, which it gets
         # by redeeming the code in the link's fragment. Browsers never send

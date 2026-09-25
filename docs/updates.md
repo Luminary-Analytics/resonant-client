@@ -25,6 +25,32 @@ button is off there. Running from source never loads WinSparkle, so development
 runs and tests don't write the WinSparkle registry key or show its dialogs. To
 try the updater from source, set `LUMI_UPDATER_FROM_SOURCE=1`.
 
+## Installing an update
+
+When a check finds a newer version, WinSparkle offers it. If you accept, it
+downloads the installer and verifies its EdDSA signature against the key
+built into Lumi. It won't run an installer that fails the check.
+
+Before running the installer, WinSparkle asks Lumi whether it can close:
+
+- **While an agent turn runs, Lumi says no.** An update never cuts a turn
+  off. WinSparkle holds the installer back and tells you; install the update
+  once the turn finishes.
+- **Otherwise Lumi closes itself** after the installer starts, so the
+  installer can replace its files. Sessions are saved as they go, and Lumi
+  opens again on the new version.
+
+The installer asks for administrator rights, since Lumi is installed for all
+users.
+
+The [audit log](audit-log.md) records what the updater does:
+
+- `update.check`: `found`, `none` or `error`;
+- `update.deferred`: an update waited for a turn;
+- `update.install`: the installer started;
+- `update.skipped`, `update.postponed` and `update.cancelled`: your choices in
+  the update window.
+
 ## For administrators
 
 Lock any of the three with the organization policy's `settings` (see

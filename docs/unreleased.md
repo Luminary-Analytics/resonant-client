@@ -46,6 +46,30 @@ Validation on September 25, 2026:
     An accepted edit changed the file, listed `notes.txt` and suggested
     reviewing it. After a reload, only the accepted turn listed a file.
 
+## September 25 pull requests on GitLab, Bitbucket and Azure DevOps — source only, not released
+
+- The pull request tools (`github_pr_view`, `github_check_log`,
+  `github_pr_create`, `github_pr_comment`, `github_pr_update`) now also work
+  on **GitLab** merge requests (cloud or self-managed), **Bitbucket Cloud**
+  and **Azure DevOps**, chosen by the `origin` remote
+  (`lumi/engine/code_hosts.py`, [guide](github.md#other-hosts)): reviews and
+  approvals, discussions and threads, CI jobs, steps and builds and their
+  logs, opening, commenting, replying and updating. They keep their names,
+  so policies and permission rules that name them cover every host.
+- Tokens: **GitLab token**, **Bitbucket token** and **Azure DevOps token** in
+  Settings > API keys, or `GITLAB_TOKEN`, `BITBUCKET_TOKEN`,
+  `AZURE_DEVOPS_TOKEN` (and `SYSTEM_ACCESSTOKEN` in Azure Pipelines).
+
+Validation on September 25, 2026: full `pytest` 4,031 passed, 4 skipped;
+`test_code_hosts.py` (16 tests) against
+mocked APIs covers remote URLs of each host and every tool on each host,
+including authentication headers (PRIVATE-TOKEN; Basic for app passwords and
+PATs; Bearer for access and job tokens), the encoded project paths, draft
+handling and replies. `test_github_tools.py` still passes, with a GitLab
+remote now taking the GitLab path. In the browser pane, searching Settings for
+"gitlab" showed the GitHub, GitLab, Bitbucket and Azure DevOps token fields,
+masked. No real host was called.
+
 ## September 25 comparing models on your own tasks — source only, not released
 
 - **Settings > Model evaluations > Compare models on your tasks**

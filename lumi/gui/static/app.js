@@ -3964,14 +3964,22 @@ class LumiApp {
             case 'agent.control_ack':
                 if (event.agent) this.upsertRuntimeAgent(event.agent);
                 this.renderRuntimeView();
+                this._syncWorkerViews();
                 break;
             case 'agent.runtime_list':
                 this.runtimeAgents = event.agents || [];
                 this.syncRuntimeAgents();
                 this.renderRuntimeView();
+                this._syncWorkerViews();
                 break;
             case 'agent.runtime_detail':
-                this.showRuntimeAgentDetail(event.agent, event.transcript || []);
+                this._renderWorkerTranscript(event.agent, event.transcript || []);
+                break;
+            case 'agent.restarted':
+                // The server started the restart as a turn of its own; its
+                // session.start and session.end follow like any turn's.
+                this._prepareTurnUI(event.display_text || 'Restarting a worker');
+                this.setRunning(true);
                 break;
             case 'session.timeline_list':
                 this.runtimeTimeline = event.checkpoints || [];
@@ -7712,50 +7720,6 @@ class LumiApp {
         detail.querySelector('.agent-handoff-close')?.addEventListener('click', () => { detail.style.display = 'none'; });
     }
 
-    showRuntimeAgentDetail(agent, transcript) {
-        if (!agent) return;
-        this.showRuntimePayload(agent.agent_type || 'Agent', { agent, transcript });
-        const detail = document.getElementById('agent-handoff-detail');
-        const controls = document.createElement('div');
-        controls.className = 'runtime-control-bar';
-        controls.innerHTML = `<button data-action="pause">Pause</button><button data-action="resume">Resume</button><button data-action="cancel" class="is-danger">Cancel</button><input aria-label="Steer agent" placeholder="Add direction without cancelling"><button data-action="steer">Steer</button>`;
-        // A terminal agent has no live thread behind it. Offering Pause /
-        // Resume / Steer there invites a control that can only ever come back
-        // as an error — and `resume` in particular used to flip a restart-
-        // orphaned agent to "running", leaving the UI waiting on a worker that
-        // no longer existed.
-        const TERMINAL_STATUSES = ['completed', 'failed', 'cancelled', 'stuck'];
-        const status = String(agent.status || '');
-        if (TERMINAL_STATUSES.includes(status)) {
-            controls.querySelectorAll('button, input').forEach((element) => {
-                element.disabled = true;
-                element.title = `Agent is ${status} — no live run to control.`;
-            });
-            // Restart is the one control that DOES apply to a dead worker: its
-            // assignment outlived its thread. Not offered for `completed` —
-            // there is nothing to redo.
-            if (status !== 'completed') {
-                const restart = document.createElement('button');
-                restart.type = 'button';
-                restart.dataset.action = 'restart';
-                restart.textContent = 'Restart';
-                restart.title = 'Re-run this agent from its saved assignment.';
-                restart.addEventListener('click', () => {
-                    restart.disabled = true;
-                    restart.textContent = 'Restarting…';
-                    this.send({ command: 'agent_restart', agent_id: agent.id });
-                });
-                controls.appendChild(restart);
-            }
-        }
-        detail?.appendChild(controls);
-        controls.querySelectorAll('button').forEach((button) => button.addEventListener('click', () => {
-            const input = controls.querySelector('input');
-            this.send({ command: 'agent_runtime_control', agent_id: agent.id, action: button.dataset.action, text: input?.value || '' });
-            if (button.dataset.action === 'steer' && input) input.value = '';
-        }));
-    }
-
     renderAgentActivityTree() {
         if (this.runtimeView !== 'agents') {
             this.renderRuntimeView();
@@ -7841,6 +7805,8 @@ class LumiApp {
             prompt,
             status: 'running',
             startedAt: Date.now(),
+            // Its controls in the Sub-tasks list act on this registry id.
+            agentId: event.agent_id || '',
         });
         this._advanceLiveMilestone('delegate', 'Coordinate sub-tasks');
         this._setLiveRunPhase(
@@ -7869,6 +7835,8 @@ class LumiApp {
         const el = document.createElement('div');
         el.className = 'subagent-block';
         el.setAttribute('data-agent-type', agentType);
+        el.dataset.agentId = event.agent_id || '';
+        if (this._isRegistryWorker(event.agent_id)) this._workerBlockMap().set(event.agent_id, el);
 
         const header = document.createElement('div');
         header.className = 'subagent-header';
@@ -7954,6 +7922,13 @@ class LumiApp {
                     result.textContent = view.line;
                 }
                 block.appendChild(result);
+                // Its transcript, and a restart if it didn't complete. The
+                // registry's record may not have arrived yet; the handoff says
+                // enough until it does (_syncWorkerViews).
+                this._renderWorkerBlockActions(block, this._runtimeAgent(event.agent_id) || {
+                    id: event.agent_id, agent_type: agentType, steps,
+                    status: workerFailed ? 'failed' : 'completed',
+                });
 
                 // If subagent had content, auto-expand it
                 if (workerContainer.children.length > 0) {
@@ -8033,6 +8008,327 @@ class LumiApp {
         const next = view.next ? `<dt>Next</dt><dd>${esc(view.next)}</dd>` : '';
         return `<summary class="subagent-result${view.failed ? ' is-error' : ''}">${esc(view.line)}</summary>`
             + `<dl class="subagent-handoff-fields">${rows}${next}</dl>`;
+    }
+
+    // ── Worker transcripts and controls ─────────────────────────
+    // The runtime pane that offered these left the page in v0.14.0. A running
+    // worker's controls sit in the run's Sub-tasks list (run_cards.js); a
+    // stopped worker's block offers its transcript and, unless it completed,
+    // a restart. The server side is unchanged: agent_runtime_list,
+    // agent_runtime_detail, agent_runtime_control and agent_restart.
+
+    _workerBlockMap() {
+        if (!this._workerBlocks) this._workerBlocks = new Map();
+        return this._workerBlocks;
+    }
+
+    /** Only the agent registry's workers have controls; a task run without one has a `task:` id. */
+    _isRegistryWorker(agentId) {
+        return /^agt_[0-9a-f]+$/i.test(String(agentId || ''));
+    }
+
+    _runtimeAgent(agentId) {
+        return (this.runtimeAgents || []).find((agent) => agent?.id === agentId) || null;
+    }
+
+    /** A live worker's controls, by its registry status. */
+    _workerLiveActions(status) {
+        if (status === 'paused') return ['resume', 'cancel', 'steer'];
+        if (['queued', 'running', 'waiting'].includes(status)) return ['pause', 'cancel', 'steer'];
+        return [];
+    }
+
+    /**
+     * A stopped worker's actions. A stopped worker has no live thread, so it
+     * gets no pause, resume or steer: they could only come back as errors.
+     * Its assignment outlives the thread, so it can be restarted, unless it
+     * completed and there is nothing to redo.
+     */
+    _workerBlockActions(status) {
+        if (status === 'completed') return ['transcript'];
+        if (['failed', 'cancelled', 'stuck'].includes(status)) return ['transcript', 'restart'];
+        return [];
+    }
+
+    /** What a worker's block says about a state its result line doesn't cover. */
+    _workerStatusNote(record) {
+        const steps = Number(record?.steps || 0);
+        const after = steps ? ` after ${steps} step${steps === 1 ? '' : 's'}` : '';
+        if (record?.status === 'stuck') return `Interrupted when Lumi closed${after}`;
+        if (record?.status === 'cancelled') return `Stopped${after}`;
+        if (record?.status === 'paused') return 'Paused';
+        return '';
+    }
+
+    /** Buttons for a running worker in the run's Sub-tasks list. */
+    _workerLiveControlsHtml(item = {}) {
+        if (!this._isRegistryWorker(item.agentId) || item.status !== 'running' || item.stopping) return '';
+        const esc = (value) => this.escapeHtml(value);
+        const name = item.label || 'worker';
+        const labels = { pause: 'Pause', resume: 'Resume', cancel: 'Stop', steer: 'Steer…' };
+        const names = {
+            pause: `Pause the ${name} worker`,
+            resume: `Resume the ${name} worker`,
+            cancel: `Stop the ${name} worker`,
+            steer: `Steer the ${name} worker`,
+        };
+        const buttons = this._workerLiveActions(item.paused ? 'paused' : 'running').map((action) => (
+            `<button type="button" class="live-run-subtask-action" data-worker-action="${action}"`
+            + ` data-agent-id="${esc(item.agentId)}" data-worker-label="${esc(name)}"`
+            + ` aria-label="${esc(names[action])}">${labels[action]}</button>`
+        ));
+        return `<span class="live-run-subtask-actions">${buttons.join('')}</span>`;
+    }
+
+    /** The transcript and restart row under a stopped worker's block. */
+    _renderWorkerBlockActions(block, record) {
+        const agentId = block?.dataset?.agentId || '';
+        if (!record || !this._isRegistryWorker(agentId)) return;
+        // A restarted worker keeps its own record; the retry has its own block.
+        const retried = (this.runtimeAgents || []).some((agent) => agent?.metadata?.resumed_from === agentId);
+        const actions = this._workerBlockActions(record.status)
+            .filter((action) => !(retried && action === 'restart'));
+        const note = [this._workerStatusNote(record), retried ? 'restarted' : ''].filter(Boolean).join(' · ');
+        let row = block.querySelector(':scope > .subagent-actions');
+        if (!actions.length && !note) {
+            row?.remove();
+            return;
+        }
+        if (!row) {
+            row = document.createElement('div');
+            row.className = 'subagent-actions';
+            block.appendChild(row);
+        }
+        const esc = (value) => this.escapeHtml(value);
+        const name = record.agent_type || block.dataset.agentType || 'worker';
+        const labels = { transcript: 'Transcript', restart: 'Restart' };
+        const names = {
+            transcript: `Show the ${name} worker's transcript`,
+            restart: `Restart the ${name} worker`,
+        };
+        row.innerHTML = (note ? `<span class="subagent-status-note">${esc(note)}</span>` : '')
+            + actions.map((action) => (
+                `<button type="button" class="subagent-action" data-worker-action="${action}"`
+                + ` data-agent-id="${esc(agentId)}" data-worker-label="${esc(name)}"`
+                + ` aria-label="${esc(names[action])}">${labels[action]}</button>`
+            )).join('');
+        row.querySelectorAll('[data-worker-action]').forEach((button) => {
+            button.addEventListener('click', () => this._onWorkerAction(button));
+        });
+    }
+
+    /** Keep the live Sub-tasks list and the worker blocks in step with the registry. */
+    _syncWorkerViews() {
+        const run = this._liveRun;
+        if (run?.active) {
+            for (const [id, item] of run.subtasks) {
+                const record = this._runtimeAgent(item.agentId);
+                if (!record) continue;
+                const paused = record.status === 'paused';
+                if (Boolean(item.paused) !== paused) this._updateLiveSubtask(id, { paused });
+            }
+        }
+        const blocks = this._workerBlockMap();
+        for (const [agentId, block] of blocks) {
+            if (!block.isConnected) {
+                blocks.delete(agentId);
+                continue;
+            }
+            const record = this._runtimeAgent(agentId);
+            if (record) this._renderWorkerBlockActions(block, record);
+        }
+    }
+
+    /** One of a worker's controls, from the Sub-tasks list or its block. */
+    _onWorkerAction(button) {
+        const action = button?.dataset?.workerAction || '';
+        const agentId = button?.dataset?.agentId || '';
+        if (!action || !this._isRegistryWorker(agentId)) return;
+        if (action === 'transcript') {
+            this.openWorkerTranscript(agentId, button);
+            return;
+        }
+        if (action === 'steer') {
+            this.openWorkerSteer(agentId, button.dataset.workerLabel || 'worker', button);
+            return;
+        }
+        if (action === 'restart') {
+            if (this.isRunning) {
+                this.showStatusMessage('Finish or stop the current run before restarting a worker.');
+                return;
+            }
+            button.disabled = true;
+            button.textContent = 'Restarting…';
+            this.send({ command: 'agent_restart', agent_id: agentId });
+            // A retry's record hides the button for good; if the server
+            // refused instead, this brings it back.
+            setTimeout(() => this._syncWorkerViews(), 5000);
+            return;
+        }
+        if (action === 'cancel') this._markLiveWorker(agentId, { stopping: true });
+        this.send({ command: 'agent_runtime_control', agent_id: agentId, action });
+    }
+
+    _markLiveWorker(agentId, patch) {
+        const run = this._liveRun;
+        if (!run?.active) return;
+        for (const [id, item] of run.subtasks) {
+            if (item.agentId === agentId) this._updateLiveSubtask(id, patch);
+        }
+    }
+
+    openWorkerTranscript(agentId, returnFocus = null) {
+        const dialog = document.getElementById('worker-transcript-dialog');
+        if (!dialog || !this._isRegistryWorker(agentId)) return;
+        this._workerTranscriptFor = agentId;
+        this._workerTranscriptReturnFocus = returnFocus || document.activeElement;
+        document.getElementById('worker-transcript-title').textContent = 'Worker transcript';
+        document.getElementById('worker-transcript-body').innerHTML = '<p class="share-note">Loading…</p>';
+        dialog.style.display = 'flex';
+        this._wireDialog(dialog, 'worker-transcript-close', () => this.closeWorkerTranscript());
+        document.getElementById('worker-transcript-close').focus();
+        this.send({ command: 'agent_runtime_detail', agent_id: agentId });
+    }
+
+    closeWorkerTranscript() {
+        const dialog = document.getElementById('worker-transcript-dialog');
+        if (dialog) dialog.style.display = 'none';
+        this._workerTranscriptFor = '';
+        const back = this._workerTranscriptReturnFocus;
+        (back && back.isConnected ? back : this.userInput)?.focus?.();
+    }
+
+    /**
+     * A worker's transcript as readable entries: its messages, each tool call
+     * with its own result (matched by call id), and errors. Streaming deltas
+     * are left out; a call with no result says so.
+     */
+    _workerTranscriptEntries(transcript = []) {
+        const entries = [];
+        const calls = new Map();
+        for (const event of Array.isArray(transcript) ? transcript : []) {
+            const kind = event?.event;
+            if (kind === 'text.done' && String(event.text || '').trim()) {
+                entries.push({ kind: 'text', text: String(event.text).trim() });
+            } else if (kind === 'tool.call') {
+                const args = event.arguments && typeof event.arguments === 'object' ? event.arguments : {};
+                const target = (event.presentation?.locations || [])[0]
+                    || args.command || args.pattern || args.query || args.url || args.path || '';
+                const entry = {
+                    kind: 'tool',
+                    label: event.presentation?.label || event.name || 'Tool',
+                    target: String(target).slice(0, 160),
+                    outcome: 'no result',
+                    output: '',
+                };
+                entries.push(entry);
+                if (event.call_id) calls.set(String(event.call_id), entry);
+            } else if (kind === 'tool.result') {
+                const outcome = event.denied ? 'denied' : event.is_error ? 'failed' : 'done';
+                const output = String(event.output ?? '').slice(0, 4000);
+                const entry = calls.get(String(event.call_id || ''));
+                if (entry) {
+                    Object.assign(entry, { outcome, output });
+                    calls.delete(String(event.call_id || ''));
+                } else {
+                    entries.push({ kind: 'tool', label: event.name || 'Tool', target: '', outcome, output });
+                }
+            } else if (kind === 'steer.applied' && String(event.text || '').trim()) {
+                entries.push({ kind: 'steer', text: String(event.text).trim() });
+            } else if (kind === 'error' && String(event.message || '').trim()) {
+                entries.push({ kind: 'error', text: String(event.message).trim() });
+            }
+        }
+        return entries;
+    }
+
+    _renderWorkerTranscript(agent, transcript = []) {
+        const dialog = document.getElementById('worker-transcript-dialog');
+        const body = document.getElementById('worker-transcript-body');
+        if (!dialog || !body || dialog.style.display === 'none' || !this._workerTranscriptFor) return;
+        if (!agent) {
+            body.innerHTML = '<p class="share-note">This worker’s record is no longer available.</p>';
+            return;
+        }
+        if (agent.id !== this._workerTranscriptFor) return;
+        const esc = (value) => this.escapeHtml(value);
+        const statuses = {
+            completed: 'Completed', failed: 'Failed', cancelled: 'Stopped', stuck: 'Interrupted',
+            running: 'Running', paused: 'Paused', queued: 'Waiting', waiting: 'Waiting',
+        };
+        const steps = Number(agent.steps || 0);
+        const started = Number(agent.created_at || 0)
+            ? new Date(Number(agent.created_at) * 1000).toLocaleString()
+            : '';
+        const meta = [
+            statuses[agent.status] || agent.status || '',
+            `${steps} step${steps === 1 ? '' : 's'}`,
+            agent.model || '',
+            started ? `started ${started}` : '',
+        ].filter(Boolean).join(' · ');
+        const outcomes = { done: 'done', failed: 'failed', denied: 'denied', 'no result': 'no result' };
+        const items = this._workerTranscriptEntries(transcript).map((entry) => {
+            if (entry.kind === 'text') return `<li class="worker-transcript-text">${esc(entry.text)}</li>`;
+            if (entry.kind === 'steer') return `<li class="worker-transcript-steer"><strong>You:</strong> ${esc(entry.text)}</li>`;
+            if (entry.kind === 'error') return `<li class="worker-transcript-error">${esc(entry.text)}</li>`;
+            const state = entry.outcome === 'no result' ? 'pending' : entry.outcome;
+            const output = entry.output
+                ? `<details><summary>Output</summary><pre>${esc(entry.output)}</pre></details>`
+                : '';
+            return `<li class="worker-transcript-tool is-${state}">`
+                + `<div class="worker-transcript-tool-head"><strong>${esc(entry.label)}</strong>`
+                + `${entry.target ? `<code>${esc(entry.target)}</code>` : ''}`
+                + `<span class="worker-transcript-outcome">${outcomes[entry.outcome] || esc(entry.outcome)}</span></div>`
+                + `${output}</li>`;
+        });
+        const type = String(agent.agent_type || '');
+        document.getElementById('worker-transcript-title').textContent = type
+            ? `${type.charAt(0).toUpperCase()}${type.slice(1)} worker transcript`
+            : 'Worker transcript';
+        body.innerHTML = `<p class="worker-transcript-meta">${esc(meta)}</p>`
+            + (agent.prompt ? `<details class="worker-transcript-assignment"><summary>Assignment</summary><p>${esc(agent.prompt)}</p></details>` : '')
+            + (items.length
+                ? `<ol class="worker-transcript">${items.join('')}</ol>`
+                : '<p class="share-note">Nothing was recorded for this worker.</p>');
+    }
+
+    openWorkerSteer(agentId, label = 'worker', returnFocus = null) {
+        const dialog = document.getElementById('worker-steer-dialog');
+        const text = document.getElementById('worker-steer-text');
+        if (!dialog || !text || !this._isRegistryWorker(agentId)) return;
+        this._workerSteerFor = agentId;
+        this._workerSteerReturnFocus = returnFocus || document.activeElement;
+        document.getElementById('worker-steer-title').textContent = `Steer the ${label} worker`;
+        text.value = '';
+        dialog.style.display = 'flex';
+        this._wireDialog(dialog, 'worker-steer-close', () => this.closeWorkerSteer());
+        if (!dialog.dataset.steerWired) {
+            document.getElementById('worker-steer-send')?.addEventListener('click', () => this._sendWorkerSteer());
+            text.addEventListener('keydown', (event) => {
+                if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
+                    event.preventDefault();
+                    this._sendWorkerSteer();
+                }
+            });
+            dialog.dataset.steerWired = '1';
+        }
+        text.focus();
+    }
+
+    closeWorkerSteer() {
+        const dialog = document.getElementById('worker-steer-dialog');
+        if (dialog) dialog.style.display = 'none';
+        this._workerSteerFor = '';
+        const back = this._workerSteerReturnFocus;
+        (back && back.isConnected ? back : this.userInput)?.focus?.();
+    }
+
+    _sendWorkerSteer() {
+        const text = String(document.getElementById('worker-steer-text')?.value || '').trim();
+        if (!text || !this._workerSteerFor) return;
+        this.send({ command: 'agent_runtime_control', agent_id: this._workerSteerFor, action: 'steer', text });
+        this.showStatusMessage('Sent. The worker reads it before its next step.');
+        this.closeWorkerSteer();
     }
 
     handleSubagentError(event) {
@@ -10045,6 +10341,7 @@ class LumiApp {
         this.subagentContainer = null;
         this.subagentContainers.clear();
         this.subagentStreams.clear();
+        this._workerBlockMap().clear();
 
         // Skip these event types during replay (streaming deltas, markers)
         const SKIP_REPLAY = new Set([
@@ -10062,6 +10359,9 @@ class LumiApp {
             if (SKIP_REPLAY.has(type)) continue;
 
             if (type === 'user_message') {
+                // A card still running here belongs to a turn that never
+                // ended (Lumi closed during it).
+                this._settleInterruptedCard();
                 this._resetAgentRunSummary(event.text || '');
                 // Replay user message bubble
                 this.addUserMessage(event.text);
@@ -10102,6 +10402,10 @@ class LumiApp {
             this.isReplaying = false;
         }
 
+        // A replayed worker's block shows its registry status (a worker that
+        // was running when Lumi closed is now `stuck`, and can be restarted).
+        if (this._workerBlockMap().size) this.send({ command: 'agent_runtime_list' });
+
         // Flush any pending collapsed groups
         this.flushCollapsedGroup();
 
@@ -10111,7 +10415,10 @@ class LumiApp {
         this.clearTerminals();
 
         const replayRecovery = activeRun ? null : this._interruptedReplayRecovery(events);
-        if (replayRecovery) this.showResumeButton(replayRecovery);
+        if (replayRecovery) {
+            this._settleInterruptedCard(replayRecovery.kind === 'not_started' ? 'Not started' : 'Paused');
+            this.showResumeButton(replayRecovery);
+        }
 
         // Scroll to bottom
         this.scrollToBottom();
@@ -10146,6 +10453,24 @@ class LumiApp {
             kind: partial ? 'paused' : 'not_started',
             prompt: String(tail[userIndex]?.text || '').trim(),
         };
+    }
+
+    /**
+     * A replayed turn that never ended still has a running card, and a running
+     * card hides its activity behind a live dock that no longer exists. Show
+     * it as stopped, with its work (and an interrupted worker's Restart) in
+     * the usual collapsed details.
+     */
+    _settleInterruptedCard(label = 'Interrupted') {
+        const task = this._activeTask;
+        if (!task?.card?.isConnected || !task.card.classList.contains('task-card-running')) return;
+        task.card.classList.remove('task-card-running');
+        task.card.classList.add('task-card-stopped');
+        if (task.stateEl) {
+            task.stateEl.className = 'task-card-state is-stopped';
+            task.stateEl.textContent = label;
+        }
+        this._collapseTaskActivity({});
     }
 
     showResumeButton(recovery = {}) {

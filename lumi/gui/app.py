@@ -2742,21 +2742,25 @@ async def websocket_endpoint(ws: WebSocket):
                 def _restart_source(on_permission, _agent_id=agent_id, _session=session_for_restart):
                     return _session.restart_agent(_agent_id, on_permission=on_permission)
 
+                # The turn's user message: recorded for replay by the run, and
+                # sent now so the page shows it as the turn starts.
+                display_text = (
+                    f"Restarting {assignment['agent_type']} agent "
+                    f"(interrupted after {assignment['completed_steps']} step"
+                    f"{'' if assignment['completed_steps'] == 1 else 's'})"
+                )
                 await ws.send_json({
                     "event": "agent.restarted",
                     "source_agent_id": agent_id,
                     "agent_type": assignment["agent_type"],
                     "completed_steps": assignment["completed_steps"],
+                    "display_text": display_text,
                 })
                 runs.adopt(asyncio.ensure_future(_run_session_streaming(
                     runs,
                     state.session,
                     assignment["prompt"],
-                    display_user_msg=(
-                        f"Restarting {assignment['agent_type']} agent "
-                        f"(interrupted after {assignment['completed_steps']} step"
-                        f"{'' if assignment['completed_steps'] == 1 else 's'})"
-                    ),
+                    display_user_msg=display_text,
                     event_source=_restart_source,
                 )))
                 continue

@@ -3477,6 +3477,47 @@ body {
     color: var(--dim);
 }
 
+/* A stopped worker's transcript and restart (app.js, _renderWorkerBlockActions). */
+.subagent-actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 12px 8px;
+    border-top: 1px solid var(--border);
+    font-size: 11.5px;
+}
+
+.subagent-status-note {
+    margin-right: auto;
+    color: var(--warn);
+}
+
+.subagent-action {
+    padding: 3px 10px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: var(--text-secondary);
+    font: inherit;
+    cursor: pointer;
+}
+
+.subagent-action:hover {
+    background: var(--bg-hover);
+    color: var(--text);
+}
+
+.subagent-action:focus-visible {
+    outline: 2px solid var(--brand);
+    outline-offset: 2px;
+}
+
+.subagent-action:disabled {
+    opacity: .6;
+    cursor: default;
+}
+
 .subagent-children {
     display: none;
     padding: 6px 12px 8px;
@@ -11394,7 +11435,13 @@ body:not([data-autonomous-sessions="1"]) .autonomous-mission-browser,
 .live-run-todo.is-done { color: #757080; }
 .live-run-todo.is-done .live-run-check { color: var(--brand); border-color: color-mix(in srgb, var(--brand) 35%, transparent); }
 .live-run-todo.is-error .live-run-check { color: var(--err); border-color: rgba(255,142,142,.35); }
-.live-run-subtask { display: grid; grid-template-columns: 8px minmax(0, 1fr) auto; align-items: center; gap: 8px; }
+.live-run-subtask { display: grid; grid-template-columns: 8px minmax(0, 1fr) auto auto; align-items: center; gap: 8px; }
+.live-run-subtask.is-paused .live-run-subtask-pulse { background: var(--warn); animation: none; box-shadow: none; }
+/* A running worker's controls (app.js, _workerLiveControlsHtml). */
+.live-run-subtask-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 4px; }
+.live-run-subtask-action { padding: 2px 8px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: transparent; color: var(--text-secondary); font: inherit; font-size: 10.5px; cursor: pointer; }
+.live-run-subtask-action:hover { background: var(--bg-hover); color: var(--text); }
+.live-run-subtask-action:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
 .live-run-subtask-pulse { width: 6px; height: 6px; border-radius: 50%; background: var(--brand); box-shadow: 0 0 0 0 rgba(255, 194, 75,.35); animation: live-run-pulse 1.7s ease-out infinite; }
 .live-run-subtask.is-done .live-run-subtask-pulse { background: #6f6a78; animation: none; box-shadow: none; }
 .live-run-subtask-copy { min-width: 0; }
@@ -13772,6 +13819,30 @@ body.is-window-dragging * {
 .handoff-check.is-warning { color: var(--warn); }
 .sidebar-handoffs[hidden] { display: none; }
 .sidebar-handoffs .sns-icon { font-size: 15px; line-height: 1; }
+
+/* A worker's transcript and steering (app.js, openWorkerTranscript and openWorkerSteer). */
+.worker-transcript-dialog { width: 640px; max-height: 85vh; display: flex; flex-direction: column; }
+.worker-transcript-dialog .dialog-header, .worker-steer-dialog .dialog-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.worker-transcript-dialog .dialog-body { overflow: auto; }
+.worker-transcript-meta { margin: 0 0 10px; color: var(--muted); font-size: 12px; }
+.worker-transcript-assignment { margin: 0 0 12px; }
+.worker-transcript-assignment > summary { cursor: pointer; color: var(--muted); }
+.worker-transcript-assignment p { margin: 6px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.worker-transcript { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.worker-transcript-text { white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.5; }
+.worker-transcript-error { color: var(--err); overflow-wrap: anywhere; }
+.worker-transcript-steer { padding-left: 8px; border-left: 2px solid var(--brand); color: var(--text-secondary); overflow-wrap: anywhere; }
+.worker-transcript-tool { padding: 6px 10px; border: 1px solid var(--border); border-radius: var(--radius-sm); }
+.worker-transcript-tool-head { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.worker-transcript-tool-head code { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }
+.worker-transcript-outcome { margin-left: auto; color: var(--ok); font-size: 11px; white-space: nowrap; }
+.worker-transcript-tool.is-failed .worker-transcript-outcome, .worker-transcript-tool.is-denied .worker-transcript-outcome { color: var(--err); }
+.worker-transcript-tool.is-pending .worker-transcript-outcome { color: var(--warn); }
+.worker-transcript-tool details > summary { cursor: pointer; color: var(--muted); font-size: 11.5px; }
+.worker-transcript-tool pre { max-height: 240px; margin: 6px 0 0; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 11.5px; }
+.worker-steer-dialog { width: 480px; }
+.worker-steer-dialog .dialog-actions { padding: 12px 0 0; }
+.worker-steer-note { margin: 8px 0 0; font-size: 12px; }
 
 /* Share a conversation (app.js, openShareDialog). */
 .share-dialog { width: 480px; }

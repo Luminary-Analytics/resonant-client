@@ -204,13 +204,6 @@ def _make_daemon(
     Returns `(daemon, events_list)` so tests can inspect event order.
     Events also feed the daemon's `_DaemonProgress` so waits can key off
     the terminal event instead of wall-clock time."""
-    events: list[dict] = []
-    progress = _DaemonProgress()
-
-    def on_event(ev: dict) -> None:
-        events.append(ev)
-        progress.record(ev)
-
     config = AutonomousMissionConfig(
         intent_id=intent_id,
         roadmap_path=roadmap_path,
@@ -220,6 +213,22 @@ def _make_daemon(
         tick_pause_seconds=tick_pause_seconds,
         decision_timeout_seconds=decision_timeout_seconds,
     )
+    return _tracked_daemon(config, hooks)
+
+
+def _tracked_daemon(
+    config: AutonomousMissionConfig, hooks: DaemonHooks,
+) -> tuple[AutonomousMissionDaemon, list[dict]]:
+    """Build a daemon from `config` whose events are collected and tracked,
+    so `_run_daemon_to_completion` can wait for its terminal event. Other
+    test modules that need their own config use this instead of `on_event=`."""
+    events: list[dict] = []
+    progress = _DaemonProgress()
+
+    def on_event(ev: dict) -> None:
+        events.append(ev)
+        progress.record(ev)
+
     daemon = AutonomousMissionDaemon(config, hooks, on_event=on_event)
     _PROGRESS[daemon] = progress
     return daemon, events

@@ -194,6 +194,38 @@ def test_a_real_unattended_run_without_a_model_records_why(project):
     assert "Choose a provider" in last["error"]
 
 
+def test_the_persons_settings_hooks_guard_a_scheduled_run(project, tmp_path, monkeypatch):
+    # headless.main itself, with a scripted model. Scheduled runs are unattended
+    # `lumi run`s, and ran without the person's hooks: a Settings guard that
+    # refused a write in the app let a schedule make it.
+    import sys
+
+    from lumi import headless
+    from lumi.gui.settings import SettingsManager
+    from tests.streaming_stub import StreamingBackend, done, text_delta, tool_call
+
+    guard = tmp_path / "guard.py"
+    guard.write_text("import sys\nsys.stderr.write('no writes while nobody watches')\nsys.exit(1)\n",
+                     encoding="utf-8")
+    SettingsManager().set("hooks", None, [
+        {"hook_type": "pre_tool_use", "matcher": "file_write", "command": f'"{sys.executable}" "{guard}"'},
+    ])
+    backend = StreamingBackend(name="anthropic", model="claude-x", scripts=[
+        [tool_call("file_write", {"path": "notes.txt", "content": "nightly"}), done(model="claude-x")],
+        [text_delta("A hook refused the write."), done(model="claude-x")],
+    ])
+    monkeypatch.setattr(headless, "build_spec", lambda settings, provider, model, project: SimpleNamespace(
+        create_backend=lambda settings: backend, permission_mode=""))
+    schedule = schedules.save(_raw(project, mode="bypass", provider="anthropic", model="claude-x"))
+
+    assert schedules.run(schedule.id) == 3
+    last = schedules.last_run(schedule.id)
+    assert (last["status"], last["answer"], last["changed_files"]) == ("needs_attention",
+                                                                       "A hook refused the write.", [])
+    assert schedules.runs(schedule.id)[0]["summary"]["denied_calls"] == 1
+    assert not os.path.exists(os.path.join(project, "notes.txt"))
+
+
 def test_a_schedule_never_runs_twice_at_once(project, monkeypatch):
     import psutil
 

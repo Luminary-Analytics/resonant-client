@@ -1227,9 +1227,12 @@ class Session:
         ``True`` counts as consent.
 
         With no prompt available (background runs, delegated work without a
-        parent prompt) the outcome is undecided. Only an explicit allow or deny
-        from a matching PERMISSION_REQUEST hook settles it; no answer, "ask",
-        or no matching hook fails closed.
+        parent prompt, ``lumi run``) the outcome is undecided. Only an explicit
+        allow or deny from a matching PERMISSION_REQUEST hook settles it; no
+        answer, "ask", or no matching hook fails closed. The hook answers for
+        the person, so it never settles a call in the read-only tier or one
+        the organization's policy asks a person about
+        (_permission_hook_decision).
         """
         if not policy_prompt and self._should_auto_approve(tool_name):
             return True, "", tool_args
@@ -1251,17 +1254,56 @@ class Session:
                      decision="approved" if approved else "denied", policy_prompt=policy_prompt)
         return approved, denial, prepared
 
+    # Tiers in which a PERMISSION_REQUEST hook may settle an approval nobody
+    # can be asked for. Not suggest, the read-only tier behind `lumi run --mode
+    # ask`, which approves nothing but reads, nor an unknown tier, which fails
+    # closed to it (_should_auto_approve).
+    _HOOK_SETTLED_TIERS = frozenset({"ask", "auto-edit", "full-auto"})
+
+    def _organization_prompt(self, tool_name: str, tool_args: dict):
+        """The organization's rule that asks a person before this call (a PolicyRule), or None."""
+        from .policies import ORGANIZATION, PolicyAction
+
+        policy = self.execution_policy
+        rule = policy.first_match(tool_name, tool_args) if policy is not None else None
+        if rule is None or rule.source != ORGANIZATION or rule.action != PolicyAction.PROMPT.value:
+            return None
+        return rule
+
+    @staticmethod
+    def _organization_prompt_unanswered(tool_name: str, rule) -> str:
+        """Why a call the organization's policy asks about didn't run, as the model is told."""
+        reason = f" ({rule.reason})" if rule.reason else ""
+        return (
+            f"The organization's policy requires a person to approve this call{reason}, but no "
+            f"approval prompt is available for this run, so {tool_name} was not executed. "
+            f"Continue without it."
+        )
+
     def _permission_hook_decision(
         self, tool_name: str, tool_args: dict, call_id: str,
     ) -> tuple[bool, str, dict]:
-        """Settle an approval nobody can be asked for; see _resolve_tool_permission."""
+        """Settle an approval nobody can be asked for; see _resolve_tool_permission.
+
+        A PERMISSION_REQUEST hook is the person's own setting and answers for
+        them, so it settles only what they could decide:
+        - not in the read-only tier (_HOOK_SETTLED_TIERS), where nothing but
+          reads may run;
+        - not a call the organization's policy asks a person about: the
+          organization outranks the person's settings. Nor may the hook
+          rewrite a call into one.
+        The hook isn't run in those cases, and the call is refused.
+        """
         unanswered = (
             f"Tool execution requires approval, but no approval prompt is available "
             f"for this run, so {tool_name} was not executed. Continue without it, or "
             f"ask the user to switch to a permission mode that allows it."
         )
+        organization_rule = self._organization_prompt(tool_name, tool_args)
+        if organization_rule is not None:
+            return False, self._organization_prompt_unanswered(tool_name, organization_rule), tool_args
         emit = getattr(self.hook_runner, "emit", None) if self.hook_runner else None
-        if not callable(emit):
+        if not callable(emit) or self.autonomy_tier not in self._HOOK_SETTLED_TIERS:
             return False, unanswered, tool_args
         result = emit(
             HookType.PERMISSION_REQUEST,
@@ -1291,6 +1333,9 @@ class Session:
             if self.execution_policy.evaluate(tool_name, modified) == PolicyAction.DENY:
                 policy_reason = self.execution_policy.get_reason(tool_name, modified)
                 return False, f"Blocked by policy: {policy_reason or 'denied'}", modified
+            organization_rule = self._organization_prompt(tool_name, modified)
+            if organization_rule is not None:
+                return False, self._organization_prompt_unanswered(tool_name, organization_rule), modified
         return True, "", modified
 
     def _delegated_permission_prompt(self) -> Optional[Callable]:
@@ -1483,6 +1528,25 @@ class Session:
             EngineEvent.SESSION_END,
             total_elapsed=time.time() - total_start,
             total_steps=total_steps,
+        )
+
+    def _step_end_event(self, step: int, elapsed: float, model: Any, stats: Any) -> dict:
+        """``step.end``, with the model and token counts of that step's call.
+
+        The GUI saves ``step.end`` with a conversation but not ``status``, so
+        these are what a replayed turn shows as its model and tokens. Counts
+        use the usage records' names, whichever names the provider reported.
+        """
+        from .. import usage
+
+        counts = usage.token_counts(stats) if isinstance(stats, dict) else {}
+        return make_event(
+            EngineEvent.STEP_END,
+            step=step,
+            elapsed=elapsed,
+            model=str(model or getattr(self.backend, "model", "") or ""),
+            input_tokens=counts.get("input_tokens", 0),
+            output_tokens=counts.get("output_tokens", 0),
         )
 
     def _run_post_edit_feedback(self, edited_path: str) -> Iterator[dict]:
@@ -2688,11 +2752,7 @@ class Session:
                         max=EMPTY_RESPONSE_RETRY_LIMIT,
                         model=backend_model,
                     )
-                    yield make_event(
-                        EngineEvent.STEP_END,
-                        step=exec_step,
-                        elapsed=step_elapsed,
-                    )
+                    yield self._step_end_event(exec_step, step_elapsed, done_model, done_stats)
                     # Empty provider responses are retries, not productive
                     # agent steps, so they do not consume max_steps.
                     iteration -= 1
@@ -2712,11 +2772,7 @@ class Session:
                 terminal_error = message
                 logger.warning("%s model=%s", message, backend_model)
                 yield make_event(EngineEvent.ERROR, message=message)
-                yield make_event(
-                    EngineEvent.STEP_END,
-                    step=exec_step,
-                    elapsed=step_elapsed,
-                )
+                yield self._step_end_event(exec_step, step_elapsed, done_model, done_stats)
                 break
 
             empty_response_retries = 0
@@ -2757,7 +2813,7 @@ class Session:
                                     model=done_model, stats=done_stats,
                                     cognitive_state=cog_state,
                                     elapsed=step_elapsed)
-                    yield make_event(EngineEvent.STEP_END, step=exec_step, elapsed=step_elapsed)
+                    yield self._step_end_event(exec_step, step_elapsed, done_model, done_stats)
                     continue
 
                 # Normal text — add to history
@@ -2785,7 +2841,7 @@ class Session:
                                 model=done_model, stats=done_stats,
                                 cognitive_state=cog_state,
                                 elapsed=step_elapsed)
-                yield make_event(EngineEvent.STEP_END, step=exec_step, elapsed=step_elapsed)
+                yield self._step_end_event(exec_step, step_elapsed, done_model, done_stats)
                 break  # Exit the agentic loop — CLI ran to completion
 
             reasoning_by_call_id = {
@@ -3566,7 +3622,7 @@ class Session:
             # ── Plan mode: ask for approval ──
             if is_planning and full_text:
                 yield make_event(EngineEvent.PLAN_GENERATED, plan=full_text)
-                yield make_event(EngineEvent.STEP_END, step=0, elapsed=step_elapsed)
+                yield self._step_end_event(0, step_elapsed, done_model, done_stats)
 
                 # The TUI handles plan approval flow and sends back
                 # PLAN_APPROVE / PLAN_REJECT / PLAN_EDIT
@@ -3599,7 +3655,7 @@ class Session:
                 )
                 # The post-tool-call block below may inject one recovery hint.
             # ── Continue or stop ──
-            yield make_event(EngineEvent.STEP_END, step=exec_step, elapsed=step_elapsed)
+            yield self._step_end_event(exec_step, step_elapsed, done_model, done_stats)
 
             # A steer that arrived during this inference or tool batch belongs
             # to the same turn. Consume it before normal completion so even a

@@ -10,8 +10,10 @@ The TUI handles ONLY display and input. All logic lives in the engine.
 """
 
 import json
+import html
 import io
 import os
+import re
 import sys
 import argparse
 import logging
@@ -162,20 +164,74 @@ def _tool_info(name: str) -> tuple:
     return TOOL_DISPLAY.get(name, ("⚙", name, C_TOOL))
 
 
+# Backslashes before a "[" that doesn't open a tag, by the tag pattern Rich's
+# parser and `escape` share (rich.markup.RE_TAGS).
+_BACKSLASHES_BEFORE_PLAIN_BRACKET = re.compile(r"\\+(?=\[(?![a-z#/@][^[]*\]))")
+
+
+def _esc(value) -> str:
+    """
+    `value` as markup that prints exactly as written, for text the TUI didn't
+    write: tool arguments and output, the model's words, model and folder
+    names, errors, what the person typed. Escape the whole run of text
+    before a closing tag, quotes included (`_esc(f"'{pattern}'")`), and
+    print the line with `_print`.
+
+    `rich.markup.escape` escapes what would read as a tag. Backslashes need
+    two more fixes: Rich drops one before a "[" that doesn't open a tag (a
+    regex's escaped bracket), so each such run gets one more; and trailing
+    ones would escape the closing tag, so all of them are doubled, not only
+    a single one. Doubled, they print right only directly before a tag.
+    """
+    text = str(value)
+    body = text.rstrip("\\")
+    trailing = "\\" * (2 * (len(text) - len(body)))
+    return escape(_BACKSLASHES_BEFORE_PLAIN_BRACKET.sub(r"\g<0>\\", body)) + trailing
+
+
+def _print(markup: str):
+    """
+    Print a line of the TUI's display without emoji codes or highlighting,
+    so outside text in it (see `_esc`) reads as written: ":x:" stays text
+    and Rich adds no styles of its own. A turn's lines without outside text
+    print this way too, so numbers look the same on every line.
+    """
+    console.print(markup, emoji=False, highlight=False)
+
+
+# What XML can't hold even escaped: characters below space other than tab
+# and line breaks, U+FFFE and U+FFFF, and lone surrogates (Python's
+# stand-ins for bytes of a POSIX file name that aren't UTF-8).
+_NOT_XML_CHARS = re.compile(r"[^\t\n\r\x20-\ud7ff\ue000-\ufffd\U00010000-\U0010ffff]")
+
+
+def _html_esc(value) -> str:
+    """
+    `value` as text inside a prompt_toolkit `HTML(...)` prompt, for text the
+    TUI didn't write: the working folder's name, a tool's name. `HTML`
+    parses XML, so "R&D" or "a<b" raised `ExpatError` there; a character
+    XML can't hold at all shows as U+FFFD.
+    """
+    return html.escape(_NOT_XML_CHARS.sub("\ufffd", str(value)))
+
+
 def _inline_tool(icon: str, desc: str, meta: str = "", color: str = C_MUTED):
-    """Render a single-line inline tool display (opencode InlineTool pattern)."""
-    meta_part = f"  [{C_DIM}]({meta})[/{C_DIM}]" if meta else ""
-    console.print(f"  [{C_DIMMER}]{G_SPLIT}[/{C_DIMMER}] [{color}]{icon}[/{color}] [{C_TEXT}]{desc}[/{C_TEXT}]{meta_part}")
+    """
+    Render a single-line inline tool display (opencode InlineTool pattern).
+    `desc` is markup, its outside text escaped; `meta` prints as written.
+    """
+    meta_part = f"  [{C_DIM}]{_esc(f'({meta})')}[/{C_DIM}]" if meta else ""
+    _print(f"  [{C_DIMMER}]{G_SPLIT}[/{C_DIMMER}] [{color}]{icon}[/{color}] [{C_TEXT}]{desc}[/{C_TEXT}]{meta_part}")
 
 
 def _block_tool_start(icon: str, title: str, color: str = C_TOOL):
-    """Start a block tool display — title line with split border."""
-    console.print(f"  [{color}]{G_SPLIT}[/{color}] [{color}]{icon} {title}[/{color}]")
+    """Start a block tool display — title line with split border. `title` is markup, its outside text escaped."""
+    _print(f"  [{color}]{G_SPLIT}[/{color}] [{color}]{icon} {title}[/{color}]")
 
 
 def _block_tool_line(text: str, color: str = C_DIM):
-    """Add a line inside a block tool display."""
-    console.print(f"  [{C_DIMMER}]{G_VLINE}[/{C_DIMMER}]   [{color}]{text}[/{color}]")
+    """Add a line inside a block tool display; `text` prints as written."""
+    _print(f"  [{C_DIMMER}]{G_VLINE}[/{C_DIMMER}]   [{color}]{_esc(text)}[/{color}]")
 
 
 def _block_tool_end():
@@ -214,8 +270,7 @@ def _print_denial_reason(reason: str, lead: int, pad: int):
     width = max(console.width - (lead + 1 + pad), 20)
     for line in Text(reason).wrap(console, width):
         # Escaped after wrapping: a break must not split an escape apart.
-        console.print(f"{prefix}[{C_DIM}]{escape(line.plain.rstrip())}[/{C_DIM}]",
-                      emoji=False, highlight=False)
+        _print(f"{prefix}[{C_DIM}]{_esc(line.plain.rstrip())}[/{C_DIM}]")
 
 
 def _render_tool_call(event: dict):
@@ -242,7 +297,7 @@ def _render_tool_call(event: dict):
         line_count = len(lines)
         lang = _detect_lang(fpath)
 
-        _block_tool_start(icon, f"{label} [{C_FILE}]{fpath}[/{C_FILE}]", color=C_OK)
+        _block_tool_start(icon, f"{label} [{C_FILE}]{_esc(fpath)}[/{C_FILE}]", color=C_OK)
 
         # Syntax-highlighted preview with split border
         preview = "\n".join(lines[:15])
@@ -263,7 +318,7 @@ def _render_tool_call(event: dict):
         old_text = args.get("old_text", "")
         new_text = args.get("new_text", "")
 
-        _block_tool_start(icon, f"{label} [{C_FILE}]{fpath}[/{C_FILE}]", color=C_WARN)
+        _block_tool_start(icon, f"{label} [{C_FILE}]{_esc(fpath)}[/{C_FILE}]", color=C_WARN)
 
         old_lines = old_text.split("\n")
         new_lines = new_text.split("\n")
@@ -272,20 +327,21 @@ def _render_tool_call(event: dict):
             colored_lines = []
             for line in diff[2:20]:
                 if line.startswith("+"):
-                    colored_lines.append(f"[{C_OK}]  + {line[1:]}[/{C_OK}]")
+                    colored_lines.append(f"[{C_OK}]  + {_esc(line[1:])}[/{C_OK}]")
                 elif line.startswith("-"):
-                    colored_lines.append(f"[{C_ERR}]  - {line[1:]}[/{C_ERR}]")
+                    colored_lines.append(f"[{C_ERR}]  - {_esc(line[1:])}[/{C_ERR}]")
                 elif line.startswith("@@"):
                     colored_lines.append(f"[{C_BRAND}]  {line}[/{C_BRAND}]")
                 else:
-                    colored_lines.append(f"[{C_DIM}]    {line}[/{C_DIM}]")
+                    colored_lines.append(f"[{C_DIM}]    {_esc(line)}[/{C_DIM}]")
             if len(diff) > 20:
                 colored_lines.append(f"[{C_DIM}]    {G_THINK} {len(diff) - 20} more lines[/{C_DIM}]")
             added = sum(1 for line in diff[2:] if line.startswith("+"))
             removed = sum(1 for line in diff[2:] if line.startswith("-"))
             subtitle = f"[{C_OK}]+{added}[/{C_OK}] [{C_ERR}]-{removed}[/{C_ERR}]"
             console.print(Panel(
-                "\n".join(colored_lines),
+                # The edit's own text, so no emoji codes (a str would get them).
+                Text.from_markup("\n".join(colored_lines), emoji=False),
                 border_style=C_DIMMER,
                 padding=(0, 1),
                 expand=False,
@@ -298,23 +354,23 @@ def _render_tool_call(event: dict):
     elif name == "file_read":
         # Inline — single line, no block needed
         fpath = args.get("path", "")
-        _inline_tool(icon, f"[{C_FILE}]{fpath}[/{C_FILE}]", color=C_TOOL)
+        _inline_tool(icon, f"[{C_FILE}]{_esc(fpath)}[/{C_FILE}]", color=C_TOOL)
 
     elif name == "glob":
         pattern = args.get("pattern", "")
         base = args.get("path", ".")
-        _inline_tool(icon, f"{pattern}", meta=base, color=C_TOOL)
+        _inline_tool(icon, _esc(pattern), meta=base, color=C_TOOL)
 
     elif name == "grep":
         pattern = args.get("pattern", "")
         path = args.get("path", ".")
-        _inline_tool(icon, f"'{pattern}'", meta=path, color=C_TOOL)
+        _inline_tool(icon, _esc(f"'{pattern}'"), meta=path, color=C_TOOL)
 
     elif name == "task":
         prompt = args.get("prompt", "")
         agent_type = args.get("agent_type", "explore")
         display_prompt = prompt if len(prompt) < 80 else prompt[:77] + "..."
-        _block_tool_start(icon, f"{label} [{C_BRAND2}]{agent_type}[/{C_BRAND2}] agent", color=C_BRAND2)
+        _block_tool_start(icon, f"{label} [{C_BRAND2}]{_esc(agent_type)}[/{C_BRAND2}] agent", color=C_BRAND2)
         _block_tool_line(f'"{display_prompt}"', color=C_TEXT)
 
     elif name == "batch":
@@ -339,16 +395,17 @@ def _render_tool_call(event: dict):
     # ── Browser tools ──
     elif name == "browser_navigate":
         url = args.get("url", "")
-        _inline_tool(icon, f"[{C_FILE}]{url}[/{C_FILE}]", color=C_BRAND2)
+        _inline_tool(icon, f"[{C_FILE}]{_esc(url)}[/{C_FILE}]", color=C_BRAND2)
     elif name == "browser_click":
         text = args.get("text", "")
         selector = args.get("selector", "")
         target = text or selector or f"({args.get('x', '?')}, {args.get('y', '?')})"
-        _inline_tool(icon, f"Click [{C_TEXT}]{target}[/{C_TEXT}]", color=C_BRAND2)
+        _inline_tool(icon, f"Click [{C_TEXT}]{_esc(target)}[/{C_TEXT}]", color=C_BRAND2)
     elif name == "browser_type":
         text = args.get("text", "")
         display = text if len(text) < 40 else text[:37] + "..."
-        _inline_tool(icon, f"Type [{C_TEXT}]'{display}'[/{C_TEXT}]", color=C_BRAND2)
+        quoted = _esc(f"'{display}'")
+        _inline_tool(icon, f"Type [{C_TEXT}]{quoted}[/{C_TEXT}]", color=C_BRAND2)
     elif name == "browser_read":
         mode = args.get("mode", "text")
         selector = args.get("selector", "")
@@ -373,22 +430,23 @@ def _render_tool_call(event: dict):
         button = args.get("button", "left")
         clicks = args.get("clicks", 1)
         click_type = "Double-click" if clicks == 2 else "Click"
-        _inline_tool(icon, f"{click_type} ({x}, {y})", meta=button, color=C_WARN)
+        _inline_tool(icon, _esc(f"{click_type} ({x}, {y})"), meta=button, color=C_WARN)
     elif name == "computer_type":
         text = args.get("text", "")
         key = args.get("key", "") or args.get("hotkey", "")
         if key:
-            _inline_tool(icon, f"Press [{C_TEXT}]{key}[/{C_TEXT}]", color=C_WARN)
+            _inline_tool(icon, f"Press [{C_TEXT}]{_esc(key)}[/{C_TEXT}]", color=C_WARN)
         else:
             display = text if len(text) < 40 else text[:37] + "..."
-            _inline_tool(icon, f"Type [{C_TEXT}]'{display}'[/{C_TEXT}]", color=C_WARN)
+            quoted = _esc(f"'{display}'")
+            _inline_tool(icon, f"Type [{C_TEXT}]{quoted}[/{C_TEXT}]", color=C_WARN)
     elif name == "computer_scroll":
         direction = args.get("direction", "down")
         amount = args.get("amount", 3)
-        _inline_tool(icon, f"Scroll {direction} ×{amount}", color=C_WARN)
+        _inline_tool(icon, _esc(f"Scroll {direction} ×{amount}"), color=C_WARN)
 
     else:
-        _inline_tool("⚙", name, color=C_TOOL)
+        _inline_tool("⚙", _esc(name), color=C_TOOL)
 
 
 def _render_tool_result(event: dict):
@@ -408,7 +466,7 @@ def _render_tool_result(event: dict):
     if denied:
         # A refused call never ran, so its output is the reason why.
         reason = _tool_denial_reason(event)
-        console.print(f"  [{C_DIMMER}]{G_VLINE}[/{C_DIMMER}]   {_denial_status(reason)}")
+        _print(f"  [{C_DIMMER}]{G_VLINE}[/{C_DIMMER}]   {_denial_status(reason)}")
         _print_denial_reason(reason, lead=2, pad=5)
         return
 
@@ -447,17 +505,17 @@ def _render_tool_result(event: dict):
     elif name == "file_read":
         lines_count = metadata.get("lines", 0)
         if is_error:
-            console.print(f"  [{C_DIMMER}]{G_VLINE}[/{C_DIMMER}]   [{C_ERR}]{G_CROSS} {output}[/{C_ERR}]")
+            _print(f"  [{C_DIMMER}]{G_VLINE}[/{C_DIMMER}]   [{C_ERR}]{G_CROSS} {_esc(output)}[/{C_ERR}]")
         elif lines_count:
-            console.print(f"  [{C_DIMMER}]{G_VLINE}[/{C_DIMMER}]   [{C_DIM}]{lines_count} lines[/{C_DIM}]")
+            _print(f"  [{C_DIMMER}]{G_VLINE}[/{C_DIMMER}]   [{C_DIM}]{lines_count} lines[/{C_DIM}]")
 
     elif name == "glob":
         count = metadata.get("count", 0)
-        console.print(f"  [{C_DIMMER}]{G_VLINE}[/{C_DIMMER}]   [{C_DIM}]{count} files[/{C_DIM}]")
+        _print(f"  [{C_DIMMER}]{G_VLINE}[/{C_DIMMER}]   [{C_DIM}]{count} files[/{C_DIM}]")
 
     elif name == "grep":
         count = metadata.get("count", 0)
-        console.print(f"  [{C_DIMMER}]{G_VLINE}[/{C_DIMMER}]   [{C_DIM}]{count} matches[/{C_DIM}]")
+        _print(f"  [{C_DIMMER}]{G_VLINE}[/{C_DIMMER}]   [{C_DIM}]{count} matches[/{C_DIM}]")
 
     elif name == "task":
         agent_type = metadata.get("agent_type", "")
@@ -481,28 +539,28 @@ def _render_tool_result(event: dict):
         icon = G_CHECK if not is_error else G_CROSS
         style = C_OK if not is_error else C_ERR
         if is_error:
-            console.print(f"  [{C_DIMMER}]{G_VLINE}[/{C_DIMMER}]   [{style}]{icon} {output}[/{style}]")
+            _print(f"  [{C_DIMMER}]{G_VLINE}[/{C_DIMMER}]   [{style}]{icon} {_esc(output)}[/{style}]")
         else:
-            console.print(f"  [{C_DIMMER}]{G_VLINE}[/{C_DIMMER}]   [{style}]{icon}[/{style}] [{C_DIM}]{title}[/{C_DIM}]")
+            _print(f"  [{C_DIMMER}]{G_VLINE}[/{C_DIMMER}]   [{style}]{icon}[/{style}] [{C_DIM}]{_esc(title)}[/{C_DIM}]")
     elif name in ("browser_click", "browser_type"):
         icon = G_CHECK if not is_error else G_CROSS
         style = C_OK if not is_error else C_ERR
-        console.print(f"  [{C_DIMMER}]{G_VLINE}[/{C_DIMMER}]   [{style}]{icon} {output}[/{style}]")
+        _print(f"  [{C_DIMMER}]{G_VLINE}[/{C_DIMMER}]   [{style}]{icon} {_esc(output)}[/{style}]")
     elif name == "browser_read":
         chars = metadata.get("chars", 0)
         if is_error:
-            console.print(f"  [{C_DIMMER}]{G_VLINE}[/{C_DIMMER}]   [{C_ERR}]{G_CROSS} {output}[/{C_ERR}]")
+            _print(f"  [{C_DIMMER}]{G_VLINE}[/{C_DIMMER}]   [{C_ERR}]{G_CROSS} {_esc(output)}[/{C_ERR}]")
         else:
-            console.print(f"  [{C_DIMMER}]{G_VLINE}[/{C_DIMMER}]   [{C_DIM}]{chars:,} chars[/{C_DIM}]")
+            _print(f"  [{C_DIMMER}]{G_VLINE}[/{C_DIMMER}]   [{C_DIM}]{chars:,} chars[/{C_DIM}]")
     elif name == "browser_screenshot":
         size_bytes = metadata.get("size_bytes", 0)
         size_kb = size_bytes / 1024 if size_bytes else 0
         icon = G_CHECK if not is_error else G_CROSS
         style = C_OK if not is_error else C_ERR
         if is_error:
-            console.print(f"  [{C_DIMMER}]{G_VLINE}[/{C_DIMMER}]   [{style}]{icon} {output}[/{style}]")
+            _print(f"  [{C_DIMMER}]{G_VLINE}[/{C_DIMMER}]   [{style}]{icon} {_esc(output)}[/{style}]")
         else:
-            console.print(f"  [{C_DIMMER}]{G_VLINE}[/{C_DIMMER}]   [{style}]{icon}[/{style}] [{C_DIM}]{size_kb:.0f}KB[/{C_DIM}]")
+            _print(f"  [{C_DIMMER}]{G_VLINE}[/{C_DIMMER}]   [{style}]{icon}[/{style}] [{C_DIM}]{size_kb:.0f}KB[/{C_DIM}]")
     elif name == "browser_js":
         lines = output.split("\n")
         if len(lines) > MAX_TOOL_OUTPUT_LINES:
@@ -522,19 +580,19 @@ def _render_tool_result(event: dict):
         icon = G_CHECK if not is_error else G_CROSS
         style = C_OK if not is_error else C_ERR
         if is_error:
-            console.print(f"  [{C_DIMMER}]{G_VLINE}[/{C_DIMMER}]   [{style}]{icon} {output}[/{style}]")
+            _print(f"  [{C_DIMMER}]{G_VLINE}[/{C_DIMMER}]   [{style}]{icon} {_esc(output)}[/{style}]")
         else:
-            console.print(f"  [{C_DIMMER}]{G_VLINE}[/{C_DIMMER}]   [{style}]{icon}[/{style}] [{C_DIM}]{w}×{h} · {size_kb:.0f}KB[/{C_DIM}]")
+            _print(f"  [{C_DIMMER}]{G_VLINE}[/{C_DIMMER}]   [{style}]{icon}[/{style}] [{C_DIM}]{w}×{h} · {size_kb:.0f}KB[/{C_DIM}]")
     elif name in ("computer_click", "computer_type", "computer_scroll"):
         icon = G_CHECK if not is_error else G_CROSS
         style = C_OK if not is_error else C_ERR
-        console.print(f"  [{C_DIMMER}]{G_VLINE}[/{C_DIMMER}]   [{style}]{icon} {output}[/{style}]")
+        _print(f"  [{C_DIMMER}]{G_VLINE}[/{C_DIMMER}]   [{style}]{icon} {_esc(output)}[/{style}]")
 
     else:
         if is_error:
-            console.print(f"  [{C_DIMMER}]{G_VLINE}[/{C_DIMMER}]   [{C_ERR}]{G_CROSS} {output}[/{C_ERR}]")
+            _print(f"  [{C_DIMMER}]{G_VLINE}[/{C_DIMMER}]   [{C_ERR}]{G_CROSS} {_esc(output)}[/{C_ERR}]")
         else:
-            console.print(f"  [{C_DIMMER}]{G_VLINE}[/{C_DIMMER}]   [{C_OK}]{G_CHECK}[/{C_OK}]")
+            _print(f"  [{C_DIMMER}]{G_VLINE}[/{C_DIMMER}]   [{C_OK}]{G_CHECK}[/{C_OK}]")
 
 
 def _render_step_start(event: dict):
@@ -549,16 +607,17 @@ def _render_step_start(event: dict):
 
     console.print()
 
+    # A label can name the tools the model called ("after grep").
     if step_type == "plan":
         console.print(f"  [{C_DIMMER}]{G_DASH * 60}[/{C_DIMMER}]")
-        console.print(f"  [{C_WARN}]{G_PLAN} Plan[/{C_WARN}]  [{C_DIM}]{label}[/{C_DIM}]")
+        _print(f"  [{C_WARN}]{G_PLAN} Plan[/{C_WARN}]  [{C_DIM}]{_esc(label)}[/{C_DIM}]")
     elif step == 1:
         console.print(f"  [{C_DIMMER}]{G_DASH * 60}[/{C_DIMMER}]")
-        console.print(f"  [{C_BRAND}]{G_STEP} Step {step}[/{C_BRAND}]")
+        _print(f"  [{C_BRAND}]{G_STEP} Step {step}[/{C_BRAND}]")
     else:
         console.print(f"  [{C_DIMMER}]{G_DASH * 60}[/{C_DIMMER}]")
-        ctx = f"  [{C_DIM}]{label}[/{C_DIM}]" if label else ""
-        console.print(f"  [{C_BRAND}]{G_STEP} Step {step}[/{C_BRAND}]{ctx}")
+        ctx = f"  [{C_DIM}]{_esc(label)}[/{C_DIM}]" if label else ""
+        _print(f"  [{C_BRAND}]{G_STEP} Step {step}[/{C_BRAND}]{ctx}")
 
 
 def _render_step_end(event: dict, model: str = None, stats: dict = None):
@@ -582,7 +641,7 @@ def _render_step_end(event: dict, model: str = None, stats: dict = None):
         elif input_tok and output_tok:
             parts.append(f"{input_tok}→{output_tok} tok")
     parts.append(f"{elapsed:.1f}s")
-    console.print(f"  [{C_DIM}]{G_SQUARE} {' · '.join(parts)}[/{C_DIM}]")
+    _print(f"  [{C_DIM}]{G_SQUARE} {_esc(' · '.join(parts))}[/{C_DIM}]")
 
 
 def _render_status(event: dict):
@@ -594,7 +653,7 @@ def _render_status(event: dict):
     cog_state = event.get("cognitive_state")
 
     if model:
-        parts.append(f"[{C_BRAND2}]{model}[/{C_BRAND2}]")
+        parts.append(f"[{C_BRAND2}]{_esc(model)}[/{C_BRAND2}]")
 
     if cog_state:
         energy = cog_state.get("energy", 0)
@@ -606,7 +665,7 @@ def _render_status(event: dict):
         if clusters:
             parts.append(f"[{C_MUTED}]{clusters} clusters[/{C_MUTED}]")
         if mode:
-            parts.append(f"[{C_MUTED}]{mode}[/{C_MUTED}]")
+            parts.append(f"[{C_MUTED}]{_esc(mode)}[/{C_MUTED}]")
 
     if stats:
         eval_count = stats.get("eval_count")
@@ -631,22 +690,23 @@ def _render_status(event: dict):
 
     if parts:
         sep = f" [{C_DIMMER}]·[/{C_DIMMER}] "
-        console.print(f"  {sep.join(parts)}")
+        _print(f"  {sep.join(parts)}")
 
 
 def _render_choices(options: list) -> str:
     """Render choices as a clean numbered menu and prompt the user to pick."""
     console.print()
     console.print(f"  [{C_BORDER}]{G_DASH * 40}[/{C_BORDER}]")
+    # The options are the model's words.
     for i, opt in enumerate(options):
         rec = f"  [{C_BRAND2}]recommended[/{C_BRAND2}]" if "(Recommended)" in opt or "(recommended)" in opt else ""
-        label = opt.replace("(Recommended)", "").replace("(recommended)", "").strip()
+        label = _esc(opt.replace("(Recommended)", "").replace("(recommended)", "").strip())
         if i == 0:
-            console.print(f"  [{C_BRAND}]{G_DOT}[/{C_BRAND}] [{C_DIM}]{i + 1}.[/{C_DIM}] [{C_TEXT}]{label}[/{C_TEXT}]{rec}")
+            _print(f"  [{C_BRAND}]{G_DOT}[/{C_BRAND}] [{C_DIM}]{i + 1}.[/{C_DIM}] [{C_TEXT}]{label}[/{C_TEXT}]{rec}")
         else:
-            console.print(f"    [{C_DIM}]{i + 1}.[/{C_DIM}] [{C_TEXT}]{label}[/{C_TEXT}]{rec}")
+            _print(f"    [{C_DIM}]{i + 1}.[/{C_DIM}] [{C_TEXT}]{label}[/{C_TEXT}]{rec}")
 
-    console.print(f"    [{C_DIM}]{len(options) + 1}. Other (type your own)[/{C_DIM}]")
+    _print(f"    [{C_DIM}]{len(options) + 1}. Other (type your own)[/{C_DIM}]")
     console.print()
 
     try:
@@ -660,17 +720,17 @@ def _render_choices(options: list) -> str:
         idx = int(answer) - 1
         if 0 <= idx < len(options):
             selected = options[idx].replace("(Recommended)", "").replace("(recommended)", "").strip()
-            console.print(f"  [{C_OK}]{G_CHECK} {selected}[/{C_OK}]")
+            _print(f"  [{C_OK}]{G_CHECK} {_esc(selected)}[/{C_OK}]")
             return selected
         elif idx == len(options):
             custom = pt_prompt(HTML(f'<style fg="#{C_BRAND[1:]}">  Your choice: </style>')).strip()
             if custom:
-                console.print(f"  [{C_OK}]{G_CHECK} {custom}[/{C_OK}]")
+                _print(f"  [{C_OK}]{G_CHECK} {_esc(custom)}[/{C_OK}]")
                 return custom
             return options[0]
     except ValueError:
         if answer:
-            console.print(f"  [{C_OK}]{G_CHECK} {answer}[/{C_OK}]")
+            _print(f"  [{C_OK}]{G_CHECK} {_esc(answer)}[/{C_OK}]")
             return answer
 
     return options[0]
@@ -713,15 +773,15 @@ def _flush_collapsed_group(group: list):
             summary_parts.append(f"{label}")
         else:
             summary_parts.append(f"{label} ×{count}")
-    summary = ", ".join(summary_parts)
+    summary = _esc(", ".join(summary_parts))
 
     # Header
     console.print()
     console.print(f"  [{C_DIMMER}]{G_DASH * 60}[/{C_DIMMER}]")
     if first_step == last_step:
-        console.print(f"  [{C_BRAND}]{G_STEP} Step {first_step}[/{C_BRAND}]  [{C_DIM}]{summary}[/{C_DIM}]")
+        _print(f"  [{C_BRAND}]{G_STEP} Step {first_step}[/{C_BRAND}]  [{C_DIM}]{summary}[/{C_DIM}]")
     else:
-        console.print(f"  [{C_BRAND}]{G_STEP} Steps {first_step}–{last_step}[/{C_BRAND}]  [{C_DIM}]{summary}[/{C_DIM}]")
+        _print(f"  [{C_BRAND}]{G_STEP} Steps {first_step}–{last_step}[/{C_BRAND}]  [{C_DIM}]{summary}[/{C_DIM}]")
 
     # Compact tool lines — one per tool call
     for g in group:
@@ -746,23 +806,24 @@ def _flush_collapsed_group(group: list):
                 meta = f"{lines_count} lines" if lines_count else ""
                 status = f"[{C_ERR}]{G_CROSS}[/{C_ERR}]" if is_error else ""
                 detail = refusal or f"[{C_DIM}]{meta}[/{C_DIM}] {status}"
-                console.print(f"    [{C_DIMMER}]{G_VLINE}[/{C_DIMMER}] [{color}]{icon}[/{color}] [{C_FILE}]{short}[/{C_FILE}]  {detail}")
+                _print(f"    [{C_DIMMER}]{G_VLINE}[/{C_DIMMER}] [{color}]{icon}[/{color}] [{C_FILE}]{_esc(short)}[/{C_FILE}]  {detail}")
 
             elif name == "glob":
                 pattern = args.get("pattern", "")
                 count = metadata.get("count", 0)
                 detail = refusal or f"[{C_DIM}]{count} files[/{C_DIM}]"
-                console.print(f"    [{C_DIMMER}]{G_VLINE}[/{C_DIMMER}] [{color}]{icon}[/{color}] [{C_TEXT}]{pattern}[/{C_TEXT}]  {detail}")
+                _print(f"    [{C_DIMMER}]{G_VLINE}[/{C_DIMMER}] [{color}]{icon}[/{color}] [{C_TEXT}]{_esc(pattern)}[/{C_TEXT}]  {detail}")
 
             elif name == "grep":
                 pattern = args.get("pattern", "")
+                quoted = _esc(f"'{pattern}'")
                 count = metadata.get("count", 0)
                 detail = refusal or f"[{C_DIM}]{count} matches[/{C_DIM}]"
-                console.print(f"    [{C_DIMMER}]{G_VLINE}[/{C_DIMMER}] [{color}]{icon}[/{color}] [{C_TEXT}]'{pattern}'[/{C_TEXT}]  {detail}")
+                _print(f"    [{C_DIMMER}]{G_VLINE}[/{C_DIMMER}] [{color}]{icon}[/{color}] [{C_TEXT}]{quoted}[/{C_TEXT}]  {detail}")
 
             else:
                 detail = f"  {refusal}" if refusal else ""
-                console.print(f"    [{C_DIMMER}]{G_VLINE}[/{C_DIMMER}] [{color}]{icon}[/{color}] [{C_TEXT}]{name}[/{C_TEXT}]{detail}")
+                _print(f"    [{C_DIMMER}]{G_VLINE}[/{C_DIMMER}] [{color}]{icon}[/{color}] [{C_TEXT}]{_esc(name)}[/{C_TEXT}]{detail}")
 
             # Under the path or pattern, past the tool's icon.
             _print_denial_reason(reason, lead=4, pad=3)
@@ -779,7 +840,7 @@ def _flush_collapsed_group(group: list):
         if input_tok and output_tok:
             parts.append(f"{input_tok}{G_ARROW}{output_tok} tok")
     parts.append(f"{total_elapsed:.1f}s")
-    console.print(f"  [{C_DIM}]{G_SQUARE} {' · '.join(parts)}[/{C_DIM}]")
+    _print(f"  [{C_DIM}]{G_SQUARE} {_esc(' · '.join(parts))}[/{C_DIM}]")
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -928,7 +989,8 @@ def consume_events(event_stream, on_permission=None):
             if options:
                 before = event.get("before", "")
                 if before:
-                    console.print(f"  {before}")
+                    # The model's words, unstyled: no markup to escape into.
+                    console.print(f"  {before}", markup=False, emoji=False, highlight=False)
 
         elif etype == EngineEvent.PLAN_GENERATED.value:
             pass  # Plan was streamed via TEXT_DELTA
@@ -940,14 +1002,14 @@ def consume_events(event_stream, on_permission=None):
             agent_type = event.get("agent_type", "")
             prompt = event.get("prompt", "")
             display_prompt = prompt if len(prompt) < 70 else prompt[:67] + "..."
-            console.print(f"  [{C_BRAND2}]{G_SPLIT}[/{C_BRAND2}] [{C_BRAND2}]│ Task[/{C_BRAND2}]  [{C_MUTED}]{agent_type} agent[/{C_MUTED}]")
-            console.print(f"  [{C_DIMMER}]{G_VLINE}[/{C_DIMMER}]   [{C_DIM}]\"{display_prompt}\"[/{C_DIM}]")
+            _print(f"  [{C_BRAND2}]{G_SPLIT}[/{C_BRAND2}] [{C_BRAND2}]│ Task[/{C_BRAND2}]  [{C_MUTED}]{_esc(f'{agent_type} agent')}[/{C_MUTED}]")
+            _block_tool_line(f'"{display_prompt}"', color=C_DIM)
 
         elif etype == EngineEvent.SUBAGENT_END.value:
             agent_type = event.get("agent_type", "")
             steps = event.get("steps", 0)
             elapsed = event.get("elapsed", 0)
-            console.print(f"  [{C_DIMMER}]{G_VLINE}[/{C_DIMMER}]   [{C_OK}]{G_CHECK} {agent_type} · {steps} steps · {elapsed:.1f}s[/{C_OK}]")
+            _block_tool_line(f"{G_CHECK} {agent_type} · {steps} steps · {elapsed:.1f}s", color=C_OK)
 
         elif etype == EngineEvent.ERROR.value:
             if spinner_live:
@@ -955,7 +1017,7 @@ def consume_events(event_stream, on_permission=None):
                 spinner_live = None
             _ensure_step_rendered()
             msg = event.get("message", "Unknown error")
-            console.print(f"\n  [{C_ERR}]{G_CROSS} {msg}[/{C_ERR}]")
+            _print(f"\n  [{C_ERR}]{G_CROSS} {_esc(msg)}[/{C_ERR}]")
 
         elif etype == EngineEvent.SESSION_END.value:
             if spinner_live:
@@ -970,7 +1032,7 @@ def consume_events(event_stream, on_permission=None):
             if total_steps > 1:
                 console.print()
                 console.print(f"  [{C_DIMMER}]{G_DASH * 60}[/{C_DIMMER}]")
-                console.print(f"  [{C_OK}]{G_CHECK}[/{C_OK}] [{C_MUTED}]Done[/{C_MUTED}]  [{C_DIM}]{total_steps} steps · {total_elapsed:.1f}s[/{C_DIM}]")
+                _print(f"  [{C_OK}]{G_CHECK}[/{C_OK}] [{C_MUTED}]Done[/{C_MUTED}]  [{C_DIM}]{total_steps} steps · {total_elapsed:.1f}s[/{C_DIM}]")
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -1000,25 +1062,26 @@ def print_banner(backend=None, health_info: dict = None):
         model = health_info.get("model", "")
         label = _BACKEND_LABELS.get(backend_name, backend_name)
 
-        # Backend + model on one line with connection dot
-        console.print(f"  [{C_OK}]{G_DOT}[/{C_OK}] [{C_MUTED}]backend[/{C_MUTED}]  [{C_BRAND2}]{label}[/{C_BRAND2}]", end="")
+        # Backend + model on one line with connection dot; the backend
+        # reports both names.
+        line = f"  [{C_OK}]{G_DOT}[/{C_OK}] [{C_MUTED}]backend[/{C_MUTED}]  [{C_BRAND2}]{_esc(label)}[/{C_BRAND2}]"
         if model:
-            console.print(f"  [{C_DIMMER}]·[/{C_DIMMER}]  [{C_TEXT}]{model}[/{C_TEXT}]", end="")
+            line += f"  [{C_DIMMER}]·[/{C_DIMMER}]  [{C_TEXT}]{_esc(model)}[/{C_TEXT}]"
 
         # Lumi-specific status
         if backend_name == "resonant":
             patterns = health_info.get('memory_patterns', 0)
             energy = health_info.get('energy', 0)
             if patterns:
-                console.print(f"  [{C_DIMMER}]·[/{C_DIMMER}]  [{C_MUTED}]{patterns:,} patterns[/{C_MUTED}]", end="")
+                line += f"  [{C_DIMMER}]·[/{C_DIMMER}]  [{C_MUTED}]{patterns:,} patterns[/{C_MUTED}]"
             if energy:
-                console.print(f"  [{C_DIMMER}]·[/{C_DIMMER}]  [{C_OK}]{energy:.0%}[/{C_OK}]", end="")
-        console.print()
+                line += f"  [{C_DIMMER}]·[/{C_DIMMER}]  [{C_OK}]{energy:.0%}[/{C_OK}]"
+        _print(line)
 
     # CWD and help
     cwd = os.getcwd()
     cwd_display = cwd.replace("\\", "/")  # Normalize for display
-    console.print(f"    [{C_MUTED}]cwd[/{C_MUTED}]      [{C_FILE}]{cwd_display}[/{C_FILE}]")
+    _print(f"    [{C_MUTED}]cwd[/{C_MUTED}]      [{C_FILE}]{_esc(cwd_display)}[/{C_FILE}]")
     console.print(f"    [{C_MUTED}]help[/{C_MUTED}]     [{C_DIM}]/help · /plan · /model · /backend · /quit[/{C_DIM}]")
     console.print()
 
@@ -1063,11 +1126,12 @@ def _select_model_interactive(models: list, current: str = None) -> str:
     console.print()
     console.print(f"  [{C_BRAND} bold]Models[/{C_BRAND} bold]")
     console.print(f"  [{C_BORDER}]{G_DASH * 40}[/{C_BORDER}]")
+    # The names are the server's.
     for i, model in enumerate(models):
         if model == current:
-            console.print(f"  [{C_BRAND}]{G_DOT}[/{C_BRAND}] [{C_BRAND}]{i + 1}.[/{C_BRAND}] [{C_TEXT}]{model}[/{C_TEXT}]  [{C_DIM}](current)[/{C_DIM}]")
+            _print(f"  [{C_BRAND}]{G_DOT}[/{C_BRAND}] [{C_BRAND}]{i + 1}.[/{C_BRAND}] [{C_TEXT}]{_esc(model)}[/{C_TEXT}]  [{C_DIM}](current)[/{C_DIM}]")
         else:
-            console.print(f"    [{C_DIM}]{i + 1}.[/{C_DIM}] [{C_TEXT}]{model}[/{C_TEXT}]")
+            _print(f"    [{C_DIM}]{i + 1}.[/{C_DIM}] [{C_TEXT}]{_esc(model)}[/{C_TEXT}]")
 
     console.print()
     try:
@@ -1081,15 +1145,21 @@ def _select_model_interactive(models: list, current: str = None) -> str:
         idx = int(answer) - 1
         if 0 <= idx < len(models):
             selected = models[idx]
-            console.print(f"  [{C_OK}]{G_CHECK} {selected}[/{C_OK}]")
+            _print(f"  [{C_OK}]{G_CHECK} {_esc(selected)}[/{C_OK}]")
             return selected
     except ValueError:
         if answer in models:
-            console.print(f"  [{C_OK}]{G_CHECK} {answer}[/{C_OK}]")
+            _print(f"  [{C_OK}]{G_CHECK} {_esc(answer)}[/{C_OK}]")
             return answer
 
     console.print(f"  [{C_DIM}]Invalid — keeping current model[/{C_DIM}]")
     return current or models[0]
+
+
+def _print_model_not_found(model: str):
+    """The model asked for (`--model`, or Settings' default) isn't on the server."""
+    missing = _esc(f"Model '{model}' not found")
+    _print(f"  [{C_WARN}]{G_CROSS} {missing}[/{C_WARN}]")
 
 
 def _create_backend_from_available(target: str, available: dict):
@@ -1125,7 +1195,8 @@ def run_embedded(session: Session, user_msg: str, images: list = None):
     def on_permission(tool_name, tool_args):
         """Prompt user for tool approval."""
         try:
-            answer = pt_prompt(HTML(f'<style fg="#{C_WARN[1:]}">    Allow {tool_name}? [Y/n] </style>'))
+            # An MCP server names its own tools.
+            answer = pt_prompt(HTML(f'<style fg="#{C_WARN[1:]}">    Allow {_html_esc(tool_name)}? [Y/n] </style>'))
             return answer.strip().lower() not in ("n", "no")
         except (EOFError, KeyboardInterrupt):
             return False
@@ -1162,7 +1233,7 @@ def run_remote(ws_url: str):
 
     async def _connect():
         async with websockets.connect(ws_url) as ws:
-            console.print(f"  [{C_OK}]{G_CHECK} Connected to {ws_url}[/{C_OK}]")
+            _print(f"  [{C_OK}]{G_CHECK} Connected to {_esc(ws_url)}[/{C_OK}]")
 
             # Receive initial status
             raw = await ws.recv()
@@ -1176,7 +1247,7 @@ def run_remote(ws_url: str):
                 try:
                     cwd_short = Path(os.getcwd()).name
                     user_input = pt_prompt(
-                        HTML(f'<style fg="#{C_BRAND[1:]}"><b>{cwd_short}</b></style> <style fg="#{C_BRAND2[1:]}">{G_PROMPT}</style> '),
+                        HTML(f'<style fg="#{C_BRAND[1:]}"><b>{_html_esc(cwd_short)}</b></style> <style fg="#{C_BRAND2[1:]}">{G_PROMPT}</style> '),
                         history=history,
                     ).strip()
                 except (EOFError, KeyboardInterrupt):
@@ -1215,10 +1286,10 @@ def run_remote(ws_url: str):
                         total = event.get("total_elapsed", 0)
                         steps = event.get("total_steps", 0)
                         if steps > 1:
-                            console.print(f"\n  [{C_DIM}]{G_CHECK} Done · {total:.1f}s · {steps} steps[/{C_DIM}]")
+                            _print(f"\n  [{C_DIM}]{G_CHECK} Done · {total:.1f}s · {steps} steps[/{C_DIM}]")
                         break
                     elif etype == EngineEvent.ERROR.value:
-                        console.print(f"\n  [{C_ERR}]{G_CROSS} {event.get('message', '')}[/{C_ERR}]")
+                        _print(f"\n  [{C_ERR}]{G_CROSS} {_esc(event.get('message', ''))}[/{C_ERR}]")
                         if "step limit" in event.get("message", ""):
                             break
                     else:
@@ -1341,7 +1412,7 @@ Examples:
         console.print()
         console.print(f"  [{C_ERR}]{G_CROSS} Ollama not reachable[/{C_ERR}]")
         console.print(f"  [{C_BORDER}]{G_DASH * 50}[/{C_BORDER}]")
-        console.print(f"    [{C_DIM}]Checked: {ollama_url}[/{C_DIM}]")
+        _print(f"    [{C_DIM}]Checked: {_esc(ollama_url)}[/{C_DIM}]")
         console.print()
         console.print(f"  [{C_DIM}]Start Ollama or specify a different URL:[/{C_DIM}]")
         console.print(f"    [{C_TEXT}]ollama serve  # then re-run resonant[/{C_TEXT}]")
@@ -1409,10 +1480,11 @@ Examples:
                 hint = f"\n  [{C_DIM}]Set OPENAI_API_KEY and install: pip install resonant-client[openai][/{C_DIM}]"
             elif chosen == "lmstudio":
                 hint = f"\n  [{C_DIM}]Use --lmstudio-url or set LMSTUDIO_URL (e.g. http://192.168.1.50:1234)[/{C_DIM}]"
-            console.print(f"\n  [{C_ERR}]{G_CROSS} Backend '{chosen}' not available[/{C_ERR}]{hint}")
+            unavailable = _esc(f"Backend '{chosen}' not available")
+            _print(f"\n  [{C_ERR}]{G_CROSS} {unavailable}[/{C_ERR}]{hint}")
             if available:
                 fallback = list(available.keys())[0]
-                console.print(f"  [{C_DIM}]{G_ARROW} Falling back to {fallback}[/{C_DIM}]")
+                _print(f"  [{C_DIM}]{G_ARROW} Falling back to {_esc(fallback)}[/{C_DIM}]")
                 chosen = fallback
             else:
                 return
@@ -1427,11 +1499,11 @@ Examples:
         if not model:
             model = _select_model_interactive(ollama_info["models"])
         elif model not in ollama_info["models"]:
-            console.print(f"  [{C_WARN}]{G_CROSS} Model '{model}' not found[/{C_WARN}]")
+            _print_model_not_found(model)
             model = _select_model_interactive(ollama_info["models"])
         backend = create_backend("ollama", ollama_info["url"], model=model)
         health_info = backend.health()
-        console.print(f"  [{C_DIM}]{G_THINK} Warming up {model}[/{C_DIM}]")
+        _print(f"  [{C_DIM}]{G_THINK} Warming up {_esc(model)}[/{C_DIM}]")
         backend.warm_up()
     elif chosen == "claude":
         claude_info = available["claude"]
@@ -1439,7 +1511,7 @@ Examples:
         if not model:
             model = _select_model_interactive(claude_info["models"])
         elif model not in claude_info["models"]:
-            console.print(f"  [{C_WARN}]{G_CROSS} Model '{model}' not found[/{C_WARN}]")
+            _print_model_not_found(model)
             model = _select_model_interactive(claude_info["models"])
         backend = create_backend("claude", api_key=claude_info["api_key"], model=model)
         health_info = backend.health()
@@ -1449,7 +1521,7 @@ Examples:
         if not model:
             model = _select_model_interactive(openai_info["models"])
         elif model not in openai_info["models"]:
-            console.print(f"  [{C_WARN}]{G_CROSS} Model '{model}' not found[/{C_WARN}]")
+            _print_model_not_found(model)
             model = _select_model_interactive(openai_info["models"])
         backend = create_backend("openai", api_key=openai_info["api_key"], model=model)
         health_info = backend.health()
@@ -1459,7 +1531,7 @@ Examples:
         if not model:
             model = _select_model_interactive(lms_info["models"])
         elif model not in lms_info["models"]:
-            console.print(f"  [{C_WARN}]{G_CROSS} Model '{model}' not found[/{C_WARN}]")
+            _print_model_not_found(model)
             model = _select_model_interactive(lms_info["models"])
         backend = create_backend("lmstudio", api_key="lm-studio", model=model,
                                  base_url=lms_info["base_url"])
@@ -1526,7 +1598,7 @@ Examples:
             mode_indicator = '<style fg="ansiyellow"> plan </style>' if plan_mode else ""
             img_indicator = f'<style fg="ansigreen"> 📎{len(pending_images)} </style>' if pending_images else ""
             user_input = pt_prompt(
-                HTML(f'{img_indicator}{mode_indicator}<style fg="#{C_BRAND[1:]}"><b>{cwd_short}</b></style> <style fg="#{C_BRAND2[1:]}">{G_PROMPT}</style> '),
+                HTML(f'{img_indicator}{mode_indicator}<style fg="#{C_BRAND[1:]}"><b>{_html_esc(cwd_short)}</b></style> <style fg="#{C_BRAND2[1:]}">{G_PROMPT}</style> '),
                 history=history,
                 multiline=False,
                 key_bindings=kb,
@@ -1549,14 +1621,15 @@ Examples:
                 break
 
             elif cmd == "/cd":
+                # The error repeats the typed path ("/cd [/]").
                 if rest:
                     try:
                         os.chdir(rest)
-                        console.print(f"  [{C_FILE}]{G_ARROW} {os.getcwd()}[/{C_FILE}]")
+                        _print(f"  [{C_FILE}]{G_ARROW} {_esc(os.getcwd())}[/{C_FILE}]")
                     except Exception as e:
-                        console.print(f"  [{C_ERR}]{G_CROSS} {e}[/{C_ERR}]")
+                        _print(f"  [{C_ERR}]{G_CROSS} {_esc(e)}[/{C_ERR}]")
                 else:
-                    console.print(f"  [{C_FILE}]{os.getcwd()}[/{C_FILE}]")
+                    _print(f"  [{C_FILE}]{_esc(os.getcwd())}[/{C_FILE}]")
 
             elif cmd == "/clear":
                 session.clear()
@@ -1569,14 +1642,15 @@ Examples:
                     table = Table(show_header=False, border_style="dim", padding=(0, 1))
                     table.add_column(style=C_BRAND)
                     table.add_column()
+                    # Text cells: a str cell is markup, and these are the backend's words.
                     for k, v in health.items():
                         if k == "available_models":
-                            table.add_row(k, ", ".join(v) if isinstance(v, list) else str(v))
+                            table.add_row(Text(str(k)), Text(", ".join(v) if isinstance(v, list) else str(v)))
                         else:
-                            table.add_row(k, str(v))
+                            table.add_row(Text(str(k)), Text(str(v)))
                     console.print(table)
                 except Exception as e:
-                    console.print(f"  [{C_ERR}]{e}[/{C_ERR}]")
+                    _print(f"  [{C_ERR}]{_esc(e)}[/{C_ERR}]")
 
             elif cmd == "/model":
                 be = session.backend
@@ -1588,11 +1662,11 @@ Examples:
                             new_be = create_backend("ollama", be.base_url, model=new_model)
                             session.set_backend(new_be, reset_history=True)  # explicit user command — preserve "conversation cleared" UX
                             health_info = new_be.health()
-                            console.print(f"  [{C_DIM}]{G_THINK} Warming up {new_model}[/{C_DIM}]")
+                            _print(f"  [{C_DIM}]{G_THINK} Warming up {_esc(new_model)}[/{C_DIM}]")
                             new_be.warm_up()
-                            console.print(f"  [{C_OK}]{G_CHECK} Switched to {new_model} · conversation cleared[/{C_OK}]")
+                            _print(f"  [{C_OK}]{G_CHECK} Switched to {_esc(f'{new_model} · conversation cleared')}[/{C_OK}]")
                         else:
-                            console.print(f"  [{C_DIM}]Keeping {be.model}[/{C_DIM}]")
+                            _print(f"  [{C_DIM}]Keeping {_esc(be.model)}[/{C_DIM}]")
                     else:
                         console.print(f"  [{C_ERR}]{G_CROSS} Could not list models[/{C_ERR}]")
                 # v0.4.0 — Claude / OpenAI / Resonant Engine branches cut.
@@ -1606,7 +1680,7 @@ Examples:
                 else:
                     others = [k for k in new_available if k != session.backend.name]
                     if not others:
-                        console.print(f"  [{C_DIM}]Already using {session.backend.name} — no other backend available[/{C_DIM}]")
+                        _print(f"  [{C_DIM}]Already using {_esc(f'{session.backend.name} — no other backend available')}[/{C_DIM}]")
                     elif len(others) == 1:
                         target = others[0]
                         new_be = _create_backend_from_available(target, new_available)
@@ -1666,7 +1740,7 @@ Examples:
                     backend_desc += f" · {session.backend.model}"
 
                 console.print()
-                console.print(f"  [{C_BRAND}]{G_SPLIT}[/{C_BRAND}] [{C_BRAND} bold]Lumi Code Agent[/{C_BRAND} bold]  [{C_DIM}]{backend_desc}[/{C_DIM}]")
+                _print(f"  [{C_BRAND}]{G_SPLIT}[/{C_BRAND}] [{C_BRAND} bold]Lumi Code Agent[/{C_BRAND} bold]  [{C_DIM}]{_esc(backend_desc)}[/{C_DIM}]")
                 console.print(f"  [{C_DIMMER}]{G_DASH * 55}[/{C_DIMMER}]")
                 console.print()
                 console.print(f"  [{C_BRAND2}]Commands[/{C_BRAND2}]")
@@ -1692,7 +1766,7 @@ Examples:
                 console.print()
 
             else:
-                console.print(f"  [{C_DIM}]Unknown: {cmd} · try /help[/{C_DIM}]")
+                _print(f"  [{C_DIM}]Unknown: {_esc(f'{cmd} · try /help')}[/{C_DIM}]")
             continue
 
         # ── Run agent ──

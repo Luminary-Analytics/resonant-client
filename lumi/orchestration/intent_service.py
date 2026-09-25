@@ -23,6 +23,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
+from ..policy import full_auto_refusal
 from .audit import (
     log_decision,
     log_floor_violation,
@@ -114,6 +115,9 @@ class IntentService:
         `PLAN_DEEP` (research-first) instead. None falls through to
         `PLAN` for backwards compatibility with the regular Mission
         flow.
+
+        Raises ValueError for empty text, an unknown specialization, or an
+        organization policy that doesn't allow Full-auto (lumi/policy.py).
         """
         text = (text or "").strip()
         if not text:
@@ -124,6 +128,11 @@ class IntentService:
                 f"unknown planner specialization {spec!r}; "
                 f"expected one of {sorted(NodeSpecialization.ALL)}"
             )
+        # Specialists run in Full-auto; refused before anything is saved or
+        # started when the organization's policy doesn't allow it.
+        refusal = full_auto_refusal()
+        if refusal:
+            raise ValueError(refusal)
         graph = PlanGraph.new(text)
         root = PlanNode(
             id=new_node_id(),

@@ -81,6 +81,25 @@ class TestParse:
         ({**BASE, "shell": {"rules": [{"tool_pattern": "bash", "action": "deny",
                                        "arg_globs": {"command": ["curl*", 5]}}]}}, "arg_globs"),
         ({**BASE, "settings": {"security.shell_sandbox": "strict"}}, "shell_sandbox"),
+        # Sections of the wrong type. These raised something other than
+        # PolicyError, which load() didn't catch.
+        ({**BASE, "permissions": "ask only"}, "permissions must be an object"),
+        ({**BASE, "models": ["anthropic:*"]}, "models must be an object"),
+        ({**BASE, "mcp": 5}, "mcp must be an object"),
+        ({**BASE, "extensions": ["team-*"]}, "extensions must be an object"),
+        ({**BASE, "files": ".env"}, "files must be an object"),
+        ({**BASE, "pricing": "cheap"}, "pricing must be an object"),
+        ({**BASE, "settings": ["privacy.secret_scan"]}, "settings must be an object"),
+        ({**BASE, "cloud": "https://cloud.example.com"}, "cloud must be an object"),
+        ({**BASE, "approvals": []}, "approvals must be an object"),
+        ({**BASE, "trusted_keys": ["acme-1"]}, "trusted_keys must map"),
+        ({**BASE, "trusted_keys": {"acme-1": 5}}, "trusted_keys must map"),
+        ({**BASE, "grace_days": [7]}, "grace_days"),
+        ({**BASE, "grace_days": "a week"}, "grace_days"),
+        ({**BASE, "grace_days": True}, "grace_days"),
+        # Values that loosened what they control when written as text.
+        ({**BASE, "mcp": {"allow_stdio": "no"}}, "mcp.allow_stdio must be true or false"),
+        ({**BASE, "extensions": {"require_signed": "true"}}, "extensions.require_signed must be true or false"),
     ])
     def test_invalid_documents(self, document, message):
         with pytest.raises(PolicyError, match=message):
@@ -90,6 +109,15 @@ class TestParse:
         policy = parse(dict(BASE), source="test")
         assert policy.mode_allowed("bypass") and policy.model_allowed("any", "model")
         assert policy.mcp_server_allowed("x", stdio=True) and policy.pack_allowed("x")
+
+    def test_null_sections_are_empty_and_grace_days_may_be_text(self):
+        sections = ("settings", "permissions", "models", "mcp", "extensions", "files", "pricing",
+                    "shell", "approvals", "trusted_keys", "cloud")
+        policy = parse({**BASE, **dict.fromkeys(sections), "grace_days": "3"}, source="test")
+        assert policy.mode_allowed("bypass") and policy.mcp_server_allowed("x", stdio=True)
+        assert not policy.require_signed and policy.grace_days == 3
+        assert parse({**BASE, "mcp": {"allow_stdio": None}}, source="test").mcp_allow_stdio
+        assert parse({**BASE, "grace_days": None}, source="test").grace_days == 0
 
 
 class TestSignatures:
@@ -151,6 +179,67 @@ class TestSources:
         state = lumi_policy.load(force=True)
         assert state.policy is None and "invalid" in state.error
         assert "administrator" in lumi_policy.blocked_reason()
+
+    @pytest.mark.parametrize("raw", [
+        json.dumps({**BASE, "permissions": "ask only"}).encode(),
+        json.dumps({**BASE, "mcp": 5}).encode(),
+        json.dumps({**BASE, "trusted_keys": ["acme-1"]}).encode(),
+        json.dumps({**BASE, "grace_days": [7]}).encode(),
+        json.dumps(BASE).encode("utf-16"),  # Windows PowerShell 5.1's Out-File default
+        b'{"schema": "lumi.policy/v1", "x": ' + b"[" * 100_000 + b"]" * 100_000 + b"}",
+    ], ids=["permissions is text", "mcp is a number", "trusted_keys is a list", "grace_days is a list",
+            "UTF-16", "nested too deeply"])
+    def test_a_machine_policy_lumi_cant_use_blocks_on_every_load(self, tmp_path, monkeypatch, raw):
+        path = tmp_path / "policy.json"
+        path.write_bytes(raw)
+        monkeypatch.setattr(lumi_policy, "machine_policy_file", lambda: path)
+        # These used to raise from the first load; later loads then saw no policy at all.
+        first = lumi_policy.load(force=True)
+        assert first.policy is None and first.error
+        assert lumi_policy.load().error == first.error and lumi_policy.current() is None
+        assert "administrator" in lumi_policy.blocked_reason()
+
+    def test_a_policy_file_with_a_utf8_byte_order_mark_applies(self, tmp_path, monkeypatch):
+        # Windows PowerShell 5.1 writes one for -Encoding utf8; it used to make the policy invalid.
+        path = tmp_path / "policy.json"
+        path.write_text(json.dumps({**BASE, "permissions": {"allowed_modes": ["ask"]}}), encoding="utf-8-sig")
+        monkeypatch.setattr(lumi_policy, "machine_policy_file", lambda: path)
+        state = lumi_policy.load(force=True)
+        assert state.error == "" and not state.policy.mode_allowed("bypass")
+
+    def test_anything_unforeseen_while_loading_fails_closed(self, tmp_path, monkeypatch):
+        path = tmp_path / "policy.json"
+        path.write_text(json.dumps(BASE), encoding="utf-8")
+        monkeypatch.setattr(lumi_policy, "machine_policy_file", lambda: path)
+
+        def broken(*args, **kwargs):
+            raise RuntimeError("an unforeseen bug")
+
+        monkeypatch.setattr(lumi_policy, "parse", broken)
+        assert "is invalid: an unforeseen bug" in lumi_policy.load(force=True).error
+        monkeypatch.setattr(lumi_policy, "_load_text", broken)
+        state = lumi_policy.load(force=True)
+        assert state.policy is None and "couldn't be loaded: an unforeseen bug" in state.error
+        assert lumi_policy.load() is state and "administrator" in lumi_policy.blocked_reason()
+
+    def test_a_cloud_policy_lumi_cant_use_leaves_the_machine_policy(self, tmp_path, monkeypatch):
+        path = tmp_path / "policy.json"
+        path.write_text(json.dumps({**BASE, "models": {"allowed": ["ollama:*"]},
+                                    "cloud": {"url": "https://cloud.example.com"}}), encoding="utf-8")
+        monkeypatch.setattr(lumi_policy, "machine_policy_file", lambda: path)
+        lumi_policy.cloud_policy_path().parent.mkdir(parents=True, exist_ok=True)
+        lumi_policy.cloud_policy_path().write_text(json.dumps({"policy": {}, "signature": "x"}), encoding="utf-8")
+        parse_machine_policy = lumi_policy.parse
+
+        def parse(data, **kwargs):
+            if kwargs.get("require_signature"):
+                raise RuntimeError("an unforeseen bug")
+            return parse_machine_policy(data, **kwargs)
+
+        monkeypatch.setattr(lumi_policy, "parse", parse)
+        state = lumi_policy.load(force=True)
+        assert not state.cloud and state.policy.model_allowed("ollama", "qwen3")
+        assert "an unforeseen bug" in state.cloud_error and "machine policy applies instead" in state.cloud_error
 
     def test_a_shell_rule_that_cant_be_applied_blocks_instead_of_failing_tool_calls(self, tmp_path, monkeypatch):
         broken = tmp_path / "policy.json"

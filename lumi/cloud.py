@@ -178,6 +178,8 @@ class CloudClient:
         self._device_access: tuple[str, float] | None = None
         self.last_error = ""
         self.next_checkin = DEFAULT_CHECKIN_SECONDS
+        # Tasks from Slack and Teams (lumi/remote_tasks.py), when the app runs them.
+        self.remote_tasks: Any = None
         # The organization's shared credit, as the last check-in reported it.
         from . import budgets
 
@@ -228,6 +230,7 @@ class CloudClient:
             "policy_source": state.source if state.cloud else "",
             "cloud_error": state.cloud_error,
             "error": self.last_error,
+            "remote_tasks": self.remote_tasks.status() if self.remote_tasks is not None else None,
         }
 
     def _changed(self) -> None:
@@ -495,6 +498,11 @@ class CloudClient:
         token = str(answer.get("access_token") or "")
         self._device_access = (token, time.monotonic() + max(60, int(answer.get("expires_in") or 3600)) - 60)
         return token
+
+    def device_call(self, method: str, path: str, **kwargs: Any) -> dict:
+        """Lumi Cloud's device API as this computer (tasks from chat, lumi/remote_tasks.py); {} for no content."""
+        token = self._device_token()
+        return self._call(method, f"{self.url}{path}", headers={"Authorization": f"Bearer {token}"}, **kwargs)
 
     def check_in(self) -> dict:
         """Report to Lumi Cloud and apply a new policy if there is one."""

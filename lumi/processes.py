@@ -7,8 +7,12 @@ import sys
 from typing import Any
 
 
-def windows_kill_job(process):
-    """Own a process tree until this handle closes, including application exit."""
+def windows_kill_job(process, *, kill_on_close: bool = True):
+    """Own a process tree until this handle closes, including application exit.
+
+    With ``kill_on_close=False`` the job only groups the tree: closing the
+    handle leaves it running, and ``terminate_windows_job`` stops it.
+    """
     if sys.platform != 'win32':
         return None
     import ctypes
@@ -25,17 +29,24 @@ def windows_kill_job(process):
     api.CreateJobObjectW.restype = wintypes.HANDLE
     api.SetInformationJobObject.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD]
     api.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+    api.TerminateJobObject.argtypes = [wintypes.HANDLE, wintypes.UINT]
     api.CloseHandle.argtypes = [wintypes.HANDLE]
     handle = api.CreateJobObjectW(None, None)
     if not handle:
         raise ctypes.WinError(ctypes.get_last_error())
     info = Extended()
-    info.basic.flags = 0x2000
+    info.basic.flags = 0x2000 if kill_on_close else 0
     if not api.SetInformationJobObject(handle, 9, ctypes.byref(info), ctypes.sizeof(info)) or not api.AssignProcessToJobObject(handle, int(process._handle)):
         error = ctypes.get_last_error()
         api.CloseHandle(handle)
         raise ctypes.WinError(error)
     return (api, handle)
+
+
+def terminate_windows_job(job, exit_code: int = 1):
+    """Stop every process in the job now."""
+    if job:
+        job[0].TerminateJobObject(job[1], exit_code)
 
 
 def close_windows_job(job):

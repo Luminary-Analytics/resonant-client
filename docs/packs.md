@@ -81,13 +81,40 @@ first, and the rest loads on demand.
 | `command` | The shell command, run in the project. |
 | `tool_name`, `matcher` | For tool hooks: which tool triggers it. |
 | `input_format` | `env` (default; event values in environment variables) or `json` (the event on standard input). |
-| `timeout_seconds` | Default 30. |
+| `timeout_seconds` | How long the hook may run, in seconds. Default 30. At the limit Lumi stops the command and everything it started. |
+
+Hooks in the `hooks` list of `settings.json` take the same fields.
 
 With `json`, a hook may answer with JSON on standard output: `decision`
-(`allow`, `ask` or `deny`), `reason`, and `additional_context` for the model. A
-`pre_tool_use` hook that exits non-zero blocks the call.
+(`allow`, `ask` or `deny`), `reason`, and `additional_context` for the model.
 
-Hook commands get a clean environment without Lumi's model keys.
+#### Gate hooks fail closed
+
+Seven hook types decide whether something happens. A hook of one of these
+types that exits non-zero, runs past its `timeout_seconds` or can't be started
+blocks it, and the reason names the hook:
+
+| Hook type | A block means |
+|---|---|
+| `pre_tool_use` | The tool call doesn't run. The model reads the reason as the call's result. |
+| `pre_tool_batch` | The `task_batch` call doesn't run, as above. |
+| `permission_request` | The call is denied. These hooks are asked only when nobody can answer an approval. |
+| `before_model` | The model request isn't made, and the turn ends with an error. |
+| `task_completed` | The result isn't accepted. After a non-zero exit or a `deny`, the model is asked to address the reason. After a timeout or a failure to start, the turn ends with an error instead, since the model can't fix the hook. |
+| `subagent_stop` | The worker's handoff is marked failed. |
+| `validation_complete` | The model is told the validation gate rejected completion. |
+
+When a hook of any other type fails, Lumi logs it and carries on.
+
+Give a gate hook that does slow work, such as running tests, a
+`timeout_seconds` longer than that work takes. A hook that runs out of time is
+stopped, and what it guards is blocked.
+
+Hook commands get a clean environment without Lumi's model keys. An `env` hook
+finds the tool call's arguments in `LUMI_TOOL_ARGS`. Linux allows 128 KiB per
+environment value, so there a larger call can't start an `env` hook, and a gate
+hook then blocks it. A `json` hook reads the arguments from standard input, and
+`LUMI_TOOL_ARGS` is empty for it when they're larger than 64 KiB.
 
 ## Trust
 

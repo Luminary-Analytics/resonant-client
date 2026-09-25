@@ -2954,7 +2954,7 @@ class LumiApp {
         this.activeTerminals.delete(callId);
 
         // Update the list entry to show done state
-        const el = document.querySelector(`.terminal-entry[data-call-id="${callId}"]`);
+        const el = document.querySelector(`.terminal-entry[data-call-id="${CSS.escape(callId)}"]`);
         if (el) {
             const spinner = el.querySelector('.terminal-entry-spinner');
             if (spinner) {
@@ -3001,7 +3001,7 @@ class LumiApp {
                 </div>
                 <div style="display:flex;align-items:center;gap:6px;">
                     <span class="terminal-entry-elapsed">${elapsed}s</span>
-                    <button class="terminal-entry-stop" title="Cancel current run" data-call-id="${callId}">
+                    <button class="terminal-entry-stop" title="Cancel current run" data-call-id="${this.escapeHtml(callId)}">
                         <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
                             <rect x="1.5" y="1.5" width="7" height="7" rx="1" fill="currentColor"/>
                         </svg>
@@ -3032,7 +3032,7 @@ class LumiApp {
             }
             // Update elapsed times in the list
             for (const [callId, info] of this.activeTerminals) {
-                const el = document.querySelector(`.terminal-entry[data-call-id="${callId}"] .terminal-entry-elapsed`);
+                const el = document.querySelector(`.terminal-entry[data-call-id="${CSS.escape(callId)}"] .terminal-entry-elapsed`);
                 if (el) {
                     el.textContent = ((Date.now() - info.startTime) / 1000).toFixed(1) + 's';
                 }
@@ -4436,7 +4436,7 @@ class LumiApp {
                         <div class="backend-card-info">
                             <div class="backend-card-name">${this.escapeHtml(item.model)}</div>
                             <div class="backend-card-detail">${this.escapeHtml(detail)}</div>
-                            <div class="backend-card-pills"><span class="backend-pill backend-pill-ok">${provider}</span></div>
+                            <div class="backend-card-pills"><span class="backend-pill backend-pill-ok">${this.escapeHtml(provider)}</span></div>
                         </div>
                         <div class="backend-card-dot"></div>`;
                     row.addEventListener('click', () => this.selectBackend(item.backend, item.model));
@@ -5709,7 +5709,7 @@ class LumiApp {
                 break;
             case 'computer_click':
                 const ct = args.clicks === 2 ? 'Double-click' : 'Click';
-                desc = `${ct} (${args.x}, ${args.y})`;
+                desc = `${ct} (${this.escapeHtml(args.x)}, ${this.escapeHtml(args.y)})`;
                 meta = args.button || 'left';
                 break;
             case 'computer_type':
@@ -5722,10 +5722,10 @@ class LumiApp {
                 }
                 break;
             case 'computer_scroll':
-                desc = `Scroll ${args.direction || 'down'} ×${args.amount || 3}`;
+                desc = `Scroll ${this.escapeHtml(args.direction || 'down')} ×${this.escapeHtml(args.amount || 3)}`;
                 break;
             default:
-                desc = info.label;
+                desc = this.escapeHtml(info.label);
         }
 
         const el = document.createElement('div');
@@ -5929,7 +5929,7 @@ class LumiApp {
     renderInlineToolResult(name, output, isError, elapsed, meta) {
         // Find the last matching inline tool and add status
         const target = this.getRenderTarget();
-        const tools = target.querySelectorAll(`.tool-inline[data-tool="${name}"]`);
+        const tools = target.querySelectorAll(`.tool-inline[data-tool="${CSS.escape(name)}"]`);
         const last = tools[tools.length - 1];
         if (!last) return;
 
@@ -5994,7 +5994,7 @@ class LumiApp {
             row = this._blockToolRows.get(callId);
             this._blockToolRows.delete(callId);
         } else {
-            const all = this.getRenderTarget().querySelectorAll(`.tool-row[data-tool="${name}"]`);
+            const all = this.getRenderTarget().querySelectorAll(`.tool-row[data-tool="${CSS.escape(name)}"]`);
             row = all[all.length - 1] || null;
         }
         if (!row) return;
@@ -6077,7 +6077,7 @@ class LumiApp {
             row = this._blockToolRows.get(callId);
             this._blockToolRows.delete(callId);
         } else {
-            const all = this.getRenderTarget().querySelectorAll(`.tool-row[data-tool="${name}"]`);
+            const all = this.getRenderTarget().querySelectorAll(`.tool-row[data-tool="${CSS.escape(name)}"]`);
             row = all[all.length - 1] || null;
         }
         if (!row) return;
@@ -6157,7 +6157,7 @@ class LumiApp {
         const overlay = document.createElement('div');
         overlay.className = 'lightbox-overlay';
         overlay.innerHTML = `
-            <img class="lightbox-img" src="${src}" alt="Screenshot">
+            <img class="lightbox-img" src="${this.escapeHtml(src)}" alt="Screenshot">
             <button class="lightbox-close">&times;</button>
         `;
         overlay.addEventListener('click', (e) => {
@@ -7023,7 +7023,7 @@ class LumiApp {
             return;
         }
         container.innerHTML = cmds.map((c, i) => `
-            <div class="cmd-palette-item${i === 0 ? ' active' : ''}" data-cmd-id="${c.id}">
+            <div class="cmd-palette-item${i === 0 ? ' active' : ''}" data-cmd-id="${this.escapeHtml(c.id)}">
                 <span class="cmd-palette-item-icon">${this.escapeHtml(c.icon)}</span>
                 <span class="cmd-palette-item-label">${this.escapeHtml(c.label)}</span>
                 ${c.hint ? `<span class="cmd-palette-item-hint">${this.escapeHtml(c.hint)}</span>` : ''}

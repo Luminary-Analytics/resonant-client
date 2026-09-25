@@ -1,15 +1,33 @@
-/* Applies the saved theme before the first paint and keeps "Match system"
- * in step with the OS.
+/* Applies the saved theme and font size before the first paint and keeps
+ * "Match system" in step with the OS.
  *
- * The server renders the saved setting into <html data-theme-setting>
- * (gui/appearance.py): the desktop window uses private browser storage and a
- * new port on every launch, so the page cannot remember it. Styles use
- * [data-theme="light"]; dark is the default. Loaded synchronously in <head>.
+ * The server renders the saved settings into <html data-theme-setting
+ * data-font-size> (gui/appearance.py): the desktop window uses private
+ * browser storage and a new port on every launch, so the page cannot remember
+ * them. Styles use [data-theme="light"]; dark is the default. Loaded
+ * synchronously in <head>.
+ *
+ * The page's Content-Security-Policy refuses style="" attributes
+ * (gui/local_access.py), so values that markup used to set inline are set
+ * here through element.style, which the policy allows.
  */
 (function () {
     'use strict';
 
     const root = document.documentElement;
+    const fontSize = parseFloat(root.getAttribute('data-font-size'));
+    if (fontSize > 0) root.style.setProperty('--text-base', `${fontSize}px`);
+
+    // Elements the page starts with hidden are marked data-start-hidden, which
+    // styles.css hides until the document is parsed. Scripts show and hide them
+    // through element.style.display, and some check it for 'none', so each
+    // gets the inline display: none its markup used to carry.
+    document.addEventListener('DOMContentLoaded', () => {
+        document.querySelectorAll('[data-start-hidden]').forEach((el) => {
+            el.style.display = 'none';
+            el.removeAttribute('data-start-hidden');
+        });
+    }, {once: true});
     const THEMES = ['dark', 'light', 'system'];
     const lightQuery = typeof window.matchMedia === 'function'
         ? window.matchMedia('(prefers-color-scheme: light)')

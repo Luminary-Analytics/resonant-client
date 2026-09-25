@@ -3230,7 +3230,7 @@ class LumiApp {
                     <span class="terminal-entry-spinner"></span>
                     <span class="terminal-entry-cmd" title="${this.escapeHtml(info.command)}">$ ${this.escapeHtml(displayCmd)}</span>
                 </div>
-                <div style="display:flex;align-items:center;gap:6px;">
+                <div class="terminal-entry-right">
                     <span class="terminal-entry-elapsed">${elapsed}s</span>
                     <button class="terminal-entry-stop" title="Cancel current run" data-call-id="${this.escapeHtml(callId)}">
                         <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
@@ -5815,6 +5815,16 @@ class LumiApp {
         }, wait);
     }
 
+    /**
+     * Sanitizes rendered Markdown, which is model output and file contents.
+     * The page's CSP refuses their style="" attributes and <style> elements
+     * anyway (gui/local_access.py); removing them here keeps each refusal out
+     * of the console, where it would hide a real one.
+     */
+    sanitizeMarkdownHtml(html) {
+        return DOMPurify.sanitize(html, {FORBID_TAGS: ['style'], FORBID_ATTR: ['style']});
+    }
+
     renderMarkdown(el, text, streaming = false) {
         const contentEl = el.querySelector('.message-content');
         if (!contentEl) return;
@@ -5829,7 +5839,7 @@ class LumiApp {
 
             let sanitized = false;
             if (typeof DOMPurify !== 'undefined') {
-                html = DOMPurify.sanitize(html);
+                html = this.sanitizeMarkdownHtml(html);
                 sanitized = true;
             }
 
@@ -6124,7 +6134,7 @@ class LumiApp {
 
         switch (name) {
             case 'file_read':
-                desc = `<span style="color:var(--file)">${this.escapeHtml(args.path || '')}</span>`;
+                desc = `<span class="tone-file">${this.escapeHtml(args.path || '')}</span>`;
                 break;
             case 'glob':
                 desc = this.escapeHtml(args.pattern || '');
@@ -6139,7 +6149,7 @@ class LumiApp {
                 meta = `${args.path || ''}${args.line ? `:${args.line}` : ''}`;
                 break;
             case 'browser_navigate':
-                desc = `<span style="color:var(--file)">${this.escapeHtml(args.url || '')}</span>`;
+                desc = `<span class="tone-file">${this.escapeHtml(args.url || '')}</span>`;
                 // Update preview panel URL bar
                 if (args.url) this.updatePreviewUrl(args.url);
                 break;
@@ -6190,7 +6200,7 @@ class LumiApp {
         // Its result finds this row by call id when a step calls the tool twice.
         if (event.call_id) el.setAttribute('data-call-id', event.call_id);
         el.innerHTML = `
-            <span class="tool-icon" style="color:var(--${info.color})">${info.icon}</span>
+            <span class="tool-icon tone-${info.color}">${info.icon}</span>
             <span class="tool-desc">${desc}</span>
             ${meta ? `<span class="tool-meta">(${this.escapeHtml(meta)})</span>` : ''}
         `;
@@ -6263,7 +6273,7 @@ class LumiApp {
 
         el.innerHTML = `
             <span class="tool-row-status pending" data-status>◯</span>
-            <span class="tool-row-glyph" style="color:var(--${glyphColor})" data-glyph>${glyph}</span>
+            <span class="tool-row-glyph tone-${glyphColor}" data-glyph>${glyph}</span>
             <code class="tool-row-summary" data-summary></code>
             <span class="tool-row-meta" data-meta>running…</span>
             <button type="button" class="tool-row-toggle" data-toggle aria-expanded="false" tabindex="-1">▸</button>
@@ -7109,7 +7119,7 @@ class LumiApp {
         const budgetHtml = budget > 0 ? `
             <div class="cost-budget" aria-label="Daily budget usage">
                 <div><span>Daily alert usage</span><strong>${Math.round(budgetPercent)}% of ${this._formatUsageCost(budget)}</strong></div>
-                <div class="cost-budget-track"><span style="width:${budgetPercent}%"></span></div>
+                <div class="cost-budget-track"><span data-percent="${budgetPercent}"></span></div>
             </div>
         ` : '';
         const historyRows = dailyEntries.slice(0, 14).map(([day, item]) => `
@@ -7172,10 +7182,17 @@ class LumiApp {
             return `
                 <div class="cost-budget" aria-label="${owner} budget for ${esc(rule.scope === 'turn' ? 'each turn' : rule.period)}">
                     <div><span>${owner}: ${scope} &middot; ${steps}</span>${spent}</div>
-                    ${rule.scope === 'turn' ? '' : `<div class="cost-budget-track"><span style="width:${percent}%"></span></div>`}
+                    ${rule.scope === 'turn' ? '' : `<div class="cost-budget-track"><span data-percent="${percent}"></span></div>`}
                 </div>`;
         }).join('');
         return `<div class="cost-budgets"><div class="cost-history-title"><strong>Budgets</strong></div>${rows}</div>`;
+    }
+
+    /** Budget bars get their widths here: the page's CSP refuses style="" (gui/local_access.py). */
+    _sizeCostBudgetTracks(root) {
+        root.querySelectorAll('.cost-budget-track > span[data-percent]').forEach(bar => {
+            bar.style.width = `${Math.min(100, Math.max(0, Number(bar.dataset.percent) || 0))}%`;
+        });
     }
 
     _renderUsageByModel(month) {
@@ -7638,12 +7655,14 @@ class LumiApp {
             this._liveAgentTodoEl = el;
         }
         this._liveAgentTodoEl.innerHTML = `
-            <div class="agent-live-todo-bar" style="--agent-todo-pct:${pct}%"></div>
+            <div class="agent-live-todo-bar"></div>
             <div class="agent-live-todo-row">
                 <span class="agent-live-todo-count">${done} of ${total} to-dos</span>
                 <span class="agent-live-todo-preview">${preview}</span>
             </div>
         `;
+        // Through element.style: the page's CSP refuses style="" attributes.
+        this._liveAgentTodoEl.querySelector('.agent-live-todo-bar').style.setProperty('--agent-todo-pct', `${pct}%`);
         this.scrollToBottom();
     }
 
@@ -7986,7 +8005,7 @@ class LumiApp {
                 <div><strong>${windowTokens.toLocaleString()}</strong><span>effective window</span></div>
                 <div><strong>${Number(state.compression_count || 0)}</strong><span>compressions</span></div>
             </div>
-            <div class="context-meter ${pct >= 75 ? 'is-warning' : ''}"><span style="width:${pct}%"></span></div>
+            <div class="context-meter ${pct >= 75 ? 'is-warning' : ''}"><span></span></div>
             <div class="context-meter-label"><span>${pct}% used</span><span>compress near ${threshold.toLocaleString()}</span></div>
             <section class="context-card">
                 <h4>Composition</h4>
@@ -8002,6 +8021,8 @@ class LumiApp {
             <section class="context-card"><h4>Durable task state</h4><div class="context-empty-row">${todos.length ? `${todos.filter(item => item.done).length}/${todos.length} todos complete` : 'No active todo ledger'}</div></section>
             <section class="context-card"><h4>Explicit attachments</h4><div class="context-provider-list">${providers || '<span class="context-empty-row">No providers available</span>'}</div><p class="context-provider-help">Insert a provider, replace <code>selector</code>, and send. Attachments carry provenance into the model context.</p></section>
         `;
+        // Through element.style: the page's CSP refuses style="" attributes.
+        body.querySelector('.context-meter > span').style.width = `${pct}%`;
         body.querySelectorAll('.context-provider-chip').forEach((button) => button.addEventListener('click', () => {
             const syntax = button.dataset.syntax || '';
             this.userInput.value = `${this.userInput.value}${this.userInput.value ? ' ' : ''}${syntax}`;
@@ -8589,7 +8610,7 @@ class LumiApp {
                 ? `${((item.finishedAt - item.startedAt) / 1000).toFixed(1)}s`
                 : item.status === 'running' ? 'live' : '';
             return `
-                <button class="agent-activity-node status-${this.escapeHtml(item.status || 'queued')}" data-activity-id="${this.escapeHtml(item.id)}" style="--agent-depth:${depth}">
+                <button class="agent-activity-node status-${this.escapeHtml(item.status || 'queued')}" data-activity-id="${this.escapeHtml(item.id)}" data-depth="${depth}">
                     <span class="agent-activity-state"></span>
                     <span class="agent-activity-main">
                         <strong>${this.escapeHtml(item.label || item.kind || 'worker')}</strong>
@@ -8600,6 +8621,8 @@ class LumiApp {
             `;
         }).join('');
         tree.querySelectorAll('.agent-activity-node').forEach(node => {
+            // Through element.style: the page's CSP refuses style="" attributes.
+            node.style.setProperty('--agent-depth', node.dataset.depth);
             node.addEventListener('click', () => {
                 const item = this.agentActivities.get(node.dataset.activityId);
                 if (item?.runtime) this.send({ command: 'agent_runtime_detail', agent_id: item.runtime.id });
@@ -8683,7 +8706,7 @@ class LumiApp {
         header.innerHTML = `
             <span class="subagent-toggle">▸</span>
             <span class="subagent-label">Task</span>
-            <span style="color:var(--muted);font-size:12px">${this.escapeHtml(agentType)}</span>
+            <span class="tone-muted text-12">${this.escapeHtml(agentType)}</span>
             <span class="subagent-prompt">"${this.escapeHtml(display)}"</span>
         `;
 
@@ -10526,12 +10549,12 @@ class LumiApp {
         content.className = 'msg-user-content';
         if (images && images.length > 0) {
             const wrap = document.createElement('div');
-            wrap.style.cssText = 'display:flex;gap:8px;margin-bottom:8px;flex-wrap:wrap';
+            wrap.className = 'msg-user-images';
             for (const img of images) {
                 const thumb = document.createElement('img');
                 thumb.src = img.dataUrl || `data:${img.media_type};base64,${img.data}`;
                 thumb.alt = 'Attached';
-                thumb.style.cssText = 'max-width:120px;max-height:80px;border-radius:4px;border:1px solid var(--border);cursor:pointer';
+                thumb.className = 'msg-user-image';
                 thumb.addEventListener('click', () => this.showLightbox(thumb.src));
                 wrap.appendChild(thumb);
             }
@@ -10848,7 +10871,6 @@ class LumiApp {
         }
         const el = document.createElement('div');
         el.className = 'status-inline';
-        el.style.cssText = 'text-align:center;color:var(--muted);font-size:12px;padding:8px;';
         el.textContent = message;
         const target = (this._activeTask && this._activeTask.activityEl) || this.chatMessages;
         target.appendChild(el);
@@ -11898,7 +11920,7 @@ class LumiApp {
         if (typeof marked !== 'undefined') {
             html = marked.parse(text);
             if (typeof DOMPurify !== 'undefined') {
-                html = DOMPurify.sanitize(html);
+                html = this.sanitizeMarkdownHtml(html);
             }
         }
 
@@ -13442,11 +13464,11 @@ class LumiApp {
 
                 item.innerHTML = `
                     <span class="proj-icon">&#128193;</span>
-                    <div style="flex:1;min-width:0">
+                    <div class="recent-project-body">
                         <div class="proj-name">${this.escapeHtml(proj.name || '')}</div>
                         <div class="proj-path">${this.escapeHtml(proj.path || '')}</div>
                     </div>
-                    ${isCurrent ? '<span style="color:var(--ok)">&#10003;</span>' : ''}
+                    ${isCurrent ? '<span class="tone-ok">&#10003;</span>' : ''}
                 `;
                 item.addEventListener('click', () => {
                     this.selectProjectFolder(proj.path);
@@ -13458,8 +13480,8 @@ class LumiApp {
             const chooseItem = document.createElement('div');
             chooseItem.className = 'recent-project-item';
             chooseItem.innerHTML = `
-                <span class="proj-icon" style="font-size:12px">&#10133;</span>
-                <div style="flex:1"><div class="proj-name">Choose a different folder</div></div>
+                <span class="proj-icon text-12">&#10133;</span>
+                <div class="recent-project-body"><div class="proj-name">Choose a different folder</div></div>
             `;
             chooseItem.addEventListener('click', () => {
                 this.openProjectFolder();
@@ -13473,8 +13495,8 @@ class LumiApp {
             const typeItem = document.createElement('div');
             typeItem.className = 'recent-project-item';
             typeItem.innerHTML = `
-                <span class="proj-icon" style="font-size:12px">&#9000;</span>
-                <div style="flex:1"><div class="proj-name">Type a folder path…</div></div>
+                <span class="proj-icon text-12">&#9000;</span>
+                <div class="recent-project-body"><div class="proj-name">Type a folder path…</div></div>
             `;
             typeItem.addEventListener('click', () => {
                 this._promptForProjectPath('Switch project', (path) => {
@@ -13504,7 +13526,7 @@ class LumiApp {
             if (!this._managedPreviews?.length) dialog.innerHTML += '<p>No previews started for this project.</p>';
             for (const p of this._managedPreviews || []) {
                 const section = document.createElement('section');
-                section.innerHTML = `<h3>${esc(p.state)}</h3><a href="${esc(p.url)}" target="_blank" rel="noopener noreferrer">Open preview</a> <button data-stop ${p.state === 'stopped' ? 'disabled' : ''}>Stop preview</button><details><summary>Recent logs</summary><pre style="white-space:pre-wrap">${esc(p.logs) || 'No output yet'}</pre></details>`;
+                section.innerHTML = `<h3>${esc(p.state)}</h3><a href="${esc(p.url)}" target="_blank" rel="noopener noreferrer">Open preview</a> <button data-stop ${p.state === 'stopped' ? 'disabled' : ''}>Stop preview</button><details><summary>Recent logs</summary><pre>${esc(p.logs) || 'No output yet'}</pre></details>`;
                 section.querySelector('[data-stop]').onclick = () => this.send({command: 'preview_stop', id: p.id});
                 dialog.appendChild(section);
             }
@@ -13545,7 +13567,7 @@ class LumiApp {
                 dialog.appendChild(team);
             }
             const form = document.createElement('form');
-            form.innerHTML = '<input type="hidden" name="id"><p><label>Note <textarea name="text" required maxlength="1000" rows="3" style="width:100%"></textarea></label></p><p><label>Source <input name="source" required maxlength="300" placeholder="Decision in this task, or file and line"></label></p><p><label>Kind <select name="kind"><option value="decision">Decision</option><option value="fact">Fact</option><option value="constraint">Constraint</option><option value="procedure">Procedure</option><option value="build_command">Build or test command</option><option value="convention">Project convention</option><option value="fix">Recurring fix</option></select></label></p><p><label>Source files <input name="sources" placeholder="Relative paths, separated by commas"></label></p><button type="submit">Save note</button>';
+            form.innerHTML = '<input type="hidden" name="id"><p><label>Note <textarea name="text" required maxlength="1000" rows="3"></textarea></label></p><p><label>Source <input name="source" required maxlength="300" placeholder="Decision in this task, or file and line"></label></p><p><label>Kind <select name="kind"><option value="decision">Decision</option><option value="fact">Fact</option><option value="constraint">Constraint</option><option value="procedure">Procedure</option><option value="build_command">Build or test command</option><option value="convention">Project convention</option><option value="fix">Recurring fix</option></select></label></p><p><label>Source files <input name="sources" placeholder="Relative paths, separated by commas"></label></p><button type="submit">Save note</button>';
             form.onsubmit = e => { e.preventDefault(); const values = Object.fromEntries(new FormData(form)); this.send({command: 'memory_save', ...values, sources: values.sources.split(',').map(s => s.trim()).filter(Boolean)}); };
             dialog.appendChild(form);
         }

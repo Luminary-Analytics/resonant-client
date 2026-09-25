@@ -61,7 +61,13 @@ from .. import audit, budgets, net, pricing, secret_scan, usage
 from . import ws_commands
 from .appearance import page_appearance
 from .chat_loop import ChatRunLoop
-from .local_access import WS_REFUSED, LocalHostGuard, access as local_access, same_origin
+from .local_access import (
+    WS_REFUSED,
+    LocalHostGuard,
+    access as local_access,
+    content_security_policy,
+    same_origin,
+)
 # Payload builders moved to ws_commands.py with the handlers that use them.
 # Re-exported because `skill_archive` still lives in the endpoint and because
 # these are the module's established public surface for tests. Safe from
@@ -3860,9 +3866,11 @@ async def homepage(request):
         },
         headers={
             # The page holds this launch's access token in origin storage.
-            # Never let another site frame it and steer clicks, and never tell
-            # external links which local port the app is running on.
-            "Content-Security-Policy": "frame-ancestors 'none'",
+            # Only this server's scripts and styles run in it (see
+            # content_security_policy), no other site may frame it and steer
+            # clicks, and external links are never told which local port the
+            # app is running on.
+            "Content-Security-Policy": content_security_policy(request.scope),
             "X-Frame-Options": "DENY",
             "Referrer-Policy": "no-referrer",
             # It carries the saved appearance, so a cached copy would be stale.

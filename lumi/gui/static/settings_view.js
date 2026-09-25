@@ -226,7 +226,7 @@ class LumiSettingsView {
             <p class="editor-help">Packs signed with these keys show who made them. Trusting a publisher approves nothing; you still review each pack.${data.require_signed ? ' Your organization turns off packs its own trusted publishers didn’t sign.' : ''}</p>
             ${publisherRows ? `<ul class="pack-publishers">${publisherRows}</ul>` : '<p class="editor-help">None yet. A signed pack offers to trust its publisher.</p>'}`;
         if (!packs.length) {
-            return `${intro}<div class="settings-row"><span class="settings-row-label" style="color:var(--dim)">No capability packs in this project's .lumi/packs or in ~/.lumi/packs.</span></div>${publishers}`;
+            return `${intro}<div class="settings-row"><span class="settings-row-label tone-dim">No capability packs in this project's .lumi/packs or in ~/.lumi/packs.</span></div>${publishers}`;
         }
         const statusText = {
             approved: 'Approved · active',
@@ -727,7 +727,7 @@ class LumiSettingsView {
         // or left as plain text when either library is missing.
         if (typeof marked !== 'undefined' && typeof DOMPurify !== 'undefined') {
             root?.querySelectorAll('.schedule-answer-body[data-plain]').forEach(body => {
-                body.innerHTML = DOMPurify.sanitize(marked.parse(body.textContent));
+                body.innerHTML = this.sanitizeMarkdownHtml(marked.parse(body.textContent));
                 body.removeAttribute('data-plain');
             });
         }
@@ -2202,19 +2202,19 @@ class LumiSettingsView {
                 bodyHtml = `
                     <div class="settings-row">
                         <span class="settings-row-label">Status</span>
-                        <span style="color:${indexed ? 'var(--ok)' : 'var(--muted)'}">${indexed ? `${rag.total_files} files indexed (${rag.total_lines || 0} lines)` : 'Not indexed'}</span>
+                        <span class="${indexed ? 'tone-ok' : 'tone-muted'}">${indexed ? `${rag.total_files} files indexed (${rag.total_lines || 0} lines)` : 'Not indexed'}</span>
                     </div>
                 `;
                 if (rag.languages) {
                     const langs = Object.entries(rag.languages).sort((a,b) => b[1]-a[1]).slice(0,5);
-                    bodyHtml += `<div class="settings-row"><span class="settings-row-label">Languages</span><span style="color:var(--muted);font-size:12px">${langs.map(([l,c]) => `${l}: ${c}`).join(', ')}</span></div>`;
+                    bodyHtml += `<div class="settings-row"><span class="settings-row-label">Languages</span><span class="tone-muted text-12">${langs.map(([l,c]) => `${l}: ${c}`).join(', ')}</span></div>`;
                 }
                 bodyHtml += `
-                    <div class="settings-row" style="margin-top:8px;gap:8px">
-                        <button class="btn-sm rag-index-btn" style="font-size:12px">${indexed ? 'Re-index' : 'Index Codebase'}</button>
-                        <button class="btn-sm rag-force-btn" style="font-size:12px">Force Re-index</button>
+                    <div class="settings-row space-above-8 gap-8">
+                        <button class="btn-sm rag-index-btn text-12">${indexed ? 'Re-index' : 'Index Codebase'}</button>
+                        <button class="btn-sm rag-force-btn text-12">Force Re-index</button>
                     </div>
-                    <div class="settings-row" style="margin-top:4px"><span class="settings-row-label" style="color:var(--dim);font-size:11px">Index enables semantic file search for better context in prompts</span></div>
+                    <div class="settings-row space-above-4"><span class="settings-row-label tone-dim text-11">Index enables semantic file search for better context in prompts</span></div>
                 `;
             } else if (section.id === 'prompt_inspector') {
                 const inspector = this.promptInspector;
@@ -2321,12 +2321,12 @@ class LumiSettingsView {
                 `;
             } else if (section.id === 'hooks') {
                 bodyHtml = this._renderHooksList(Array.isArray(data) ? data : []);
-                bodyHtml += `<div class="settings-row" style="margin-top:8px"><span class="settings-row-label" style="color:var(--dim);font-size:11px">Edit hooks in ~/.lumi/settings.json</span></div>`;
+                bodyHtml += `<div class="settings-row space-above-8"><span class="settings-row-label tone-dim text-11">Edit hooks in ~/.lumi/settings.json</span></div>`;
             } else if (section.id === 'mcp_servers') {
                 const servers = typeof data === 'object' && !Array.isArray(data)
                     ? Object.entries(data).filter(([name, cfg]) => !(cfg?.editor_integration && name === `resonant_${cfg.editor_integration}`)) : [];
                 if (servers.length === 0) {
-                    bodyHtml = `<div class="settings-row"><span class="settings-row-label" style="color:var(--dim)">No MCP servers configured</span></div>`;
+                    bodyHtml = `<div class="settings-row"><span class="settings-row-label tone-dim">No MCP servers configured</span></div>`;
                 } else {
                     bodyHtml = servers.map(([name, rawCfg]) => {
                         const cfg = rawCfg && typeof rawCfg === 'object' ? rawCfg : {};
@@ -2336,22 +2336,22 @@ class LumiSettingsView {
                         const error = runtime?.error || '';
                         const endpoint = transport === 'http'
                             ? `<input class="settings-input mcp-url-input" type="url" data-server="${this.escapeHtml(name)}" value="${this.escapeHtml(cfg.url || '')}" aria-label="${this.escapeHtml(name)} MCP server URL" />`
-                            : `<code style="font-size:11px">${this.escapeHtml([cfg.command, ...(cfg.args || [])].filter(Boolean).join(' '))}</code>`;
+                            : `<code class="text-11">${this.escapeHtml([cfg.command, ...(cfg.args || [])].filter(Boolean).join(' '))}</code>`;
                         return `
                             <div class="settings-row mcp-settings-row">
-                                <span class="settings-row-label"><strong>${this.escapeHtml(name)}</strong><small style="display:block;color:var(--dim)">${this.escapeHtml(transport)}</small></span>
-                                <div class="settings-row-value" style="display:flex;flex-direction:column;align-items:stretch;gap:4px;min-width:0;flex:1">${endpoint}${error ? `<small style="color:var(--danger)">${this.escapeHtml(error)}</small>` : ''}</div>
-                                <button class="btn-sm mcp-connect-btn" data-server="${this.escapeHtml(name)}" style="font-size:11px" ${connected ? 'disabled' : ''}>${connected ? `${runtime.tools || 0} tools` : 'Connect'}</button>
+                                <span class="settings-row-label"><strong>${this.escapeHtml(name)}</strong><small class="mcp-transport tone-dim">${this.escapeHtml(transport)}</small></span>
+                                <div class="settings-row-value mcp-settings-value">${endpoint}${error ? `<small class="tone-err">${this.escapeHtml(error)}</small>` : ''}</div>
+                                <button class="btn-sm mcp-connect-btn text-11" data-server="${this.escapeHtml(name)}" ${connected ? 'disabled' : ''}>${connected ? `${runtime.tools || 0} tools` : 'Connect'}</button>
                             </div>`;
                     }).join('');
                 }
                 bodyHtml += `
-                    <div class="settings-row" style="margin-top:8px">
-                        <span class="settings-row-label" style="color:var(--dim);font-size:11px">BrowserOS: copy the Server URL from <code>chrome://browseros/mcp</code>. Other MCP servers remain user configurable.</span>
+                    <div class="settings-row space-above-8">
+                        <span class="settings-row-label tone-dim text-11">BrowserOS: copy the Server URL from <code>chrome://browseros/mcp</code>. Other MCP servers remain user configurable.</span>
                         <button class="btn-sm mcp-add-http-btn" type="button">Add HTTP MCP</button>
                     </div>`;
             } else if (section.custom) {
-                bodyHtml = `<div class="settings-row"><span class="settings-row-label" style="color:var(--dim)">Configure in settings.json</span></div>`;
+                bodyHtml = `<div class="settings-row"><span class="settings-row-label tone-dim">Configure in settings.json</span></div>`;
             } else if (section.fields) {
                 if (section.note) bodyHtml += `<div class="settings-row settings-section-note"><div class="settings-row-copy"><span class="settings-row-hint">${this.escapeHtml(section.note)}</span></div></div>`;
                 for (const field of section.fields) {
@@ -2372,10 +2372,10 @@ class LumiSettingsView {
                     } else if (field.type === 'password') {
                         const hasSecret = Boolean(this.settings._meta?.api_keys_present?.[field.key]);
                         input = `
-                            <div style="display:flex;align-items:center;gap:8px;">
-                                <input class="settings-input" type="password" value="" data-section="${store}" data-key="${field.key}" aria-label="${this.escapeHtml(field.label)}" data-secret-field="true" placeholder="${hasSecret ? 'Stored key' : 'Enter key'}" style="flex:1"${lock} />
-                                <span style="color:var(--muted);font-size:11px;white-space:nowrap">${hasSecret ? 'Stored' : 'Not set'}</span>
-                                ${hasSecret && !lockedBy ? `<button class="btn-sm settings-clear-secret" data-section="${store}" data-key="${field.key}" aria-label="Clear ${this.escapeHtml(field.label)}" style="font-size:11px">Clear</button>` : ''}
+                            <div class="settings-secret-row">
+                                <input class="settings-input" type="password" value="" data-section="${store}" data-key="${field.key}" aria-label="${this.escapeHtml(field.label)}" data-secret-field="true" placeholder="${hasSecret ? 'Stored key' : 'Enter key'}"${lock} />
+                                <span class="settings-secret-state">${hasSecret ? 'Stored' : 'Not set'}</span>
+                                ${hasSecret && !lockedBy ? `<button class="btn-sm settings-clear-secret text-11" data-section="${store}" data-key="${field.key}" aria-label="Clear ${this.escapeHtml(field.label)}">Clear</button>` : ''}
                             </div>
                         `;
                     } else if (field.type === 'lines') {
@@ -2385,7 +2385,7 @@ class LumiSettingsView {
                         const ph = field.placeholder ? ` placeholder="${this.escapeHtml(field.placeholder)}"` : '';
                         input = `<textarea class="settings-input settings-textarea settings-lines" rows="3" spellcheck="false" data-section="${store}" data-key="${field.key}" aria-label="${this.escapeHtml(field.label)}"${ph}${lock}>${this.escapeHtml(text)}</textarea>`;
                     } else if (field.type === 'number') {
-                        input = `<input class="settings-input" type="number" value="${val || ''}" data-section="${store}" data-key="${field.key}" aria-label="${this.escapeHtml(field.label)}" placeholder="None" style="width:80px"${lock} />`;
+                        input = `<input class="settings-input settings-input-narrow" type="number" value="${val || ''}" data-section="${store}" data-key="${field.key}" aria-label="${this.escapeHtml(field.label)}" placeholder="None"${lock} />`;
                     } else {
                         // Like lines, typed text stays until a save succeeds.
                         const draft = this._settingsDrafts?.[`${store}.${field.key}`];
@@ -2399,6 +2399,7 @@ class LumiSettingsView {
             }
 
             el.innerHTML = `<h3 class="settings-section-header"><span class="settings-section-title">${this.escapeHtml(section.heading || (section.id === 'general' ? page.title : section.title))}</span></h3><div class="settings-section-body">${bodyHtml}</div>`;
+            if (section.id === 'cost_tracking') this._sizeCostBudgetTracks(el);
             this.settingsBody.appendChild(el);
         }
 
@@ -2949,12 +2950,12 @@ class LumiSettingsView {
     /** Configured hooks. Commands routinely contain <, > and quotes. */
     _renderHooksList(hooks) {
         if (hooks.length === 0) {
-            return `<div class="settings-row"><span class="settings-row-label" style="color:var(--dim)">No hooks configured</span></div>`;
+            return `<div class="settings-row"><span class="settings-row-label tone-dim">No hooks configured</span></div>`;
         }
         return hooks.map(h => `
             <div class="settings-row">
-                <span class="settings-row-label">${this.escapeHtml(h.name || h.hook_type)}: <code style="font-size:11px">${this.escapeHtml(h.command)}</code></span>
-                <span style="color:${h.enabled ? 'var(--ok)' : 'var(--muted)'}">${h.enabled ? '●' : '○'}</span>
+                <span class="settings-row-label">${this.escapeHtml(h.name || h.hook_type)}: <code class="text-11">${this.escapeHtml(h.command)}</code></span>
+                <span class="${h.enabled ? 'tone-ok' : 'tone-muted'}">${h.enabled ? '●' : '○'}</span>
             </div>
         `).join('');
     }
@@ -2980,7 +2981,7 @@ class LumiSettingsView {
 
         if (tab === 'changes') {
             if (this.gitData.changes.length === 0) {
-                body.innerHTML = '<div style="padding:16px;color:var(--muted);text-align:center">No changes</div>';
+                body.innerHTML = '<div class="git-popover-empty">No changes</div>';
                 return;
             }
             body.innerHTML = this.gitData.changes.map(c => {
@@ -3024,11 +3025,10 @@ class LumiSettingsView {
                 <span>Project instructions</span>
                 <button class="icon-btn resonant-md-popover-close">&times;</button>
             </div>
-            <div class="resonant-md-popover-body" style="padding:12px;display:flex;flex-direction:column;gap:8px;">
+            <div class="resonant-md-popover-body">
                 <textarea class="settings-input" id="resonant-md-editor" rows="12"
-                    style="font-family:monospace;font-size:12px;resize:vertical;min-height:120px;"
                     placeholder="Add project instructions for the AI assistant...">${this.escapeHtml(content)}</textarea>
-                <div style="display:flex;gap:8px;justify-content:flex-end;">
+                <div class="resonant-md-popover-actions">
                     <button class="btn-primary btn-sm" id="resonant-md-save-btn">Save</button>
                 </div>
             </div>

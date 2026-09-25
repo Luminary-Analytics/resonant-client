@@ -13796,3 +13796,50 @@ body.is-window-dragging * {
 .plan-card-lumi .task-card-main { display: flex; align-items: baseline; gap: 8px; min-width: 0; max-width: 100%; margin-left: 0; }
 .plan-card-lumi .task-card-label { display: block; flex-shrink: 0; color: var(--text-secondary); font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; }
 .plan-card-lumi .task-request-text { min-width: 0; padding: 0; border-radius: 0; background: none; color: var(--text); font-size: 13px; font-weight: 600; overflow-wrap: anywhere; }
+
+/* ── Former inline styles ──────────────────────────────────────────────
+   The page's Content-Security-Policy (gui/local_access.py) refuses style=""
+   attributes, so markup uses these classes instead. A script that computes a
+   value (a width, a position, a color it changes later) sets it through
+   element.style, which the policy allows.
+
+   Elements the page starts with hidden: static/appearance.js swaps this
+   marker for an inline display: none once the document is parsed. */
+[data-start-hidden] { display: none !important; }
+
+/* Each of these stands for one inline declaration. !important keeps the
+   precedence the attribute had over the rules above, including #settings-body
+   ones. Never add display here: scripts show and hide through element.style. */
+.tone-tool { color: var(--tool) !important; }
+.tone-brand { color: var(--brand) !important; }
+.tone-brand2 { color: var(--brand2) !important; }
+.tone-file { color: var(--file) !important; }
+.tone-ok { color: var(--ok) !important; }
+.tone-warn { color: var(--warn) !important; }
+.tone-muted { color: var(--muted) !important; }
+.tone-dim { color: var(--dim) !important; }
+.tone-err { color: var(--danger, var(--err)) !important; }
+.text-11 { font-size: 11px !important; }
+.text-12 { font-size: 12px !important; }
+.space-above-4 { margin-top: 4px !important; }
+.space-above-8 { margin-top: 8px !important; }
+.gap-8 { gap: 8px !important; }
+
+/* Component styles that were inline, with !important only where a rule above
+   would otherwise win. */
+.chat-welcome-footer.setup-role-footer { margin-bottom: 12px; }
+.terminal-entry-right { display: flex; align-items: center; gap: 6px; }
+.recent-project-body { flex: 1; min-width: 0; }
+.status-inline { text-align: center; color: var(--muted); font-size: 12px; padding: 8px; }
+.msg-user-images { display: flex; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; }
+.msg-user-image { max-width: 120px; max-height: 80px; border-radius: 4px; border: 1px solid var(--border); cursor: pointer; }
+.settings-row-value.mcp-settings-value { display: flex; flex-direction: column; align-items: stretch !important; gap: 4px; min-width: 0; flex: 1 !important; }
+.mcp-transport { display: block; }
+.settings-secret-row { display: flex; align-items: center; gap: 8px; }
+.settings-secret-row > .settings-input { flex: 1 !important; }
+.settings-secret-state { color: var(--muted) !important; font-size: 11px !important; white-space: nowrap !important; }
+.settings-input.settings-input-narrow { width: 80px !important; }
+.git-popover-empty { padding: 16px; color: var(--muted); text-align: center; }
+.resonant-md-popover-body { padding: 12px; display: flex; flex-direction: column; gap: 8px; }
+#resonant-md-editor { font-family: monospace; font-size: 12px; resize: vertical; min-height: 120px; }
+.resonant-md-popover-actions { display: flex; gap: 8px; justify-content: flex-end; }

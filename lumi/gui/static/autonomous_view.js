@@ -2069,7 +2069,7 @@ class LumiAutonomousView {
                     <span class="mission-build-label">Build autonomously</span>
                 </button>
             </div>
-            <p class="mission-autonomous-fullauto-note" style="display: none;">
+            <p class="mission-autonomous-fullauto-note">
                 Full auto skips the time ceiling. The session stops only on convergence, blocking,
                 or your Stop click. A 100-iteration cap is always enforced as a defensive backstop.
             </p>
@@ -2086,6 +2086,8 @@ class LumiAutonomousView {
         );
         const budgetDisplay = wrap.querySelector('.mission-autonomous-budget-display');
         const fullAutoNote = wrap.querySelector('.mission-autonomous-fullauto-note');
+        // Hidden through element.style: the page's CSP refuses style="".
+        fullAutoNote.style.display = 'none';
         const updateSelection = (label) => {
             chosen = label;
             budgetDisplay.textContent = label;

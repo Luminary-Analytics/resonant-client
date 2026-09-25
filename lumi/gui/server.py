@@ -314,6 +314,13 @@ def launch_gui(
             win_ref[0] = window
             import lumi.gui.app as _gui_app
             _gui_app._webview_window = window
+            # The page's CSP refuses the eval that pywebview's bridge uses,
+            # and WebKit (macOS, Linux) enforces it on the bridge too.
+            try:
+                from .webview_bridge import install as install_bridge_without_eval
+                install_bridge_without_eval(window)
+            except Exception:
+                logger.warning("Could not set up the window bridge without eval", exc_info=True)
 
             def _set_icon_on_shown():
                 """Set the window icon after the HWND exists."""

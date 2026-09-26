@@ -95,6 +95,9 @@ key is required by this recovery or was added to the app.
   transcription were simulated in tests. No live microphone, paid provider
   request, native packaged window or release build was used for qualification.
 
-The source branch is local. The four existing PRs and their remote branches
-remain unchanged. Publishing, merging into main, retiring old worktrees and
-building or deploying a release are separate operations.
+At the end of the initial recovery, the source branch was local and the four
+existing PRs and their remote branches were unchanged. The user subsequently
+authorized publication, merging into main and worktree cleanup. The integration
+PR records those GitHub operations; the local cleanup archive retains the
+original inventory, patches, file backups and a Git bundle before worktrees
+are retired. Building or deploying a release remains a separate operation.

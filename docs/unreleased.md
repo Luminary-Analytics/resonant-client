@@ -25,6 +25,9 @@ for origins, current validation and preservation of the original worktrees.
   session security. Voice settings explain that optional OpenAI transcription
   is billed separately from a ChatGPT subscription; Codex sign-in remains
   available for subscription-backed coding.
+- The standalone macOS policy-profile generator validates voice settings
+  without requiring the transcription HTTP client to be installed. The HTTP
+  dependency loads only when a recording is transcribed.
 
 ## September 25 the unused run-complete card is removed — source only, not released
 

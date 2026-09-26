@@ -101,3 +101,9 @@ authorized publication, merging into main and worktree cleanup. The integration
 PR records those GitHub operations; the local cleanup archive retains the
 original inventory, patches, file backups and a Git bundle before worktrees
 are retired. Building or deploying a release remains a separate operation.
+
+The first publication check found that the macOS policy-profile generator
+imported the transcription HTTP client even for policies without voice
+settings. The client now loads only during transcription. Three regressions
+run the actual profile generator with Python's site packages disabled, checking
+ordinary policies, valid voice settings and rejection of invalid voice settings.

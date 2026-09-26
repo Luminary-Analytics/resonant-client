@@ -23,11 +23,12 @@ from __future__ import annotations
 import os
 import re
 import time
-from typing import Any
-
-import httpx
+from typing import TYPE_CHECKING, Any
 
 from . import audit, net, usage
+
+if TYPE_CHECKING:
+    import httpx
 
 ENGINES = ("auto", "browser", "service", "off")
 DEFAULT_MODEL = "whisper-1"
@@ -258,6 +259,10 @@ def transcribe(settings: Any, audio: bytes, audio_type: str, *, project: str = "
         raise VoiceError("Nothing was recorded. Check your microphone.")
     if len(audio) > MAX_AUDIO_BYTES:
         raise VoiceError("The recording is too long. Dictate in shorter parts.")
+
+    # The standalone policy-profile generator uses validate() with only the
+    # standard library installed. HTTP dependencies belong to transcription.
+    import httpx
 
     service, model = state["service"], state["model"]
     base, headers, tls, name = _endpoint(settings, service, transport=transport)

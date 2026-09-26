@@ -1881,7 +1881,7 @@ class LumiSettingsView {
                       hint: 'Speech recognition built into a browser sends your voice to Google, Microsoft or Apple, and Lumi can’t see where. The desktop app often has none, so choose a service.' },
                     { key: 'service', label: 'Transcription service', type: 'select', default: '',
                       options: this._voiceServiceOptions(),
-                      hint: 'OpenAI uses your OpenAI key. Any connection that speaks OpenAI’s API works too, such as a Whisper server on your own network (Settings > Connections). The recording is sent when you stop dictating, and Lumi keeps no copy.' },
+                      hint: 'OpenAI transcription requires an API key and is billed separately from your ChatGPT subscription. Signing in with ChatGPT still covers coding through Codex. You can also choose a compatible service, such as a Whisper server on your own network (Settings > Connections). The recording is sent when you stop dictating, and Lumi keeps no copy.' },
                     { key: 'model', label: 'Transcription model', type: 'text', placeholder: 'whisper-1',
                       hint: 'OpenAI offers whisper-1, gpt-4o-mini-transcribe and gpt-4o-transcribe; other services name their own. Dictation is billed per minute, so Usage lists it without a cost.' },
                     { key: 'language', label: 'Language', type: 'text', placeholder: 'en-US',

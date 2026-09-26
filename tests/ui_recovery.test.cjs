@@ -6,6 +6,38 @@ const path = require('node:path');
 const source = fs.readFileSync(path.join(__dirname, '../lumi/gui/static/app.js'), 'utf8').split('function applyMixin(')[0];
 const tick = () => new Promise(resolve => setImmediate(resolve));
 
+function draftDictation(app, engine) {
+    const window = {};
+    vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../lumi/gui/static/voice_input.js'), 'utf8'),
+        {window, setTimeout, clearTimeout});
+    let recognition, recorder, resolveTranscript;
+    class Recognition {
+        constructor() { recognition = this; }
+        start() {}
+        abort() {}
+    }
+    class Recorder {
+        constructor() { recorder = this; this.state = 'inactive'; this.mimeType = 'audio/webm'; }
+        start() { this.state = 'recording'; }
+        stop() {
+            this.state = 'inactive';
+            this.ondataavailable({data: new Blob(['recorded'])});
+            this.onstop();
+        }
+    }
+    const dictation = window.LumiDictation.create({
+        env: {SpeechRecognition: Recognition, MediaRecorder: Recorder, Blob,
+            mediaDevices: {getUserMedia: async () => ({getTracks: () => [{stop() {}}]})}},
+        getStatus: () => ({engine, service_ready: true}),
+        getText: () => app.userInput.value,
+        setText: text => { app.userInput.value = text; },
+        transcribe: () => new Promise(resolve => { resolveTranscript = resolve; }),
+    });
+    app._dictation = dictation;
+    return {dictation, hear(text) { recognition.onresult({results: [Object.assign([{transcript: text}], {isFinal: true})]}); },
+        transcript(text) { resolveTranscript(text); }, stop() { recorder.stop(); }};
+}
+
 function setup(fetch, globals = {}) {
     const context = vm.createContext({fetch, URLSearchParams, Blob, console, Event, document: {getElementById: () => null}, WebSocket: {OPEN: 1}, ...globals});
     vm.runInContext(source + '\nthis.App = LumiApp;', context);
@@ -30,6 +62,42 @@ test('late draft reads do not overwrite typing or cross session boundaries', asy
     reads[1]({ok:true, json:async () => ({text:'older B'})});
     await tick();
     assert.equal(app.userInput.value, 'typing B');
+});
+
+test('switching drafts cancels recognition before it can overwrite the new conversation', async () => {
+    const app = setup(async (_url, options) => ({ok: true, json: async () => ({text: options ? '' : 'saved draft'})}));
+    app._activateDraft('D:/project', 'a');
+    await tick();
+    app.userInput.value = 'Draft A';
+    const voice = draftDictation(app, 'browser');
+    voice.dictation.press();
+    voice.hear('spoken in A');
+    app._activateDraft('D:/project', 'b');
+    await tick();
+    voice.hear('late A');
+    assert.equal(voice.dictation.cancel(), false);
+    assert.equal(app.userInput.value, 'saved draft');
+});
+
+test('a pending transcript cannot cross a project switch or a sent draft', async () => {
+    for (const transition of ['project', 'send']) {
+        const app = setup(async () => ({ok: true, json: async () => ({text: ''})}));
+        app._activateDraft('D:/a', 'session');
+        await tick();
+        const voice = draftDictation(app, 'service');
+        voice.dictation.press();
+        await tick();
+        voice.stop();
+        await tick();
+        if (transition === 'project') app._activateDraft('D:/b', 'session');
+        else await app._clearDraft();
+        await tick();
+        app.userInput.value = 'New draft';
+        voice.transcript('words from old draft');
+        await tick();
+        assert.equal(app.userInput.value, 'New draft');
+        assert.equal(voice.dictation.state, 'idle');
+    }
 });
 
 test('sent drafts are deleted and a late read cannot restore them', async () => {
@@ -2502,6 +2570,32 @@ test('after a reload the Plan tab follows the latest running plan, and Stop reac
     assert.equal(reconnected.stateLabel(), 'Running');
     assert.deepEqual(reconnected.planTabOpened, [false]);
     assert.equal(reconnected.planTabUnread, 1);
+});
+
+test('other plans cannot replace the followed graph or change its controls', () => {
+    const app = reloadedPlanApp();
+    app.connect([runningPlan('older'), runningPlan('followed')]);
+    const graph = app.canvas.innerHTML;
+    app.handleEvent({event: 'plan.snapshot', intent_id: 'autonomous', snapshot: runningPlan('autonomous').snapshot});
+    app.handleEvent({event: 'plan.event', intent_id: 'older', event_payload: {
+        kind: 'plan.rewrite', payload: {added_nodes: [{id: 'foreign-node', goal: 'foreign', status: 'pending'}]},
+    }});
+    assert.equal(app.canvas.innerHTML, graph);
+    app.press('plan-graph-stop');
+    assert.deepEqual(app.sent, [{command: 'intent_cancel', intent_id: 'followed'}]);
+});
+
+test('the accepted plan draws its earlier snapshot, and reconnect settles a plan that ended offline', () => {
+    const app = reloadedPlanApp();
+    const snapshot = runningPlan('new-plan').snapshot;
+    app.handleEvent({event: 'plan.snapshot', intent_id: 'new-plan', snapshot});
+    app.handleEvent({event: 'intent.accepted', intent_id: 'new-plan', text: snapshot.intent});
+    assert.match(app.canvas.innerHTML, /new-plan-b/);
+    app.press('plan-graph-stop');
+    app.connect([]);
+    assert.equal(app.stateLabel(), 'Ended');
+    assert.equal(app.unavailable('plan-graph-stop'), true);
+    assert.equal(app.unavailable('plan-graph-pause'), true);
 });
 
 test('a plan paused or stopping when the page reloaded shows so', () => {

@@ -1242,6 +1242,11 @@ def _policy_mode(requested: str, *, chosen: bool) -> str:
     return allowed[0]
 
 
+def _print_refusal(reason: str) -> None:
+    """Print a refusal literally, including outside policy, path or error text."""
+    _print(f"\n  [{C_ERR}]{G_CROSS} {_esc(reason)}[/{C_ERR}]\n")
+
+
 def _allowed_models(provider: str, models: list) -> list:
     """The models the organization's policy allows (lumi/policy.py): all of them without a policy."""
     from .policy import current as current_policy
@@ -1535,10 +1540,10 @@ Examples:
             raise ValueError(refusal)
         mode = _policy_mode(requested_mode, chosen=args.approve)
     except ValueError as exc:
-        console.print(f"\n  [{C_ERR}]{G_CROSS} {escape(str(exc))}[/{C_ERR}]\n")
+        _print_refusal(str(exc))
         return
     except Exception as exc:  # noqa: BLE001 - never run a session without the rules Settings hold
-        console.print(f"\n  [{C_ERR}]{G_CROSS} Lumi couldn't apply its settings: {escape(str(exc))}[/{C_ERR}]\n")
+        _print_refusal(f"Lumi couldn't apply its settings: {exc}")
         return
     mode_notice = "" if mode == requested_mode else \
         f"{current_policy().organization}'s policy doesn't allow {requested_mode}"
@@ -1640,8 +1645,8 @@ Examples:
         # Only the models the organization's policy allows are offered.
         models = _allowed_models("ollama", ollama_info["models"])
         if not models:
-            console.print(f"\n  [{C_ERR}]{G_CROSS} {escape(current_policy().organization)}'s policy allows none "
-                          f"of the models at {escape(ollama_info['url'])}[/{C_ERR}]\n")
+            _print_refusal(f"{current_policy().organization}'s policy allows none of the models at "
+                           f"{ollama_info['url']}")
             return
         model = args.model
         if not model:
@@ -1696,7 +1701,7 @@ Examples:
         session = build_session(settings, backend, project=os.getcwd(), mode=mode,
                                 max_tokens=args.max_tokens, auto_plan=args.auto_plan)
     except Exception as exc:  # noqa: BLE001 - never run a session without its rules
-        console.print(f"\n  [{C_ERR}]{G_CROSS} The session couldn't be set up: {escape(str(exc))}[/{C_ERR}]\n")
+        _print_refusal(f"The session couldn't be set up: {exc}")
         return
     print_banner(backend=backend, health_info=health_info, session=session, mode=mode, notice=mode_notice)
 
@@ -1802,8 +1807,7 @@ Examples:
                     # Only the models the organization's policy allows are offered.
                     models = _allowed_models("ollama", listed)
                     if listed and not models:
-                        console.print(f"  [{C_ERR}]{G_CROSS} {escape(current_policy().organization)}'s policy "
-                                      f"allows none of these models[/{C_ERR}]")
+                        _print_refusal(f"{current_policy().organization}'s policy allows none of these models")
                     elif models:
                         new_model = _select_model_interactive(models, current=be.model)
                         if new_model != be.model:
@@ -1883,7 +1887,7 @@ Examples:
                     try:
                         mode = _switch_mode(session, settings, wanted)
                     except ValueError as exc:
-                        console.print(f"  [{C_ERR}]{G_CROSS} {escape(str(exc))}[/{C_ERR}]")
+                        _print_refusal(str(exc))
                     else:
                         if mode == "bypass":
                             console.print(f"  [{C_OK}]{G_DOT} Approval OFF[/{C_OK}]  [{C_DIM}]auto-execute[/{C_DIM}]")

@@ -8,6 +8,24 @@ The heartbeat remains paused. Documentation maintenance does not resume work,
 spending or grants, and changes no native implementation or installed bundle.
 The dated September 15/18 records below are historical.
 
+## September 26 worktree recovery and integration fixes — source only, not released
+
+The open plan-controls, terminal-session and dictation PRs were integrated
+with the unfinished hook, reload, reflection, page-policy and keyboard work
+on `codex/finish-open-work`. See the [recovery record](worktree-recovery-2026-09-26.md)
+for origins, current validation and preservation of the original worktrees.
+
+- Dictation cannot put a late result into another conversation or a sent
+  draft. Invalid or expired organization policy blocks both dictation paths.
+- A plan's graph and controls follow the same intent. Reconnecting after a
+  plan ended offline settles its controls without claiming it completed.
+- Plans adopted by a rebuilt service retain their original project's audit
+  log and snapshots, including after switching projects.
+- Terminal setup and refusal messages preserve literal text while applying
+  session security. Voice settings explain that optional OpenAI transcription
+  is billed separately from a ChatGPT subscription; Codex sign-in remains
+  available for subscription-backed coding.
+
 ## September 25 the unused run-complete card is removed — source only, not released
 
 - **Removed `_renderAgentRunCompleteCard`** (`lumi/gui/static/run_cards.js`,

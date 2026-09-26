@@ -444,7 +444,9 @@ planner splits it into steps, and implementers and verifiers take them in
 order. This is separate from the **Plan** permission mode. The preview's
 **Plan** tab opens with the plan and updates as steps start and finish. Its
 toolbar shows the plan's state: Running, Paused, Stopping…, Stopped, Complete
-or Failed.
+or Failed. If the connection returns after a plan has ended, the toolbar
+shows Ended until a new plan is followed; it does not infer that the plan
+succeeded.
 
 - **Pause** lets the step already running finish and starts no new one until
   you press **Resume** (the same button).
@@ -460,7 +462,8 @@ Pause and Stop are buttons you can reach with Tab and press with Enter or
 Space; focus stays on them while a plan's steps start and end. They act on
 the plan the tab follows: the last one started with `/plan` or with a
 Mission's **Build this roadmap**. An autonomous session's plans are stopped
-from its badge.
+from its badge. Events from other plans cannot replace the graph shown
+beside these controls.
 
 A plan keeps running when the page reloads or reconnects, and the page picks
 it back up. The preview opens on the **Plan** tab, showing the plan's steps

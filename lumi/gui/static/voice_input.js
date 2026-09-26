@@ -299,7 +299,10 @@
         function send(id, blob, kind) {
             pending = id;
             emit('transcribing');
-            Promise.resolve().then(() => options.transcribe(blob, kind)).then(text => {
+            Promise.resolve().then(() => {
+                if (pending !== id) return '';
+                return options.transcribe(blob, kind);
+            }).then(text => {
                 if (pending !== id) return;
                 pending = 0;
                 const said = String(text || '').trim();
@@ -358,7 +361,7 @@
             finish();
         }
 
-        function cancel() {
+        function cancel({restore = true, focus = true} = {}) {
             if (state === 'idle') return false;
             const was = engine;
             session += 1;
@@ -370,8 +373,8 @@
             if (recorder && recorder.state !== 'inactive') {
                 try { recorder.stop(); } catch (_) { /* stopped already */ }
             }
-            if (was === 'browser') options.setText(original, {interim: false});
-            finishIdle({cancelled: true});
+            if (was === 'browser' && restore) options.setText(original, {interim: false});
+            finishIdle(focus ? {cancelled: true} : {cancelled: true, focus: false});
             return true;
         }
 

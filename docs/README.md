@@ -22,6 +22,9 @@ The current release is [Lumi 0.19.1](v0.19.1-release-notes.md).
 yet shipped. Versioned release notes and dated evaluations record their own
 point in time; they are not instructions to restore an old design.
 
+[September 26 worktree recovery](worktree-recovery-2026-09-26.md) records the
+local integration of open PRs and unfinished work, its review and validation.
+
 The [documentation status catalog](documentation-status.md) identifies active
 guides, historical plans, and dated evidence, with links to current replacements.
 

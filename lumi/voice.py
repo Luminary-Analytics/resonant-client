@@ -166,6 +166,12 @@ def status(settings: Any) -> dict[str, Any]:
         result["reason"] = (f"{policy.organization} turned dictation off." if result["locked"]
                             else "Dictation is off in Settings > Voice.")
         return result
+    refusal = blocked_reason()
+    if refusal:
+        result["browser"] = False
+        result["browser_reason"] = refusal
+        result["reason"] = refusal
+        return result
     if policy and policy.require_zero_retention and result["browser"]:
         result["browser"] = False
         result["browser_reason"] = (
@@ -173,7 +179,7 @@ def status(settings: Any) -> dict[str, Any]:
             "browser's speech service keeps. Choose a transcription service in Settings > Voice."
         )
     if engine in ("auto", "service"):
-        problem = blocked_reason() or _service_problem(settings, service)
+        problem = _service_problem(settings, service)
         if not problem and policy and not policy.model_allowed(service, model):
             problem = f"{policy.organization}'s policy doesn't allow {names.get(service, service)}'s {model} model."
         result["service_ready"] = not problem

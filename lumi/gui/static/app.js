@@ -574,6 +574,7 @@ class LumiApp {
     }
 
     _clearDraft() {
+        this._dictation?.cancel({restore: false, focus: false});
         if (this._draftScope) {
             this._draftScope.edited = true;
             this._draftScope.savedText = undefined;
@@ -613,6 +614,8 @@ class LumiApp {
         if (!project) return;
         const key = JSON.stringify([this._projectKey(project), session]);
         if (this._draftScope?.key === key) return;
+        // Stop callbacks while the composer still belongs to the old draft.
+        this._dictation?.cancel({focus: false});
         this._clearPromptSuggestion();
         const previous = this._draftScope;
         const carry = migrateNew && previous && !previous.session &&
@@ -2191,6 +2194,8 @@ class LumiApp {
         this._currentIntentId = intentId;
         this._currentIntentState = '';
         this._setIntentState('running');
+        const snapshot = this._planRuns?.get(intentId)?.snapshot;
+        if (snapshot && window.PlanGraphView) window.PlanGraphView.render(snapshot);
     }
 
     /**
@@ -2202,7 +2207,12 @@ class LumiApp {
      */
     _followRunningPlans(plans) {
         const latest = plans.at(-1);
-        if (!latest?.intent_id) return;
+        if (!latest?.intent_id) {
+            if (this._planControlsLive() || this._currentIntentState === 'stopping') {
+                this._setIntentState('ended');
+            }
+            return;
+        }
         const alreadyShown = latest.intent_id === this._currentIntentId;
         this._followIntent(latest.intent_id);
         if (latest.stopping) this._setIntentState('stopping');
@@ -2211,7 +2221,7 @@ class LumiApp {
         // A page reconnecting to the plan it shows keeps its layout.
         if (alreadyShown) return;
         // A preview opened for the plan shows it, so its Pause and Stop can be
-        // reached from the keyboard (the preview's tabs can't be). One already
+        // reached from the keyboard. One already
         // open stays on its pane, with the Plan tab marked. Neither takes focus.
         this.openPlanTab(!this.previewOpen);
         this._markPlanTabUnread();
@@ -3871,7 +3881,7 @@ class LumiApp {
                 break;
             // ── Plan-graph (organic orchestration) ────────────────────
             case 'plan.snapshot':
-                if (window.PlanGraphView) {
+                if (event.intent_id === this._currentIntentId && window.PlanGraphView) {
                     window.PlanGraphView.render(event.snapshot || event.data);
                     this.openPlanTab(false);  // open without stealing focus
                     this._markPlanTabUnread();
@@ -3879,13 +3889,13 @@ class LumiApp {
                 break;
             case 'plan.event':
                 this.trackPlanAgentEvent(event);
-                if (window.PlanGraphView) {
+                if (event.intent_id === this._currentIntentId && window.PlanGraphView) {
                     window.PlanGraphView.applyEvent(event.event_payload || event);
                     this._markPlanTabUnread();
                 }
                 break;
             case 'plan.checkpoint':
-                if (window.PlanGraphView) {
+                if (event.intent_id === this._currentIntentId && window.PlanGraphView) {
                     window.PlanGraphView.showCheckpoint(event.payload || event);
                     // Checkpoints DO grab focus (an explicit user-attention
                     // moment). The mark-unread is moot since the switch
@@ -3900,6 +3910,10 @@ class LumiApp {
                 break;
             case 'intent.accepted':
                 this._followIntent(event.intent_id);
+                if (this._planRuns?.get(event.intent_id)?.snapshot) {
+                    this.openPlanTab(false);
+                    this._markPlanTabUnread();
+                }
                 break;
             case 'intent.started':
                 this.showStatusMessage(`Intent started: ${event.text || ''}`);
@@ -5308,8 +5322,10 @@ class LumiApp {
                     if (detail.cancelled) say('Dictation cancelled.', true);
                     else if (detail.inserted) say('Dictation added to your message.', true);
                     else if (!errored) say('');
-                    composer.focus();
-                    composer.setSelectionRange(composer.value.length, composer.value.length);
+                    if (detail.focus !== false) {
+                        composer.focus();
+                        composer.setSelectionRange(composer.value.length, composer.value.length);
+                    }
                 }
             },
             onError: message => {
@@ -8123,6 +8139,7 @@ class LumiApp {
         if (!lifecycle.includes(type)) return;
         const run = this._planRunFor(event);
         if (!run) return;
+        if (type === 'plan.snapshot') run.snapshot = event.snapshot || event.data;
         if (['plan.snapshot', 'intent.accepted', 'intent.started'].includes(type)) {
             if (run.status === 'starting') this._setPlanStatus(run, 'running');
         } else if (type === 'intent.paused') {

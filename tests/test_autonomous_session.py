@@ -548,6 +548,7 @@ class TestIntentCommandsDuringAMission:
             _project_instructions="",
             settings=None,
             _build_specialist_backend=lambda _specialization: None,
+            specialist_hook_runner=lambda _project: None,
         )
         # The app's own service construction and emitter rebinding.
         state.get_intent_service = gui_app.AppState.get_intent_service.__get__(state)

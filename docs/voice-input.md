@@ -12,6 +12,9 @@ box for you to read and edit; dictation never sends anything.
   through pauses until you press again.
 - **Escape cancels.** Nothing is added, and the message box keeps what it
   had.
+- Switching projects or conversations cancels dictation before saving the
+  old draft. Sending a message discards any pending transcription. A late
+  result cannot add words to a different draft or the next message.
 - The line under the message box says what's happening: listening,
   transcribing, or why dictation can't start. Screen readers announce it.
 - Dictation stops after five minutes. It also stops after a long silence,
@@ -32,7 +35,10 @@ here. Pressing it says what to change.
 **Transcription services**
 
 - **OpenAI** uses the OpenAI key under Settings > Connections (or
-  `OPENAI_API_KEY`).
+  `OPENAI_API_KEY`). Transcription API usage is billed separately from a
+  ChatGPT subscription. **Sign in with ChatGPT** uses your subscription for
+  coding through Codex; it does not supply a transcription API key.
+  See [OpenAI's billing explanation](https://help.openai.com/en/articles/9039756).
 - **Any connection that speaks OpenAI's API** also works. It must offer
   `POST /audio/transcriptions`, which OpenAI-compatible and OpenAI Responses
   connections both can. For example, a Whisper server on your own network,
@@ -76,6 +82,10 @@ here. Pressing it says what to change.
 
 Organization policy locks these like any other setting (see the
 [policy guide](enterprise-policy.md)):
+
+An invalid or expired organization policy blocks both transcription services
+and this window's speech recognition. Automatic mode cannot fall back to a
+browser recognizer while that policy is blocked.
 
 | Setting | Values |
 | --- | --- |

@@ -56,6 +56,17 @@ def _local_whisper(settings, **extra):
 
 # ── What may listen ─────────────────────────────────────────────────────────
 
+
+@pytest.mark.parametrize("engine", ["auto", "browser", "service"])
+def test_invalid_policy_disables_every_dictation_engine(settings, monkeypatch, engine):
+    settings.set("voice", "engine", engine)
+    _openai(settings)
+    monkeypatch.setattr(lumi_policy, "blocked_reason", lambda: "Organization policy is invalid")
+    result = voice.status(settings)
+    assert result["browser"] is False
+    assert result["service_ready"] is False
+    assert result["browser_reason"] == result["reason"] == "Organization policy is invalid"
+
 def test_by_default_the_browser_listens_and_no_service_is_chosen(settings, monkeypatch):
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     state = voice.status(settings)

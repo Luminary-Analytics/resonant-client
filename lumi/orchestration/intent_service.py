@@ -276,7 +276,7 @@ class IntentService:
             return False
         active.cancel_event.set()
         active.status = "cancelled"
-        log_decision(self.project_path, intent_id, summary="intent cancel requested")
+        log_decision(active.project_path, intent_id, summary="intent cancel requested")
         # Not yet `intent.cancelled`: the running step is still ending. The
         # worker sends that when the walk is over.
         self._emit({"event": "intent.cancelling", "intent_id": intent_id})
@@ -288,7 +288,7 @@ class IntentService:
             return False
         active.pause_event.set()
         active.status = "paused"
-        log_decision(self.project_path, intent_id, summary="intent paused")
+        log_decision(active.project_path, intent_id, summary="intent paused")
         self._emit({"event": "intent.paused", "intent_id": intent_id})
         return True
 
@@ -298,7 +298,7 @@ class IntentService:
             return False
         active.pause_event.clear()
         active.status = "running"
-        log_decision(self.project_path, intent_id, summary="intent resumed")
+        log_decision(active.project_path, intent_id, summary="intent resumed")
         self._emit({"event": "intent.resumed", "intent_id": intent_id})
         return True
 
@@ -390,7 +390,9 @@ class IntentService:
     # ── Snapshots / restore ────────────────────────────────────────
 
     def list_snapshots(self, intent_id: str) -> list[dict]:
-        return list_snapshots(self.project_path, intent_id=intent_id)
+        active = self._get(intent_id)
+        project_path = active.project_path if active else self.project_path
+        return list_snapshots(project_path, intent_id=intent_id)
 
     def restore_snapshot(self, intent_id: str, ts_ms: int) -> bool:
         """Restore a graph from an old snapshot. The intent must not be running.
@@ -400,12 +402,15 @@ class IntentService:
         active = self._get(intent_id)
         if active and active.thread.is_alive():
             return False
-        snap = restore_snapshot(self.project_path, ts_ms=ts_ms, intent_id=intent_id)
+        project_path = active.project_path if active else self.project_path
+        snap = restore_snapshot(project_path, ts_ms=ts_ms, intent_id=intent_id)
         if not snap:
             return False
-        save_graph(snap, self.project_path)
+        save_graph(snap, project_path)
+        if active:
+            active.graph = snap
         log_decision(
-            self.project_path, intent_id,
+            project_path, intent_id,
             summary="snapshot restored", ts_ms=ts_ms,
         )
         self._emit({

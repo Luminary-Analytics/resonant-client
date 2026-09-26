@@ -570,6 +570,38 @@ def test_a_page_is_handed_its_projects_running_plans_oldest_first(state_home, pr
     assert {e["intent_id"] for e in here} == {first, second}
 
 
+def test_adopted_plan_keeps_its_project_audit_and_snapshots(state_home, project_dir, tmp_path):
+    other = tmp_path / "other"
+    other.mkdir()
+    original = _make_service(project_dir)
+    replacement = _make_service(other)
+    started = []
+    release = threading.Event()
+    with patch("lumi.orchestration.intent_service.LocalSpecialistRunner",
+               side_effect=lambda **kw: _held_runner(started, release)):
+        intent_id = original.start_intent("keep the original project")
+        try:
+            _wait_until(_implementing(started, 1))
+            replacement.adopt_running(original)
+            assert replacement.pause(intent_id)
+            assert replacement.resume(intent_id)
+            snapshots = original.list_snapshots(intent_id)
+            assert snapshots
+            assert replacement.list_snapshots(intent_id) == snapshots
+            assert replacement.cancel(intent_id)
+        finally:
+            release.set()
+            _wait_for_completion(original, intent_id)
+
+    assert replacement.restore_snapshot(intent_id, snapshots[-1]["ts_ms"])
+    decisions = {event["payload"].get("summary") for event in read_audit_events(str(project_dir), intent_id)
+                 if event["kind"] == "decision"}
+    assert {"intent paused", "intent resumed", "intent cancel requested", "snapshot restored"} <= decisions
+    assert read_audit_events(str(other), intent_id) == []
+    assert load_graph(intent_id, str(other)) is None
+    assert replacement.get_graph(intent_id).to_dict() == load_graph(intent_id, str(project_dir)).to_dict()
+
+
 def test_a_page_acting_on_a_plan_gets_its_events_but_never_an_autonomous_plans(state_home, project_dir):
     service_events: list = []
     service = _make_service(project_dir, on_event=service_events.append)

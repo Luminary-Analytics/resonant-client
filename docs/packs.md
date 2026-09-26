@@ -91,13 +91,17 @@ Hooks in the `hooks` list of `settings.json` take the same fields. They are
 your own, so they need no approval, and they run wherever Lumi works with your
 Settings:
 
-- the app;
+- the app, including each step of a plan: a `/plan` message, a Mission's
+  **Build this roadmap** and [autonomous sessions](autonomous-sessions.md);
 - [`lumi run`](headless.md), and so [scheduled tasks](scheduled-tasks.md)
   and the runs of [model comparisons](model-comparisons.md);
 - the [chat gateway](chat-gateway.md);
 - [tasks from Slack and Teams](lumi-cloud.md#tasks-from-slack-and-teams).
 
-A pack's hooks run only in the app, where approved packs are loaded.
+A pack's hooks run only in the app, where approved packs are loaded: in the
+project's conversations and in its plans' steps alike. A step looks its
+hooks up as it starts, so a pack you approve or withdraw during a plan counts
+from the next step.
 
 With `json`, a hook may answer with JSON on standard output: `decision`
 (`allow`, `ask` or `deny`), `reason`, and `additional_context` for the model.

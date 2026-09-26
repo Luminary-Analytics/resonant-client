@@ -16,11 +16,6 @@ again (Unreleased):
   details (`flight_recorder_detail`, `flight_recorder_export`, `artifact_view`);
 - capability packs: in Settings.
 
-`app.js` still has rendering for the pane's agents, timeline and packs views
-(`renderRuntimeView`, `renderAgentActivityTree`), drawing into elements that no
-longer exist. **Fix proposal:** remove it, keeping the state the conversation's
-worker blocks use.
-
 ## Current provider and validation limitations (2026-09-14)
 
 - Authenticated live SONN discovery and coding have been exercised through the

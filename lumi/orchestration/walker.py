@@ -45,7 +45,8 @@ logger = logging.getLogger(__name__)
 class WalkerEvent:
     """One event in the walker's stream. The UI consumes these."""
     kind: str                       # node.start / node.done / node.confidence /
-                                    # plan.rewrite / plan.complete / soft_checkpoint
+                                    # plan.rewrite / plan.complete / plan.stopped /
+                                    # soft_checkpoint
     node_id: Optional[str] = None
     payload: dict = field(default_factory=dict)
     ts: float = field(default_factory=time.time)
@@ -141,7 +142,8 @@ def _strip_retry_prefix(goal: str) -> str:
 class GraphWalker:
     """Drives a plan-graph to completion by dispatching specialists.
 
-    Stateless aside from the cancel_event. Construct one per intent / run.
+    Stateless aside from the cancel and pause events. Construct one per
+    intent / run.
     """
 
     def __init__(
@@ -150,6 +152,7 @@ class GraphWalker:
         runner: SpecialistRunner,
         on_event: Optional[Callable[[WalkerEvent], None]] = None,
         cancel_event: Optional[threading.Event] = None,
+        pause_event: Optional[threading.Event] = None,
         max_total_nodes: int = 200,
         max_repair_attempts: int = 2,
         max_planner_retries: int = 1,
@@ -157,6 +160,8 @@ class GraphWalker:
         self.runner = runner
         self.on_event = on_event or (lambda ev: None)
         self.cancel_event = cancel_event or threading.Event()
+        # While set, no new node starts; the one running finishes first.
+        self.pause_event = pause_event or threading.Event()
         self.max_total_nodes = max_total_nodes
         self.max_repair_attempts = max_repair_attempts
         # v0.5.1a3 — when a PLAN / PLAN_DEEP node returns no
@@ -174,8 +179,7 @@ class GraphWalker:
         seen_node_ids: set[str] = set()
         while not graph.is_complete():
             if self.cancel_event.is_set():
-                logger.info("GraphWalker cancelled before completion (intent=%s)", graph.intent_id)
-                return graph
+                break
             if len(graph.nodes) > self.max_total_nodes:
                 logger.warning(
                     "GraphWalker hit max_total_nodes (%d) for intent %s; abandoning remaining work",
@@ -200,9 +204,18 @@ class GraphWalker:
                 if node.id in seen_node_ids:
                     # Defensive: prevent infinite loops if a node somehow reappears as runnable.
                     continue
+                self._hold_while_paused()
+                if self.cancel_event.is_set():
+                    # Cancelled during a pause or the previous node: the
+                    # loop's check above ends the walk.
+                    break
                 seen_node_ids.add(node.id)
                 self._run_one(graph, node)
 
+        if self.cancel_event.is_set():
+            logger.info("GraphWalker stopped before completion (intent=%s)", graph.intent_id)
+            self._abandon_unfinished(graph)
+            return graph
         if graph.is_complete():
             self.on_event(WalkerEvent(kind="plan.complete", payload={
                 "intent_id": graph.intent_id,
@@ -210,6 +223,24 @@ class GraphWalker:
                 "all_done": all(n.status == NodeStatus.DONE for n in graph.nodes.values()),
             }))
         return graph
+
+    def _hold_while_paused(self) -> None:
+        # Pause is rare and user-driven, so a short poll is enough. Cancel
+        # wins: a paused walk that is cancelled stops without resuming.
+        while self.pause_event.is_set() and not self.cancel_event.is_set():
+            time.sleep(0.1)
+
+    def _abandon_unfinished(self, graph: PlanGraph) -> None:
+        # A stopped plan's remaining steps will never run. Record that
+        # instead of leaving them pending, and never report the plan
+        # complete: `plan.stopped` replaces `plan.complete`.
+        abandoned = [n.id for n in graph.nodes.values() if not n.is_terminal()]
+        for node_id in abandoned:
+            graph.mark_abandoned(node_id, reason="plan stopped")
+        self.on_event(WalkerEvent(kind="plan.stopped", payload={
+            "intent_id": graph.intent_id,
+            "abandoned": abandoned,
+        }))
 
     # ── Per-node execution ─────────────────────────────────────────────
 
@@ -247,6 +278,11 @@ class GraphWalker:
             "summary": result.summary,
             "verdict": result.verdict,
         }))
+
+        if self.cancel_event.is_set():
+            # Stopped while this node ran: add no subgoals, retries,
+            # verifiers or repairs. Nothing would run them.
+            return
 
         # ── Post-execution decisions ──────────────────────────────────
 

@@ -57,6 +57,13 @@ another browser, but the tab it opened keeps working through reloads and
 reconnects, as do new tabs of that browser at the same address, until Lumi exits. After a restart, paste the new link into an existing tab. A page
 opened without a link explains how to get one. See [Unreleased](unreleased.md).
 
+**What replies can't do (Unreleased):** the app page runs only Lumi's own
+scripts and styles. HTML in a reply or a file that tries to run code, restyle
+the page or submit a form does nothing, and images from other websites don't
+load in replies, because their address could carry data away. Screenshots,
+attachments and saved images still show. A browser's developer console lists
+each thing it refused.
+
 **Find projects or sessions** matches project names, paths, and session titles.
 The scope selector offers **All sessions** and **Pinned**. Expanded projects
 initially show six matching sessions, plus the active conversation if needed.
@@ -79,6 +86,13 @@ The toolbar provides runtime status, managed project previews,
 project notes, and the browser/design preview panel. Managed previews list
 running project servers; the preview-panel toggle opens the adjacent viewing
 surface. These are separate controls.
+
+The preview panel's **Browser**, **Plan** and **Context** tabs are one stop in
+the tab order: Tab reaches the shown pane's tab, and the arrow keys, Home and
+End move to another tab and show its pane (Unreleased). A plan brings the Plan
+tab forward without moving keyboard focus. While another pane shows, a dot on
+the Plan tab marks updates, and screen readers hear "new updates" with its
+name.
 
 **Compact layout (v0.17.1):** Previews and Project notes become icon buttons
 with accessible names and hover tooltips. Search has dedicated layout space so
@@ -374,7 +388,10 @@ work details, so nothing is added to it.
 
 A plan (a `/plan` message, or a Mission's **Build this roadmap**) reports
 under its own card (Unreleased): the `/plan` message, or a "Plan" card named
-from the roadmap's spec. Each specialist has a line, for example "Implementer
+from the roadmap's spec, headed by that label and name rather than drawn as
+your message. An autonomous session's reflect pass reports the same way,
+under a "Reflection" card (see [autonomous sessions](autonomous-sessions.md)).
+Each specialist has a line, for example "Implementer
 · Add a toggle to the settings page · done · 2 actions · 1s", open while it
 runs with its commands, edits and prose. A finished line folds; one that
 didn't finish, or whose check asked for a repair, stays open. A status line
@@ -418,6 +435,47 @@ Checkpoints belong to the saved conversation, so its Timeline is still there
 after Lumi restarts. Codex and Claude Code change files with their own tools,
 so their changes have no checkpoints. **Settings > Checkpoints & recovery**
 also lists a Git project's checkpoints.
+
+## Plans with /plan (Unreleased)
+
+Start a message with `/plan`, for example `/plan add a dark mode toggle`, to
+have specialists work through a goal instead of answering in one turn: a
+planner splits it into steps, and implementers and verifiers take them in
+order. This is separate from the **Plan** permission mode. The preview's
+**Plan** tab opens with the plan and updates as steps start and finish. Its
+toolbar shows the plan's state: Running, Paused, Stopping…, Stopped, Complete
+or Failed. If the connection returns after a plan has ended, the toolbar
+shows Ended until a new plan is followed; it does not infer that the plan
+succeeded.
+
+- **Pause** lets the step already running finish and starts no new one until
+  you press **Resume** (the same button).
+- **Stop** ends the plan. The step that is running makes no further model
+  request or tool call (a command it started is stopped), and no other step
+  starts. The toolbar reads Stopping… until that step has ended, then
+  Stopped; steps that never ran are marked abandoned. A stopped plan can't be
+  resumed: start it again with `/plan`.
+- **History** lists the plan's saved snapshots. A plan can be restored from
+  one once it has stopped.
+
+Pause and Stop are buttons you can reach with Tab and press with Enter or
+Space; focus stays on them while a plan's steps start and end. They act on
+the plan the tab follows: the last one started with `/plan` or with a
+Mission's **Build this roadmap**. An autonomous session's plans are stopped
+from its badge. Events from other plans cannot replace the graph shown
+beside these controls.
+
+A plan keeps running when the page reloads or reconnects, and the page picks
+it back up. The preview opens on the **Plan** tab, showing the plan's steps
+as they stand and its state (Running, Paused or Stopping…), and Pause and
+Stop reach it again, from the keyboard too. If several plans are running in
+the open project, the tab follows the latest. What the plan's steps wrote in the conversation
+before the reload isn't shown again; what they do next appears as before.
+With two windows open (File > Open in Browser), a plan's updates go to the
+window that connected last, or that last used one of the plan's controls.
+
+Specialists run in Full-auto inside the project, with the guardrails that
+apply in every mode. See [Unreleased](unreleased.md).
 
 ## Creative editors
 

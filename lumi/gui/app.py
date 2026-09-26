@@ -61,7 +61,13 @@ from .. import audit, budgets, net, pricing, secret_scan, usage
 from . import ws_commands
 from .appearance import page_appearance
 from .chat_loop import ChatRunLoop
-from .local_access import WS_REFUSED, LocalHostGuard, access as local_access, same_origin
+from .local_access import (
+    WS_REFUSED,
+    LocalHostGuard,
+    access as local_access,
+    content_security_policy,
+    same_origin,
+)
 # Payload builders moved to ws_commands.py with the handlers that use them.
 # Re-exported because `skill_archive` still lives in the endpoint and because
 # these are the module's established public surface for tests. Safe from
@@ -509,17 +515,21 @@ class AppState:
 
         Stateful singleton: the same instance survives across WS commands so
         `start_intent` and a later `cancel(intent_id)` reach the same `_active`
-        dict. Rebuilt whenever the backend or project changes (so a project
-        switch doesn't leak active intents from the prior project).
+        dict. Rebuilt whenever the backend or project changes, and after the
+        MCP tools change (those commands drop it), so new intents use the
+        current ones. Intents still running carry over, so Stop, Pause and
+        Resume keep reaching a plan started before a model switch.
 
         `on_event` is rebound on every call — the WebSocket-scoped emitter
-        changes per connection.
+        changes per connection. Anything else that needs the events, such as
+        an autonomous mission's dispatch tracker, uses
+        `IntentService.add_listener`, which this rebinding leaves alone.
         """
         from ..engine.tools import AGENT_TOOLS
         signature = (id(self.backend), self.project.project_path)
         existing = getattr(self, "_intent_service", None)
         if existing is None or getattr(self, "_intent_service_signature", None) != signature:
-            self._intent_service = IntentService(
+            service = IntentService(
                 project_path=self.project.project_path,
                 backend=self.backend,
                 all_tools=list(AGENT_TOOLS) + self.mcp_manager.get_all_tools(),
@@ -530,11 +540,31 @@ class AppState:
                 # resolver. None override → default backend.
                 specialist_backend_resolver=self._build_specialist_backend,
                 mcp_manager=self.mcp_manager,
+                hook_runner_for=self.specialist_hook_runner,
             )
+            # The MCP commands set `_intent_service` to None, so the last
+            # service built is kept apart to hand its running intents on.
+            service.adopt_running(existing or getattr(self, "_intent_service_last", None))
+            self._intent_service = self._intent_service_last = service
             self._intent_service_signature = signature
         elif on_event is not None:
             self._intent_service.on_event = on_event
         return self._intent_service
+
+    def attach_intent_viewer(self, viewer: Callable[[dict], None]) -> list[dict]:
+        """Hand this project's running plans to a page that just connected.
+
+        Their events go to `viewer` from now on, and the page gets them to
+        follow in the Plan tab (IntentService.attach_viewer). Nothing is built
+        or rebound: `on_event` may carry an autonomous mission's dispatch
+        tracker, which must keep seeing its plans end.
+        """
+        # The MCP commands drop `_intent_service`; the last one built holds
+        # every plan still running, adopted from the services before it.
+        service = getattr(self, "_intent_service", None) or getattr(self, "_intent_service_last", None)
+        if service is None:
+            return []
+        return service.attach_viewer(viewer, project_path=self.project.project_path)
 
     def _module_name_from_target_file(raw_path: str) -> str:
         path = str(raw_path or "").strip().replace("\\", "/")
@@ -869,6 +899,16 @@ class AppState:
 
         session._skill_context_provider = _combined_skill_context
         session.mcp_tools = self._safe_mcp_tools()
+
+    def specialist_hook_runner(self, project_path: str) -> HookRunner:
+        """The hooks of a /plan or Mission specialist working in ``project_path``.
+
+        What a chat session there gets (_attach_capability_packs): the shared
+        runner's Settings hooks, which apply_settings reloads, and the
+        project's approved capability-pack hooks. The orchestration runner
+        asks for it as each specialist starts (LocalSpecialistRunner._hook_runner).
+        """
+        return self.hook_runner.scoped(self._capability_packs_for(project_path).hook_definitions())
 
     def capability_pack_payload(self) -> dict:
         """Every discovered pack with what it would run, for review in Settings."""
@@ -3826,9 +3866,11 @@ async def homepage(request):
         },
         headers={
             # The page holds this launch's access token in origin storage.
-            # Never let another site frame it and steer clicks, and never tell
-            # external links which local port the app is running on.
-            "Content-Security-Policy": "frame-ancestors 'none'",
+            # Only this server's scripts and styles run in it (see
+            # content_security_policy), no other site may frame it and steer
+            # clicks, and external links are never told which local port the
+            # app is running on.
+            "Content-Security-Policy": content_security_policy(request.scope),
             "X-Frame-Options": "DENY",
             "Referrer-Policy": "no-referrer",
             # It carries the saved appearance, so a cached copy would be stale.

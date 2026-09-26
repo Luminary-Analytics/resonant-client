@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en" data-theme-setting="{{ appearance.theme }}"{% if appearance.theme == 'light' %} data-theme="light"{% endif %}{% if appearance.density == 'compact' %} data-density="compact"{% endif %}{% if appearance.font_size %} style="--text-base: {{ appearance.font_size }}px"{% endif %}>
+<html lang="en" data-theme-setting="{{ appearance.theme }}"{% if appearance.theme == 'light' %} data-theme="light"{% endif %}{% if appearance.density == 'compact' %} data-density="compact"{% endif %}{% if appearance.font_size %} data-font-size="{{ appearance.font_size }}"{% endif %}>
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -291,14 +291,14 @@
                                     <button id="welcome-folder-browse" title="Browse for folder">&#128193;</button>
                                     <button id="welcome-folder-open">Open</button>
                                 </div>
-                                <div id="welcome-dir-browser" class="dir-browser" style="display:none"></div>
+                                <div id="welcome-dir-browser" class="dir-browser" data-start-hidden></div>
                                 <div id="welcome-recent-projects" class="recent-projects-list"></div>
                             </div>
 
                             <!-- Step 2: Backend Selection (shown after folder picked) -->
-                            <div id="backend-step" class="setup-step" style="display:none;">
+                            <div id="backend-step" class="setup-step" data-start-hidden>
                                 <div class="setup-project-badge" id="setup-project-badge"></div>
-                                <div class="chat-welcome-footer" style="margin-bottom:12px;">
+                                <div class="chat-welcome-footer setup-role-footer">
                                     <select id="setup-session-role" class="chat-welcome-model-select" title="Agent role">
                                         <option value="generator">Build</option>
                                         <option value="planner">Plan</option>
@@ -314,7 +314,7 @@
                     </div>
 
                     <!-- ═══ Chat Area ═══ -->
-                    <div class="agent-panel" id="agent-panel" style="display:none;">
+                    <div class="agent-panel" id="agent-panel" data-start-hidden>
                         <!-- Chat header — slim bar above the messages. Hosts the
                              Mission toggle (off-state) or Mission badge (on-state).
                              See docs/long-running-agents.md (Phase 1 UI). -->
@@ -355,7 +355,7 @@
                     </div>
 
                     <!-- ═══ Terminal Status Bar ═══ -->
-                    <div id="terminal-bar" class="terminal-bar" style="display:none;">
+                    <div id="terminal-bar" class="terminal-bar" data-start-hidden>
                         <div class="terminal-bar-header" id="terminal-bar-header">
                             <div class="terminal-bar-left">
                                 <span class="terminal-bar-spinner"></span>
@@ -385,7 +385,7 @@
                     </div>
 
                     <!-- ═══ Bottom Input Bar ═══ -->
-                    <div id="input-bar" class="input-bar" style="display:none;">
+                    <div id="input-bar" class="input-bar" data-start-hidden>
                         <section id="live-run-surface" class="live-run-surface" hidden aria-live="polite"></section>
                         <!-- Persistent "the runtime is not usable" notice. The
                              reason used to be a toast that vanished before the
@@ -408,18 +408,19 @@
                                         <path d="M8 13V3M4 7l4-4 4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
                                     </svg>
                                 </button>
-                                <button id="stop-btn" class="stop-btn" title="Stop the agent" style="display:none;">
+                                <button id="stop-btn" class="stop-btn" title="Stop the agent" data-start-hidden>
                                     <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
                                         <rect x="3" y="3" width="10" height="10" rx="1" fill="currentColor"/>
                                     </svg>
                                 </button>
                             </div>
                             <small id="composer-suggestion-hint" class="composer-suggestion-hint" hidden>Suggested next prompt · Tab to accept · Esc to dismiss</small>
+                            <small id="dictation-status" class="dictation-status" role="status" aria-live="polite"></small>
                             <div class="input-footer">
                                 <div class="input-footer-left">
                                     <button class="add-context-btn" id="add-context-btn" title="Add context (paste/drop image, attach file)" aria-label="Add context">+</button>
                                     <button type="button" class="add-context-btn composer-prompts-btn" id="composer-prompts-btn" title="Team prompts" aria-label="Team prompts" aria-haspopup="dialog" hidden>&#10077;</button>
-                                    <button class="mic-btn" id="mic-btn" title="Hold to dictate &mdash; release to insert transcript" aria-label="Voice input (push-to-talk)">
+                                    <button type="button" class="mic-btn" id="mic-btn" title="Dictate: hold to talk, or press to start and stop (Ctrl+Shift+Space)" aria-label="Dictate" aria-pressed="false" aria-describedby="dictation-status" aria-keyshortcuts="Control+Shift+Space">
                                         <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
                                             <rect x="6" y="2" width="4" height="7" rx="2" stroke="currentColor" stroke-width="1.4"/>
                                             <path d="M3.5 8a4.5 4.5 0 009 0" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
@@ -474,7 +475,7 @@
                                 </div>
                                 <div class="input-footer-right">
                                     <span class="token-info" id="token-info" title="Approximate context tokens used by this turn"></span>
-                                    <select id="thinking-mode-selector" class="reasoning-selector" title="Reasoning depth for thinking models" aria-label="Reasoning depth" style="display:none;">
+                                    <select id="thinking-mode-selector" class="reasoning-selector" title="Reasoning depth for thinking models" aria-label="Reasoning depth" data-start-hidden>
                                         <option value="default">Provider default</option>
                                         <option value="off">Off</option>
                                         <option value="low">Low</option>
@@ -492,7 +493,7 @@
                     </div>
 
                     <!-- ═══ Settings / Customize View ═══ -->
-                    <div id="settings-view" class="feature-view" style="display:none">
+                    <div id="settings-view" class="feature-view" data-start-hidden>
                         <aside class="settings-sidebar" aria-label="Settings navigation">
                             <button id="settings-back" class="feature-view-back" type="button" title="Back to session" aria-label="Back to session">
                                 <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="m7 3-5 5 5 5M2 8h12" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
@@ -509,7 +510,7 @@
                     </div>
 
                     <!-- ═══ Keyboard Shortcuts Overlay ═══ -->
-                    <div id="shortcuts-overlay" class="shortcuts-overlay" style="display:none">
+                    <div id="shortcuts-overlay" class="shortcuts-overlay" data-start-hidden>
                         <div class="shortcuts-panel">
                             <div class="shortcuts-header">
                                 <h3>Keyboard Shortcuts</h3>
@@ -528,92 +529,102 @@
 
                 <!-- ═══ Preview Panel ═══ -->
                 <aside id="preview-panel" class="preview-panel">
-                    <!-- Tab bar -->
+                    <!-- Tab bar: WAI-ARIA tabs with a roving tabindex (one tab stop); the arrow keys, Home and End move between them.
+                         Every tab's tabindex is explicit: WebKit (the macOS window) tabs to a button only then, unless macOS keyboard navigation is on. -->
                     <div class="preview-tab-bar">
-                        <div class="preview-tab active" id="preview-tab" data-pane="browser">
-                            <span class="preview-tab-dot"></span>
-                            <span class="preview-tab-name" id="preview-tab-name">Browser</span>
+                        <div class="preview-tabs" id="preview-tabs" role="tablist" aria-label="Preview panel">
+                            <button type="button" class="preview-tab active" id="preview-tab" data-pane="browser" role="tab" aria-selected="true" aria-controls="preview-browser-pane" tabindex="0" title="Screenshots and command output from the agent">
+                                <span class="preview-tab-dot" aria-hidden="true"></span>
+                                <span class="preview-tab-name" id="preview-tab-name">Browser</span>
+                            </button>
+                            <button type="button" class="preview-tab" id="plan-tab" data-pane="plan" role="tab" aria-selected="false" aria-controls="plan-graph-pane" tabindex="-1" title="Live plan-graph for the active intent">
+                                <span class="preview-tab-dot" aria-hidden="true"></span>
+                                <span class="preview-tab-name">Plan</span>
+                                <span class="preview-tab-badge" id="plan-tab-badge" data-start-hidden>0</span>
+                                <span class="preview-tab-unread-text sr-only">, new updates</span>
+                            </button>
+                            <button type="button" class="preview-tab" id="context-tab" data-pane="context" role="tab" aria-selected="false" aria-controls="context-cockpit-pane" tabindex="-1" title="Live context composition and budget">
+                                <span class="preview-tab-dot" aria-hidden="true"></span>
+                                <span class="preview-tab-name">Context</span>
+                            </button>
                         </div>
-                        <div class="preview-tab" id="plan-tab" data-pane="plan" title="Live plan-graph for the active intent">
-                            <span class="preview-tab-dot"></span>
-                            <span class="preview-tab-name">Plan</span>
-                            <span class="preview-tab-badge" id="plan-tab-badge" style="display:none">0</span>
-                        </div>
-                        <div class="preview-tab" id="context-tab" data-pane="context" title="Live context composition and budget">
-                            <span class="preview-tab-dot"></span>
-                            <span class="preview-tab-name">Context</span>
-                        </div>
-                        <button id="preview-close" class="preview-tab-close" title="Close preview">&times;</button>
+                        <button id="preview-close" class="preview-tab-close" title="Close preview" aria-label="Close preview">&times;</button>
                     </div>
-                    <!-- Browser chrome — nav + URL bar -->
-                    <div class="preview-chrome">
-                        <div class="preview-nav">
-                            <button class="preview-nav-btn" id="preview-back" title="Previous screenshot" disabled>
-                                <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M8 2L4 6l4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
-                            </button>
-                            <button class="preview-nav-btn" id="preview-forward" title="Next screenshot" disabled>
-                                <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M4 2l4 4-4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
-                            </button>
-                            <button class="preview-nav-btn" id="preview-reload" title="Reload">
-                                <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M10 6a4 4 0 11-1.2-2.8" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><path d="M10 1.5V4H7.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
-                            </button>
-                        </div>
-                        <div class="preview-url-bar" id="preview-url-bar">
-                            <span class="preview-url-text" id="preview-url-text"></span>
-                        </div>
-                    </div>
-                    <!-- Viewport — screenshot display -->
-                    <div id="preview-viewport" class="preview-viewport">
-                        <div class="preview-empty" id="preview-empty">
-                            <div class="preview-empty-icon">
-                                <svg width="32" height="32" viewBox="0 0 32 32" fill="none">
-                                    <rect x="2" y="4" width="28" height="20" rx="2" stroke="currentColor" stroke-width="1.5"/>
-                                    <line x1="2" y1="10" x2="30" y2="10" stroke="currentColor" stroke-width="1" opacity="0.3"/>
-                                    <circle cx="6" cy="7" r="1.2" fill="currentColor" opacity="0.3"/>
-                                    <circle cx="10" cy="7" r="1.2" fill="currentColor" opacity="0.3"/>
-                                    <circle cx="14" cy="7" r="1.2" fill="currentColor" opacity="0.3"/>
-                                    <rect x="8" y="26" width="16" height="2" rx="1" fill="currentColor" opacity="0.2"/>
-                                </svg>
+                    <div id="preview-browser-pane" class="preview-browser-pane" role="tabpanel" aria-labelledby="preview-tab">
+                        <!-- Browser chrome — nav + URL bar -->
+                        <div class="preview-chrome">
+                            <div class="preview-nav">
+                                <button class="preview-nav-btn" id="preview-back" title="Previous screenshot" disabled>
+                                    <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M8 2L4 6l4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                                </button>
+                                <button class="preview-nav-btn" id="preview-forward" title="Next screenshot" disabled>
+                                    <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M4 2l4 4-4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                                </button>
+                                <button class="preview-nav-btn" id="preview-reload" title="Reload">
+                                    <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M10 6a4 4 0 11-1.2-2.8" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><path d="M10 1.5V4H7.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                                </button>
                             </div>
-                            <span>Waiting for output...</span>
+                            <div class="preview-url-bar" id="preview-url-bar">
+                                <span class="preview-url-text" id="preview-url-text"></span>
+                            </div>
+                        </div>
+                        <!-- Viewport — screenshot display -->
+                        <div id="preview-viewport" class="preview-viewport">
+                            <div class="preview-empty" id="preview-empty">
+                                <div class="preview-empty-icon">
+                                    <svg width="32" height="32" viewBox="0 0 32 32" fill="none">
+                                        <rect x="2" y="4" width="28" height="20" rx="2" stroke="currentColor" stroke-width="1.5"/>
+                                        <line x1="2" y1="10" x2="30" y2="10" stroke="currentColor" stroke-width="1" opacity="0.3"/>
+                                        <circle cx="6" cy="7" r="1.2" fill="currentColor" opacity="0.3"/>
+                                        <circle cx="10" cy="7" r="1.2" fill="currentColor" opacity="0.3"/>
+                                        <circle cx="14" cy="7" r="1.2" fill="currentColor" opacity="0.3"/>
+                                        <rect x="8" y="26" width="16" height="2" rx="1" fill="currentColor" opacity="0.2"/>
+                                    </svg>
+                                </div>
+                                <span>Waiting for output...</span>
+                            </div>
+                        </div>
+                        <!-- Console / logs panel -->
+                        <div class="preview-console" id="preview-console">
+                            <div class="preview-console-header">
+                                <input type="text" class="preview-console-search" placeholder="Search..." id="preview-console-search" />
+                                <div class="preview-console-tabs">
+                                    <button class="preview-console-tab active" data-filter="all">all</button>
+                                    <button class="preview-console-tab" data-filter="stdout">stdout</button>
+                                    <button class="preview-console-tab" data-filter="stderr">stderr</button>
+                                </div>
+                            </div>
+                            <div class="preview-console-body" id="preview-console-body">
+                                <div class="preview-console-waiting">Waiting for output...</div>
+                            </div>
                         </div>
                     </div>
                     <!-- Plan-graph viewport (toggle via the Plan tab) -->
-                    <div id="plan-graph-pane" class="plan-graph-pane" style="display:none">
+                    <div id="plan-graph-pane" class="plan-graph-pane" role="tabpanel" aria-labelledby="plan-tab" data-start-hidden>
                         <div class="plan-graph-toolbar">
                             <span class="plan-graph-intent" id="plan-graph-intent">No active intent</span>
+                            <span class="plan-graph-state" id="plan-graph-state" role="status"></span>
                             <span class="plan-graph-spacer"></span>
-                            <button class="plan-graph-btn" id="plan-graph-pause" title="Pause new node spawns">Pause</button>
-                            <button class="plan-graph-btn" id="plan-graph-history" title="Plan snapshots / restore">History</button>
-                            <button class="plan-graph-btn" id="plan-graph-branch" title="Fork plan-graph from selected node">Branch</button>
+                            <span class="plan-graph-actions" role="group" aria-label="Plan controls">
+                                <button class="plan-graph-btn" id="plan-graph-pause" type="button" title="Pause new node spawns" aria-disabled="true">Pause</button>
+                                <button class="plan-graph-btn" id="plan-graph-stop" type="button" title="End the running step now and start no more" aria-label="Stop plan" aria-disabled="true">Stop</button>
+                                <button class="plan-graph-btn" id="plan-graph-history" title="Plan snapshots / restore">History</button>
+                                <button class="plan-graph-btn" id="plan-graph-branch" title="Fork plan-graph from selected node">Branch</button>
+                            </span>
                         </div>
-                        <div id="plan-graph-checkpoint" class="plan-graph-checkpoint" style="display:none"></div>
+                        <div id="plan-graph-checkpoint" class="plan-graph-checkpoint" data-start-hidden></div>
                         <div id="plan-graph-canvas" class="plan-graph-canvas">
                             <div class="plan-graph-empty">Plan-graph idle &mdash; start an intent to see it populate.</div>
                         </div>
-                        <div id="plan-graph-detail" class="plan-graph-detail" style="display:none"></div>
+                        <div id="plan-graph-detail" class="plan-graph-detail" data-start-hidden></div>
                     </div>
-                    <div id="context-cockpit-pane" class="context-cockpit-pane" style="display:none">
+                    <div id="context-cockpit-pane" class="context-cockpit-pane" role="tabpanel" aria-labelledby="context-tab" data-start-hidden>
                         <div class="context-cockpit-toolbar">
                             <span>Context cockpit</span>
                             <button id="context-cockpit-refresh" class="plan-graph-btn" type="button">Refresh</button>
                         </div>
                         <div id="context-cockpit-body" class="context-cockpit-body">
                             <div class="agent-activity-empty">Context telemetry appears when a session starts.</div>
-                        </div>
-                    </div>
-                    <!-- Console / logs panel -->
-                    <div class="preview-console" id="preview-console">
-                        <div class="preview-console-header">
-                            <input type="text" class="preview-console-search" placeholder="Search..." id="preview-console-search" />
-                            <div class="preview-console-tabs">
-                                <button class="preview-console-tab active" data-filter="all">all</button>
-                                <button class="preview-console-tab" data-filter="stdout">stdout</button>
-                                <button class="preview-console-tab" data-filter="stderr">stderr</button>
-                            </div>
-                        </div>
-                        <div class="preview-console-body" id="preview-console-body">
-                            <div class="preview-console-waiting">Waiting for output...</div>
                         </div>
                     </div>
                 </aside>
@@ -623,7 +634,7 @@
     </div>
 
     <!-- ═══ Permission Dialog ═══ -->
-    <div id="permission-dialog" class="dialog-overlay" style="display:none;" role="dialog" aria-modal="true" aria-label="Tool permission" tabindex="-1">
+    <div id="permission-dialog" class="dialog-overlay" data-start-hidden role="dialog" aria-modal="true" aria-label="Tool permission" tabindex="-1">
         <div class="dialog diff-review-dialog">
             <div class="dialog-header">
                 <span id="permission-title">Tool Approval</span>
@@ -631,8 +642,8 @@
             </div>
             <div class="dialog-body">
                 <p id="permission-text"></p>
-                <div id="permission-warnings" class="review-warnings" style="display:none;"></div>
-                <div id="permission-diff" class="review-diff" style="display:none;"></div>
+                <div id="permission-warnings" class="review-warnings" data-start-hidden></div>
+                <div id="permission-diff" class="review-diff" data-start-hidden></div>
                 <pre id="permission-details" class="permission-details"></pre>
             </div>
             <div class="dialog-actions">
@@ -643,7 +654,7 @@
     </div>
 
     <!-- ═══ Skill Detail Dialog (v0.6.2a3) ═══ -->
-    <div id="team-prompts-dialog" class="dialog-overlay" style="display:none;" role="dialog" aria-modal="true" aria-labelledby="team-prompts-title">
+    <div id="team-prompts-dialog" class="dialog-overlay" data-start-hidden role="dialog" aria-modal="true" aria-labelledby="team-prompts-title">
         <div class="dialog team-prompts-dialog">
             <div class="dialog-header">
                 <span id="team-prompts-title">Team prompts</span>
@@ -658,7 +669,7 @@
         </div>
     </div>
 
-    <div id="handoff-dialog" class="dialog-overlay" style="display:none;" role="dialog" aria-modal="true" aria-labelledby="handoff-dialog-title">
+    <div id="handoff-dialog" class="dialog-overlay" data-start-hidden role="dialog" aria-modal="true" aria-labelledby="handoff-dialog-title">
         <div class="dialog handoff-dialog">
             <div class="dialog-header">
                 <span id="handoff-dialog-title">Hand off this conversation</span>
@@ -668,7 +679,7 @@
         </div>
     </div>
 
-    <div id="handoffs-dialog" class="dialog-overlay" style="display:none;" role="dialog" aria-modal="true" aria-labelledby="handoffs-dialog-title">
+    <div id="handoffs-dialog" class="dialog-overlay" data-start-hidden role="dialog" aria-modal="true" aria-labelledby="handoffs-dialog-title">
         <div class="dialog handoffs-dialog">
             <div class="dialog-header">
                 <span id="handoffs-dialog-title">Hand-offs for you</span>
@@ -678,7 +689,7 @@
         </div>
     </div>
 
-    <div id="share-dialog" class="dialog-overlay" style="display:none;" role="dialog" aria-modal="true" aria-labelledby="share-dialog-title">
+    <div id="share-dialog" class="dialog-overlay" data-start-hidden role="dialog" aria-modal="true" aria-labelledby="share-dialog-title">
         <div class="dialog share-dialog">
             <div class="dialog-header">
                 <span id="share-dialog-title">Share this conversation</span>
@@ -688,7 +699,7 @@
         </div>
     </div>
 
-    <div id="timeline-dialog" class="dialog-overlay" style="display:none;" role="dialog" aria-modal="true" aria-labelledby="timeline-dialog-title">
+    <div id="timeline-dialog" class="dialog-overlay" data-start-hidden role="dialog" aria-modal="true" aria-labelledby="timeline-dialog-title">
         <div class="dialog timeline-dialog">
             <div class="dialog-header">
                 <span id="timeline-dialog-title">Timeline</span>
@@ -698,7 +709,7 @@
         </div>
     </div>
 
-    <div id="run-trace-dialog" class="dialog-overlay" style="display:none;" role="dialog" aria-modal="true" aria-labelledby="run-trace-title">
+    <div id="run-trace-dialog" class="dialog-overlay" data-start-hidden role="dialog" aria-modal="true" aria-labelledby="run-trace-title">
         <div class="dialog run-trace-dialog">
             <div class="dialog-header">
                 <span id="run-trace-title">Trace</span>
@@ -708,7 +719,7 @@
         </div>
     </div>
 
-    <div id="artifact-dialog" class="dialog-overlay" style="display:none;" role="dialog" aria-modal="true" aria-labelledby="artifact-dialog-title">
+    <div id="artifact-dialog" class="dialog-overlay" data-start-hidden role="dialog" aria-modal="true" aria-labelledby="artifact-dialog-title">
         <div class="dialog artifact-dialog">
             <div class="dialog-header">
                 <span id="artifact-dialog-title">Saved file</span>
@@ -718,7 +729,7 @@
         </div>
     </div>
 
-    <div id="worker-transcript-dialog" class="dialog-overlay" style="display:none;" role="dialog" aria-modal="true" aria-labelledby="worker-transcript-title">
+    <div id="worker-transcript-dialog" class="dialog-overlay" data-start-hidden role="dialog" aria-modal="true" aria-labelledby="worker-transcript-title">
         <div class="dialog worker-transcript-dialog">
             <div class="dialog-header">
                 <span id="worker-transcript-title">Worker transcript</span>
@@ -728,7 +739,7 @@
         </div>
     </div>
 
-    <div id="worker-steer-dialog" class="dialog-overlay" style="display:none;" role="dialog" aria-modal="true" aria-labelledby="worker-steer-title">
+    <div id="worker-steer-dialog" class="dialog-overlay" data-start-hidden role="dialog" aria-modal="true" aria-labelledby="worker-steer-title">
         <div class="dialog worker-steer-dialog">
             <div class="dialog-header">
                 <span id="worker-steer-title">Steer the worker</span>
@@ -745,7 +756,7 @@
         </div>
     </div>
 
-    <div id="skill-detail-dialog" class="dialog-overlay" style="display:none;" role="dialog" aria-modal="true" aria-label="Skill detail">
+    <div id="skill-detail-dialog" class="dialog-overlay" data-start-hidden role="dialog" aria-modal="true" aria-label="Skill detail">
         <div class="dialog skill-detail-dialog">
             <div class="dialog-header">
                 <span id="skill-detail-name">Skill</span>
@@ -764,7 +775,7 @@
     </div>
 
     <!-- ═══ Command Palette ═══ -->
-    <div id="command-palette" class="cmd-palette-overlay" style="display:none" role="dialog" aria-modal="true" aria-label="Command palette">
+    <div id="command-palette" class="cmd-palette-overlay" data-start-hidden role="dialog" aria-modal="true" aria-label="Command palette">
         <div class="cmd-palette">
             <div class="cmd-palette-input-row">
                 <svg class="cmd-palette-icon" width="16" height="16" viewBox="0 0 16 16" fill="none"><circle cx="6.5" cy="6.5" r="4.5" stroke="currentColor" stroke-width="1.3"/><path d="M10 10l4 4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
@@ -785,6 +796,7 @@
          missing, rather than failing later at call time. -->
     <script src="/static/autonomous_view.js?v={{ asset_version }}"></script>
     <script src="/static/settings_view.js?v={{ asset_version }}"></script>
+    <script src="/static/voice_input.js?v={{ asset_version }}"></script>
     <script src="/static/run_cards.js?v={{ asset_version }}"></script>
     <script src="/static/employee_tasks.js?v={{ asset_version }}"></script>
     <div class="window-resize-edge window-resize-top" data-resize-edge="top" aria-hidden="true"></div>

@@ -1,7 +1,7 @@
 # Modern agent runtime
 
 Status: implemented foundation and canonical extension guide
-Last updated: 2026-09-25 (orchestration specialists get the app's session setup)
+Last updated: 2026-09-25 (orchestration specialists get the app's session setup and the person's hooks)
 
 This document describes the runtime Resonant uses for long-horizon coding with
 its native provider adapters. The design favors correct, verified
@@ -140,6 +140,15 @@ context, or reject an unsupported completion claim.
 A missing or unknown `decision` is no decision; it is never read as consent.
 When several hooks answer, `deny` outranks `ask`, which outranks `allow`.
 
+The person's Settings hooks (`hooks` in settings.json) run in the app's chat
+sessions and the workers they delegate to (`copy_execution_context_from`), in
+orchestration specialists (`orchestration/runner.py`), and in every session
+`headless.build_session` builds. They are the person's configuration, not
+repository content, so project trust doesn't decide them. A new place that
+builds a Session for the person must attach them too. Approved
+capability-pack hooks join them only in the app (see
+[Capability packs](#capability-packs)).
+
 Gate hooks fail closed (`GATE_HOOK_TYPES` in `engine/hooks.py`: pre-tool,
 pre-tool-batch, before-model, permission, task-completed, sub-agent-stop and
 validation-complete). A gate hook that exits non-zero, runs past its
@@ -172,7 +181,8 @@ the project's policy can't be built (`with_organization_rules`). The runner
 each specialist Full-auto with the project's `lumi-policy.json`, read from the
 project root even when the specialist works in a subfolder, and builds it as
 the specialist starts. Nobody can answer a specialist's approval prompt, so a
-`prompt` rule refuses the call.
+`prompt` rule refuses the call unless the person's PERMISSION_REQUEST hook
+allows it. An organization `prompt` rule is refused without asking the hook.
 
 A trusted project's `allow` rules answer Auto-edit's prompt (Plan uses the
 same tier). A call the tier would ask about runs without asking when the policy
@@ -241,7 +251,11 @@ each specialist starts, so a change applies from the next one:
 - project trust (`gui/workspace_trust.py`): the repository's instructions,
   notes, codebase index summary and language servers reach a specialist only
   in a trusted project, like its policy's `allow` rules;
-- Settings' computer use switch, which a policy can lock.
+- Settings' computer use switch, which a policy can lock;
+- the person's hooks (see [Lifecycle hooks](#lifecycle-hooks)): the app's
+  shared runner scoped with the project's approved capability-pack hooks
+  (`AppState.specialist_hook_runner`), whatever the trust. A lookup that
+  fails blocks the specialist.
 
 Specialists run in Full-auto, since nobody can answer their approval prompts.
 Where the organization's `permissions.allowed_modes` leaves out `bypass`,
@@ -357,9 +371,11 @@ followed, so review what the commands do before approving.
 
 Only approved, enabled, unchanged packs register hooks, connect MCP servers,
 contribute skills, or create agent types. Pack hooks ride on per-session
-runners rather than the shared settings runner. Opening another project
-disconnects the previous project's pack MCP servers, and its sessions' pack
-hooks go with those sessions. When the open project has packs waiting for a
+runners rather than the shared settings runner, and an orchestration
+specialist gets one too (see
+[Orchestration specialists](#orchestration-specialists)). Opening another
+project disconnects the previous project's pack MCP servers, and its
+sessions' pack hooks go with those sessions. When the open project has packs waiting for a
 decision, the banner above the composer links to the review page.
 
 ## Multimodal artifact bus

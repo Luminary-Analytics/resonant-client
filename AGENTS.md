@@ -86,6 +86,8 @@ host enrollment and actual packaged/learned-benefit qualification remain open.
 - Repository-provided instructions, notes, index summaries, policy `allow`
   rules, automatic lint/test runs and language servers require project trust
   (`gui/workspace_trust.py`). Repository content must never grant itself trust.
+  Only the app, which knows Recent projects, records trust's first run; other
+  surfaces read decisions without creating `trusted_projects.json`.
 - Language servers (`engine/lsp.py`, the `code_intel` tool) start with
   `secrets_store.child_env()`, pass the guardrails and run in the shell
   sandbox when it's on. Answers never list places in excluded files, show
@@ -128,12 +130,23 @@ host enrollment and actual packaged/learned-benefit qualification remain open.
   app: `engine/policies.project_execution_policy`, `ExclusionRules`, workspace
   trust and policy checks. Keep the two in step, and never let a headless run
   trust a repository unless it was trusted in the app or `--trust-project` is set.
+- The terminal UI (`tui.py`) scopes its session with the same
+  `headless.scope_session`, at start, on `/cd` and when `/approve` changes the
+  tier; it never trusts a repository itself. It checks `policy.current()` for
+  modes and models, and runs the person's Settings hooks, as the app does.
 - Computer use: `security.computer_use` (and policy) gates every tool in
   `tools.COMPUTER_ACCESS_TOOL_NAMES`: the screen, input, other apps'
   interfaces and the clipboard, not only the screen-driving
   `DESKTOP_TOOL_NAMES`. A new tool that reaches outside the project must join
   that set. Never write model-supplied text into AppleScript or other script
   source; pass it as an argument (`on run argv`).
+- Dictation (`voice.py`, `static/voice_input.js`) inserts text into the
+  composer and never sends. Audio goes only to the transcription service
+  chosen in Settings > Voice, after the person stops; Lumi keeps no copy.
+  The service's model passes the policy's model rules, and a zero-retention
+  policy turns off the webview's own recognizer. Usage records dictation
+  unpriced (`priced=False`); the audit log records metadata, never the
+  words. Tests use `httpx.MockTransport` and a fake recognizer.
 - Scheduled tasks (`schedules.py`) run `lumi schedule run <id>`, which is a
   `lumi run`; a schedule never passes `--trust-project`. Only `save`,
   `set_enabled` and `remove` touch the OS scheduler (schtasks, launchctl,
@@ -148,6 +161,12 @@ host enrollment and actual packaged/learned-benefit qualification remain open.
   approved packs. A `permission_request` hook settles only approvals the
   person could give: never in the read-only `suggest` tier, and never for an
   organization `prompt` rule (`policies.ORGANIZATION`), which needs a person.
+- Orchestration specialists (`orchestration/runner.py`: `/plan`, Missions,
+  autonomous sessions) get their hooks as each starts from `hook_runner_for`,
+  which the app sets to `AppState.specialist_hook_runner`: the shared runner
+  scoped with the project's approved pack hooks, as a chat session gets. A
+  runner built without it loads `HookRunner(settings)`. A new place that
+  builds a Session for the person must attach their hooks too.
 
 ## Working in the codebase
 
@@ -185,6 +204,15 @@ host enrollment and actual packaged/learned-benefit qualification remain open.
   URL, log or printed output. The socket's `update_settings` edits only
   the fields Settings shows; hooks, stdio MCP servers, LSP servers, plugins and
   the gateway stay file-edited.
+- The page's Content-Security-Policy (`local_access.content_security_policy`)
+  runs only the server's own scripts and styles and connects only to its own
+  socket. Never add inline `<script>`, `on*=` attributes, `style=""` (also in
+  markup scripts build), `javascript:` URLs, eval or `new Function`; use
+  `addEventListener`, classes, `element.style` for computed values and
+  `data-start-hidden` for elements the page starts with hidden.
+  `tests/test_content_security_policy.py` enforces this. pywebview's bridge
+  needs eval, so `gui/webview_bridge.py` replaces it; recheck
+  `tests/test_webview_bridge.py` when pywebview changes.
 - Live working status follows the active turn output; preserve manual scroll
   position when the user reads older messages. Next-prompt suggestions are
   transient, scoped to the conversation, and never replace typed drafts. Tab
@@ -341,7 +369,7 @@ python -m ruff check .
 python -m pytest -q
 node --check lumi/gui/static/app.js
 node --check lumi/gui/static/settings_view.js
-node --test tests/ui_recovery.test.cjs tests/appearance.test.cjs tests/autonomous_view.test.cjs tests/vscode_extension.test.cjs
+node --test tests/ui_recovery.test.cjs tests/appearance.test.cjs tests/autonomous_view.test.cjs tests/vscode_extension.test.cjs tests/voice_input.test.cjs
 git diff --check
 ```
 

@@ -892,12 +892,14 @@ body {
     color: var(--text);
 }
 
+/* Wraps rather than squeezing the plan's name away in a narrow panel. */
 .plan-graph-toolbar {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
-    gap: 8px;
-    height: 32px;
-    padding: 0 10px;
+    gap: 4px 8px;
+    min-height: 32px;
+    padding: 4px 10px;
     border-bottom: 1px solid var(--border);
     background: var(--bg-sidebar);
     font-size: 12px;
@@ -914,6 +916,25 @@ body {
 
 .plan-graph-spacer { flex: 1; }
 
+.plan-graph-actions {
+    display: flex;
+    flex-shrink: 0;
+    gap: 8px;
+}
+
+/* Running, Paused, Stopping…, Stopped: the followed plan's state. */
+.plan-graph-state {
+    flex-shrink: 0;
+    color: var(--text-secondary);
+    white-space: nowrap;
+}
+
+.plan-graph-state:not(:empty) {
+    padding: 0 6px;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+}
+
 .plan-graph-btn {
     background: var(--bg-elem);
     border: 1px solid var(--border);
@@ -928,6 +949,22 @@ body {
 .plan-graph-btn:hover {
     background: var(--bg-hover);
     color: var(--text);
+}
+
+.plan-graph-btn:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+}
+
+/* Pause and Stop with no running plan. aria-disabled rather than disabled
+   keeps them focusable, so focus stays put when a plan stops, and a click
+   says why nothing happens. */
+.plan-graph-btn[aria-disabled="true"],
+.plan-graph-btn[aria-disabled="true"]:hover {
+    background: var(--bg-elem);
+    color: var(--muted);
+    opacity: 0.55;
+    cursor: default;
 }
 
 /* Soft-checkpoint toast */
@@ -4886,6 +4923,15 @@ body {
     50%      { box-shadow: 0 0 0 6px rgba(248, 113, 113, 0); }
 }
 
+/* Dictation (voice_input.js). A quick press keeps listening, so the state shows. */
+.mic-btn { touch-action: none; }
+.mic-btn[aria-pressed="true"] { color: var(--err); }
+.mic-btn.transcribing { color: var(--accent); animation: none; }
+.mic-btn.unavailable { opacity: 0.55; }
+.add-context-btn:focus-visible,
+.mic-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+@media (prefers-reduced-motion: reduce) { .mic-btn.recording { animation: none; } }
+
 .diff-header {
     padding: 8px 12px;
     font-size: 12px;
@@ -5218,12 +5264,21 @@ body {
     box-sizing: border-box;
 }
 
+/* The tab list: Browser, Plan and Context, without the close button. */
+.preview-tabs {
+    display: flex;
+    align-items: center;
+    min-width: 0;
+}
+
 .preview-tab {
     display: flex;
     align-items: center;
     gap: 6px;
+    margin: 0;
     padding: 0 10px;
     height: 24px;
+    font: inherit;
     font-size: 11.5px;
     color: var(--muted);
     background: var(--bg-elem);
@@ -5236,6 +5291,26 @@ body {
     color: var(--text);
     background: var(--bg-panel);
     border-color: var(--border-strong);
+}
+
+/* The tabs take keyboard focus (arrow keys move between them); it shows
+   as a ring, as elsewhere (WCAG 2.4.7). */
+.preview-tab:focus-visible {
+    position: relative;
+    z-index: 1;
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
+}
+
+/* Read with the Plan tab's name while its update dot shows: "Plan, new
+   updates". It's in the name rather than a live region, so a busy plan
+   never talks over the conversation. */
+.preview-tab-unread-text {
+    display: none;
+}
+
+.preview-tab.has-unread:not(.active) .preview-tab-unread-text {
+    display: block;
 }
 
 /* C2 — unread plan-tab indicator. Pulsing brand-color dot to the right
@@ -5300,6 +5375,14 @@ body {
 .preview-tab-close:hover {
     background: var(--bg-hover);
     color: var(--text);
+}
+
+/* The Browser tab's pane: the chrome, the screenshots and the console. */
+.preview-browser-pane {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-height: 0;
 }
 
 /* ── Browser chrome (nav + URL bar) ── */
@@ -5862,74 +5945,12 @@ body {
     cursor: pointer;
 }
 
-.agent-activity-pane {
-    display: flex;
-    flex-direction: column;
-    flex: 1;
-    min-height: 0;
-    background: var(--bg);
-}
-
-.runtime-view-tabs {
-    display: flex;
-    gap: 3px;
-    min-width: 0;
-    overflow-x: auto;
-}
-
-.runtime-view-tab {
-    border: 0;
-    border-radius: 7px;
-    background: transparent;
-    color: var(--muted);
-    padding: 5px 7px;
-    font: inherit;
-    font-size: 10px;
-    cursor: pointer;
-    white-space: nowrap;
-}
-
-.runtime-view-tab:hover,
-.runtime-view-tab.active {
-    color: var(--text);
-    background: color-mix(in srgb, var(--accent) 14%, transparent);
-}
-
-.runtime-card {
-    display: grid;
-    gap: 8px;
-    margin: 7px 8px;
-    padding: 11px;
-    border: 1px solid var(--border);
-    border-radius: 10px;
-    background: color-mix(in srgb, var(--panel-bg, var(--bg)) 94%, var(--accent) 6%);
-}
-
-.runtime-card > div:first-child {
-    display: flex;
-    justify-content: space-between;
-    gap: 8px;
-}
-
-.runtime-card small,
-.runtime-card > span {
-    color: var(--muted);
-    font-size: 10px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-}
-
-.runtime-actions,
-.runtime-badges,
-.runtime-control-bar,
 .context-provider-list {
     display: flex;
     flex-wrap: wrap;
     gap: 6px;
 }
 
-.runtime-actions button,
-.runtime-control-bar button,
 .context-provider-chip {
     border: 1px solid var(--border);
     border-radius: 7px;
@@ -5941,114 +5962,19 @@ body {
     cursor: pointer;
 }
 
-.runtime-actions button:hover,
-.runtime-control-bar button:hover,
 .context-provider-chip:hover {
     border-color: var(--accent);
     background: color-mix(in srgb, var(--accent) 10%, transparent);
 }
 
-.runtime-control-bar {
-    margin-top: 10px;
-}
-
-.runtime-control-bar input {
-    flex: 1 1 150px;
-    min-width: 0;
-    border: 1px solid var(--border);
-    border-radius: 7px;
-    background: var(--input-bg, var(--bg));
-    color: var(--text);
-    padding: 6px 8px;
-}
-
-.runtime-control-bar .is-danger { color: var(--danger, var(--err)); }
-.runtime-badges b { padding: 2px 6px; border-radius: 999px; background: var(--hover); color: var(--muted); font-size: 9px; }
-.runtime-badges b.is-on { color: var(--accent); }
 .context-provider-help { color: var(--muted); font-size: 10px; line-height: 1.4; }
-.agent-activity-toolbar {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    min-height: 32px;
-    padding: 0 10px;
-    border-bottom: 1px solid var(--border);
-    color: var(--text-secondary);
-    font-size: 12px;
-}
-.agent-activity-count { color: var(--muted); font-size: 11px; }
-.agent-activity-tree { flex: 1; overflow: auto; padding: 8px; }
+/* The Context pane's empty state. The name is left from the Agents pane. */
 .agent-activity-empty {
     display: grid;
     place-items: center;
     min-height: 140px;
     color: var(--dim);
     font-size: 12px;
-}
-.agent-activity-node {
-    width: calc(100% - var(--agent-depth, 0) * 18px);
-    margin: 0 0 6px calc(var(--agent-depth, 0) * 18px);
-    display: flex;
-    align-items: center;
-    gap: 9px;
-    padding: 8px 9px;
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    background: var(--bg-elem);
-    color: var(--text);
-    text-align: left;
-    cursor: pointer;
-}
-.agent-activity-node:hover { border-color: var(--border-strong); background: var(--bg-hover); }
-.agent-activity-state {
-    width: 7px;
-    height: 7px;
-    border-radius: 50%;
-    background: var(--muted);
-    flex: 0 0 auto;
-}
-.agent-activity-node.status-running .agent-activity-state {
-    background: var(--brand);
-    box-shadow: 0 0 0 3px color-mix(in srgb, var(--brand) 18%, transparent);
-}
-.agent-activity-node.status-done .agent-activity-state,
-.agent-activity-node.status-completed .agent-activity-state { background: var(--ok); }
-.agent-activity-node.status-blocked .agent-activity-state,
-.agent-activity-node.status-failed .agent-activity-state { background: var(--danger); }
-.agent-activity-main { min-width: 0; display: grid; gap: 2px; flex: 1; }
-.agent-activity-main strong { font-size: 12px; font-weight: 600; }
-.agent-activity-main small {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    color: var(--muted);
-    font-size: 10.5px;
-}
-.agent-activity-elapsed { color: var(--dim); font-size: 10.5px; }
-.agent-handoff-detail {
-    max-height: 50%;
-    overflow: auto;
-    border-top: 1px solid var(--border);
-    background: var(--bg-sidebar);
-    padding: 10px;
-}
-.agent-handoff-header { display: flex; justify-content: space-between; align-items: center; }
-.agent-handoff-close { border: 0; background: none; color: var(--muted); cursor: pointer; font-size: 18px; }
-.agent-handoff-meta { margin: 4px 0 10px; color: var(--muted); font-size: 10.5px; }
-.agent-handoff-section > span {
-    display: block;
-    margin: 8px 0 4px;
-    color: var(--dim);
-    font-size: 10px;
-    text-transform: uppercase;
-    letter-spacing: .06em;
-}
-.agent-handoff-section pre {
-    margin: 0;
-    white-space: pre-wrap;
-    word-break: break-word;
-    color: var(--text-secondary);
-    font: 11px/1.5 var(--font-mono);
 }
 
 .context-cockpit-pane {
@@ -13272,6 +13198,9 @@ body.is-window-dragging * {
 /* The suggested prompt is a placeholder, never an unsent draft. */
 .composer-suggestion-hint { display: block; margin: 0 16px 4px; color: var(--muted); font-size: 11px; }
 .composer-suggestion-hint[hidden] { display: none; }
+/* Always rendered, so screen readers hear each change; empty takes no room. */
+.dictation-status { display: block; margin: 0 16px 4px; color: var(--muted); font-size: 11px; }
+.dictation-status:empty { margin: 0; }
 :root .editor-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr)); gap: 16px; }
 .editor-card { padding: 16px; border: 1px solid var(--border); border-radius: 12px; min-width: 0; display: flex; flex-direction: column; gap: 12px; }
 .editor-card h3, .editor-card p { margin: 0; }
@@ -13741,3 +13670,56 @@ body.is-window-dragging * {
 .plan-run-status.is-running .task-run-mark { background: transparent; }
 .plan-run-status.is-running .task-run-mark::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: var(--brand); animation: live-run-pulse 1.8s ease-out infinite; }
 @media (prefers-reduced-motion: reduce) { .plan-run-status.is-running .task-run-mark::before { animation: none; } }
+/* A plan the person didn't send (a roadmap's, an autonomous iteration's, a
+   reflect pass) is headed by its label and title, not a message bubble. */
+.plan-card-lumi .task-card-header { justify-content: flex-start; }
+.plan-card-lumi .task-card-main { display: flex; align-items: baseline; gap: 8px; min-width: 0; max-width: 100%; margin-left: 0; }
+.plan-card-lumi .task-card-label { display: block; flex-shrink: 0; color: var(--text-secondary); font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; }
+.plan-card-lumi .task-request-text { min-width: 0; padding: 0; border-radius: 0; background: none; color: var(--text); font-size: 13px; font-weight: 600; overflow-wrap: anywhere; }
+
+/* ── Former inline styles ──────────────────────────────────────────────
+   The page's Content-Security-Policy (gui/local_access.py) refuses style=""
+   attributes, so markup uses these classes instead. A script that computes a
+   value (a width, a position, a color it changes later) sets it through
+   element.style, which the policy allows.
+
+   Elements the page starts with hidden: static/appearance.js swaps this
+   marker for an inline display: none once the document is parsed. */
+[data-start-hidden] { display: none !important; }
+
+/* Each of these stands for one inline declaration. !important keeps the
+   precedence the attribute had over the rules above, including #settings-body
+   ones. Never add display here: scripts show and hide through element.style. */
+.tone-tool { color: var(--tool) !important; }
+.tone-brand { color: var(--brand) !important; }
+.tone-brand2 { color: var(--brand2) !important; }
+.tone-file { color: var(--file) !important; }
+.tone-ok { color: var(--ok) !important; }
+.tone-warn { color: var(--warn) !important; }
+.tone-muted { color: var(--muted) !important; }
+.tone-dim { color: var(--dim) !important; }
+.tone-err { color: var(--danger, var(--err)) !important; }
+.text-11 { font-size: 11px !important; }
+.text-12 { font-size: 12px !important; }
+.space-above-4 { margin-top: 4px !important; }
+.space-above-8 { margin-top: 8px !important; }
+.gap-8 { gap: 8px !important; }
+
+/* Component styles that were inline, with !important only where a rule above
+   would otherwise win. */
+.chat-welcome-footer.setup-role-footer { margin-bottom: 12px; }
+.terminal-entry-right { display: flex; align-items: center; gap: 6px; }
+.recent-project-body { flex: 1; min-width: 0; }
+.status-inline { text-align: center; color: var(--muted); font-size: 12px; padding: 8px; }
+.msg-user-images { display: flex; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; }
+.msg-user-image { max-width: 120px; max-height: 80px; border-radius: 4px; border: 1px solid var(--border); cursor: pointer; }
+.settings-row-value.mcp-settings-value { display: flex; flex-direction: column; align-items: stretch !important; gap: 4px; min-width: 0; flex: 1 !important; }
+.mcp-transport { display: block; }
+.settings-secret-row { display: flex; align-items: center; gap: 8px; }
+.settings-secret-row > .settings-input { flex: 1 !important; }
+.settings-secret-state { color: var(--muted) !important; font-size: 11px !important; white-space: nowrap !important; }
+.settings-input.settings-input-narrow { width: 80px !important; }
+.git-popover-empty { padding: 16px; color: var(--muted); text-align: center; }
+.resonant-md-popover-body { padding: 12px; display: flex; flex-direction: column; gap: 8px; }
+#resonant-md-editor { font-family: monospace; font-size: 12px; resize: vertical; min-height: 120px; }
+.resonant-md-popover-actions { display: flex; gap: 8px; justify-content: flex-end; }

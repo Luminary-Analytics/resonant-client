@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import threading
 
+import pytest
 
 from lumi.orchestration import (
     GraphWalker,
@@ -250,18 +251,129 @@ def test_cancel_event_stops_walker_between_nodes():
     b = _node(g, goal="b", deps=[a.id])
 
     cancel = threading.Event()
+    ran: list[str] = []
 
     def runner(node: PlanNode, graph: PlanGraph) -> SpecialistResult:
         # Cancel after this node finishes — walker should bail before b runs.
+        ran.append(node.id)
         cancel.set()
         return SpecialistResult(status=NodeStatus.DONE, confidence=1.0)
 
-    walker = GraphWalker(runner=runner, cancel_event=cancel)
+    events: list[WalkerEvent] = []
+    walker = GraphWalker(runner=runner, cancel_event=cancel, on_event=events.append)
     walker.run(g)
 
+    assert ran == [a.id]
     assert g.nodes[a.id].status == NodeStatus.DONE
-    # b should never have run
+    # b never ran and never will: it's abandoned rather than left pending,
+    # and the walk reports that it stopped, not that the plan completed.
+    assert g.nodes[b.id].status == NodeStatus.ABANDONED
+    assert g.nodes[b.id].audit_log[-1]["reason"] == "plan stopped"
+    kinds = [e.kind for e in events]
+    assert "plan.complete" not in kinds
+    assert kinds[-1] == "plan.stopped"
+    assert events[-1].payload["abandoned"] == [b.id]
+
+
+def test_a_planner_stopped_mid_run_is_not_retried():
+    # A stopped planner has no subgoals, which used to look like an
+    # unparseable plan: the walker added a retry node and announced it.
+    g = PlanGraph.new("intent")
+    plan_node = _node(g, goal="decompose", spec=NodeSpecialization.PLAN)
+    cancel = threading.Event()
+
+    def runner(node: PlanNode, graph: PlanGraph) -> SpecialistResult:
+        cancel.set()  # Stop pressed while the planner runs.
+        return SpecialistResult(
+            status=NodeStatus.ABANDONED, confidence=0.0,
+            summary="Stopped before this step finished.",
+        )
+
+    events: list[WalkerEvent] = []
+    GraphWalker(runner=runner, cancel_event=cancel, on_event=events.append).run(g)
+
+    assert list(g.nodes) == [plan_node.id]
+    assert g.nodes[plan_node.id].status == NodeStatus.ABANDONED
+    assert [e.kind for e in events] == ["node.start", "node.done", "plan.stopped"]
+
+
+@pytest.mark.parametrize(("spec", "result"), [
+    # A planner that finished its subgoals as Stop was pressed.
+    (NodeSpecialization.PLAN, SpecialistResult(
+        status=NodeStatus.DONE, confidence=0.9,
+        subgoals=[{"goal": "add the toggle", "specialization": "implement"}],
+    )),
+    # Low confidence would add a verifier.
+    (NodeSpecialization.IMPLEMENT, SpecialistResult(status=NodeStatus.DONE, confidence=0.3)),
+    # A verdict of revise would add a repair and a re-verify.
+    (NodeSpecialization.VERIFY, SpecialistResult(
+        status=NodeStatus.DONE, confidence=0.9, verdict="revise", findings=["broken"],
+    )),
+])
+def test_a_node_that_ends_after_stop_adds_no_follow_up_nodes(spec, result):
+    g = PlanGraph.new("intent")
+    node = _node(g, goal="the step running when Stop was pressed", spec=spec)
+    cancel = threading.Event()
+
+    def runner(n: PlanNode, graph: PlanGraph) -> SpecialistResult:
+        cancel.set()
+        return result
+
+    events: list[WalkerEvent] = []
+    GraphWalker(runner=runner, cancel_event=cancel, on_event=events.append).run(g)
+
+    assert list(g.nodes) == [node.id]
+    assert "plan.rewrite" not in [e.kind for e in events]
+    assert events[-1].kind == "plan.stopped"
+
+
+def test_pause_holds_the_next_node_until_resumed():
+    g = PlanGraph.new("intent")
+    a = _node(g, goal="a")
+    b = _node(g, goal="b", deps=[a.id])
+    pause = threading.Event()
+    ran: list[str] = []
+
+    def runner(node: PlanNode, graph: PlanGraph) -> SpecialistResult:
+        ran.append(node.id)
+        if node.id == a.id:
+            # Paused while a runs: a finishes, b waits.
+            pause.set()
+        return SpecialistResult(status=NodeStatus.DONE, confidence=1.0)
+
+    walker = GraphWalker(runner=runner, pause_event=pause)
+    worker = threading.Thread(target=walker.run, args=(g,), daemon=True)
+    worker.start()
+    worker.join(timeout=0.5)
+
+    assert worker.is_alive()
+    assert ran == [a.id]
+    assert g.nodes[a.id].status == NodeStatus.DONE
     assert g.nodes[b.id].status == NodeStatus.PENDING
+
+    pause.clear()
+    worker.join(timeout=5)
+
+    assert not worker.is_alive()
+    assert ran == [a.id, b.id]
+
+
+def test_cancel_releases_a_paused_walker_without_running_another_node():
+    g = PlanGraph.new("intent")
+    a = _node(g, goal="a")
+    pause, cancel = threading.Event(), threading.Event()
+    pause.set()
+    runner = RecordingRunner()
+
+    walker = GraphWalker(runner=runner, cancel_event=cancel, pause_event=pause)
+    worker = threading.Thread(target=walker.run, args=(g,), daemon=True)
+    worker.start()
+    cancel.set()
+    worker.join(timeout=5)
+
+    assert not worker.is_alive()
+    assert runner.calls == []
+    assert g.nodes[a.id].status == NodeStatus.ABANDONED
 
 
 def test_runner_exception_blocks_node_does_not_crash_walker():

@@ -174,6 +174,8 @@ const LUMI_EVENT_DELEGATES = {
     'mission_phase_changed': 'handleMissionPhaseChanged',
     'project_files': 'handleProjectFiles',
     'rag_results': 'handleRagResults',
+    'reflect.done': 'handleReflectDone',
+    'reflect.start': 'handleReflectStart',
     'session.end': 'handleSessionEnd',
     'session_history_page': 'handleSessionHistoryPage',
     'session.start': 'handleSessionStart',
@@ -195,6 +197,18 @@ const LUMI_EVENT_DELEGATES = {
     'tool_permission': 'handleToolPermission',
     'user_input_received': 'handleUserInputReceived',
 };
+
+// The state label in the Plan tab's toolbar, for the plan it follows.
+const PLAN_STATE_LABELS = {
+    running: 'Running',
+    paused: 'Paused',
+    stopping: 'Stopping…',
+    stopped: 'Stopped',
+    complete: 'Complete',
+    failed: 'Failed',
+    ended: 'Ended',
+};
+const PLAN_FINAL_STATES = new Set(['stopped', 'complete', 'failed', 'ended']);
 
 
 class LumiApp {
@@ -292,12 +306,9 @@ class LumiApp {
         this.agentActivities = new Map();
         // Runtime bookkeeping still powers compact in-chat task summaries.
         // It is intentionally not exposed as a separate agent hierarchy.
-        this.runtimeView = 'agents';
         this.runtimeAgents = [];
         this.runtimeTimeline = [];
-        this.runtimePacks = [];
         this.agentActivityOrder = [];
-        this.agentActivityStack = [];
         this.contextState = null;
         this.contextProviders = [];
 
@@ -563,6 +574,7 @@ class LumiApp {
     }
 
     _clearDraft() {
+        this._dictation?.cancel({restore: false, focus: false});
         if (this._draftScope) {
             this._draftScope.edited = true;
             this._draftScope.savedText = undefined;
@@ -602,6 +614,8 @@ class LumiApp {
         if (!project) return;
         const key = JSON.stringify([this._projectKey(project), session]);
         if (this._draftScope?.key === key) return;
+        // Stop callbacks while the composer still belongs to the old draft.
+        this._dictation?.cancel({focus: false});
         this._clearPromptSuggestion();
         const previous = this._draftScope;
         const carry = migrateNew && previous && !previous.session &&
@@ -1444,34 +1458,13 @@ class LumiApp {
             this.closePreviewPanel();
         });
 
-        // Preview tab toggle (Browser ↔ Plan)
-        document.querySelectorAll('.preview-tab[data-pane]').forEach((tab) => {
-            tab.addEventListener('click', () => {
-                this.switchPreviewPane(tab.dataset.pane);
-            });
-        });
+        this._bindPreviewTabs();
         document.getElementById('context-cockpit-refresh')?.addEventListener('click', () => {
             this.send({ command: 'get_context_state' });
             this.send({ command: 'context_catalog' });
         });
-        document.querySelectorAll('.runtime-view-tab').forEach((button) => {
-            button.addEventListener('click', () => this.switchRuntimeView(button.dataset.runtimeView));
-        });
 
-        // Plan-graph toolbar buttons
-        document.getElementById('plan-graph-pause')?.addEventListener('click', () => {
-            const id = this._currentIntentId;
-            if (!id) { this.showStatusMessage('No active intent to pause.'); return; }
-            this.send({ command: 'intent_pause', intent_id: id });
-        });
-        document.getElementById('plan-graph-history')?.addEventListener('click', () => {
-            const id = this._currentIntentId;
-            if (!id) { this.showStatusMessage('No active intent — nothing to show history for.'); return; }
-            this.send({ command: 'intent_list_snapshots', intent_id: id });
-        });
-        document.getElementById('plan-graph-branch')?.addEventListener('click', () => {
-            this.showStatusMessage('Branch from a node by clicking it in the viz, then choosing Restore from here.');
-        });
+        this._bindPlanGraphToolbar();
 
         // Wire host-app hooks for the plan-graph view: per-node Restore / Re-run.
         if (window.PlanGraphView) {
@@ -2145,6 +2138,139 @@ class LumiApp {
         this._beginPlanRun(text);
         this.showStatusMessage('Intent dispatched — plan-graph populating in the preview panel.');
         this.openPlanTab(true);
+    }
+
+    /**
+     * Wire the Plan tab's toolbar. Pause (Resume while paused) and Stop act
+     * on the plan the tab follows: the last one started with /plan or a
+     * Mission's Build this roadmap, or the latest still running when the
+     * page connected.
+     */
+    _bindPlanGraphToolbar() {
+        document.getElementById('plan-graph-pause')?.addEventListener('click', () => {
+            const id = this._currentIntentId;
+            if (!id) { this.showStatusMessage('No active intent to pause.'); return; }
+            if (!this._planControlsLive()) { this.showStatusMessage(this._planUnavailableMessage()); return; }
+            // The button reads Resume while the intent is paused.
+            this.send({ command: this._currentIntentPaused ? 'intent_resume' : 'intent_pause', intent_id: id });
+        });
+        document.getElementById('plan-graph-stop')?.addEventListener('click', () => this.stopCurrentIntent());
+        document.getElementById('plan-graph-history')?.addEventListener('click', () => {
+            const id = this._currentIntentId;
+            if (!id) { this.showStatusMessage('No active intent — nothing to show history for.'); return; }
+            this.send({ command: 'intent_list_snapshots', intent_id: id });
+        });
+        document.getElementById('plan-graph-branch')?.addEventListener('click', () => {
+            this.showStatusMessage('Branch from a node by clicking it in the viz, then choosing Restore from here.');
+        });
+    }
+
+    /**
+     * Stop the plan the Plan tab follows. Its running step makes no further
+     * model request or tool call and no other step starts; the toolbar
+     * reads Stopping… until the server reports the plan stopped.
+     */
+    stopCurrentIntent() {
+        const id = this._currentIntentId;
+        if (!id) { this.showStatusMessage('No plan is running.'); return; }
+        if (!this._planControlsLive()) { this.showStatusMessage(this._planUnavailableMessage()); return; }
+        // send() drops a message while the socket is down, which would leave
+        // the toolbar saying Stopping… for a plan that carries on.
+        if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+            this.showStatusMessage('Reconnecting to Lumi. Press Stop again once it’s back.');
+            return;
+        }
+        this._setIntentState('stopping');
+        this.send({ command: 'intent_cancel', intent_id: id });
+    }
+
+    /**
+     * Point the Plan tab's Pause and Stop at a plan the person started with
+     * /plan or a Mission's Build this roadmap. An autonomous session's plans
+     * are stopped from its own badge instead.
+     */
+    _followIntent(intentId) {
+        if (!intentId) return;
+        this._currentIntentId = intentId;
+        this._currentIntentState = '';
+        this._setIntentState('running');
+        const snapshot = this._planRuns?.get(intentId)?.snapshot;
+        if (snapshot && window.PlanGraphView) window.PlanGraphView.render(snapshot);
+    }
+
+    /**
+     * Pick up the plans still running when this page connected (after a
+     * reload, say). The Plan tab follows the latest, with its graph as it
+     * stands, and Pause and Stop reach it again: the server sends its events
+     * here from now on. Only plans started with /plan or Build this roadmap
+     * are listed.
+     */
+    _followRunningPlans(plans) {
+        const latest = plans.at(-1);
+        if (!latest?.intent_id) {
+            if (this._planControlsLive() || this._currentIntentState === 'stopping') {
+                this._setIntentState('ended');
+            }
+            return;
+        }
+        const alreadyShown = latest.intent_id === this._currentIntentId;
+        this._followIntent(latest.intent_id);
+        if (latest.stopping) this._setIntentState('stopping');
+        else if (latest.paused) this._setIntentState('paused');
+        if (latest.snapshot && window.PlanGraphView) window.PlanGraphView.render(latest.snapshot);
+        // A page reconnecting to the plan it shows keeps its layout.
+        if (alreadyShown) return;
+        // A preview opened for the plan shows it, so its Pause and Stop can be
+        // reached from the keyboard. One already
+        // open stays on its pane, with the Plan tab marked. Neither takes focus.
+        this.openPlanTab(!this.previewOpen);
+        this._markPlanTabUnread();
+        this.showStatusMessage('A plan is still running. Pause and Stop are in the Plan tab.');
+    }
+
+    _planControlsLive() {
+        return this._currentIntentState === 'running' || this._currentIntentState === 'paused';
+    }
+
+    _planUnavailableMessage() {
+        return this._currentIntentState === 'stopping'
+            ? 'The plan is already stopping.'
+            : 'That plan has already ended.';
+    }
+
+    /**
+     * Track the state of the plan the toolbar follows and show it: a status
+     * label, Pause reading Resume while the plan is paused, and Pause and
+     * Stop marked unavailable once it is stopping or over. They stay
+     * focusable (aria-disabled, not disabled), so keyboard focus isn't
+     * dropped when a plan stops under it. Events for another intent (an
+     * autonomous session's, say) leave the toolbar alone.
+     */
+    _setIntentState(state, intentId) {
+        if (intentId && intentId !== this._currentIntentId) return;
+        const current = this._currentIntentState || '';
+        // An ended plan stays ended, and a late pause or resume doesn't bring
+        // back one that is stopping.
+        if (PLAN_FINAL_STATES.has(current)) return;
+        if (current === 'stopping' && (state === 'running' || state === 'paused')) return;
+        this._currentIntentState = state;
+        this._currentIntentPaused = state === 'paused';
+        const live = this._planControlsLive();
+        const pause = document.getElementById('plan-graph-pause');
+        if (pause) {
+            pause.textContent = state === 'paused' ? 'Resume' : 'Pause';
+            pause.title = state === 'paused' ? 'Resume starting new nodes' : 'Pause new node spawns';
+            this._setPlanControlAvailable(pause, live);
+        }
+        this._setPlanControlAvailable(document.getElementById('plan-graph-stop'), live);
+        const label = document.getElementById('plan-graph-state');
+        if (label) label.textContent = PLAN_STATE_LABELS[state] || '';
+    }
+
+    _setPlanControlAvailable(button, available) {
+        if (!button) return;
+        if (available) button.removeAttribute('aria-disabled');
+        else button.setAttribute('aria-disabled', 'true');
     }
 
     /**
@@ -3035,7 +3161,9 @@ class LumiApp {
         this.userInput.closest('.input-wrapper')?.classList.toggle('is-running', running);
         if (running) this._startLiveRun();
         else this._stopLiveRun();
-        this.userInput.focus();
+        // A plan's steps start and end while the person may be using the
+        // Plan tab's Pause or Stop: keep keyboard focus there.
+        if (!document.activeElement?.closest?.('#plan-graph-pane')) this.userInput.focus();
     }
 
     // ── Terminal Bar ─────────────────────────────────────────────
@@ -3101,7 +3229,7 @@ class LumiApp {
                     <span class="terminal-entry-spinner"></span>
                     <span class="terminal-entry-cmd" title="${this.escapeHtml(info.command)}">$ ${this.escapeHtml(displayCmd)}</span>
                 </div>
-                <div style="display:flex;align-items:center;gap:6px;">
+                <div class="terminal-entry-right">
                     <span class="terminal-entry-elapsed">${elapsed}s</span>
                     <button class="terminal-entry-stop" title="Cancel current run" data-call-id="${this.escapeHtml(callId)}">
                         <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
@@ -3753,7 +3881,7 @@ class LumiApp {
                 break;
             // ── Plan-graph (organic orchestration) ────────────────────
             case 'plan.snapshot':
-                if (window.PlanGraphView) {
+                if (event.intent_id === this._currentIntentId && window.PlanGraphView) {
                     window.PlanGraphView.render(event.snapshot || event.data);
                     this.openPlanTab(false);  // open without stealing focus
                     this._markPlanTabUnread();
@@ -3761,13 +3889,13 @@ class LumiApp {
                 break;
             case 'plan.event':
                 this.trackPlanAgentEvent(event);
-                if (window.PlanGraphView) {
+                if (event.intent_id === this._currentIntentId && window.PlanGraphView) {
                     window.PlanGraphView.applyEvent(event.event_payload || event);
                     this._markPlanTabUnread();
                 }
                 break;
             case 'plan.checkpoint':
-                if (window.PlanGraphView) {
+                if (event.intent_id === this._currentIntentId && window.PlanGraphView) {
                     window.PlanGraphView.showCheckpoint(event.payload || event);
                     // Checkpoints DO grab focus (an explicit user-attention
                     // moment). The mark-unread is moot since the switch
@@ -3781,35 +3909,63 @@ class LumiApp {
                 this._renderSnapshotList(event.intent_id, event.snapshots || []);
                 break;
             case 'intent.accepted':
-                this._currentIntentId = event.intent_id;
+                this._followIntent(event.intent_id);
+                if (this._planRuns?.get(event.intent_id)?.snapshot) {
+                    this.openPlanTab(false);
+                    this._markPlanTabUnread();
+                }
                 break;
             case 'intent.started':
                 this.showStatusMessage(`Intent started: ${event.text || ''}`);
                 break;
             case 'intent.complete':
+                this._setIntentState('complete', event.intent_id);
                 this.showStatusMessage(
                     event.extracted_skill_id
                         ? `Intent complete \u00B7 skill saved: ${event.extracted_skill_id}`
                         : 'Intent complete'
                 );
                 break;
+            case 'intent.cancelling':
+                // The stop was accepted and the running step is ending;
+                // intent.cancelled follows once the plan has stopped.
+                this._setIntentState('stopping', event.intent_id);
+                this.showStatusMessage('Stopping the plan. No new step will start.');
+                break;
             case 'intent.cancelled':
-                this.showStatusMessage('Intent cancelled.');
+                this._setIntentState('stopped', event.intent_id);
+                this.showStatusMessage('Plan stopped.');
                 break;
             case 'intent.failed':
+                this._setIntentState('failed', event.intent_id);
                 this.showStatusMessage(`Intent failed: ${event.error || 'unknown error'}`);
                 break;
             case 'intent.paused':
-                this.showStatusMessage('Intent paused.');
+                this._setIntentState('paused', event.intent_id);
+                this.showStatusMessage('Intent paused. The running step finishes first.');
                 break;
             case 'intent.resumed':
+                this._setIntentState('running', event.intent_id);
                 this.showStatusMessage('Intent resumed.');
                 break;
             case 'intent.cancel_ack':
             case 'intent.pause_ack':
             case 'intent.resume_ack':
             case 'intent.restore_ack':
-                // Acks are silent — the followup intent.* event surfaces the user-visible message.
+                // A successful ack is followed by the event that reports it
+                // (intent.paused, plan.snapshot, ...). A refused one is not,
+                // so say why nothing changed.
+                if (event.ok === false) {
+                    // Stop, Pause and Resume are refused only for a plan
+                    // that isn't running any more.
+                    if (event.event !== 'intent.restore_ack') this._setIntentState('ended', event.intent_id);
+                    this.showStatusMessage({
+                        'intent.cancel_ack': 'That plan can no longer be stopped.',
+                        'intent.pause_ack': 'That plan can no longer be paused.',
+                        'intent.resume_ack': 'That plan can no longer be resumed.',
+                        'intent.restore_ack': 'Snapshot not restored. A plan can be restored once it has stopped.',
+                    }[event.event]);
+                }
                 break;
             case 'harness_cycle_started':
                 this.showStatusMessage(`Started ${event.run?.name || 'harness cycle'}`);
@@ -3973,9 +4129,20 @@ class LumiApp {
                 this._renderAccountMenu();
                 if (this.currentView === 'settings') this.renderSettingsView();
                 break;
+            case 'voice.transcript':
+            case 'voice.error': {
+                const request = this._voiceRequests?.get(event.request_id);
+                if (!request) break;
+                this._voiceRequests.delete(event.request_id);
+                clearTimeout(request.timer);
+                if (type === 'voice.transcript') request.resolve(event.text || '');
+                else request.reject(new Error(event.message || 'Transcription failed.'));
+                break;
+            }
             case 'settings':
                 this.settings = event.data || {};
                 this._syncAutonomousSwitch();
+                this._syncDictationButton();
                 this.settingsError = '';
                 this._settingsDrafts = {};
                 // A save succeeded: an earlier refusal no longer applies, even
@@ -4059,13 +4226,11 @@ class LumiApp {
             case 'agent.steered':
             case 'agent.control_ack':
                 if (event.agent) this.upsertRuntimeAgent(event.agent);
-                this.renderRuntimeView();
                 this._syncWorkerViews();
                 break;
             case 'agent.runtime_list':
                 this.runtimeAgents = event.agents || [];
                 this.syncRuntimeAgents();
-                this.renderRuntimeView();
                 this._syncWorkerViews();
                 break;
             case 'agent.runtime_detail':
@@ -4202,7 +4367,6 @@ class LumiApp {
                 if (this.currentView === 'settings') this.renderSettingsView();
                 break;
             case 'capability.pack_list': {
-                this.runtimePacks = event.packs || [];
                 this.capabilityPacks = event;
                 // An install finished: keep what was typed only if it failed,
                 // and show the result even while the form keeps focus.
@@ -4211,7 +4375,6 @@ class LumiApp {
                     this._packInstalling = false;
                     if (!event.error) this._packInstallDraft = {};
                 }
-                this.renderRuntimeView();
                 if (this.currentView === 'settings') this.renderSettingsView(installed ? {force: true} : undefined);
                 if (Array.isArray(event.pending) && this._runtimeBannerState) {
                     this._applyRuntimeError({...this._runtimeBannerState, capability_packs_pending: event.pending});
@@ -4398,6 +4561,7 @@ class LumiApp {
         // Store settings
         if (event.settings) {
             this.settings = event.settings;
+            this._syncDictationButton?.();
             this._syncAutonomousSwitch();
             this._renderAccountMenu();
         }
@@ -4526,6 +4690,13 @@ class LumiApp {
         // list (running + complete + paused + failed) on init.
         if (Array.isArray(event.autonomous_missions)) {
             this.handleAutonomousMissions({ missions: event.autonomous_missions });
+        }
+
+        // Plans still running when this page connected; only the socket's
+        // own init lists them. Before the returns below: a plan runs on the
+        // model it started with, whatever this page can load now.
+        if (Array.isArray(event.running_intents)) {
+            this._followRunningPlans(event.running_intents);
         }
 
         if (current_backend) {
@@ -5096,103 +5267,160 @@ class LumiApp {
     }
 
     /**
-     * Push-to-talk voice input via the browser SpeechRecognition API.
+     * Dictation in the composer: voice_input.js decides, this wires it to the
+     * page (docs/voice-input.md).
      *
-     * Hold the mic button → start recognition; show interim results in
-     * the textarea (greyed); release → final transcript replaces the
-     * grey text. User can edit before submitting.
-     *
-     * Falls back gracefully when SpeechRecognition isn't available
-     * (e.g. desktop pywebview without WebView2 speech support).
+     * Hold the microphone button (or Space on it, or Ctrl+Shift+Space
+     * anywhere) to dictate until release; a quick press or Enter keeps
+     * listening until the next press. Escape cancels and leaves the composer
+     * as it was. Settings > Voice and the organization's policy decide
+     * whether the webview's recognizer or a transcription service listens
+     * (settings._meta.voice); pressing the button says why when neither can.
      */
     _setupVoiceInput() {
         const btn = document.getElementById('mic-btn');
-        if (!btn) return;
-
-        const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-        if (!SpeechRecognition) {
-            btn.disabled = true;
-            btn.title = 'Voice input not supported (try a Chromium browser, or wire whisper.cpp on the desktop)';
-            btn.style.opacity = 0.4;
-            return;
-        }
-
-        let recognition = null;
-        let active = false;
-        let baseText = '';
-        let interim = '';
-
-        const start = (e) => {
-            e.preventDefault();
-            if (active) return;
-            active = true;
-            btn.classList.add('recording');
-            baseText = this.userInput.value;
-            interim = '';
-
-            recognition = new SpeechRecognition();
-            recognition.continuous = false;
-            recognition.interimResults = true;
-            recognition.lang = navigator.language || 'en-US';
-
-            recognition.addEventListener('result', (event) => {
-                let finalT = '';
-                let interimT = '';
-                for (let i = event.resultIndex; i < event.results.length; i++) {
-                    const res = event.results[i];
-                    if (res.isFinal) finalT += res[0].transcript;
-                    else interimT += res[0].transcript;
-                }
-                if (finalT) {
-                    baseText = (baseText + (baseText && !baseText.endsWith(' ') ? ' ' : '') + finalT).trimStart();
-                }
-                interim = interimT;
-                this.userInput.value = baseText + (interim ? (baseText && !baseText.endsWith(' ') ? ' ' : '') + interim : '');
-                this.userInput.style.height = 'auto';
-                this.userInput.style.height = Math.min(this.userInput.scrollHeight, 200) + 'px';
-            });
-
-            recognition.addEventListener('error', (event) => {
-                this.showStatusMessage(`Speech: ${event.error || 'error'}`);
-                stop();
-            });
-
-            recognition.addEventListener('end', () => {
-                // Browser may end on its own (silence). Settle final text.
-                if (interim) {
-                    baseText = (baseText + (baseText && !baseText.endsWith(' ') ? ' ' : '') + interim).trimStart();
-                    interim = '';
-                    this.userInput.value = baseText;
-                }
-                stop();
-            });
-
-            try {
-                recognition.start();
-            } catch (err) {
-                this.showStatusMessage(`Speech start failed: ${err}`);
-                stop();
-            }
+        const status = document.getElementById('dictation-status');
+        if (!btn || !window.LumiDictation) return;
+        const composer = this.userInput;
+        this._voiceRequests = new Map();
+        let clearStatus = null;
+        let errored = false;
+        const say = (text, linger = false) => {
+            if (!status) return;
+            clearTimeout(clearStatus);
+            status.textContent = text || '';
+            if (linger) clearStatus = setTimeout(() => { status.textContent = ''; }, 6000);
         };
+        const dictation = window.LumiDictation.create({
+            env: {
+                SpeechRecognition: window.SpeechRecognition || window.webkitSpeechRecognition,
+                mediaDevices: navigator.mediaDevices,
+                MediaRecorder: window.MediaRecorder,
+                Blob: window.Blob,
+            },
+            getStatus: () => this.settings?._meta?.voice,
+            getText: () => composer.value,
+            setText: text => {
+                composer.value = text;
+                // Saves the draft, resizes the composer and drops a suggestion, as typing does.
+                composer.dispatchEvent(new Event('input', {bubbles: true}));
+            },
+            language: () => this.settings?.voice?.language || navigator.language || 'en-US',
+            transcribe: (blob, type) => this._transcribeRecording(blob, type),
+            onState: (state, detail) => {
+                btn.classList.toggle('recording', state === 'starting' || state === 'listening');
+                btn.classList.toggle('transcribing', state === 'stopping' || state === 'transcribing');
+                btn.setAttribute('aria-pressed', String(state !== 'idle'));
+                if (state === 'starting' || state === 'listening') errored = false;
+                if (state === 'starting') say('Opening the microphone…');
+                else if (state === 'listening') say(detail.latched
+                    ? 'Listening. Press the microphone or Ctrl+Shift+Space again to stop, or Escape to cancel.'
+                    : 'Listening. Release to stop, or press Escape to cancel.');
+                else if (state === 'stopping') say('Finishing…');
+                else if (state === 'transcribing') say(`Transcribing with ${this.settings?._meta?.voice?.service_name || 'the transcription service'}…`);
+                else {
+                    if (detail.cancelled) say('Dictation cancelled.', true);
+                    else if (detail.inserted) say('Dictation added to your message.', true);
+                    else if (!errored) say('');
+                    if (detail.focus !== false) {
+                        composer.focus();
+                        composer.setSelectionRange(composer.value.length, composer.value.length);
+                    }
+                }
+            },
+            onError: message => {
+                errored = true;
+                say(message, true);
+                this.showStatusMessage(message);
+            },
+        });
+        this._dictation = dictation;
 
-        const stop = () => {
-            if (!active) return;
-            active = false;
-            btn.classList.remove('recording');
-            if (recognition) {
-                try { recognition.stop(); } catch (_) {}
-                recognition = null;
+        // The pointer: hold to talk, or a quick press to keep listening.
+        btn.addEventListener('pointerdown', event => {
+            if (event.button !== 0) return;
+            event.preventDefault();  // the composer keeps focus
+            try { btn.setPointerCapture(event.pointerId); } catch (_) { /* released already */ }
+            dictation.press();
+        });
+        btn.addEventListener('pointerup', () => dictation.release());
+        btn.addEventListener('pointercancel', () => dictation.release());
+        btn.addEventListener('contextmenu', event => event.preventDefault());  // a long touch
+        // Keys on the button: Space held like the mouse; Enter or a quick press toggles.
+        btn.addEventListener('keydown', event => {
+            if ((event.key !== ' ' && event.key !== 'Enter') || event.ctrlKey || event.altKey || event.metaKey) return;
+            event.preventDefault();
+            if (!event.repeat) dictation.press();
+        });
+        btn.addEventListener('keyup', event => {
+            if (event.key !== ' ' && event.key !== 'Enter') return;
+            event.preventDefault();
+            dictation.release();
+        });
+        btn.addEventListener('click', event => event.preventDefault());
+
+        // Ctrl+Shift+Space from anywhere in the conversation, and Escape to cancel.
+        let shortcutHeld = false;
+        document.addEventListener('keydown', event => {
+            if (event.code === 'Space' && event.ctrlKey && event.shiftKey && !event.altKey && !event.metaKey) {
+                if (this.currentView === 'settings') return;
+                event.preventDefault();
+                if (!event.repeat && !shortcutHeld) {
+                    shortcutHeld = true;
+                    dictation.press();
+                }
+            } else if (event.key === 'Escape' && dictation.state !== 'idle') {
+                event.preventDefault();
+                event.stopImmediatePropagation();
+                dictation.cancel();
             }
-            this.userInput.focus();
+        }, true);
+        const releaseShortcut = () => {
+            if (!shortcutHeld) return;
+            shortcutHeld = false;
+            dictation.release();
         };
+        document.addEventListener('keyup', event => {
+            if (event.code === 'Space' || event.key === 'Control' || event.key === 'Shift') releaseShortcut();
+        }, true);
+        window.addEventListener('blur', releaseShortcut);
+        this._syncDictationButton();
+    }
 
-        // Push-to-talk: mousedown / touchstart starts; mouseup / leave / touchend stops.
-        btn.addEventListener('mousedown', start);
-        btn.addEventListener('touchstart', start, { passive: false });
-        btn.addEventListener('mouseup', stop);
-        btn.addEventListener('mouseleave', stop);
-        btn.addEventListener('touchend', stop);
-        btn.addEventListener('touchcancel', stop);
+    /** The microphone button says whether dictation can run here, and why not. */
+    _syncDictationButton() {
+        const btn = document.getElementById('mic-btn');
+        if (!btn || !this._dictation) return;
+        const choice = this._dictation.available();
+        // Not disabled: pressing it explains what to change.
+        btn.classList.toggle('unavailable', !choice.engine);
+        const service = this.settings?._meta?.voice?.service_name;
+        btn.title = !choice.engine ? choice.reason
+            : `Dictate: hold to talk, or press to start and stop (Ctrl+Shift+Space)${choice.engine === 'service' && service ? ` · ${service}` : ''}`;
+    }
+
+    /** Send a dictation's recording to Lumi to transcribe; resolves with the text. */
+    _transcribeRecording(blob, type) {
+        return new Promise((resolve, reject) => {
+            if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+                reject(new Error('Lumi isn’t connected. Dictate again once it reconnects.'));
+                return;
+            }
+            const reader = new FileReader();
+            reader.onerror = () => reject(new Error('The recording couldn’t be read. Dictate again.'));
+            reader.onload = () => {
+                const url = String(reader.result || '');
+                const requestId = `voice-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+                const timer = setTimeout(() => {
+                    this._voiceRequests.delete(requestId);
+                    reject(new Error('Transcription took too long. Try again.'));
+                }, 150000);
+                this._voiceRequests.set(requestId, {resolve, reject, timer});
+                this.send({command: 'voice_transcribe', request_id: requestId, media_type: type,
+                           audio: url.slice(url.indexOf(',') + 1)});
+            };
+            reader.readAsDataURL(blob);
+        });
     }
 
     /** Sync the thinking-mode selector with server state (called from init/session_loaded). */
@@ -5588,6 +5816,16 @@ class LumiApp {
         }, wait);
     }
 
+    /**
+     * Sanitizes rendered Markdown, which is model output and file contents,
+     * and drops its style="" attributes and <style> elements. The page's CSP
+     * refuses those (gui/local_access.py), so a reply never shows them; the
+     * browser still reports each one once, when DOMPurify parses it.
+     */
+    sanitizeMarkdownHtml(html) {
+        return DOMPurify.sanitize(html, {FORBID_TAGS: ['style'], FORBID_ATTR: ['style']});
+    }
+
     renderMarkdown(el, text, streaming = false) {
         const contentEl = el.querySelector('.message-content');
         if (!contentEl) return;
@@ -5602,7 +5840,7 @@ class LumiApp {
 
             let sanitized = false;
             if (typeof DOMPurify !== 'undefined') {
-                html = DOMPurify.sanitize(html);
+                html = this.sanitizeMarkdownHtml(html);
                 sanitized = true;
             }
 
@@ -5897,7 +6135,7 @@ class LumiApp {
 
         switch (name) {
             case 'file_read':
-                desc = `<span style="color:var(--file)">${this.escapeHtml(args.path || '')}</span>`;
+                desc = `<span class="tone-file">${this.escapeHtml(args.path || '')}</span>`;
                 break;
             case 'glob':
                 desc = this.escapeHtml(args.pattern || '');
@@ -5912,7 +6150,7 @@ class LumiApp {
                 meta = `${args.path || ''}${args.line ? `:${args.line}` : ''}`;
                 break;
             case 'browser_navigate':
-                desc = `<span style="color:var(--file)">${this.escapeHtml(args.url || '')}</span>`;
+                desc = `<span class="tone-file">${this.escapeHtml(args.url || '')}</span>`;
                 // Update preview panel URL bar
                 if (args.url) this.updatePreviewUrl(args.url);
                 break;
@@ -5963,7 +6201,7 @@ class LumiApp {
         // Its result finds this row by call id when a step calls the tool twice.
         if (event.call_id) el.setAttribute('data-call-id', event.call_id);
         el.innerHTML = `
-            <span class="tool-icon" style="color:var(--${info.color})">${info.icon}</span>
+            <span class="tool-icon tone-${info.color}">${info.icon}</span>
             <span class="tool-desc">${desc}</span>
             ${meta ? `<span class="tool-meta">(${this.escapeHtml(meta)})</span>` : ''}
         `;
@@ -6036,7 +6274,7 @@ class LumiApp {
 
         el.innerHTML = `
             <span class="tool-row-status pending" data-status>◯</span>
-            <span class="tool-row-glyph" style="color:var(--${glyphColor})" data-glyph>${glyph}</span>
+            <span class="tool-row-glyph tone-${glyphColor}" data-glyph>${glyph}</span>
             <code class="tool-row-summary" data-summary></code>
             <span class="tool-row-meta" data-meta>running…</span>
             <button type="button" class="tool-row-toggle" data-toggle aria-expanded="false" tabindex="-1">▸</button>
@@ -6503,25 +6741,58 @@ class LumiApp {
     }
 
     /**
-     * Switch the preview panel between the Browser pane and the Plan pane.
-     * Browser-related elements stay in their existing IDs (preview-chrome,
-     * preview-viewport, preview-console). Plan elements live under
-     * #plan-graph-pane. Mutually exclusive display toggle.
+     * The Browser, Plan and Context tabs follow the WAI-ARIA tabs pattern:
+     * the tab list is one tab stop (the selected tab), and the arrow keys,
+     * Home and End move to another tab and show its pane at once. Panes
+     * show without a wait, so moving selects, as the pattern recommends.
+     * Enter and Space are the buttons' own clicks.
+     */
+    _bindPreviewTabs() {
+        const tabList = document.getElementById('preview-tabs');
+        if (!tabList) return;
+        const tabs = () => [...tabList.querySelectorAll('.preview-tab[data-pane]')];
+        tabs().forEach((tab) => {
+            tab.addEventListener('click', () => this.switchPreviewPane(tab.dataset.pane));
+        });
+        tabList.addEventListener('keydown', (e) => {
+            if (e.altKey || e.ctrlKey || e.metaKey) return;
+            const all = tabs();
+            const index = all.indexOf(document.activeElement);
+            if (index < 0) return;
+            const next = {
+                ArrowRight: all[(index + 1) % all.length],
+                ArrowLeft: all[(index - 1 + all.length) % all.length],
+                Home: all[0],
+                End: all[all.length - 1],
+            }[e.key];
+            if (!next) return;
+            e.preventDefault();
+            this.switchPreviewPane(next.dataset.pane);
+            next.focus();
+        });
+    }
+
+    /**
+     * Switch the preview panel between the Browser, Plan and Context panes
+     * (#preview-browser-pane, #plan-graph-pane, #context-cockpit-pane).
+     * Mutually exclusive display toggle. The selected tab becomes the tab
+     * list's one tab stop; a switch the person didn't make leaves focus
+     * where it is.
      */
     switchPreviewPane(pane) {
         const isPlan = pane === 'plan';
         const isContext = pane === 'context';
         const isBrowser = !isPlan && !isContext;
+        const shown = isPlan ? 'plan' : (isContext ? 'context' : 'browser');
         document.querySelectorAll('.preview-tab[data-pane]').forEach((t) => {
-            t.classList.toggle('active', t.dataset.pane === pane);
+            const selected = t.dataset.pane === shown;
+            t.classList.toggle('active', selected);
+            t.setAttribute('aria-selected', selected ? 'true' : 'false');
+            t.tabIndex = selected ? 0 : -1;
         });
-        const browserChrome = document.querySelector('#preview-panel .preview-chrome');
-        const browserViewport = document.getElementById('preview-viewport');
-        const browserConsole = document.getElementById('preview-console');
+        const browserPane = document.getElementById('preview-browser-pane');
         const planPane = document.getElementById('plan-graph-pane');
-        if (browserChrome) browserChrome.style.display = isBrowser ? '' : 'none';
-        if (browserViewport) browserViewport.style.display = isBrowser ? '' : 'none';
-        if (browserConsole) browserConsole.style.display = isBrowser ? '' : 'none';
+        if (browserPane) browserPane.style.display = isBrowser ? '' : 'none';
         if (planPane) planPane.style.display = isPlan ? 'flex' : 'none';
         const contextPane = document.getElementById('context-cockpit-pane');
         if (contextPane) contextPane.style.display = isContext ? 'flex' : 'none';
@@ -6552,15 +6823,6 @@ class LumiApp {
     _clearPlanTabUnread() {
         const tab = document.querySelector('.preview-tab[data-pane="plan"]');
         if (tab) tab.classList.remove('has-unread');
-    }
-
-    _markAgentTabUnread() {
-        if (this._currentPreviewPane === 'agents') return;
-        document.querySelector('.preview-tab[data-pane="agents"]')?.classList.add('has-unread');
-    }
-
-    _clearAgentTabUnread() {
-        document.querySelector('.preview-tab[data-pane="agents"]')?.classList.remove('has-unread');
     }
 
     /**
@@ -6701,12 +6963,9 @@ class LumiApp {
         this._previewTitle = '';
         this.agentActivities.clear();
         this.agentActivityOrder = [];
-        this.agentActivityStack = [];
         this.contextState = null;
         this.runtimeAgents = [];
         this.runtimeTimeline = [];
-        this.runtimePacks = [];
-        this.renderAgentActivityTree();
         this.renderContextCockpit();
 
         // Reset viewport
@@ -6728,9 +6987,9 @@ class LumiApp {
             `;
         }
 
-        // Reset URL bar & tab
+        // Reset URL bar & tab (the tab's name, as the page first shows it)
         if (this.previewUrlText) this.previewUrlText.textContent = '';
-        if (this.previewTabName) this.previewTabName.textContent = 'Preview';
+        if (this.previewTabName) this.previewTabName.textContent = 'Browser';
 
         // Reset console
         if (this.previewConsoleBody) {
@@ -6882,7 +7141,7 @@ class LumiApp {
         const budgetHtml = budget > 0 ? `
             <div class="cost-budget" aria-label="Daily budget usage">
                 <div><span>Daily alert usage</span><strong>${Math.round(budgetPercent)}% of ${this._formatUsageCost(budget)}</strong></div>
-                <div class="cost-budget-track"><span style="width:${budgetPercent}%"></span></div>
+                <div class="cost-budget-track"><span data-percent="${budgetPercent}"></span></div>
             </div>
         ` : '';
         const historyRows = dailyEntries.slice(0, 14).map(([day, item]) => `
@@ -6945,10 +7204,17 @@ class LumiApp {
             return `
                 <div class="cost-budget" aria-label="${owner} budget for ${esc(rule.scope === 'turn' ? 'each turn' : rule.period)}">
                     <div><span>${owner}: ${scope} &middot; ${steps}</span>${spent}</div>
-                    ${rule.scope === 'turn' ? '' : `<div class="cost-budget-track"><span style="width:${percent}%"></span></div>`}
+                    ${rule.scope === 'turn' ? '' : `<div class="cost-budget-track"><span data-percent="${percent}"></span></div>`}
                 </div>`;
         }).join('');
         return `<div class="cost-budgets"><div class="cost-history-title"><strong>Budgets</strong></div>${rows}</div>`;
+    }
+
+    /** Budget bars get their widths here: the page's CSP refuses style="" (gui/local_access.py). */
+    _sizeCostBudgetTracks(root) {
+        root.querySelectorAll('.cost-budget-track > span[data-percent]').forEach(bar => {
+            bar.style.width = `${Math.min(100, Math.max(0, Number(bar.dataset.percent) || 0))}%`;
+        });
     }
 
     _renderUsageByModel(month) {
@@ -7411,12 +7677,14 @@ class LumiApp {
             this._liveAgentTodoEl = el;
         }
         this._liveAgentTodoEl.innerHTML = `
-            <div class="agent-live-todo-bar" style="--agent-todo-pct:${pct}%"></div>
+            <div class="agent-live-todo-bar"></div>
             <div class="agent-live-todo-row">
                 <span class="agent-live-todo-count">${done} of ${total} to-dos</span>
                 <span class="agent-live-todo-preview">${preview}</span>
             </div>
         `;
+        // Through element.style: the page's CSP refuses style="" attributes.
+        this._liveAgentTodoEl.querySelector('.agent-live-todo-bar').style.setProperty('--agent-todo-pct', `${pct}%`);
         this.scrollToBottom();
     }
 
@@ -7759,7 +8027,7 @@ class LumiApp {
                 <div><strong>${windowTokens.toLocaleString()}</strong><span>effective window</span></div>
                 <div><strong>${Number(state.compression_count || 0)}</strong><span>compressions</span></div>
             </div>
-            <div class="context-meter ${pct >= 75 ? 'is-warning' : ''}"><span style="width:${pct}%"></span></div>
+            <div class="context-meter ${pct >= 75 ? 'is-warning' : ''}"><span></span></div>
             <div class="context-meter-label"><span>${pct}% used</span><span>compress near ${threshold.toLocaleString()}</span></div>
             <section class="context-card">
                 <h4>Composition</h4>
@@ -7775,6 +8043,8 @@ class LumiApp {
             <section class="context-card"><h4>Durable task state</h4><div class="context-empty-row">${todos.length ? `${todos.filter(item => item.done).length}/${todos.length} todos complete` : 'No active todo ledger'}</div></section>
             <section class="context-card"><h4>Explicit attachments</h4><div class="context-provider-list">${providers || '<span class="context-empty-row">No providers available</span>'}</div><p class="context-provider-help">Insert a provider, replace <code>selector</code>, and send. Attachments carry provenance into the model context.</p></section>
         `;
+        // Through element.style: the page's CSP refuses style="" attributes.
+        body.querySelector('.context-meter > span').style.width = `${pct}%`;
         body.querySelectorAll('.context-provider-chip').forEach((button) => button.addEventListener('click', () => {
             const syntax = button.dataset.syntax || '';
             this.userInput.value = `${this.userInput.value}${this.userInput.value ? ' ' : ''}${syntax}`;
@@ -7794,6 +8064,11 @@ class LumiApp {
     // the completion verdict with Retry, the next-prompt suggestion, or focus.
     // Plan activity isn't saved with the conversation; the Plan tab's History
     // keeps the plan's snapshots.
+    //
+    // An autonomous session's REFLECT pass (gui/autonomous_factory.py) runs
+    // one specialist the same way, outside IntentService. It reports as a
+    // one-step plan with an id of its own, under a "Reflection" card:
+    // reflect.start, its specialist's tagged events, then reflect.done.
 
     /**
      * Plans shown on this page, by intent id, and /plan cards whose plan
@@ -7807,7 +8082,8 @@ class LumiApp {
 
     _newPlanRun(intentId) {
         return {
-            intentId, intentText: '', request: '', fromUser: false, card: null,
+            // kind: 'plan', or 'reflect' for a REFLECT pass (handleReflectStart).
+            intentId, kind: 'plan', intentText: '', request: '', fromUser: false, card: null,
             steps: new Map(), currentNodeId: '', status: 'running', error: '',
             toolCount: 0, firstTs: 0, lastTs: 0, allDone: null,
         };
@@ -7863,6 +8139,7 @@ class LumiApp {
         if (!lifecycle.includes(type)) return;
         const run = this._planRunFor(event);
         if (!run) return;
+        if (type === 'plan.snapshot') run.snapshot = event.snapshot || event.data;
         if (['plan.snapshot', 'intent.accepted', 'intent.started'].includes(type)) {
             if (run.status === 'starting') this._setPlanStatus(run, 'running');
         } else if (type === 'intent.paused') {
@@ -7901,9 +8178,13 @@ class LumiApp {
         }
         const nodeId = String(wrapped.node_id || '');
         if (!nodeId || !['node.start', 'node.done'].includes(wrapped.kind)) return;
-        const ts = Number(wrapped.ts) || 0;
+        this._applyPlanNodeEvent(run, wrapped.kind, nodeId, payload, Number(wrapped.ts) || 0);
+    }
+
+    /** A specialist's step starts (node.start) or ends (node.done). */
+    _applyPlanNodeEvent(run, kind, nodeId, payload, ts) {
         const step = this._planStep(run, nodeId, payload);
-        if (wrapped.kind === 'node.start') {
+        if (kind === 'node.start') {
             run.currentNodeId = nodeId;
             step.status = 'running';
             step.startTs = ts;
@@ -7919,6 +8200,31 @@ class LumiApp {
         }
         this._renderPlanStep(run, step);
         this._setPlanStatus(run, run.status === 'starting' ? 'running' : run.status);
+    }
+
+    /**
+     * An autonomous session's REFLECT pass starts: a one-step plan whose id
+     * is its own, named by the event (not claimed by a waiting /plan card).
+     * Its specialist's events follow, tagged `_source: "intent"`.
+     */
+    handleReflectStart(event) {
+        const run = this._planRunFor(event);
+        if (!run) return;
+        run.kind = 'reflect';
+        if (!run.intentText) run.intentText = String(event.text || '').trim();
+        this._applyPlanNodeEvent(run, 'node.start', String(event.node_id || 'reflect'), {
+            specialization: event.specialization || 'reflect', goal: String(event.goal || ''),
+        }, Number(event.ts) || 0);
+    }
+
+    /** The REFLECT pass ended: done, abandoned (the session was stopped) or blocked. */
+    handleReflectDone(event) {
+        const run = this._planRunFor(event);
+        if (!run) return;
+        const status = String(event.status || 'done');
+        this._applyPlanNodeEvent(run, 'node.done', String(event.node_id || run.currentNodeId || 'reflect'),
+            { status, error: event.error || '' }, Number(event.ts) || 0);
+        this._setPlanStatus(run, { done: 'complete', abandoned: 'cancelled' }[status] || 'failed');
     }
 
     /** A plan specialist's engine event, drawn in its step and nowhere else. */
@@ -7953,12 +8259,18 @@ class LumiApp {
         }
     }
 
-    /** The plan's card: the /plan message, or a "Plan" card for a plan started elsewhere. */
+    /**
+     * The plan's card: the /plan message, or a "Plan" card for a plan
+     * started elsewhere, or a "Reflection" card for a REFLECT pass.
+     */
     _planCard(run) {
         if (run.card) return run.card;
         this._removeChatEmptyState();
         const card = document.createElement('article');
         card.className = 'task-card plan-card task-card-running';
+        // A plan the person didn't send is headed by its label and title,
+        // not drawn as their message (styles.css, .plan-card-lumi).
+        if (!run.fromUser) card.classList.add('plan-card-lumi');
         // Not a message of the session: forking from a later message counts
         // only the session's own (_forkFromUserMessage).
         card.dataset.userMessage = 'plan';
@@ -7969,10 +8281,10 @@ class LumiApp {
         main.className = 'task-card-main';
         const label = document.createElement('div');
         label.className = 'task-card-label';
-        label.textContent = run.fromUser ? 'You' : 'Plan';
+        label.textContent = run.fromUser ? 'You' : (run.kind === 'reflect' ? 'Reflection' : 'Plan');
         const request = document.createElement('div');
         request.className = 'task-request-text';
-        request.textContent = run.request || this._planTitle(run.intentText) || 'Plan';
+        request.textContent = run.request || this._planTitle(run.intentText) || label.textContent;
         main.appendChild(label);
         main.appendChild(request);
         header.appendChild(main);
@@ -8086,7 +8398,14 @@ class LumiApp {
         if (!card) return;
         const current = run.steps.get(run.currentNodeId);
         const counts = this._planCounts(run);
-        const [state, label, detail] = {
+        const statuses = run.kind === 'reflect' ? {
+            // One step, whose line already says what it checks, and no
+            // Plan-tab controls: a REFLECT pass runs, then ends one way.
+            running: ['running', 'Reflection running', ''],
+            complete: ['done', 'Reflection done', counts],
+            cancelled: ['warning', 'Reflection stopped', counts],
+            failed: ['error', 'Reflection failed', counts],
+        } : {
             starting: ['running', 'Starting plan', ''],
             running: ['running', 'Plan running', current ? `${current.titleEl.textContent}: ${current.goalEl.textContent}` : ''],
             paused: ['warning', 'Plan paused', 'No new step starts until you resume it in the Plan tab.'],
@@ -8095,7 +8414,8 @@ class LumiApp {
             cancelled: ['warning', 'Plan cancelled', counts],
             failed: ['error', 'Plan failed', run.error || 'The plan stopped with an error.'],
             not_started: ['error', 'Plan not started', run.error],
-        }[run.status] || ['running', 'Plan running', ''];
+        };
+        const [state, label, detail] = statuses[run.status] || statuses.running;
         card.statusEl.className = `task-run-summary plan-run-status is-${state}`;
         card.markEl.textContent = { done: 'OK', warning: '!', error: '!' }[state] || '';
         card.labelEl.textContent = label;
@@ -8106,7 +8426,8 @@ class LumiApp {
 
     _planCounts(run) {
         const steps = run.steps.size;
-        const parts = [`${steps} step${steps === 1 ? '' : 's'}`];
+        // A REFLECT pass is always one step.
+        const parts = run.kind === 'reflect' ? [] : [`${steps} step${steps === 1 ? '' : 's'}`];
         if (run.toolCount) parts.push(`${run.toolCount} action${run.toolCount === 1 ? '' : 's'}`);
         if (run.firstTs && run.lastTs > run.firstTs) parts.push(this._formatRunDuration(run.lastTs - run.firstTs));
         return parts.join(' · ');
@@ -8210,24 +8531,6 @@ class LumiApp {
         return line.length > 160 ? `${line.slice(0, 159)}…` : line;
     }
 
-    switchRuntimeView(view) {
-        this.runtimeView = view || 'agents';
-        document.querySelectorAll('.runtime-view-tab').forEach((button) => {
-            button.classList.toggle('active', button.dataset.runtimeView === this.runtimeView);
-        });
-        this.refreshRuntimeView();
-    }
-
-    refreshRuntimeView() {
-        const commands = {
-            agents: 'agent_runtime_list',
-            timeline: 'session_timeline_list',
-            packs: 'capability_pack_list',
-        };
-        this.send({ command: commands[this.runtimeView] || commands.agents });
-        this.renderRuntimeView();
-    }
-
     upsertRuntimeAgent(agent) {
         const index = this.runtimeAgents.findIndex((item) => item.id === agent.id);
         if (index >= 0) this.runtimeAgents[index] = agent;
@@ -8254,105 +8557,6 @@ class LumiApp {
                 handoff: agent.handoff ? JSON.stringify(agent.handoff, null, 2) : agent.error || '',
                 runtime: agent,
             });
-        });
-    }
-
-    renderRuntimeView() {
-        const tree = document.getElementById('agent-activity-tree');
-        const count = document.getElementById('agent-activity-count');
-        if (!tree) return;
-        if (this.runtimeView === 'agents') {
-            this.renderAgentActivityTree();
-            return;
-        }
-        const collections = {
-            timeline: this.runtimeTimeline,
-            packs: this.runtimePacks,
-        };
-        const items = collections[this.runtimeView] || [];
-        if (count) count.textContent = `${items.length} ${this.runtimeView}`;
-        if (!items.length) {
-            tree.innerHTML = `<div class="agent-activity-empty">No ${this.escapeHtml(this.runtimeView)} recorded yet.</div>`;
-            return;
-        }
-        tree.innerHTML = items.map((item) => `
-            <article class="runtime-card">
-                <div><strong>${this.escapeHtml(item.name || item.id)}</strong><small>v${this.escapeHtml(item.version || '0.0.0')}</small></div>
-                <span>${this.escapeHtml(item.description || '')}</span>
-                <div class="runtime-badges"><b class="${item.enabled ? 'is-on' : ''}">${item.enabled ? 'enabled' : 'disabled'}</b><b class="${item.trusted ? 'is-on' : ''}">${item.trusted ? 'trusted' : 'untrusted'}</b><b>${(item.agents || []).length} agents</b><b>${(item.skills || []).length} skills</b></div>
-            </article>`).join('');
-    }
-
-    renderAgentActivityTree() {
-        if (this.runtimeView !== 'agents') {
-            this.renderRuntimeView();
-            return;
-        }
-        const tree = document.getElementById('agent-activity-tree');
-        const count = document.getElementById('agent-activity-count');
-        const badge = document.getElementById('agents-tab-badge');
-        if (!tree) return;
-        const activities = this.agentActivityOrder
-            .map(id => this.agentActivities.get(id))
-            .filter(Boolean);
-        if (count) count.textContent = `${activities.length} worker${activities.length === 1 ? '' : 's'}`;
-        if (badge) {
-            badge.textContent = String(activities.filter(item => item.status === 'running').length || activities.length);
-            badge.style.display = activities.length ? '' : 'none';
-        }
-        if (!activities.length) {
-            tree.innerHTML = '<div class="agent-activity-empty">Sub-agents and specialists will appear here.</div>';
-            const detail = document.getElementById('agent-handoff-detail');
-            if (detail) detail.style.display = 'none';
-            return;
-        }
-        tree.innerHTML = activities.map(item => {
-            const depth = item.parentId ? 1 : 0;
-            const elapsed = item.finishedAt && item.startedAt
-                ? `${((item.finishedAt - item.startedAt) / 1000).toFixed(1)}s`
-                : item.status === 'running' ? 'live' : '';
-            return `
-                <button class="agent-activity-node status-${this.escapeHtml(item.status || 'queued')}" data-activity-id="${this.escapeHtml(item.id)}" style="--agent-depth:${depth}">
-                    <span class="agent-activity-state"></span>
-                    <span class="agent-activity-main">
-                        <strong>${this.escapeHtml(item.label || item.kind || 'worker')}</strong>
-                        <small>${this.escapeHtml((item.prompt || '').slice(0, 90) || item.kind || '')}</small>
-                    </span>
-                    <span class="agent-activity-elapsed">${this.escapeHtml(elapsed)}</span>
-                </button>
-            `;
-        }).join('');
-        tree.querySelectorAll('.agent-activity-node').forEach(node => {
-            node.addEventListener('click', () => {
-                const item = this.agentActivities.get(node.dataset.activityId);
-                if (item?.runtime) this.send({ command: 'agent_runtime_detail', agent_id: item.runtime.id });
-                else this.showAgentHandoff(node.dataset.activityId);
-            });
-        });
-    }
-
-    showAgentHandoff(id) {
-        const item = this.agentActivities.get(id);
-        const detail = document.getElementById('agent-handoff-detail');
-        if (!item || !detail) return;
-        const metadata = [
-            item.status,
-            item.steps != null ? `${item.steps} steps` : '',
-            item.confidence != null ? `${Math.round(item.confidence * 100)}% confidence` : '',
-            item.verdict || '',
-        ].filter(Boolean).join(' · ');
-        detail.innerHTML = `
-            <div class="agent-handoff-header">
-                <strong>${this.escapeHtml(item.label || 'Worker')}</strong>
-                <button class="agent-handoff-close" type="button" aria-label="Close handoff">×</button>
-            </div>
-            <div class="agent-handoff-meta">${this.escapeHtml(metadata)}</div>
-            ${item.prompt ? `<div class="agent-handoff-section"><span>Assignment</span><pre>${this.escapeHtml(item.prompt)}</pre></div>` : ''}
-            <div class="agent-handoff-section"><span>Handoff</span><pre>${this.escapeHtml(item.handoff || 'No handoff was returned.')}</pre></div>
-        `;
-        detail.style.display = 'block';
-        detail.querySelector('.agent-handoff-close')?.addEventListener('click', () => {
-            detail.style.display = 'none';
         });
     }
 
@@ -8391,8 +8595,6 @@ class LumiApp {
             startedAt: Date.now(),
         });
         this.agentActivityOrder.push(activityId);
-        this.renderAgentActivityTree();
-        this._markAgentTabUnread();
         const display = prompt.length > 100 ? prompt.slice(0, 97) + '...' : prompt;
 
         const el = document.createElement('div');
@@ -8406,7 +8608,7 @@ class LumiApp {
         header.innerHTML = `
             <span class="subagent-toggle">▸</span>
             <span class="subagent-label">Task</span>
-            <span style="color:var(--muted);font-size:12px">${this.escapeHtml(agentType)}</span>
+            <span class="tone-muted text-12">${this.escapeHtml(agentType)}</span>
             <span class="subagent-prompt">"${this.escapeHtml(display)}"</span>
         `;
 
@@ -8459,8 +8661,6 @@ class LumiApp {
                 ? JSON.stringify(event.handoff, null, 2)
                 : event.result || event.result_preview || '';
             this.agentActivities.set(activityId, activity);
-            this.renderAgentActivityTree();
-            this._markAgentTabUnread();
         }
 
         // Find this worker's own block even when sibling events interleave.
@@ -9433,7 +9633,6 @@ class LumiApp {
             activity.finishedAt = Date.now();
             this.agentActivities.set(activityId, activity);
             this._updateLiveSubtask(activityId, { status: 'failed' });
-            this.renderAgentActivityTree();
         }
     }
 
@@ -9466,7 +9665,6 @@ class LumiApp {
             this._setLiveRunPhase('Stopping', 'The active run has been interrupted');
             return;
         }
-
         // v0.3.2 — release the mission_start in-flight guard on error so a
         // failed mission_start doesn't leave the user locked out of retries
         // for the full 6s safety timeout.
@@ -10250,12 +10448,12 @@ class LumiApp {
         content.className = 'msg-user-content';
         if (images && images.length > 0) {
             const wrap = document.createElement('div');
-            wrap.style.cssText = 'display:flex;gap:8px;margin-bottom:8px;flex-wrap:wrap';
+            wrap.className = 'msg-user-images';
             for (const img of images) {
                 const thumb = document.createElement('img');
                 thumb.src = img.dataUrl || `data:${img.media_type};base64,${img.data}`;
                 thumb.alt = 'Attached';
-                thumb.style.cssText = 'max-width:120px;max-height:80px;border-radius:4px;border:1px solid var(--border);cursor:pointer';
+                thumb.className = 'msg-user-image';
                 thumb.addEventListener('click', () => this.showLightbox(thumb.src));
                 wrap.appendChild(thumb);
             }
@@ -10572,7 +10770,6 @@ class LumiApp {
         }
         const el = document.createElement('div');
         el.className = 'status-inline';
-        el.style.cssText = 'text-align:center;color:var(--muted);font-size:12px;padding:8px;';
         el.textContent = message;
         const target = (this._activeTask && this._activeTask.activityEl) || this.chatMessages;
         target.appendChild(el);
@@ -11622,7 +11819,7 @@ class LumiApp {
         if (typeof marked !== 'undefined') {
             html = marked.parse(text);
             if (typeof DOMPurify !== 'undefined') {
-                html = DOMPurify.sanitize(html);
+                html = this.sanitizeMarkdownHtml(html);
             }
         }
 
@@ -13166,11 +13363,11 @@ class LumiApp {
 
                 item.innerHTML = `
                     <span class="proj-icon">&#128193;</span>
-                    <div style="flex:1;min-width:0">
+                    <div class="recent-project-body">
                         <div class="proj-name">${this.escapeHtml(proj.name || '')}</div>
                         <div class="proj-path">${this.escapeHtml(proj.path || '')}</div>
                     </div>
-                    ${isCurrent ? '<span style="color:var(--ok)">&#10003;</span>' : ''}
+                    ${isCurrent ? '<span class="tone-ok">&#10003;</span>' : ''}
                 `;
                 item.addEventListener('click', () => {
                     this.selectProjectFolder(proj.path);
@@ -13182,8 +13379,8 @@ class LumiApp {
             const chooseItem = document.createElement('div');
             chooseItem.className = 'recent-project-item';
             chooseItem.innerHTML = `
-                <span class="proj-icon" style="font-size:12px">&#10133;</span>
-                <div style="flex:1"><div class="proj-name">Choose a different folder</div></div>
+                <span class="proj-icon text-12">&#10133;</span>
+                <div class="recent-project-body"><div class="proj-name">Choose a different folder</div></div>
             `;
             chooseItem.addEventListener('click', () => {
                 this.openProjectFolder();
@@ -13197,8 +13394,8 @@ class LumiApp {
             const typeItem = document.createElement('div');
             typeItem.className = 'recent-project-item';
             typeItem.innerHTML = `
-                <span class="proj-icon" style="font-size:12px">&#9000;</span>
-                <div style="flex:1"><div class="proj-name">Type a folder path…</div></div>
+                <span class="proj-icon text-12">&#9000;</span>
+                <div class="recent-project-body"><div class="proj-name">Type a folder path…</div></div>
             `;
             typeItem.addEventListener('click', () => {
                 this._promptForProjectPath('Switch project', (path) => {
@@ -13228,7 +13425,7 @@ class LumiApp {
             if (!this._managedPreviews?.length) dialog.innerHTML += '<p>No previews started for this project.</p>';
             for (const p of this._managedPreviews || []) {
                 const section = document.createElement('section');
-                section.innerHTML = `<h3>${esc(p.state)}</h3><a href="${esc(p.url)}" target="_blank" rel="noopener noreferrer">Open preview</a> <button data-stop ${p.state === 'stopped' ? 'disabled' : ''}>Stop preview</button><details><summary>Recent logs</summary><pre style="white-space:pre-wrap">${esc(p.logs) || 'No output yet'}</pre></details>`;
+                section.innerHTML = `<h3>${esc(p.state)}</h3><a href="${esc(p.url)}" target="_blank" rel="noopener noreferrer">Open preview</a> <button data-stop ${p.state === 'stopped' ? 'disabled' : ''}>Stop preview</button><details><summary>Recent logs</summary><pre>${esc(p.logs) || 'No output yet'}</pre></details>`;
                 section.querySelector('[data-stop]').onclick = () => this.send({command: 'preview_stop', id: p.id});
                 dialog.appendChild(section);
             }
@@ -13269,7 +13466,7 @@ class LumiApp {
                 dialog.appendChild(team);
             }
             const form = document.createElement('form');
-            form.innerHTML = '<input type="hidden" name="id"><p><label>Note <textarea name="text" required maxlength="1000" rows="3" style="width:100%"></textarea></label></p><p><label>Source <input name="source" required maxlength="300" placeholder="Decision in this task, or file and line"></label></p><p><label>Kind <select name="kind"><option value="decision">Decision</option><option value="fact">Fact</option><option value="constraint">Constraint</option><option value="procedure">Procedure</option><option value="build_command">Build or test command</option><option value="convention">Project convention</option><option value="fix">Recurring fix</option></select></label></p><p><label>Source files <input name="sources" placeholder="Relative paths, separated by commas"></label></p><button type="submit">Save note</button>';
+            form.innerHTML = '<input type="hidden" name="id"><p><label>Note <textarea name="text" required maxlength="1000" rows="3"></textarea></label></p><p><label>Source <input name="source" required maxlength="300" placeholder="Decision in this task, or file and line"></label></p><p><label>Kind <select name="kind"><option value="decision">Decision</option><option value="fact">Fact</option><option value="constraint">Constraint</option><option value="procedure">Procedure</option><option value="build_command">Build or test command</option><option value="convention">Project convention</option><option value="fix">Recurring fix</option></select></label></p><p><label>Source files <input name="sources" placeholder="Relative paths, separated by commas"></label></p><button type="submit">Save note</button>';
             form.onsubmit = e => { e.preventDefault(); const values = Object.fromEntries(new FormData(form)); this.send({command: 'memory_save', ...values, sources: values.sources.split(',').map(s => s.trim()).filter(Boolean)}); };
             dialog.appendChild(form);
         }

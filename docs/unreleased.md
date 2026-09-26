@@ -8,6 +8,27 @@ The heartbeat remains paused. Documentation maintenance does not resume work,
 spending or grants, and changes no native implementation or installed bundle.
 The dated September 15/18 records below are historical.
 
+## September 26 worktree recovery and integration fixes — source only, not released
+
+The open plan-controls, terminal-session and dictation PRs were integrated
+with the unfinished hook, reload, reflection, page-policy and keyboard work
+on `codex/finish-open-work`. See the [recovery record](worktree-recovery-2026-09-26.md)
+for origins, current validation and preservation of the original worktrees.
+
+- Dictation cannot put a late result into another conversation or a sent
+  draft. Invalid or expired organization policy blocks both dictation paths.
+- A plan's graph and controls follow the same intent. Reconnecting after a
+  plan ended offline settles its controls without claiming it completed.
+- Plans adopted by a rebuilt service retain their original project's audit
+  log and snapshots, including after switching projects.
+- Terminal setup and refusal messages preserve literal text while applying
+  session security. Voice settings explain that optional OpenAI transcription
+  is billed separately from a ChatGPT subscription; Codex sign-in remains
+  available for subscription-backed coding.
+- The standalone macOS policy-profile generator validates voice settings
+  without requiring the transcription HTTP client to be installed. The HTTP
+  dependency loads only when a recording is transcribed.
+
 ## September 25 the unused run-complete card is removed — source only, not released
 
 - **Removed `_renderAgentRunCompleteCard`** (`lumi/gui/static/run_cards.js`,
@@ -290,6 +311,124 @@ command since v0.4.4, and prompt_toolkit's blocking `prompt()` raises
 checked. Not changed: the TUI's own markup, such as the hint
 `pip install resonant-client[claude]`, whose `[claude]` doesn't print;
 `--backend` accepts only `ollama` and `auto`, so those hints can't show.
+## September 25 your hooks run in a plan's steps too — source only, not released
+
+**A plan's specialists ran no hooks.** `LocalSpecialistRunner`
+(`orchestration/runner.py`) builds a Session for each step of a `/plan`, a
+Mission's **Build this roadmap** and an autonomous session (its iterations and
+its reflect pass). It never set `session.hook_runner`. So neither your
+Settings hooks (`hooks` in settings.json) nor the project's approved
+capability-pack hooks ran there, although the pack's MCP tools did reach
+those steps. It was confirmed with a scripted model and a Settings
+`pre_tool_use` hook that exits 1:
+
+- an implementer's `file_write` went through ("File written: …"), and no hook
+  ran, not even `session_start`;
+- the same happened through the app's own path (`AppState.get_intent_service`,
+  as `/plan` uses it), with the Settings guard or an approved pack's guard.
+
+What was decided:
+
+- **Specialists run your Settings hooks.** They are your own configuration,
+  not repository content, so project trust doesn't decide them. A guard that
+  refuses a call in a chat, failing closed, must not be skipped by typing
+  `/plan`. Specialists work unattended in Full-auto, where a guard matters
+  most.
+- **They get what a chat session in the project gets:** the app's shared
+  runner, scoped with the project's approved pack hooks
+  (`AppState.specialist_hook_runner`, like `_attach_capability_packs`). Pack
+  hooks stay on the specialist's own runner, never the shared one. The shared
+  runner is the one Settings changes reload. Hooks in settings.json are edited
+  in the file and read at startup, so in practice this keeps one source of
+  hooks rather than following live edits.
+- **Looked up as each specialist starts, from the project root.** A pack
+  approved or withdrawn during a plan counts from its next step. A step
+  working in a subfolder still gets the root's packs, and its hooks run in
+  that subfolder.
+- **A lookup that fails blocks the step** before its first model request, with
+  "runner exception: …", rather than running it without its guards.
+- **A runner built outside the app** (a test, the smoke harness, a script)
+  loads `HookRunner(settings)` when it has settings, as `lumi run` does, and
+  has no hooks without them. `IntentService`, `make_reflect_runner` and
+  `build_autonomous_mission_hooks` take the same `hook_runner_for`.
+
+What this means:
+
+- Each step fires the hook points a chat turn does: `session_start` and
+  `session_end`, `before_model` and `after_model`, `pre_tool_use` and
+  `post_tool_use`, `task_completed` and the rest its tools reach. A refused
+  tool call's result is "Blocked by hook: …", which the model reads. A block
+  that ends the step with an error, such as `before_model`, blocks that step's
+  node.
+- **A project `prompt` rule now goes to your `permission_request` hook.** This
+  changes one point of "specialists follow the organization's and the
+  project's rules", which refused every `prompt` rule in a specialist since
+  nobody can answer one. Your `permission_request` hook answers for you where
+  nobody can be asked, as in the app's background work and `lumi run`, so a
+  project `prompt` rule runs the call when that hook allows it. Without such a
+  hook, or without an allow, it is still refused. An organization `prompt`
+  rule is still refused, without asking the hook (see "your own hooks run in
+  `lumi run`, schedules, comparisons and chats").
+- Not covered: Codex and Claude Code run their own tool loops, so tool hooks
+  don't reach their tools, as in a chat. The request that repairs a planner's
+  or verifier's malformed JSON (Ollama's `generate_structured`) is made outside
+  the Session, so `before_model` hooks don't see it.
+- Guides: packs (where Settings and pack hooks run), autonomous sessions,
+  organization policy (`shell.rules` prompts in a plan's steps), the runtime
+  contract (lifecycle hooks, tool approvals, orchestration specialists) and
+  AGENTS.md.
+
+Validation on September 25, 2026:
+
+- New tests in `tests/test_specialist_hooks.py` (8), with the streaming stub,
+  the real Session and real hook scripts:
+  - the runner alone: a Settings guard refuses a specialist's write, and
+    `session_start` and `session_end` hooks run; without settings nothing is
+    attached;
+  - the app's runner is used alone (the runner's settings aren't loaded again
+    beside it), and asked for with the project root by a step working in
+    `web/`;
+  - a lookup that raises blocks the step with no model request;
+  - the reflect pass refuses a guarded `bash` call, and a Mission hands it
+    `AppState.specialist_hook_runner`;
+  - through a real `AppState` and its intent service, as `/plan` runs a step:
+    the Settings hook runs once, the approved pack's guard refuses the write,
+    an unapproved pack's hook doesn't run, and the shared runner holds no pack
+    hooks;
+  - a pack approved between two plans of the same intent service guards the
+    second.
+- Each piece was undone in turn, and each variant failed 1 to 6 of these tests:
+  no hook runner, no Settings fallback, the lookup asked with the subfolder, a
+  failed lookup falling back to Settings hooks, Settings hooks loaded beside
+  the app's runner, the resolver dropped by `IntentService`, `AppState`, the
+  reflect runner or the Mission, and pack hooks left out. The files were
+  restored after each.
+- On main before this change (b9d6e38), 7 of the 8 fail: the Settings-guard
+  test and both app tests with "File written", the rest because
+  `hook_runner_for` doesn't exist there. The eighth checks that nothing is
+  attached without settings.
+- The real app in the browser pane, before and after, from a throwaway home
+  with the credential store off. A scripted Ollama-compatible model answered.
+  settings.json had a `pre_tool_use` guard on `file_write` (exit 1) and a
+  `session_start` recorder. The steps: a Mission (autonomous sessions on,
+  **Run autonomously** off), its spec, then **Build this roadmap**. `/plan`
+  itself sends nothing on this base; PR #69 fixes that.
+  - Main (b9d6e38): only the drafting chat's `session_start` ran. The plan
+    card's Implementer step showed "✓ notes.txt", and notes.txt was written.
+  - This branch: `session_start` ran for the chat, the planner and the
+    implementer, then the guard, all in the project folder. The model was told
+    "Blocked by hook: Settings guard: no file writes here". The Implementer
+    step showed "✗ notes.txt · not run" with that reason, and nothing was
+    written.
+  - The same held on 8474e10 (PR #74's head, before the plan card), where
+    the step's rows show as a chat turn.
+  - Afterwards the real `~/.resonant` files had the same hashes, no `~/.lumi`
+    existed and no credential entry was added.
+- Full `pytest`: 4,447 passed, 5 skipped. `ruff check .`, `git diff --check`,
+  `node --check` of `app.js` and `settings_view.js`, and the Node UI tests
+  (81) pass.
+- Not exercised: a live model, a packaged build, `/plan` from the message box
+  (see PR #69), and Codex or Claude Code as a step's model.
 
 ## September 25 specialists get a chat's exclusions, project trust and allowed modes — source only, not released
 
@@ -491,6 +630,174 @@ Validation on September 25, 2026:
 Not exercised: a packaged build, a live model, an autonomous session's own
 loop in the app (its dispatches and REFLECT pass use the same runner, and its
 tests pass), macOS and Linux.
+
+## September 25 dictation: keyboard, pauses, and a transcription service — source only, not released
+
+Dictation used the webview's speech recognition only, stopped at the first
+pause and needed a mouse held down. The desktop app on Windows usually has
+no working recognizer, so there it couldn't be used at all.
+See [dictation](voice-input.md).
+
+**Using it**
+
+- Hold the microphone button, Space on it or Ctrl+Shift+Space to talk until
+  you let go. A quick press or Enter keeps listening until the next press,
+  and Escape cancels, leaving the message box as it was.
+- It listens through pauses: the recognizer is restarted when it stops by
+  itself, until you stop, five minutes pass, or a long silence.
+- A status line under the message box says what's happening, and screen
+  readers announce it. The button says whether it's on, has a focus ring,
+  and explains what to change when dictation can't run.
+
+**A transcription service (Settings > Voice)**
+
+- Lumi records while you talk and, when you stop, sends the recording to
+  OpenAI (your OpenAI key) or to a connection that speaks OpenAI's
+  `/audio/transcriptions`, such as a Whisper server on your own network.
+  Lumi keeps no copy.
+- In auto, a service you set up wins over the webview's recognizer; you can
+  also pick either one, or off. The model and language are settings too.
+- The request runs on its own task, so Stop and everything else stay live
+  (`voice_transcribe`, answered by `voice.transcript` or `voice.error`).
+
+**Policy, usage and the audit log**
+
+- `voice.engine`, `voice.service`, `voice.model` and `voice.language` can be
+  locked, and an invalid value makes the policy invalid.
+- The service's model must pass `models.allowed` and `models.blocked` (as
+  `openai:whisper-1` or `conn-<id>:<model>`). `require_zero_retention` allows
+  only a service that keeps no data and turns off the webview's recognizer,
+  whose service Lumi can't see.
+- Each transcription is a usage record with the purpose `dictation`, and
+  no cost: dictation is billed per minute, and the `gpt-4o-mini*` chat price
+  would otherwise have valued `gpt-4o-mini-transcribe`'s audio at text rates
+  (`UsageLedger.record(priced=False)`).
+- The audit log's `voice.transcription` records the service, model, size,
+  characters and outcome, never the words.
+- Checking whether a key is saved no longer reads it from the credential
+  store (`SettingsManager.key_present`).
+
+**Also**
+
+- The macOS app declares `NSSpeechRecognitionUsageDescription`, without
+  which WebKit refuses the webview's recognizer.
+- The shortcuts list (Ctrl+/) named Alt+2, Alt+3 and Alt+4 views that don't
+  exist. It now lists Alt+1 (Sessions), Alt+2 (Settings) and dictation.
+
+**Checks**
+
+- `tests/test_voice.py` (23), with `httpx.MockTransport`, covers:
+  - which engines may listen, under settings and policy;
+  - the request (URL, key, multipart fields, language), and failures with
+    what to do;
+  - the unpriced usage record, and the metadata-only audit record;
+  - the socket command.
+- `tests/voice_input.test.cjs` (12) drives the dictation logic with a fake
+  recognizer, microphone and clock: holding, the quick press, restarts, a
+  long silence, errors, Escape, the length limit, and late answers.
+- In a browser, with an isolated home, a generated tone as the microphone and
+  a local fake transcription service:
+  - A click, Enter and Space on the button, and Ctrl+Shift+Space, each
+    started and stopped dictation, and the transcript joined the draft. Tab
+    reached the button with its focus ring, and Escape cancelled with
+    nothing sent.
+  - The service received WebM with `model` and `language=en` (from
+    `en-GB`).
+  - Usage and the audit log gained one unpriced `dictation` record and one
+    `voice.transcription` record per dictation, without the words.
+  - Settings > Voice saved the engine chosen with the keyboard. "english"
+    was refused as a language, and with dictation off the button said so.
+  - With the window's own recognizer chosen, it asked for the microphone,
+    which the test browser blocks, and Lumi said to allow microphone access.
+  - At 375 px, the status line fits with no sideways scrolling.
+- Not checked:
+  - a real microphone and speech;
+  - OpenAI's or a real Whisper server's answers;
+  - WebView2's and WKWebView's recognizers;
+  - the macOS app.
+
+## September 25 the preview panel's tabs work from the keyboard — source only, not released
+
+**The preview panel's tabs took no keyboard focus.** Browser, Plan and
+Context were `<div>`s with click handlers. `/plan` and a Mission's **Build
+this roadmap** bring the Plan tab forward, but once someone moved to Browser
+or Context, they couldn't get back to the Plan tab's Pause without a mouse.
+
+**They now follow the WAI-ARIA tabs pattern** (`lumi/gui/templates/index.html`;
+`_bindPreviewTabs` and `switchPreviewPane` in `app.js`; `styles.css`):
+
+- `role="tablist"`, `tab` and `tabpanel`, with `aria-selected`,
+  `aria-controls` and `aria-labelledby`. The tabs are buttons with a roving
+  tabindex, so the tab list is one stop in the tab order: the shown pane's
+  tab.
+- Every tab's `tabindex` is explicit, the shown one's `0` included. WebKit,
+  which draws the macOS window, tabs to a button only then, unless macOS
+  keyboard navigation is on (`HTMLFormControlElement::isKeyboardFocusable`).
+  That comes from WebKit's source; the macOS window wasn't tried.
+- Left and Right (wrapping), Home and End move to a tab and show its pane at
+  once. The pattern recommends that when panes show without a wait, as these
+  do. Enter and Space are the buttons' own clicks. Alt, Ctrl and Meta
+  combinations are left to the browser.
+- A switch the person didn't make, such as a plan bringing its tab forward,
+  moves the tab stop to that tab and leaves focus where it is.
+- Keyboard focus shows a 2 px `--accent` ring (`:focus-visible`), like the
+  rings from the accessibility review. A mouse click shows none.
+- The Browser pane's toolbar, screenshots and console sit in one panel,
+  `#preview-browser-pane`. The console moved up in the page to join them;
+  with one pane shown at a time, the panel looks the same.
+
+**The Plan tab's badge and update dot are read with its name.** Chrome names
+the tab "Plan 3 steps , new updates" while it has updates nobody has looked
+at, and "Plan 3 steps" once it's shown. `plan_graph_view.js` gives the badge
+a hidden unit ("1 step", "3 steps"), and the words for the dot show only
+while the dot does. They're part of the name rather than a live region, so a
+busy plan doesn't talk over the conversation.
+
+**Names.** The close button is "Close preview" rather than "×". The Browser
+tab's tooltip says what its pane shows, and the tab goes back to "Browser"
+rather than "Preview" when the session or project changes.
+
+**[The accessibility report](accessibility.md)** lists the fix, and its 2.1.1,
+2.4.7, 4.1.2 and 4.1.3 remarks mention the tabs. No conformance level
+changed. [The desktop workflow](desktop-workflow.md) says how to use the tabs
+from the keyboard.
+
+Validation on September 25, 2026:
+
+- `tests/ui_recovery.test.cjs` has three new tests, which drive the real
+  handlers with key events on the page's own tab list. The arrows, Home and
+  End move and select, with wrapping; modifier combinations, Tab and letters
+  are left alone. One tab stop and `aria-selected` stay in step, the Context
+  pane refreshes when it's shown, and a plan brings its tab forward without
+  taking focus. The badge counts "1 step" and "3 steps". Removing any one of
+  the lines that set the tab stop, `aria-selected` or focus, check modifier
+  keys or call `preventDefault` failed a test.
+- In the browser pane with real key presses, against an isolated fixture
+  (temporary home and state, keychain off, a scripted Ollama-compatible
+  model), on this branch rebased onto the plan-activity merge:
+  - Tab reached the Browser tab from the model menu. The arrows, Home and End
+    moved focus and switched panes, and Shift+Tab came back to the shown
+    pane's tab.
+  - A Mission's Build this roadmap brought the Plan tab forward. It became
+    the tab stop, and focus didn't move into the panel.
+  - With Browser shown, the plan's events set the dot, and focus stayed on
+    the Browser tab when its steps ended. Right moved to Plan and cleared the
+    dot; Tab went to Close preview and then to Pause, and Space pressed it.
+  - Both themes, and 375 px wide. The ring measures 11.6:1 against the dark
+    tab bar and 5.6:1 against the light one.
+- Chrome's own accessibility tree, read over the DevTools protocol from a
+  headless Chrome on the same fixture, named the tab list "Preview panel",
+  the tabs "Browser", "Plan" and "Context" (their tooltips as descriptions,
+  `selected` on the shown one), and each panel after its tab.
+- Seen in the fixture and not changed here:
+  - Pause answers "No active intent to pause." for a Mission's plan, because
+    nothing tells the Plan tab which plan to follow. Draft PR #73 makes it
+    follow one, and #69 makes the server act on Pause.
+  - At 375 px with the panel open, the conversation's "Autonomous" chip
+    overlaps the Browser tab. `main` does the same.
+  - Before the rebase, each plan step's end moved focus from the tab list to
+    the message box. The section "a plan's specialists report under its
+    card" fixed that.
 
 ## September 25 the terminal prints tool and model text as written — source only, not released
 
@@ -721,6 +1028,147 @@ steps take the same path), and a worker in the browser (the tests above cover
 it). The terminal UI still prints each step's footer from `status`,
 unchanged.
 
+## September 25 the terminal UI keeps the rules `lumi run` keeps — source only, not released
+
+**The terminal's session had none of them.** `lumi` with no subcommand
+(`lumi/tui.py` `main`) built a bare `Session`: no project, path sandbox, file
+exclusions, execution policy or hook runner, and project content counted as
+trusted. Driven through the unchanged `main()` with a scripted model, in
+Bypass (its default):
+
+- a command the organization's shell rules deny ran and wrote its file, and
+  `git push nowhere main` ran with agent changes waiting for review: both
+  rules live in the execution policy;
+- `.env` (excluded in Settings), `deploy.pem` (excluded by the organization's
+  policy) and a file outside the project were read into the conversation;
+- the person's own `pre_tool_use` hook in Settings didn't run;
+- a policy allowing only Ask and Auto-edit didn't stop Bypass.
+
+Only the guardrails held, at dispatch (`check_floor`). With `--approve` (the
+read-only suggest tier, without its policy) the terminal asked about all three
+commands, the guardrail one included, and ran the organization-denied command
+and the push once they were approved.
+
+- **One way to scope a session** (`headless.scope_session`): the project, path
+  sandbox, exclusions, trust, instructions and the tier's execution policy
+  (guardrails, review gate and organization shell rules first, the project's
+  `lumi-policy.json` layered on). It works everything out before setting
+  anything, so a failure leaves the session as it was. `lumi run`'s
+  `build_session` uses it; its behavior is unchanged.
+- **The terminal builds its session with it** (`tui.build_session`) and never
+  trusts a project itself. Settings and policy apply as in `lumi run`
+  (`headless._configure`: network, secret scan, audit log, prices, usage,
+  budgets, review gate and code hosts, shell sandbox) before it starts;
+  before, only the audit log, prices, usage, budgets and GitHub were set up.
+  The Ollama address and default model are read through `SettingsManager`,
+  so values a policy locks apply.
+- **Modes.** Bypass, the default, is the full-auto tier. `--approve` and
+  `/approve on` are Ask, which asks before changes and commands as before,
+  and also refuses what Auto-edit refuses (recursive deletes, `curl … | sh`).
+  `/approve` rebuilds the execution policy with the tier; it used to flip
+  only the tier. The organization's `permissions.allowed_modes` applies:
+  without Bypass the terminal starts in the first allowed mode it has (Ask
+  or Auto-edit) and the banner says so, a mode chosen with `--approve` or
+  `/approve` that the policy doesn't allow is refused, and with none of its
+  modes allowed it doesn't start.
+- **Models.** Only the models the policy allows are offered, at start and in
+  `/model`; with none allowed, or an invalid or expired policy
+  (`policy.blocked_reason`), the terminal doesn't start. `Session.run` still
+  refuses a blocked model on each turn.
+- **The approval prompt is always passed** (`run_embedded`), so in Bypass a
+  `prompt` rule in the organization's or the project's policy asks, instead
+  of being refused as if nobody could answer.
+- **Hooks, decided deliberately:** the person's Settings hooks run
+  (`HookRunner(settings)`), as in the app, and as in `lumi run` and the other
+  `build_session` surfaces since "your own hooks run in `lumi run`,
+  schedules, comparisons and chats" below. They are the person's own
+  configuration, not repository content, and a guard they set up shouldn't
+  be skipped because they typed in a terminal. Capability packs, with their
+  hooks, skills and MCP servers, still aren't loaded, as in `lumi run`.
+- **`/cd`** moves the session with the folder: its sandbox, exclusions, trust
+  and execution policy. A folder that can't be opened changes nothing.
+- **The app's first run still trusts Recent projects.** Building a
+  `WorkspaceTrust` created `trusted_projects.json`, so running `lumi run` (or,
+  with this change, the terminal) before the app's first run with trust left
+  an empty file, and the app then trusted none of the Recent projects, against
+  the upgrade promise in "client security" below. Only a caller that passes
+  Recent projects, the app, records that first run now; `lumi run`, the
+  terminal and model comparisons only read decisions.
+- Computer use follows Settings (a policy can lock it off); it was always on.
+  Audit and usage records name the session `tui:<id>`. The banner shows the
+  mode, and whether an untrusted project's instructions and allow rules are
+  off.
+- Guide: [the terminal UI](terminal-ui.md). The README, AGENTS.md,
+  ARCHITECTURE.md and the shell sandbox, audit log, usage and organization
+  policy guides mention the terminal.
+
+This settles the "Not exercised" note of "the terminal says why a tool call
+was refused" below: the terminal's own sessions now have hooks and an
+execution policy.
+
+Validation on September 25, 2026:
+
+- `tests/test_tui_session.py` (15 tests) runs the real `main()` in an isolated
+  state folder, with Ollama, the model (the streaming stub) and the keyboard
+  scripted:
+  - in Bypass, the organization's rule, the review gate, both exclusions, the
+    path sandbox and a Settings hook each refuse their call with the reason
+    the model is told, nothing is asked, and no secret reaches the
+    conversation;
+  - with `--approve`, the guardrail, the organization's rule and `rm -rf`
+    are refused before any prompt, a read runs, a command answered "y" runs
+    and an edit answered "n" doesn't;
+  - an untrusted project's `prompt` rule asks in Bypass;
+  - a policy that locks the shell sandbox on (where it can't run) and
+    computer use off reaches the session;
+  - the policy's modes (fallback, refused `/approve off`, refused
+    `--approve`, none usable), an invalid policy, blocked models at start and
+    in `/model`, and no allowed model;
+  - repository instructions apply only once the project is trusted, and the
+    terminal records no trust decision and leaves no trust file, so the app's
+    first run still trusts the project from Recent projects (also
+    `tests/test_exclusions_and_trust.py`; both tests failed with the file
+    created as before);
+  - `/cd` applies the new folder's `.lumiignore` and sandbox, and a missing
+    folder changes nothing; `/approve on` and `off` switch the tier's rules;
+  - a `scope_session` that fails leaves the session as it was.
+- Each piece of the change undone in turn (13 variants: no scoping, no hooks,
+  the old prompt rule, no shell sandbox setup, computer use always on, `/cd`
+  or `/approve` without re-scoping, mode or model policy ignored, trust
+  granted, the suggest tier for `--approve`, assigning while scoping, an
+  invalid policy ignored) failed at least one of these tests. The files were
+  restored after each.
+- A script driving `main()` in a throwaway home showed the gap above before
+  the change; after it, all seven calls were refused with nothing asked, in
+  both modes, and the policy moved the default to Ask.
+- The related suites (chat gateway, exclusions and trust, guardrails,
+  `lumi run`, model comparisons, shell sandbox, tasks from chat, review gate,
+  scheduled tasks, `test_tui.py`): 208 passed, 1 skipped.
+- Merged with main through #68: full `pytest` 4,409 passed, 5 skipped and 1
+  failed. In `tests/test_repl.py::TestExecWrappers::test_python_round_trip`
+  a fresh Python REPL's first eval (30 s limit) returned an error while about
+  a dozen sessions shared this computer; the file passed alone (22 tests),
+  and `lumi/engine/repl.py` isn't part of this change. `ruff check .` is
+  clean (ruff 0.12.12), `node --check` passes for `app.js` and
+  `settings_view.js`, the four Node UI test files pass (70 tests), and
+  `git diff --check` is clean. The real `~/.resonant` was unchanged and no
+  `~/.lumi` was created.
+- Merged with main through #74 (Settings hooks in `build_session`) and #76
+  (computer use): the suites around the changed paths (`lumi run`, the chat
+  gateway, tasks from chat, model comparisons, schedules, hook gates,
+  permission decisions, organization policy, guardrails, review gate, shell
+  sandbox, exclusions and trust, docs links and both terminal UI files) 360
+  passed, 1 skipped. `ruff check .` is clean, both `node --check` runs and
+  the Node UI tests (86) pass, and `git diff --check` is clean. A full local
+  run was skipped: about a dozen sessions were short of memory on this
+  computer, and CI runs it.
+
+Not exercised: a real terminal window and a live model. Ollama wasn't
+reachable (10.0.0.131 timed out, and nothing listens locally), so the
+terminal's Ollama detection, warm-up and model listing ran against stubs.
+The docs site wasn't built locally (MkDocs isn't installed here);
+`tests/test_docs_links.py` passes.
+
 ## September 25 your own hooks run in `lumi run`, schedules, comparisons and chats — source only, not released
 
 **Only the app ran them.** The desktop app gives every session the `hooks`
@@ -785,7 +1233,8 @@ refused it.
   row); organization policy (`prompt` rules); the runtime contract; and
   AGENTS.md.
 - The terminal UI (`lumi` with no subcommand) builds its own session and
-  isn't changed here.
+  isn't changed here; "the terminal UI keeps the rules `lumi run` keeps"
+  above gives it the Settings hooks.
 
 Validation on September 25, 2026:
 
@@ -845,6 +1294,321 @@ Tasks from chat run inside it, and its background work gets the
 organization-prompt limit; both were tested only at the engine and function
 level. Also not exercised: Codex or Claude Code (their tools never reach tool
 hooks), real Telegram, Slack or Lumi Cloud, and hooks on macOS or Linux.
+
+## September 25 an autonomous session no longer waits on a finished iteration — source only, not released
+
+- **Fixed: an autonomous session could keep waiting on an iteration that
+  had already finished.** Each iteration runs as a plan (a sub-mission) on
+  the app's one plan service, `IntentService`, and the session waits for
+  that plan's end. Its dispatch tracker took the service's `on_event`, which
+  every intent command from the page rebinds to its own connection. Those
+  commands are the Plan tab's Pause and History, a node's Restore, `/plan`
+  and a Mission's **Build this roadmap**. After any of them, the session's
+  plans reported their end only to the page. The session then waited for
+  its stall ceiling (15 minutes to 4 hours), and the ceiling's cancel went
+  the same way, so it really waited until **Stop**.
+  - `IntentService.add_listener` and `remove_listener`: a listener gets
+    every event as well as `on_event`, which stays the page's emitter and is
+    still rebound for each connection. The page gets each event first.
+  - A mission adds its tracker as a listener just before its daemon starts.
+    `DaemonHooks.exit_hook` removes it when the daemon's thread ends, however
+    it ends, so a finished mission stops collecting other plans' outcomes.
+
+Validation on September 25, 2026:
+
+- `tests/test_autonomous_session.py`: a real daemon, with its hooks and
+  tracker, runs on the app's own `get_intent_service` and a stub
+  specialist. While a sub-mission's step runs, the page asks for a plan's
+  history through the socket handler, and the step then ends.
+  - Before the fix, the page got `intent.complete` and the mission didn't:
+    its iteration ended only when the test stopped it, as
+    `autonomous_iteration_failed`.
+  - Now the iteration completes, the page's connection still gets
+    `intent.complete`, and the finished mission stops listening.
+- `tests/test_intent_service.py` (2 tests): a listener keeps every event
+  when `on_event` is rebound; a failing or removed listener costs the others
+  nothing. `tests/test_autonomous_loop.py` (2 tests): `exit_hook` runs once,
+  after the last event, when a stop rule ends the thread and when it crashes.
+- The new tests passed eight runs in a row with `RuntimeWarning` as an
+  error. The full `pytest` run: 4,433 passed, 5 skipped; `ruff` is clean.
+- Merged in a scratch copy with draft PR #73 (the Plan tab's Stop, which
+  includes #69), the intent, autonomous and socket test modules passed (295
+  tests), #73's Stop tests among them. With #73, `intent.cancelling` reaches
+  the tracker the same way.
+- Only tests were run: no autonomous session ran in the app.
+
+## September 25 a reflect pass reports under its own card — source only, not released
+
+**An autonomous session's reflect pass still arrived as turns of the
+conversation.** "September 25 a plan's specialists report under its card"
+kept a plan's specialists out of the conversation's turn by the
+`_source: "intent"` tag IntentService gives their events. A reflect pass runs
+its REFLECT specialist outside IntentService (`make_reflect_runner` in
+`lumi/gui/autonomous_factory.py`), which forwarded that specialist's events
+untagged. So every pass that needed the model (a `[chrome]` or `[manual]`
+criterion, or one that failed) went through the conversation's turn
+handlers. In the fixture described below, on `main`:
+
+- the pass drew as an unnamed turn card: "Worked for 16s · 1 action", the
+  model's prose and its raw JSON verdict;
+- its end ran the turn's completion (`handleSessionEnd`): `setRunning(false)`
+  moved keyboard focus into the message box, and a next prompt was
+  suggested;
+- while a message of the person's own was still waiting on the model, the
+  pass drew its work and JSON into that message's card and finished it:
+  "Please ping the conversation…" read "Worked for 24s · 1 action ·
+  hello.txt is there and reads well. {…}", and `isRunning` and the live
+  progress cleared. The message's real answer came 31 s later, in a card of
+  its own with no message above it.
+
+**Now a reflect pass reports like a one-step plan.**
+
+- `make_reflect_runner` gives each pass an id of its own (its one-node
+  graph's) and a runner of its own, as IntentService does per plan. It sends:
+  - `reflect.start`, with the card's title ("Check the roadmap against its
+    acceptance criteria", or "Act on the decision, then …" after a decision)
+    and where the criteria stand ("1 of 2 criteria met, 1 to check in the
+    browser, 1 for you to judge");
+  - the specialist's events, as copies tagged `_source: "intent"` with that
+    id. The session's own events are unchanged;
+  - `reflect.done`: `done`, `abandoned` when the session was stopped during
+    the pass, or `blocked`. A stop ends the pass's session with an error,
+    which the runner reports as BLOCKED; it shows as stopped, not failed.
+
+  The daemon gets the same outcome as before.
+- The page draws each pass under a "Reflection" card (`app.js`, "Plan
+  activity"): a "Reflection" step with that line, its commands, edits and
+  prose as they come, folded once done and left open when stopped or failed;
+  and a status line: "Reflection running", "Reflection done · 1 action ·
+  20s", "Reflection stopped" or "Reflection failed". The pass's verdict card
+  follows as before.
+- Nothing from a pass reaches the conversation's turn: its cards and
+  progress, `isRunning`, the verdict and Retry, the suggestion, or focus.
+- Cards Lumi starts (a roadmap's or an iteration's "Plan", and a
+  "Reflection") are now headed by their label and name. The task-card styles
+  hid the label and drew the name as a message bubble, as if the person had
+  sent it. A `/plan` card is still the person's message.
+
+Like a plan's, a pass's activity isn't saved with the conversation: a reload
+shows its verdict card without it.
+
+Validation on September 25, 2026:
+
+- `tests/test_autonomous_factory.py` adds 2 tests. A pass's forwarded events
+  carry the tag and the pass's own id without changing the session's events,
+  and fall between its `reflect.start` and `reflect.done`; `reflect.done`
+  says done, stopped (a BLOCKED result after a stop) or blocked, with the
+  error. Checked by mutation, they fail without the tag, without the id, with
+  the event changed in place, with the untagged emitter, with a stop reported
+  as blocked, with one id for every pass, and without the error.
+- `tests/ui_recovery.test.cjs` adds 1 test driving the real handlers into a
+  fake conversation beside a running turn: the card, its step, row, prose and
+  fold, the done, stopped and failed status lines, the heading, and a `/plan`
+  card that stays a message. It fails against 10 mutations: no `reflect.*`
+  handlers, no reflect kind, a "Plan" label, the plan's status lines, a step
+  count, every end shown as done, no step end, no `_source` routing, no
+  heading, and a heading on the person's `/plan`.
+- Full `pytest` on this change over `main` (e004b5a): FILL. The four UI
+  node suites: FILL. `ruff check` and `git diff --check` clean.
+- In the browser pane, with an isolated home (temporary USERPROFILE, HOME and
+  LUMI_STATE_HOME, `LUMI_KEYCHAIN=off`, CLI connections off) and a scripted
+  Ollama-compatible model answering the interview, planner, implementer and
+  REFLECT (a `file_read`, then its verdict), in autonomous sessions started
+  from the ∞ button:
+  - A pass after the first iteration drew "Reflection · 1 of 1 criteria met,
+    1 for you to judge · done · 1 action · 20s" and "Reflection done", then
+    the verdict card. Keyboard focus stayed on the Timeline button through the
+    pass, and nothing called `setRunning`, `handleSessionEnd` or the
+    suggestion.
+  - **Stop** during a pass: "✗ Interrupted", "stopped · 15s" left open, and
+    "Reflection stopped".
+  - A message sent while a pass ran kept its "Working for …" through the
+    pass's end and got its own answer 28 s later.
+  - The same sessions on `main` showed the behavior listed above.
+  - The heading's label measured 9.66:1 in the dark theme and 8.23:1 in the
+    light theme (switched in place), its name about 16:1. At 375 px the card
+    fits and nothing scrolls sideways.
+  - The real home was unchanged afterwards.
+
+Not in this change:
+
+- A Stop that lands during a reflect pass on an empty roadmap ends the
+  session as "stuck, needs you" rather than "stopped by you": the daemon's
+  empty-roadmap branch decides before it checks for the stop. Seen in the
+  fixture; it predates this change.
+
+## September 25 a strict Content-Security-Policy for the app page — source only, not released
+
+**Security hardening.** The app page sent only `frame-ancestors 'none'`.
+Inline scripts, event-handler attributes, `eval` and inline styles were all
+allowed, so markup injected through a rendered reply or a file's contents
+could have run with the page's access token and its socket, which changes
+settings and starts agent turns. Rendered Markdown already went through
+DOMPurify; the policy is a second line that doesn't depend on the sanitizer.
+
+- **The policy** (`lumi/gui/local_access.py`, `content_security_policy`),
+  sent with the page: `default-src 'self'; script-src 'self'; style-src
+  'self'; img-src 'self' data: blob:; connect-src 'self'
+  ws://127.0.0.1:<port> ws://localhost:<port>; object-src 'none'; base-uri
+  'none'; form-action 'none'; frame-ancestors 'none'`. There is no
+  `'unsafe-inline'` or `'unsafe-eval'`. The socket sources are the hosts the
+  server accepts on its own port (and a literal non-loopback bind address),
+  not every local port.
+- **What it would have broken, and what changed:**
+  - 28 elements the page starts with hidden carried `style="display:none"`.
+    They carry `data-start-hidden`, which `styles.css` hides until
+    `static/appearance.js` swaps it for the same inline `display: none`:
+    scripts show these elements with `style.display = ''` or check for
+    `'none'`, as the command palette's Ctrl+K toggle does.
+  - The saved font size was a `style` on `<html>`. It is `data-font-size`,
+    which `appearance.js` applies before the first paint.
+  - About 60 inline styles in markup the scripts build became classes
+    (`styles.css`, "Former inline styles"). Values that are computed or change
+    later go through `element.style`: budget and context bars, the live to-do
+    bar, plan-graph positions, worker depth, a tool result's status color, the
+    autonomous card's Full-auto note and the employee task panel.
+  - Rendered Markdown (replies, scheduled-task answers) drops `style`
+    attributes and `<style>` elements (`sanitizeMarkdownHtml`). The browser
+    still reports each one once, while DOMPurify parses it: every HTML parse
+    in the page inherits its policy.
+  - The desktop window. pywebview builds `window.pywebview.api` with
+    `new Function` and returns each call's result through `eval`. WebView2 on
+    Windows exempts the scripts its host runs. WebKit on macOS and Linux
+    applies the page's policy to them, which would have left the frameless
+    window's minimize, maximize and close buttons without an API.
+    `lumi/gui/webview_bridge.py` builds the API from closures and returns
+    results with `run_js`.
+- **Visible change:** images from other websites in a reply no longer load,
+  because a remote image's address can carry data away. Screenshots,
+  attachments and saved images, which are data: URLs, still show. A form in a
+  reply can't submit. Nothing in the app used inline scripts, event-handler
+  attributes, eval or iframes. The preview panel shows screenshots and opens
+  previews in a new tab, so no `frame-src` is needed.
+
+Validation on September 25, 2026:
+
+- `tests/test_content_security_policy.py` checks the page's policy under
+  both host names and the socket sources for other binds. It also finds no
+  inline style, event-handler attribute, inline script, `javascript:` URL,
+  eval, string timer, `setAttribute('style')` or `cssText` in the template or
+  the static scripts. Against `main`'s files it flags 30 inline styles in the
+  template and 58 in the scripts.
+- `tests/test_webview_bridge.py` runs the installed pywebview's own injected
+  scripts in a Node context that refuses code generation from strings, as
+  WebKit does under the policy. With the replacement the API is built, the
+  call is posted and its result arrives through `run_js`. Without it, the same
+  context stops at `new Function` with an EvalError.
+- `tests/appearance.test.cjs` adds the font size and the start-hidden
+  conversion; `tests/test_appearance.py` checks `data-font-size`.
+- A Chromium test page with this exact policy refused `style=""` in markup,
+  `setAttribute('style')` and style attributes set through `innerHTML`, but
+  not `style.cssText`, `style.color` or `setProperty`. It refused eval,
+  `new Function`, inline handlers and inline scripts, a WebSocket to another
+  local port and a remote image.
+- A standalone pywebview 6.1 window (WebView2) with this policy: pywebview's
+  own bridge still worked, because host scripts are exempt there. With
+  `webview_bridge.install` the API was built without `new Function`, and both
+  calls' results came back through `run_js`, with no violations.
+- The app in the browser pane, with an isolated home and a scripted local
+  model (no live model), covered:
+  - loading the page, and a conversation with a list, a table, a highlighted
+    code block, a quote and tool rows;
+  - all 25 Settings pages;
+  - the command palette (Ctrl+K opens and closes it), keyboard shortcuts,
+    Timeline, Trace, the Command Review dialog in Ask mode (denied with
+    Escape) and the inline edit review (Reject);
+  - the preview panel's Plan and Context tabs, and a 375px width.
+
+  The only violations came from content the scripted reply injected: its
+  style attribute and `<style>` (reported during sanitizing, absent from the
+  page), its remote image, and its form when submitted. Computed styles
+  matched the old inline values (bar widths, Settings spacing and sizes, tool
+  colors), and a font size chosen in Settings survived a reload.
+- The real desktop window (pywebview 6.1, WebView2), hidden and driven from a
+  function: no violations; all seven `pywebview.api` functions built without
+  `new Function`; `is_maximized()` answered through `run_js`; window controls
+  shown and **Open in Browser** offered.
+- FULL_SUITE_RESULTS
+
+Not exercised: a macOS or Linux (WebKit) window, where the bridge replacement
+matters most, and a packaged build.
+
+## September 25 the Agents pane's leftover code — source only, not released
+
+- **The Agents pane's rendering is gone from `lumi/gui/static/app.js`.**
+  v0.14.0 took the pane off the page. Each of its views now has a place of
+  its own:
+  - worker handoffs, transcripts and controls in the conversation;
+  - the checkpoint Timeline in the chat header;
+  - a run's trace and saved files in its card;
+  - capability packs in Settings.
+
+  Its code still ran on worker and pack events and whenever a conversation
+  opened, drawing into elements that no longer exist.
+  - Removed: `switchRuntimeView`, `refreshRuntimeView`, `renderRuntimeView`,
+    `renderAgentActivityTree`, `showAgentHandoff`, the Agents tab's unread
+    marker (`_markAgentTabUnread`, `_clearAgentTabUnread`) and the
+    `.runtime-view-tab` bindings.
+  - Their calls are gone from the `agent.*` and `capability.pack_list`
+    handlers, the worker start, end and error handlers, and
+    `clearPreviewPanel`.
+  - Also removed, because only the pane read them:
+    - `runtimeView`;
+    - `runtimePacks` (Settings reads `capabilityPacks`);
+    - `agentActivityStack`, unread since v0.14.1.
+  - Kept, for the worker blocks, the Sub-tasks list and the Timeline:
+    `agentActivities`, `agentActivityOrder`, `runtimeAgents` with
+    `upsertRuntimeAgent` and `syncRuntimeAgents`, `_syncWorkerViews`, and
+    `runtimeTimeline`.
+- **Styles** (`styles.css`). The pane's rules are gone:
+  - `.agent-activity-pane`, `-toolbar`, `-count`, `-tree`, `-node`, `-state`,
+    `-main` and `-elapsed`;
+  - `.runtime-view-tabs` and `.runtime-view-tab`;
+  - `.runtime-card` and `.runtime-badges`;
+  - `.agent-handoff-*`;
+  - `.runtime-actions` and `.runtime-control-bar`, left from the pane's
+    traces and worker-detail views.
+
+  `.agent-activity-empty` stays: the Context pane's placeholder uses it.
+- **The control-plane test reads every script the page loads**, not `app.js`
+  alone (`tests/test_modern_harness_runtime.py`). Settings
+  (`settings_view.js`) asks for the pack list; in `app.js` only the removed
+  code did.
+- [Known issues](known-issues.md) no longer lists the leftover code.
+
+Validation on September 25, 2026, on top of PRs #75 and #76:
+
+- Full `pytest` 4,428 passed, 5 skipped. `ruff check .` clean, `node --check`
+  passes for `app.js` and `settings_view.js`, the four Node UI test files pass
+  (86 tests), `git diff --check` clean.
+- The plan card's tests from PR #75 pass. `plan.event` still calls
+  `trackPlanAgentEvent`, which since that PR draws a plan's specialists under
+  its card; with the call taken out, 5 of them fail.
+- In the browser pane, from an isolated home with a scripted Ollama stub,
+  running a scratch copy of the changed code:
+  - A turn wrote a file. Its card's Trace listed its rows.
+  - A turn delegated to a build worker. While it ran, the Sub-tasks list
+    offered Pause, Stop and Steer, and Pause and Resume went through
+    (`agent.control_ack`, `agent.runtime_list`, `agent.updated`).
+  - The worker's block showed its result line ("✓ build · 2 steps · 30.5s ·
+    1 file changed") and opened its Transcript. The turn's Trace included
+    the worker's rows.
+  - The Timeline listed both checkpoints, one "by a worker".
+  - After a reload, the worker's block kept its Transcript button, and
+    Settings > Capability packs loaded its list.
+  - Also run on the base before PRs #75 and #76: a Steer note
+    (`agent.steered`); a Files restore, after which the Timeline's list
+    refreshed; New session and reopening the conversation; the Context
+    pane's chips and placeholder, which kept their styles.
+  - No console errors in either run; a deliberate error showed the console
+    was captured. The real `~/.resonant` was unchanged, no `~/.lumi` was
+    created, and no Lumi credential was stored.
+- Seen along the way, not changed here: in a project without Git, a Files
+  restore leaves files created after the checkpoint in place
+  (`checkpoint_timeline._restore_archive` only extracts the snapshot).
+
+Not exercised: a packaged build, and compact layouts (no visible element's
+style changed).
 
 ## September 25 a plan's specialists report under its card — source only, not released
 
@@ -950,7 +1714,8 @@ Validation on September 25, 2026:
 Not in this change:
 
 - The autonomous daemon's REFLECT pass (`make_reflect_runner`) forwards its
-  specialist's events without the tag, so they still arrive as turns.
+  specialist's events without the tag, so they still arrive as turns. (Since
+  addressed: see "September 25 a reflect pass reports under its own card".)
 - After a reload during a plan, its events reach the page again only once
   another plan command is sent from it (`get_intent_service` rebinds the
   socket then).
@@ -1324,6 +2089,283 @@ duplicate ids, headings, language, landmarks and composited text contrast:
 
 The full suite and the node UI tests pass.
 
+## September 25 a reloaded page picks its running plan back up — source only, not released
+
+**A reload stranded a running plan.** The Plan tab follows a plan by an id
+the page keeps in memory, and the plan's events went to the socket of the
+page that last sent an intent command. After a reload the tab followed
+nothing: Stop answered "No plan is running.", and the plan's progress went to
+a socket that was gone, while the plan ran on to its end.
+
+- **A page that connects is handed the running plans**
+  (`lumi/gui/ws_commands.py`, `lumi/gui/app.py`,
+  [guide](desktop-workflow.md#plans-with-plan-unreleased)).
+  - The socket's `init` reply lists the open project's running plans as
+    `running_intents`, oldest first: id, text, `paused`, `stopping` and the
+    graph as it stands (`get_graph(id).to_dict()`).
+  - Their events go to that socket from then on
+    (`AppState.attach_intent_viewer`). The service isn't rebuilt or rebound:
+    its `on_event` may be an autonomous mission's wrapper feeding its
+    `DispatchTracker`, which must keep seeing the mission's iterations end.
+- **A followed plan's events go to its page**
+  (`lumi/orchestration/intent_service.py`).
+  - `/plan` and Build this roadmap start their plan with the page's emitter
+    as its viewer (`start_intent(viewer=...)`), which gets the plan's events
+    instead of `on_event`. A page that connects takes over the running ones
+    (`attach_viewer`), and a page that uses one of a plan's controls (Pause,
+    Resume, Stop, History, Restore) takes over that plan (`route_to`), so the
+    page that acted gets the events that report the result.
+  - An autonomous session's plans have no viewer. They are never listed or
+    taken over, and their events keep reaching `on_event`; the mission's
+    badge stops them.
+  - A plan a rebuilt service adopted, after a model or project switch, is
+    taken over too: its viewer is read per event from the entry both
+    services share. Only the open project's plans are listed.
+  - The graph is read after the switch, and the `init` reply goes out with
+    nothing awaited in between, so an event the graph misses reaches the
+    page after it. A graph read while its walker adds a step is read again.
+- **The page follows the latest** (`lumi/gui/static/app.js`,
+  `_followRunningPlans`). The Plan tab draws its graph and shows Running,
+  Paused (with Resume) or Stopping…, and Pause and Stop reach it. The preview
+  opens on the Plan tab, leaving focus where it was, so the controls can be
+  reached from the keyboard (the preview's tabs can't be); a preview already
+  open stays on its pane with the Plan tab marked. A notice says the plan is
+  still running. A socket that reconnects to the plan its page shows only
+  takes the server's state.
+
+Validation on September 25, 2026:
+
+- `pytest`: PENDING. `ruff`, `node --check`, the four node test files
+  (PENDING), `git diff --check`.
+- New tests, each failing against the code before this change (and 5 of them
+  with only the viewer switch in `attach_viewer` removed):
+  - the service hands a connecting page its running plans (text, paused,
+    stopping, graph) and sends it their events from then on, none to the
+    page before; lists them oldest first and only the named project's,
+    including one adopted from another project's service; never lists or
+    routes an autonomous plan; reads a changing graph again;
+  - `init` lists the running plans and binds their events to its socket,
+    and still opens the page when they can't be handed over; `/plan` passes
+    its page as the viewer, and each plan control takes its plan over;
+  - through the app's real `/ws` socket: `/plan`, the socket closes, a new
+    one sends `init` and gets the plan with its graph, then its next step's
+    events without asking, and its `intent_cancel` stops it;
+  - with an autonomous mission's wrapper as `on_event`, a page that connects
+    takes over the plan but not the iteration, the wrapper stays, and the
+    mission's tracker sees its iteration end;
+  - in node, through the real `handleInit` and the toolbar from
+    `index.html`: the latest plan followed, with its graph and a working
+    Stop; paused and stopping plans; a preview already open; no plans, a
+    refresh, and a reconnect to the shown plan changing nothing else.
+- In the browser pane, against an isolated fixture (temporary home and
+  state, keychain off, a scripted Ollama-compatible model that streams the
+  planner and gives the implementer a `bash` that sleeps 240 s):
+  - Reloaded while the implementer's command ran: the Plan tab showed the
+    plan's three steps (planner done, implementer running, check pending)
+    and Running, with the notice, and focus stayed in the composer. Stop,
+    clicked: Stopping…, then Stopped; the command was killed at once and no
+    model request followed.
+  - Reloaded during the planner: the page followed the plan. Pause held the
+    implementer for 35 s after the planner ended, until Resume; Stop from
+    the keyboard (Tab from Pause, Enter) stopped it. A plan paused before a
+    reload came back Paused, with Resume.
+  - After a reload the preview opened on the Plan tab; from the composer,
+    Tab reached Stop in nine presses, and Enter stopped the plan and closed
+    the planner's stream.
+  - The same reload on the code before this change (a046131): the Plan tab
+    read "No active intent", Stop had no plan to stop, and the page received
+    no event in 8 s while the planner kept streaming.
+  - The real home was unchanged afterwards.
+
+Not yet:
+- What a plan's steps wrote in the conversation before a reload isn't shown
+  again.
+- The preview has no narrow layout. At 375 px, a preview that opens by
+  itself (for a plan's first snapshot, and now for a plan picked up after a
+  reload) squeezes the conversation to about 54 px until it is closed.
+- An autonomous mission's own events still go only to the page that started
+  it, and an intent command still replaces the intent service's `on_event`,
+  a running mission's wrapper included. Plans followed in the Plan tab no
+  longer depend on `on_event`.
+
+## September 25 a plan can be stopped — source only, not released
+
+**Nothing could stop a plan.** Nothing in the app sent `intent_cancel`, so a
+plan started with `/plan` or a Mission's **Build this roadmap** ran to its
+end. (The composer's Stop acts on the conversation's own turn, never a plan.)
+Sending `intent_cancel` by hand showed the backend wasn't ready either: a
+stopped planner's partial answer went back to the model for repair, a model
+request after the stop, and the walker added a planner retry that nothing
+would run.
+
+- **Stop in the Plan tab** (`lumi/gui/templates/index.html`,
+  `lumi/gui/static/app.js`, [guide](desktop-workflow.md#plans-with-plan-unreleased)).
+  - Next to Pause, **Stop** sends `intent_cancel` for the plan the tab
+    follows. The toolbar shows the plan's state in a status label: Running,
+    Paused, Stopping… until the running step has ended, then Stopped (also
+    Complete, Failed).
+  - Pause and Stop look unavailable when they can't act, and say why when
+    pressed. They stay focusable (`aria-disabled`, not `disabled`), so focus
+    stays on Stop when the plan stops. A plan step's end no longer moves
+    keyboard focus out of the Plan tab to the composer (`setRunning`).
+  - The tab also follows a Mission's **Build this roadmap** (from
+    `mission_phase_changed`), which used to leave its Pause answering "No
+    active intent". An autonomous session's plans keep their own Stop, in its
+    badge: its `intent_id` names the daemon, not a plan.
+  - A step ended by Stop shows as stopped in the conversation, not failed
+    and needing attention. While the app reconnects, Stop says so instead of
+    showing a stop it couldn't send.
+  - The toolbar wraps, controls together on a second row, in a narrow
+    preview panel instead of squeezing the plan's name away.
+- **What a stop does** (`lumi/orchestration/`).
+  - The running specialist's Session already shared the plan's cancel event.
+    A stopped step is now abandoned without asking the model anything more
+    (`LocalSpecialistRunner` skips the structured-output repair), and the
+    walker adds no subgoals, planner retry, verifier or repair after a stop.
+  - Steps that never ran are marked abandoned, in the saved plan too, and
+    the walk reports `plan.stopped` instead of `plan.complete`. A stopped
+    plan is never saved as a skill.
+  - `intent_cancel` is answered with `intent.cancelling` at once and
+    `intent.cancelled` once the plan has stopped. `intent.cancelled` used to
+    come twice, the first time before the step had ended. The autonomous
+    dispatch tracker ends a sub-mission's wait on either, so its stall
+    ceiling still releases a hung one immediately.
+  - A plan that has announced its end can no longer be stopped, paused or
+    resumed while its worker thread exits.
+- **A model switch no longer strands a running plan** (`lumi/gui/app.py`).
+  Picking another model, saving some settings or connecting an MCP server
+  rebuilds the intent service. Plans started before kept running, but Stop,
+  Pause and Resume answered that they had ended. The new service now takes
+  over the plans still running (`IntentService.adopt_running`).
+- **Neither does losing the backend** (`lumi/gui/ws_commands.py`). Opening a
+  conversation whose model can't start leaves the app without a backend, and
+  every plan control was then refused ("Connect a backend before starting an
+  intent."). A running plan keeps the backend it started with, so only
+  starting a plan needs one now.
+
+Validation on September 25, 2026:
+
+- `pytest`: 4395 passed, 5 skipped. `ruff`, `node --check`, the four node
+  test files (78 pass), `git diff --check`.
+- New tests, each failing against the code it covers (22 mutations, one
+  change reverted at a time):
+  - the walker marks never-run steps abandoned, reports `plan.stopped`, and
+    adds no retry, subgoals, verifier or repair after a stop;
+  - a planner stopped mid-stream is abandoned without a repair request;
+  - the service sends `intent.cancelling`, then one `intent.cancelled`
+    after `plan.stopped`, audits "plan stopped", saves the abandoned steps,
+    extracts no skill, and refuses a stop once the end is announced;
+  - a rebuilt service reaches a running plan, and only running ones;
+  - the dispatch tracker's wait ends while a cancelled sub-mission is still
+    stuck;
+  - through the app's real `/ws` socket: `intent_cancel` after a model
+    switch, or with no backend left, stops the running step, and the next
+    one never starts;
+  - Stop, Pause and Resume reach the service without a backend; starting a
+    plan still needs one;
+  - in node, against the toolbar markup from `index.html`: Stop's states,
+    refusals, reconnecting, Build this roadmap, the stopped step, focus, and
+    the graph's abandoned steps.
+- In the browser pane, against an isolated fixture (temporary home and
+  state, keychain off, a scripted Ollama-compatible model that streams a plan
+  over 22 s and gives the first implementer a `bash` that sleeps 60 s):
+  - Stop during the planner's stream: the toolbar read Stopping…, then
+    Stopped 0.3 s later. The model's stream was closed 14 s into its 22 s,
+    and no request followed.
+  - From the keyboard (Tab from Pause to Stop, which shows a focus ring,
+    then Enter) during the implementer's `bash`: the command was killed at
+    once, the next step never started and was marked abandoned, and focus
+    stayed on Stop.
+  - Build this roadmap: the Plan tab followed the Mission's plan, and Stop
+    ended its planner the same way.
+  - After switching the composer's model mid-plan, Stop still stopped it.
+  - The same stop sent to #69's code by hand: a structured-output repair
+    request reached the model after the stop, a planner retry was added and
+    left pending, the step read Failed, and `intent.cancelled` arrived twice.
+  - The toolbar wraps at 375 and 768 px without overflow and stays one row
+    at 1600 px.
+  - The real home was unchanged afterwards.
+
+Not yet:
+- Exit Mission doesn't stop the Mission's roadmap, and the Mission's badge
+  doesn't show when its roadmap ends, finished or stopped.
+- The preview panel's Browser, Plan and Context tabs can't be reached from
+  the keyboard; `/plan` and Build this roadmap bring the Plan tab forward.
+
+(Picking a running plan back up after a page reload, so that its Stop reaches
+it, came in "September 25 a reloaded page picks its running plan back up".)
+
+## September 25 /plan and the Plan tab's controls work again — source only, not released
+
+- **`/plan <goal>` starts a plan again** (`lumi/gui/ws_commands.py`,
+  [guide](desktop-workflow.md#plans-with-plan-unreleased)).
+  - Since the WebSocket commands moved out of `websocket_endpoint` (8d0b2c8,
+    July 27), the handler for the six intent commands compared each name with
+    the module's `command` decorator instead of the message's command. Every
+    one did nothing and sent nothing: `/plan` said "Intent dispatched" and no
+    plan ran, and the Plan tab's Pause, History and Restore had no effect.
+  - The handler reads the name from the message. A name it doesn't serve gets
+    an error instead of silence.
+  - A Mission's **Build this roadmap** wasn't affected: it starts its plan
+    directly.
+- **Pause holds a plan** (`lumi/orchestration/walker.py`).
+  - Pause used to take effect only before a plan's first step. Now no new
+    step starts while a plan is paused; the step already running finishes.
+  - The Plan tab's **Pause** button becomes **Resume**.
+  - A finished plan can't be paused, resumed or stopped
+    (`lumi/orchestration/intent_service.py`). It used to be relabelled and
+    announced as paused. The Plan tab now says when a control was refused,
+    including a snapshot that can't be restored while its plan runs.
+- **Specialists' rules.** Specialists started by `/plan` run in Full-auto
+  with the guardrails and the review gate, as a Mission's roadmap does. They
+  don't yet apply the organization's shell rules or the project's
+  `lumi-policy.json` (`LocalSpecialistRunner` builds
+  `policy_for_tier("full-auto")`). In the browser check below, a specialist
+  ran a command the organization's policy denies; a normal turn refused it.
+
+Validation on September 25, 2026:
+
+- `tests/test_ws_command_registry.py` drives each of the six commands through
+  the registry, with the message's `command` as the endpoint passes it:
+  - `intent_start` (the goal trimmed, `intent.accepted`), the other five
+    acknowledgements, a missing goal, no backend, and names the handler
+    doesn't serve;
+  - `/plan` through the app's real `/ws` socket and the app's own
+    `get_intent_service`, with a scripted specialist: `intent.accepted`,
+    `plan.snapshot`, `intent.started`, `plan.event` and `intent.complete`
+    all arrive.
+- `test_graph_walker.py` and `test_intent_service.py`: a paused walk starts
+  no node until resumed; cancel ends a paused walk without running another;
+  a paused intent's implementer waits for resume; a finished intent refuses
+  pause, resume and cancel.
+- `tests/ui_recovery.test.cjs`: the button's Resume state and the refusal
+  messages.
+- Each new test fails against the bug it covers: the old name comparison,
+  a walker without the pause check, a service that doesn't pass its pause
+  flag, or finished intents accepted again. The socket test fails rather
+  than hangs.
+
+In the browser pane, against an isolated fixture (temporary home and state,
+keychain off, a scripted Ollama-compatible model, and an organization policy
+that denies `forbidden-by-acme`):
+
+- `/plan add a dark mode toggle` opened the Plan tab, and the planner and
+  implementer ran to completion.
+- Pause, pressed while the planner ran: the button read Resume, the planner
+  finished, and the implementer's first model request came only after
+  Resume, 54 s later. A second plan, paused and resumed from the keyboard
+  (Enter, then Space), waited 65 s.
+- History listed the snapshots. Restore while the plan was paused said
+  "Snapshot not restored…"; once it finished, Restore put the graph back.
+- Pause on a finished plan said "That plan can no longer be paused."
+- The implementer's `echo forbidden-by-acme > ran.txt` ran and wrote the
+  file. The same command in a normal turn was "Blocked by policy: Acme: no".
+
+Not yet: a plan's steps also show in the conversation as ordinary turns,
+with "Needs attention", Retry and a suggested next prompt. (A Stop control,
+and keeping keyboard focus in the Plan tab as steps end, came in "September
+25 a plan can be stopped".)
+
 ## September 25 refused tool calls say why — source only, not released
 
 **A refused call's row said only "denied".** When a hook, a policy rule, a
@@ -1557,9 +2599,11 @@ Validation on September 25, 2026:
   created.
 
 Not exercised: the TUI in a terminal window with a live model; the console was
-captured instead. The `lumi` TUI builds its session without hooks or an
-execution policy (`tui.py` `main`), so from it a hook or policy refusal can't
-happen today. The tests give the session they pass to `run_embedded` a hook.
+captured instead. When this landed, the `lumi` TUI built its session without
+hooks or an execution policy (`tui.py` `main`), so from it a hook or policy
+refusal couldn't happen; "the terminal UI keeps the rules `lumi run` keeps"
+above changes that. The tests give the session they pass to `run_embedded` a
+hook.
 
 ## September 25 checkpoint Timeline — source only, not released
 

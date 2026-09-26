@@ -43,7 +43,8 @@ day. `LUMI_STATE_HOME` moves the whole folder.
 | `update.skipped`, `update.postponed`, `update.cancelled` | You skip an update, choose to be reminded later, or close the update window | version, feed |
 | `error` | A turn reports an error | code, message by capture level |
 
-Turns from the chat gateway name their chat as `gateway:<chat id>`. A
+Turns from the chat gateway name their chat as `gateway:<chat id>`, and the
+[terminal UI](terminal-ui.md) names each of its sessions `tui:<id>`. A
 delegated worker's events are recorded once, by the worker's own turn, with
 its `agent` id.
 

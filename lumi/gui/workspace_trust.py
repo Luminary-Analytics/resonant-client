@@ -122,9 +122,15 @@ def _policy_facts(path: str) -> tuple[str, int]:
 
 
 class WorkspaceTrust:
-    """The user's trust decisions, stored in ``trusted_projects.json``."""
+    """The user's trust decisions, stored in ``trusted_projects.json``.
 
-    def __init__(self, path: str | Path | None = None, *, recent_projects: Iterable[str] = ()):
+    The app passes ``recent_projects``, and its first run with trust records
+    them. ``lumi run``, the terminal UI and model comparisons only read
+    decisions and pass none: they never create the file, or the app's first
+    run would find it and trust none of the Recent projects.
+    """
+
+    def __init__(self, path: str | Path | None = None, *, recent_projects: Iterable[str] | None = None):
         self._path = Path(path) if path else state_home() / TRUST_FILE
         self._lock = threading.Lock()
         self._projects: dict[str, dict] = {}
@@ -134,7 +140,7 @@ class WorkspaceTrust:
                 self._projects = dict(data.get("projects") or {})
             except (ValueError, OSError):
                 logger.warning("Could not read %s; asking about projects again", self._path)
-        else:
+        elif recent_projects is not None:
             # First run with trust: keep every project the user already works in.
             for project in recent_projects:
                 if project and os.path.isdir(project):

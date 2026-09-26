@@ -12,6 +12,7 @@
     "_internal/lumi/gui/static/employee_tasks.js",
     "_internal/lumi/gui/static/local_access.js",
     "_internal/lumi/gui/static/appearance.js",
+    "_internal/lumi/gui/static/voice_input.js",
     "_internal/lumi/gui/static/plan_graph_view.js",
     "_internal/lumi/gui/static/fonts.css",
     "_internal/lumi/gui/static/vendor/marked.min.js",

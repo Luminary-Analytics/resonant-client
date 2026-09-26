@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -367,13 +368,20 @@ def test_gui_exposes_runtime_control_plane_contract():
     The backend half checks the dispatch registry rather than grepping
     app.py's source: these handlers now live in gui/ws_commands.py, and a
     substring search over one file asserts where the code sits rather than
-    whether the command is actually routable.
+    whether the command is actually routable. For the same reason the
+    frontend half reads every script the page loads: they share one app
+    object, and Settings (settings_view.js) is what asks for the pack list.
     """
     from lumi.gui import ws_commands
     from lumi.gui.app import websocket_endpoint  # noqa: F401
 
     root = Path(__file__).parents[1]
-    frontend = (root / "lumi" / "gui" / "static" / "app.js").read_text(encoding="utf-8")
+    template = (root / "lumi" / "gui" / "templates" / "index.html").read_text(encoding="utf-8")
+    scripts = re.findall(r'<script[^>]*\ssrc="/static/(\w+\.js)\?', template)
+    assert "app.js" in scripts and "settings_view.js" in scripts, scripts
+    frontend = "\n".join(
+        (root / "lumi" / "gui" / "static" / name).read_text(encoding="utf-8") for name in scripts
+    )
     endpoint_source = (root / "lumi" / "gui" / "app.py").read_text(encoding="utf-8")
 
     # A run card opens its trace and saved files (flight_recorder_detail,

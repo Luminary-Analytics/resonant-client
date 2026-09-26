@@ -92,6 +92,36 @@ def _allowed_origins(scope: Scope) -> frozenset[str]:
     return frozenset(f"{scheme}://{host}" for host in allowed_hosts(scope))
 
 
+def content_security_policy(scope: Scope) -> str:
+    """The Content-Security-Policy for the app page served on this connection.
+
+    The page holds the launch's access token, and it renders model output and
+    file contents. An injection into that markup must not run code or restyle
+    the page, for example into a fake approval prompt. So scripts and styles
+    come only from this server's files: no inline scripts, event-handler
+    attributes, eval or ``style=""`` attributes. The page connects only to
+    this server, whose WebSocket it opens on a host :func:`allowed_hosts`
+    accepts. Images are this server's, or data: and blob: URLs (screenshots,
+    attachments); remote images, whose address could carry data away, are
+    refused, and forms submit nowhere.
+    """
+    scheme = "wss" if scope.get("scheme") in ("https", "wss") else "ws"
+    # A bracketed IPv6 literal is not a valid CSP host source; 'self' covers
+    # the page's own address, WebSocket included, in current browsers.
+    sockets = sorted(f"{scheme}://{host}" for host in allowed_hosts(scope) if not host.startswith("["))
+    return "; ".join((
+        "default-src 'self'",
+        "script-src 'self'",
+        "style-src 'self'",
+        "img-src 'self' data: blob:",
+        " ".join(("connect-src 'self'", *sockets)),
+        "object-src 'none'",
+        "base-uri 'none'",
+        "form-action 'none'",
+        "frame-ancestors 'none'",
+    ))
+
+
 def same_origin(conn: HTTPConnection, *, require_origin: bool) -> bool:
     """True when ``Host`` names this server and ``Origin`` is its own.
 

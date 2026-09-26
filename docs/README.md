@@ -22,6 +22,9 @@ The current release is [Lumi 0.19.1](v0.19.1-release-notes.md).
 yet shipped. Versioned release notes and dated evaluations record their own
 point in time; they are not instructions to restore an old design.
 
+[September 26 worktree recovery](worktree-recovery-2026-09-26.md) records the
+local integration of open PRs and unfinished work, its review and validation.
+
 The [documentation status catalog](documentation-status.md) identifies active
 guides, historical plans, and dated evidence, with links to current replacements.
 
@@ -36,6 +39,7 @@ guide belongs in that navigation; historical records stay out of it.
 - [Plans: free for individuals, and what's planned for organizations](plans.md)
 - [Lumi account and Lumi Cloud: signing in, enrolling this computer, sharing a conversation, managed enrollment](lumi-cloud.md)
 - [Projects, sessions, search, and provider selection](desktop-workflow.md)
+- [The terminal UI: permission modes, project trust and commands](terminal-ui.md)
 - [Previews, project notes, skills, and named acceptance checks](priority-improvements.md)
 - [Comparing models on your own tasks before switching](model-comparisons.md)
 - [Code intelligence: language servers for definitions, references and diagnostics](code-intelligence.md)
@@ -49,6 +53,7 @@ guide belongs in that navigation; historical records stay out of it.
 - [Skills and learning](skills.md)
 - [Writing a capability pack: the manifest, hooks, trust and sharing](packs.md)
 - [Extensions: add a model provider with the Extension SDK (manifest, protocol, template, checker)](extensions.md)
+- [Dictation: talking instead of typing, and the transcription service it uses](voice-input.md)
 - [Accessibility conformance report (draft, self-assessed WCAG 2.1 AA)](accessibility.md)
 - [Blender, Unity, and Unreal Engine 5 setup](creative-editors.md)
 - [Known limitations and historical bug ledger](known-issues.md)

@@ -103,6 +103,12 @@
             case 'plan.complete':
                 // Just re-render with current data
                 break;
+            case 'plan.stopped':
+                // Stopped: the steps that never ran never will.
+                for (const id of payload.abandoned || []) {
+                    if (_snapshot.nodes[id]) _snapshot.nodes[id].status = 'abandoned';
+                }
+                break;
             default:
                 return;  // unknown event — ignore
         }
@@ -201,8 +207,7 @@
             const conf = (typeof node.confidence === 'number' ? node.confidence : 1.0).toFixed(2);
             const icon = SPECIALIZATION_ICON[node.specialization] || '\u25CB';
             nodesHtml += `
-                <div class="${cls.join(' ')}" data-id="${_escape(node.id)}"
-                     style="left:${pos.x}px;top:${pos.y}px;width:${NODE_W}px;height:${NODE_H}px">
+                <div class="${cls.join(' ')}" data-id="${_escape(node.id)}">
                     <div class="pgn-header">
                         <span class="pgn-icon">${icon}</span>
                         <span class="pgn-spec">${_escape(node.specialization || 'implement')}</span>
@@ -219,8 +224,11 @@
         canvas.style.minWidth = `${totalW}px`;
         canvas.style.minHeight = `${totalH}px`;
 
-        // Wire node clicks
+        // Place and wire the cards. Positions go through element.style: the
+        // page's Content-Security-Policy refuses style="" attributes.
         canvas.querySelectorAll('.pgn').forEach((card) => {
+            const pos = positions.nodes[card.dataset.id];
+            Object.assign(card.style, {left: `${pos.x}px`, top: `${pos.y}px`, width: `${NODE_W}px`, height: `${NODE_H}px`});
             card.addEventListener('click', () => _selectNode(card.dataset.id));
         });
 
@@ -369,6 +377,11 @@
         if (count > 0) {
             badge.style.display = '';
             badge.textContent = String(count);
+            // The badge is part of the Plan tab's name: "Plan 3 steps", not "Plan 3".
+            const unit = document.createElement('span');
+            unit.className = 'sr-only';
+            unit.textContent = count === 1 ? ' step' : ' steps';
+            badge.appendChild(unit);
         } else {
             badge.style.display = 'none';
         }

@@ -374,6 +374,13 @@ def parse(data: Any, *, source: str, trusted_keys: dict[str, str] | None = None,
         raise PolicyError(str(exc)) from exc
     if "security.shell_sandbox" in settings and settings["security.shell_sandbox"] not in ("off", "project"):
         raise PolicyError("'security.shell_sandbox' must be \"off\" or \"project\".")
+    from .voice import validate as validate_voice
+
+    for name in [name for name in settings if name.startswith("voice.")]:
+        try:
+            validate_voice(name.partition(".")[2], settings[name])
+        except ValueError as exc:
+            raise PolicyError(f"'{name}': {exc}") from exc
     if "review.agent_changes" in settings and not isinstance(settings["review.agent_changes"], bool):
         raise PolicyError("'review.agent_changes' must be true or false.")
     reviewers = settings.get("review.reviewers", [])

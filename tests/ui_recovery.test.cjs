@@ -6,6 +6,38 @@ const path = require('node:path');
 const source = fs.readFileSync(path.join(__dirname, '../lumi/gui/static/app.js'), 'utf8').split('function applyMixin(')[0];
 const tick = () => new Promise(resolve => setImmediate(resolve));
 
+function draftDictation(app, engine) {
+    const window = {};
+    vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../lumi/gui/static/voice_input.js'), 'utf8'),
+        {window, setTimeout, clearTimeout});
+    let recognition, recorder, resolveTranscript;
+    class Recognition {
+        constructor() { recognition = this; }
+        start() {}
+        abort() {}
+    }
+    class Recorder {
+        constructor() { recorder = this; this.state = 'inactive'; this.mimeType = 'audio/webm'; }
+        start() { this.state = 'recording'; }
+        stop() {
+            this.state = 'inactive';
+            this.ondataavailable({data: new Blob(['recorded'])});
+            this.onstop();
+        }
+    }
+    const dictation = window.LumiDictation.create({
+        env: {SpeechRecognition: Recognition, MediaRecorder: Recorder, Blob,
+            mediaDevices: {getUserMedia: async () => ({getTracks: () => [{stop() {}}]})}},
+        getStatus: () => ({engine, service_ready: true}),
+        getText: () => app.userInput.value,
+        setText: text => { app.userInput.value = text; },
+        transcribe: () => new Promise(resolve => { resolveTranscript = resolve; }),
+    });
+    app._dictation = dictation;
+    return {dictation, hear(text) { recognition.onresult({results: [Object.assign([{transcript: text}], {isFinal: true})]}); },
+        transcript(text) { resolveTranscript(text); }, stop() { recorder.stop(); }};
+}
+
 function setup(fetch, globals = {}) {
     const context = vm.createContext({fetch, URLSearchParams, Blob, console, Event, document: {getElementById: () => null}, WebSocket: {OPEN: 1}, ...globals});
     vm.runInContext(source + '\nthis.App = LumiApp;', context);
@@ -30,6 +62,42 @@ test('late draft reads do not overwrite typing or cross session boundaries', asy
     reads[1]({ok:true, json:async () => ({text:'older B'})});
     await tick();
     assert.equal(app.userInput.value, 'typing B');
+});
+
+test('switching drafts cancels recognition before it can overwrite the new conversation', async () => {
+    const app = setup(async (_url, options) => ({ok: true, json: async () => ({text: options ? '' : 'saved draft'})}));
+    app._activateDraft('D:/project', 'a');
+    await tick();
+    app.userInput.value = 'Draft A';
+    const voice = draftDictation(app, 'browser');
+    voice.dictation.press();
+    voice.hear('spoken in A');
+    app._activateDraft('D:/project', 'b');
+    await tick();
+    voice.hear('late A');
+    assert.equal(voice.dictation.cancel(), false);
+    assert.equal(app.userInput.value, 'saved draft');
+});
+
+test('a pending transcript cannot cross a project switch or a sent draft', async () => {
+    for (const transition of ['project', 'send']) {
+        const app = setup(async () => ({ok: true, json: async () => ({text: ''})}));
+        app._activateDraft('D:/a', 'session');
+        await tick();
+        const voice = draftDictation(app, 'service');
+        voice.dictation.press();
+        await tick();
+        voice.stop();
+        await tick();
+        if (transition === 'project') app._activateDraft('D:/b', 'session');
+        else await app._clearDraft();
+        await tick();
+        app.userInput.value = 'New draft';
+        voice.transcript('words from old draft');
+        await tick();
+        assert.equal(app.userInput.value, 'New draft');
+        assert.equal(voice.dictation.state, 'idle');
+    }
 });
 
 test('sent drafts are deleted and a late read cannot restore them', async () => {
@@ -901,6 +969,125 @@ test('model-written plan goals stay inside their attributes', () => {
     assert.equal(canvas.innerHTML.split(UNTRUSTED_AS_TEXT).length - 1, 2, 'goal title and text');
 });
 
+test('the Plan tab badge says what it counts', () => {
+    const dom = fakeDom();
+    const badge = dom.document.createElement('span');
+    const canvas = {innerHTML: '', style: {}, querySelectorAll: () => []};
+    const elements = {'plan-graph-canvas': canvas, 'plan-tab-badge': badge};
+    const window = {};
+    vm.runInContext(
+        fs.readFileSync(path.join(__dirname, '../lumi/gui/static/plan_graph_view.js'), 'utf8'),
+        vm.createContext({window, document: {getElementById: id => elements[id] || null, createElement: dom.document.createElement}, console}),
+    );
+    const node = id => ({id, goal: id, status: 'pending', specialization: 'implement'});
+
+    window.PlanGraphView.render({intent: 'Fix it', intent_id: 'i1', nodes: [node('n1')]});
+    assert.equal(badge.textContent, '1 step');
+    window.PlanGraphView.render({intent: 'Fix it', intent_id: 'i1', nodes: ['n1', 'n2', 'n3'].map(node)});
+    assert.equal(badge.textContent, '3 steps');
+    assert.equal(badge.children[0].className, 'sr-only', 'the number shows; its unit is for screen readers');
+    window.PlanGraphView.render({intent: '', intent_id: '', nodes: []});
+    assert.equal(badge.style.display, 'none');
+});
+
+// The preview panel's tab list, taken from the page, with its three panes.
+function previewTabsApp() {
+    const dom = fakeDom();
+    const doc = dom.document;
+    const page = fs.readFileSync(path.join(__dirname, '../lumi/gui/templates/index.html'), 'utf8');
+    const root = doc.createElement('div');
+    root.innerHTML = /<div class="preview-tabs"[^>]*>[\s\S]*?<\/div>/.exec(page)[0]
+        + '<div id="preview-browser-pane"></div><div id="plan-graph-pane"></div><div id="context-cockpit-pane"></div>';
+    Object.assign(doc, {
+        activeElement: null,
+        getElementById: id => root.querySelector(`[id="${id}"]`),
+        querySelector: selector => root.querySelector(selector),
+        querySelectorAll: selector => root.querySelectorAll(selector),
+    });
+    const element = Object.getPrototypeOf(root);
+    element.focus = function focus() { doc.activeElement = this; };
+    Object.defineProperty(element, 'tabIndex', {
+        get() { return Number(this.getAttribute('tabindex') ?? 0); },
+        set(value) { this.setAttribute('tabindex', value); },
+    });
+    const context = vm.createContext({console, document: doc, CSS: dom.CSS, window: {}});
+    vm.runInContext(source + '\nthis.App = LumiApp;', context);
+    const app = Object.create(context.App.prototype);
+    app.sent = [];
+    app.send = message => app.sent.push(message.command);
+    app.previewOpen = true;
+    app._bindPreviewTabs();
+    const tabList = doc.getElementById('preview-tabs');
+    const tabs = tabList.querySelectorAll('.preview-tab[data-pane]');
+    return {
+        app, doc, tabs,
+        // [pane, aria-selected, tabindex] for each tab, in order.
+        state: () => tabs.map(tab => `${tab.dataset.pane} ${tab.getAttribute('aria-selected')} ${tab.tabIndex}`),
+        shown: () => ['preview-browser-pane', 'plan-graph-pane', 'context-cockpit-pane']
+            .filter(id => doc.getElementById(id).style.display !== 'none'),
+        press(key, modifiers = {}) {
+            let prevented = false;
+            tabList.listeners.keydown({key, altKey: false, ctrlKey: false, metaKey: false, ...modifiers,
+                preventDefault: () => { prevented = true; }});
+            return prevented;
+        },
+    };
+}
+
+test('the preview tabs are one tab stop; arrows, Home and End move to a tab and show its pane', () => {
+    const {app, doc, tabs, state, shown, press} = previewTabsApp();
+    const [browser, plan, context] = tabs;
+    assert.deepEqual(tabs.map(tab => tab.getAttribute('role')), ['tab', 'tab', 'tab']);
+    assert.deepEqual(state(), ['browser true 0', 'plan false -1', 'context false -1']);
+
+    browser.focus();
+    assert.equal(press('ArrowRight'), true);
+    assert.equal(doc.activeElement, plan);
+    assert.deepEqual(state(), ['browser false -1', 'plan true 0', 'context false -1']);
+    assert.deepEqual(shown(), ['plan-graph-pane']);
+
+    press('ArrowRight');
+    assert.equal(doc.activeElement, context);
+    assert.deepEqual(shown(), ['context-cockpit-pane']);
+    assert.deepEqual(app.sent, ['get_context_state', 'context_catalog'], 'the Context pane refreshes when shown');
+
+    press('ArrowRight');
+    assert.equal(doc.activeElement, browser, 'Right wraps to the first tab');
+    assert.deepEqual(shown(), ['preview-browser-pane']);
+    press('ArrowLeft');
+    assert.equal(doc.activeElement, context, 'Left wraps to the last tab');
+    press('Home');
+    assert.equal(doc.activeElement, browser);
+    press('End');
+    assert.equal(doc.activeElement, context);
+
+    for (const [key, modifiers] of [['ArrowLeft', {altKey: true}], ['ArrowRight', {ctrlKey: true}], ['Tab', {}], ['a', {}]]) {
+        assert.equal(press(key, modifiers), false, `${key} is left to the browser`);
+    }
+    assert.equal(doc.activeElement, context);
+    assert.deepEqual(state(), ['browser false -1', 'plan false -1', 'context true 0']);
+
+    plan.listeners.click();  // Enter, Space or a click
+    assert.deepEqual(state(), ['browser false -1', 'plan true 0', 'context false -1']);
+    assert.deepEqual(shown(), ['plan-graph-pane']);
+});
+
+test('a plan that brings its tab forward moves the tab stop, never the focus', () => {
+    const {app, doc, tabs, state, shown} = previewTabsApp();
+    const plan = tabs[1];
+    const composer = doc.createElement('textarea');
+    composer.focus();
+    app._markPlanTabUnread();
+    assert.ok(plan.classList.contains('has-unread'));
+
+    app.openPlanTab(true);  // /plan, or a Mission's Build this roadmap
+
+    assert.equal(doc.activeElement, composer);
+    assert.deepEqual(state(), ['browser false -1', 'plan true 0', 'context false -1']);
+    assert.deepEqual(shown(), ['plan-graph-pane']);
+    assert.equal(plan.classList.contains('has-unread'), false, 'shown, so no longer unread');
+});
+
 // Worker transcripts and controls: the runtime pane that offered them left in
 // v0.14.0. A running worker's controls sit in the run's Sub-tasks list; a
 // stopped worker's block offers its transcript and, unless it completed, a restart.
@@ -1559,6 +1746,73 @@ test('a step\'s prose stays above its calls, and a finished step stays open whil
     assert.deepEqual(app.turnCalls, []);
 });
 
+// An autonomous session's REFLECT pass runs its specialist outside
+// IntentService (gui/autonomous_factory.py) and reports as a one-step plan
+// with an id of its own: reflect.start, the tagged session, reflect.done.
+const reflectStart = (intentId, ts, text = 'Check the roadmap against its acceptance criteria') =>
+    ({event: 'reflect.start', intent_id: intentId, node_id: 'n1', text, specialization: 'reflect',
+      goal: '1 of 2 criteria met, 1 to check in the browser', ts});
+const reflectDone = (intentId, status, ts, error = '') =>
+    ({event: 'reflect.done', intent_id: intentId, node_id: 'n1', status, error, ts});
+
+test('a REFLECT pass reports under a Reflection card of its own, never as the conversation\'s turn', () => {
+    const app = planApp();
+    // The conversation's own turn is running when the pass starts.
+    app.isRunning = true;
+    app._liveRun = {active: true, lastEventAt: 1};
+    const mark = editCall('call_1', '.lumi/roadmap-m1.md');
+    app.play(reflectStart('pass-1', 10),
+        fromSpecialist('pass-1', {event: 'session.start', model: 'stub'}, {event: 'step.start', step: 1},
+            {event: 'text.delta', delta: 'The toggle shows; marking it.'}, mark,
+            {event: 'text.done', text: 'The toggle shows; marking it.'}, toolResult(mark),
+            {event: 'status', model: 'stub', stats: {input_tokens: 10, output_tokens: 5}},
+            {event: 'context.state', used: 100}, {event: 'step.end', step: 1},
+            {event: 'session.end', outcome: 'changed_unverified'}),
+        reflectDone('pass-1', 'done', 22));
+
+    assert.deepEqual(app.turnCalls, []);
+    assert.equal(app.isRunning, true);
+    assert.equal(app._liveRun.lastEventAt, 1, 'the turn\'s progress heard nothing');
+    const card = app.card('pass-1');
+    assert.equal(app.chatMessages.children.length, 1);
+    assert.ok(card.classList.contains('plan-card-lumi'), 'headed as Lumi\'s, not as the person\'s message');
+    assert.equal(card.querySelector('.task-card-label').textContent, 'Reflection');
+    assert.equal(card.querySelector('.task-request-text').textContent, 'Check the roadmap against its acceptance criteria');
+    const [step] = app.steps('pass-1');
+    assert.equal(app.steps('pass-1').length, 1);
+    assert.equal(step.querySelector('.task-activity-title').textContent, 'Reflection');
+    assert.equal(step.querySelector('.plan-step-goal').textContent, '1 of 2 criteria met, 1 to check in the browser');
+    assert.equal(step.querySelector('.task-activity-meta').textContent, 'done · 1 action · 12s');
+    assert.equal(step.querySelector('.tool-row').getAttribute('data-tool'), 'file_edit');
+    assert.equal(step.querySelector('.message-content').textContent, 'The toggle shows; marking it.');
+    assert.equal(step.open, false);
+    assert.equal(card.querySelector('.task-run-label').textContent, 'Reflection done');
+    assert.equal(card.querySelector('.task-run-detail').textContent, '1 action · 12s');
+
+    // A pass the session's Stop interrupted, and one that broke: each on its own card, open, saying so.
+    app.play(reflectStart('pass-2', 30, 'Act on the decision, then check the roadmap against its acceptance criteria'),
+        fromSpecialist('pass-2', {event: 'error', message: 'Interrupted'}, {event: 'session.end', outcome: 'interrupted'}),
+        reflectDone('pass-2', 'abandoned', 31),
+        reflectStart('pass-3', 40), reflectDone('pass-3', 'blocked', 40, 'boom'));
+    assert.equal(app.chatMessages.children.length, 3);
+    const [stopped] = app.steps('pass-2');
+    assert.equal(app.card('pass-2').querySelector('.task-request-text').textContent,
+        'Act on the decision, then check the roadmap against its acceptance criteria');
+    assert.deepEqual([stopped.querySelector('.task-activity-meta').textContent, stopped.open], ['stopped · 1s', true]);
+    assert.equal(stopped.querySelector('.error-block').textContent, '✗ Interrupted');
+    assert.equal(app.card('pass-2').querySelector('.task-run-label').textContent, 'Reflection stopped');
+    const [broken] = app.steps('pass-3');
+    assert.deepEqual([broken.querySelector('.task-activity-meta').textContent, broken.open], ['blocked', true]);
+    assert.equal(broken.querySelector('.error-block').textContent, '✗ boom');
+    assert.equal(app.card('pass-3').querySelector('.task-run-label').textContent, 'Reflection failed');
+    assert.deepEqual(app.turnCalls, []);
+    assert.equal(app.isRunning, true);
+
+    // A /plan the person sent stays their message.
+    app.startIntent('add a footer');
+    assert.equal(app.chatMessages.children.at(-1).classList.contains('plan-card-lumi'), false);
+});
+
 // ── A refused call says why ───────────────────────────────────────────
 // Its row shows the reason the model was told: a hook's message, a policy
 // rule, an approval nobody could answer. The person's own Deny needs none.
@@ -1674,6 +1928,7 @@ function fakeDom() {
             if (at !== html.length || open.length !== 1) throw new Error(`fake DOM cannot parse ${JSON.stringify(html)}`);
         }
         setAttribute(name, value) { this.attributes.set(name, String(value)); }
+        removeAttribute(name) { this.attributes.delete(name); }
         getAttribute(name) { return this.attributes.has(name) ? this.attributes.get(name) : null; }
         hasAttribute(name) { return this.attributes.has(name); }
         addEventListener(type, handler) { this.listeners[type] = handler; }
@@ -2103,4 +2358,344 @@ test('prose in an Evidence step closes its group without drawing the calls again
         assert.deepEqual(app.statuses(), ['✓']);
         assert.equal(app.activity.querySelectorAll('.collapsed-group').length, 1);
     }
+});
+test('the plan-graph Pause button becomes Resume while the plan is paused', () => {
+    const button = {textContent: 'Pause', title: '', setAttribute() {}, removeAttribute() {}};
+    const app = setup(() => {}, {document: {getElementById: (id) => (id === 'plan-graph-pause' ? button : null)}});
+    const notices = [];
+    app.showStatusMessage = (message) => notices.push(message);
+
+    app.handleEvent({event: 'intent.accepted', intent_id: 'plan-1', text: 'add a toggle'});
+    app.handleEvent({event: 'intent.paused', intent_id: 'plan-1'});
+    assert.equal(app._currentIntentPaused, true);
+    assert.equal(button.textContent, 'Resume');
+    // Another intent (a Mission's roadmap) finishing leaves this plan's button alone.
+    app.handleEvent({event: 'intent.complete', intent_id: 'mission-2'});
+    assert.equal(button.textContent, 'Resume');
+    app.handleEvent({event: 'intent.resumed', intent_id: 'plan-1'});
+    assert.equal(app._currentIntentPaused, false);
+    assert.equal(button.textContent, 'Pause');
+
+    app.handleEvent({event: 'intent.paused', intent_id: 'plan-1'});
+    app.handleEvent({event: 'intent.cancelled', intent_id: 'plan-1'});
+    assert.equal(button.textContent, 'Pause');
+
+    // Accepted controls are reported by the event that follows; refused ones say so.
+    const before = notices.length;
+    app.handleEvent({event: 'intent.pause_ack', intent_id: 'plan-1', ok: true});
+    assert.equal(notices.length, before);
+    app.handleEvent({event: 'intent.resume_ack', intent_id: 'plan-1', ok: false});
+    app.handleEvent({event: 'intent.restore_ack', intent_id: 'plan-1', ok: false});
+    assert.deepEqual(notices.slice(before), [
+        'That plan can no longer be resumed.',
+        'Snapshot not restored. A plan can be restored once it has stopped.',
+    ]);
+});
+
+// The Plan tab's toolbar as index.html draws it, wired by the real
+// _bindPlanGraphToolbar and driven through the real handleEvent. A Mission's
+// roadmap reaches it through autonomous_view.js's handleMissionPhaseChanged,
+// and plan_graph_view.js draws the graph into `app.canvas`.
+function planToolbarApp() {
+    const dom = fakeDom();
+    const page = fs.readFileSync(path.join(__dirname, '../lumi/gui/templates/index.html'), 'utf8');
+    const toolbar = dom.document.createElement('div');
+    toolbar.innerHTML = page.match(/<div class="plan-graph-toolbar">([\s\S]*?)<\/div>/)[1];
+    const byId = id => toolbar.querySelector(`[id="${id}"]`);
+    // The graph's markup is kept as a string; the fake DOM can't parse its SVG.
+    const canvas = {innerHTML: '', style: {}, querySelectorAll: () => []};
+    const document = {
+        ...dom.document, body: {dataset: {}}, querySelectorAll: () => [],
+        getElementById: id => (id === 'plan-graph-canvas' ? canvas : byId(id)),
+    };
+    const context = vm.createContext({console, document, CSS: dom.CSS, window: {}, WebSocket: {OPEN: 1}});
+    vm.runInContext(source + '\nthis.App = LumiApp;', context);
+    vm.runInContext(fs.readFileSync(path.join(__dirname, '../lumi/gui/static/autonomous_view.js'), 'utf8'), context);
+    vm.runInContext(fs.readFileSync(path.join(__dirname, '../lumi/gui/static/plan_graph_view.js'), 'utf8'), context);
+    const app = Object.create(context.App.prototype);
+    Object.assign(app, {
+        ws: {readyState: 1},
+        sent: [], notices: [], planTabOpened: [],
+        send: message => app.sent.push({...message}),
+        showStatusMessage: message => app.notices.push(message),
+        openPlanTab: focus => app.planTabOpened.push(focus),
+        _currentSessionSummary: () => null,
+        _refreshMissionBadge: () => {},
+        handleMissionPhaseChanged: context.window.LumiAutonomousView.prototype.handleMissionPhaseChanged,
+    });
+    app._bindPlanGraphToolbar();
+    app.button = byId;
+    app.canvas = canvas;
+    app.press = id => byId(id).listeners.click();
+    app.stateLabel = () => byId('plan-graph-state').textContent;
+    app.unavailable = id => byId(id).getAttribute('aria-disabled') === 'true';
+    return app;
+}
+
+test('the Plan tab\'s Stop stops the plan it follows, shown stopping, then stopped', () => {
+    const app = planToolbarApp();
+    const stop = app.button('plan-graph-stop');
+    assert.equal(stop.getAttribute('aria-label'), 'Stop plan');
+    // No plan yet: Pause and Stop look unavailable, and Stop says why.
+    assert.equal(app.unavailable('plan-graph-stop'), true);
+    assert.equal(app.unavailable('plan-graph-pause'), true);
+    app.press('plan-graph-stop');
+    assert.deepEqual(app.sent, []);
+    assert.equal(app.notices.at(-1), 'No plan is running.');
+
+    app.handleEvent({event: 'intent.accepted', intent_id: 'plan-1', text: 'add a toggle'});
+    assert.equal(app.stateLabel(), 'Running');
+    assert.equal(app.unavailable('plan-graph-stop'), false);
+    assert.equal(app.unavailable('plan-graph-pause'), false);
+
+    app.press('plan-graph-stop');
+    assert.deepEqual(app.sent, [{command: 'intent_cancel', intent_id: 'plan-1'}]);
+    assert.equal(app.stateLabel(), 'Stopping…');
+    // Still focusable (not disabled), but nothing more is sent.
+    assert.equal(stop.hasAttribute('disabled'), false);
+    assert.equal(app.unavailable('plan-graph-stop'), true);
+    assert.equal(app.unavailable('plan-graph-pause'), true);
+    app.press('plan-graph-stop');
+    app.press('plan-graph-pause');
+    assert.equal(app.sent.length, 1);
+    assert.deepEqual(app.notices.slice(-2), ['The plan is already stopping.', 'The plan is already stopping.']);
+
+    // Accepted at once; stopped once the running step has ended.
+    app.handleEvent({event: 'intent.cancel_ack', intent_id: 'plan-1', ok: true});
+    app.handleEvent({event: 'intent.cancelling', intent_id: 'plan-1'});
+    assert.equal(app.notices.at(-1), 'Stopping the plan. No new step will start.');
+    // A late resume doesn't bring the plan back.
+    app.handleEvent({event: 'intent.resumed', intent_id: 'plan-1'});
+    assert.equal(app.stateLabel(), 'Stopping…');
+    app.handleEvent({event: 'intent.cancelled', intent_id: 'plan-1'});
+    assert.equal(app.stateLabel(), 'Stopped');
+    assert.equal(app.notices.at(-1), 'Plan stopped.');
+    assert.equal(app.unavailable('plan-graph-stop'), true);
+    assert.equal(app.button('plan-graph-pause').textContent, 'Pause');
+    app.press('plan-graph-stop');
+    assert.equal(app.sent.length, 1);
+    assert.equal(app.notices.at(-1), 'That plan has already ended.');
+    // A stopped plan stays stopped.
+    app.handleEvent({event: 'intent.paused', intent_id: 'plan-1'});
+    assert.equal(app.stateLabel(), 'Stopped');
+
+    // The next plan gets working controls.
+    app.handleEvent({event: 'intent.accepted', intent_id: 'plan-2', text: 'add a menu'});
+    assert.equal(app.stateLabel(), 'Running');
+    assert.equal(app.unavailable('plan-graph-stop'), false);
+});
+
+test('Stop reaches a paused plan, and a refusal marks the plan ended', () => {
+    const app = planToolbarApp();
+    app.handleEvent({event: 'intent.accepted', intent_id: 'plan-1', text: 'add a toggle'});
+    app.handleEvent({event: 'intent.paused', intent_id: 'plan-1'});
+    assert.equal(app.stateLabel(), 'Paused');
+    assert.equal(app.button('plan-graph-pause').textContent, 'Resume');
+
+    app.press('plan-graph-stop');
+    assert.deepEqual(app.sent, [{command: 'intent_cancel', intent_id: 'plan-1'}]);
+    // The server no longer had it running: nothing was stopped.
+    app.handleEvent({event: 'intent.cancel_ack', intent_id: 'plan-1', ok: false});
+    assert.equal(app.stateLabel(), 'Ended');
+    assert.equal(app.notices.at(-1), 'That plan can no longer be stopped.');
+    assert.equal(app.unavailable('plan-graph-pause'), true);
+});
+
+test('while Lumi reconnects, Stop says so instead of showing a stop that was never sent', () => {
+    const app = planToolbarApp();
+    app.handleEvent({event: 'intent.accepted', intent_id: 'plan-1', text: 'add a toggle'});
+    app.ws = {readyState: 3};
+    app.press('plan-graph-stop');
+    assert.deepEqual(app.sent, []);
+    assert.equal(app.stateLabel(), 'Running');
+    assert.equal(app.notices.at(-1), 'Reconnecting to Lumi. Press Stop again once it’s back.');
+});
+
+// A page that has just connected, receiving the socket's init through the
+// real handleInit. What init touches outside the Plan tab is stubbed.
+function reloadedPlanApp() {
+    const app = planToolbarApp();
+    const noop = () => {};
+    Object.assign(app, {
+        settings: {}, _handoffsRequested: true, planTabUnread: 0,
+        _activateDraft: noop, setPermissionMode: noop, requestGitStatus: noop, renderProjectRail: noop,
+        populateModelSelector: noop, _setSystemStatus: noop, _applyRuntimeError: noop,
+        showChatInterface: noop, showNewSessionSetup: noop,
+        _markPlanTabUnread: () => { app.planTabUnread += 1; },
+    });
+    app.connect = runningIntents => app.handleEvent({event: 'init', running_intents: runningIntents});
+    return app;
+}
+
+// A plan as the server lists it for a page that connects.
+const runningPlan = (id, fields = {}) => ({
+    intent_id: id, text: `plan ${id}`, paused: false, stopping: false, started_at: 1,
+    snapshot: {intent_id: id, intent: `plan ${id}`, nodes: [
+        {id: `${id}-a`, goal: 'plan it', status: 'done', specialization: 'plan'},
+        {id: `${id}-b`, goal: 'add the toggle', status: 'running', specialization: 'implement', parent_id: `${id}-a`},
+    ]},
+    ...fields,
+});
+
+test('after a reload the Plan tab follows the latest running plan, and Stop reaches it', () => {
+    const app = reloadedPlanApp();
+    app.connect([runningPlan('plan-1'), runningPlan('plan-2')]);
+
+    assert.equal(app.stateLabel(), 'Running');
+    assert.equal(app.unavailable('plan-graph-stop'), false);
+    assert.equal(app.unavailable('plan-graph-pause'), false);
+    // Its graph as it stands, in a preview opened on the Plan tab (focus is
+    // left where it was), and said so.
+    assert.equal(app.button('plan-graph-intent').textContent, 'plan plan-2');
+    assert.match(app.canvas.innerHTML, /class="pgn pgn-running" data-id="plan-2-b"/);
+    assert.deepEqual(app.planTabOpened, [true]);
+    assert.equal(app.planTabUnread, 1);
+    assert.equal(app.notices.at(-1), 'A plan is still running. Pause and Stop are in the Plan tab.');
+
+    app.press('plan-graph-stop');
+    assert.deepEqual(app.sent, [{command: 'intent_cancel', intent_id: 'plan-2'}]);
+    assert.equal(app.stateLabel(), 'Stopping…');
+    // The server sends its events to this page now.
+    app.handleEvent({event: 'intent.cancelling', intent_id: 'plan-2'});
+    app.handleEvent({event: 'intent.cancelled', intent_id: 'plan-2'});
+    assert.equal(app.stateLabel(), 'Stopped');
+    // The older plan's end leaves the toolbar alone.
+    app.handleEvent({event: 'intent.complete', intent_id: 'plan-1'});
+    assert.equal(app.stateLabel(), 'Stopped');
+
+    // A preview already open (the socket came back) stays on its pane.
+    const reconnected = reloadedPlanApp();
+    reconnected.previewOpen = true;
+    reconnected.connect([runningPlan('plan-3')]);
+    assert.equal(reconnected.stateLabel(), 'Running');
+    assert.deepEqual(reconnected.planTabOpened, [false]);
+    assert.equal(reconnected.planTabUnread, 1);
+});
+
+test('other plans cannot replace the followed graph or change its controls', () => {
+    const app = reloadedPlanApp();
+    app.connect([runningPlan('older'), runningPlan('followed')]);
+    const graph = app.canvas.innerHTML;
+    app.handleEvent({event: 'plan.snapshot', intent_id: 'autonomous', snapshot: runningPlan('autonomous').snapshot});
+    app.handleEvent({event: 'plan.event', intent_id: 'older', event_payload: {
+        kind: 'plan.rewrite', payload: {added_nodes: [{id: 'foreign-node', goal: 'foreign', status: 'pending'}]},
+    }});
+    assert.equal(app.canvas.innerHTML, graph);
+    app.press('plan-graph-stop');
+    assert.deepEqual(app.sent, [{command: 'intent_cancel', intent_id: 'followed'}]);
+});
+
+test('the accepted plan draws its earlier snapshot, and reconnect settles a plan that ended offline', () => {
+    const app = reloadedPlanApp();
+    const snapshot = runningPlan('new-plan').snapshot;
+    app.handleEvent({event: 'plan.snapshot', intent_id: 'new-plan', snapshot});
+    app.handleEvent({event: 'intent.accepted', intent_id: 'new-plan', text: snapshot.intent});
+    assert.match(app.canvas.innerHTML, /new-plan-b/);
+    app.press('plan-graph-stop');
+    app.connect([]);
+    assert.equal(app.stateLabel(), 'Ended');
+    assert.equal(app.unavailable('plan-graph-stop'), true);
+    assert.equal(app.unavailable('plan-graph-pause'), true);
+});
+
+test('a plan paused or stopping when the page reloaded shows so', () => {
+    const paused = reloadedPlanApp();
+    paused.connect([runningPlan('plan-1', {paused: true})]);
+    assert.equal(paused.stateLabel(), 'Paused');
+    assert.equal(paused.button('plan-graph-pause').textContent, 'Resume');
+    paused.press('plan-graph-pause');
+    assert.deepEqual(paused.sent, [{command: 'intent_resume', intent_id: 'plan-1'}]);
+
+    // Stop was pressed before the reload; the running step is still ending.
+    const stopping = reloadedPlanApp();
+    stopping.connect([runningPlan('plan-1', {paused: true, stopping: true})]);
+    assert.equal(stopping.stateLabel(), 'Stopping…');
+    assert.equal(stopping.unavailable('plan-graph-stop'), true);
+    stopping.press('plan-graph-stop');
+    assert.deepEqual(stopping.sent, []);
+    stopping.handleEvent({event: 'intent.cancelled', intent_id: 'plan-1'});
+    assert.equal(stopping.stateLabel(), 'Stopped');
+});
+
+test('with no plan running, or reconnecting to the plan it shows, the page keeps its Plan tab', () => {
+    const app = reloadedPlanApp();
+    app.connect([]);
+    assert.equal(app.stateLabel(), '');
+    assert.deepEqual(app.planTabOpened, []);
+    assert.deepEqual(app.notices, []);
+
+    app.handleEvent({event: 'intent.accepted', intent_id: 'plan-1', text: 'add a toggle'});
+    app.handleEvent({event: 'intent.paused', intent_id: 'plan-1'});
+    const notices = app.notices.length;
+    // A refresh of the project's state lists no plans and changes none.
+    app.handleEvent({event: 'init', refresh_only: true});
+    assert.equal(app.stateLabel(), 'Paused');
+    // The socket came back while the plan was resumed from elsewhere: its
+    // state is the server's, with the panel and notices left as they were.
+    app.connect([runningPlan('plan-1')]);
+    assert.equal(app.stateLabel(), 'Running');
+    assert.equal(app.button('plan-graph-intent').textContent, 'plan plan-1');
+    assert.deepEqual(app.planTabOpened, []);
+    assert.equal(app.planTabUnread, 0);
+    assert.equal(app.notices.length, notices);
+});
+
+test('Build this roadmap points Pause and Stop at the Mission\'s plan; an autonomous session does not', () => {
+    const app = planToolbarApp();
+    // An autonomous session's intent_id names its daemon; its badge stops it.
+    app.handleEvent({event: 'mission_phase_changed', session_id: 's1', phase: 'autonomous_running', intent_id: 'daemon-1'});
+    // Resuming a Mission names no plan.
+    app.handleEvent({event: 'mission_phase_changed', session_id: 's1', phase: 'planning_dispatched'});
+    assert.equal(app.stateLabel(), '');
+    assert.deepEqual(app.planTabOpened, []);
+
+    app.handleEvent({event: 'mission_phase_changed', session_id: 's1', phase: 'planning_dispatched', intent_id: 'roadmap-1'});
+    assert.equal(app.stateLabel(), 'Running');
+    assert.deepEqual(app.planTabOpened, [true]);
+    app.press('plan-graph-stop');
+    assert.deepEqual(app.sent, [{command: 'intent_cancel', intent_id: 'roadmap-1'}]);
+    // Another plan's end (an autonomous iteration's) leaves the toolbar alone.
+    app.handleEvent({event: 'intent.cancelled', intent_id: 'iteration-7'});
+    assert.equal(app.stateLabel(), 'Stopping…');
+});
+
+test('a plan step ending leaves keyboard focus in the Plan tab', () => {
+    const inPlanTab = {closest: selector => (selector === '#plan-graph-pane' ? {} : null)};
+    const document = {getElementById: () => null, activeElement: inPlanTab};
+    const app = setup(() => {}, {document});
+    let focused = 0;
+    Object.assign(app, {
+        userInput: {focus: () => focused++, closest: () => null, style: {}},
+        sendBtn: {style: {}, setAttribute() {}},
+        stopBtn: {style: {}},
+        _renderAccountMenu() {}, _setSessionActivity() {}, _startLiveRun() {}, _stopLiveRun() {},
+        _clearPromptSuggestion() {},
+    });
+    app.setRunning(false);
+    assert.equal(focused, 0);
+    document.activeElement = {closest: () => null};
+    app.setRunning(false);
+    assert.equal(focused, 1);
+});
+
+test('a stopped plan shows the steps that will never run as abandoned', () => {
+    const canvas = {innerHTML: '', style: {}, querySelectorAll: () => []};
+    const document = {getElementById: id => (id === 'plan-graph-canvas' ? canvas : null)};
+    const window = {};
+    vm.runInContext(
+        fs.readFileSync(path.join(__dirname, '../lumi/gui/static/plan_graph_view.js'), 'utf8'),
+        vm.createContext({window, document, console}),
+    );
+    window.PlanGraphView.render({intent: 'add a toggle', intent_id: 'plan-1', nodes: [
+        {id: 'n1', goal: 'plan it', status: 'done', specialization: 'plan'},
+        {id: 'n2', goal: 'add the toggle', status: 'running', specialization: 'implement', parent_id: 'n1'},
+        {id: 'n3', goal: 'check it', status: 'pending', specialization: 'verify', parent_id: 'n1', depends_on: ['n2']},
+    ]});
+
+    window.PlanGraphView.applyEvent({kind: 'node.done', node_id: 'n2', payload: {status: 'abandoned'}});
+    window.PlanGraphView.applyEvent({kind: 'plan.stopped', payload: {abandoned: ['n3']}});
+
+    const statuses = Object.fromEntries(
+        [...canvas.innerHTML.matchAll(/class="pgn pgn-(\w+)" data-id="(\w+)"/g)].map(([, status, id]) => [id, status]));
+    assert.deepEqual(statuses, {n1: 'done', n2: 'abandoned', n3: 'abandoned'});
 });

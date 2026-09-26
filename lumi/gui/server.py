@@ -291,6 +291,8 @@ def launch_gui(
                 height=800,
                 min_size=(800, 600),
                 resizable=True,
+                # pywebview turns selection off with an injected <style>, which
+                # the page's Content-Security-Policy refuses.
                 text_select=True,
                 background_color=window_background(app_state.settings),
                 frameless=True,
@@ -314,6 +316,13 @@ def launch_gui(
             win_ref[0] = window
             import lumi.gui.app as _gui_app
             _gui_app._webview_window = window
+            # The page's CSP refuses the eval that pywebview's bridge uses,
+            # and WebKit (macOS, Linux) enforces it on the bridge too.
+            try:
+                from .webview_bridge import install as install_bridge_without_eval
+                install_bridge_without_eval(window)
+            except Exception:
+                logger.warning("Could not set up the window bridge without eval", exc_info=True)
 
             def _set_icon_on_shown():
                 """Set the window icon after the HWND exists."""

@@ -12,6 +12,8 @@ import importlib.util
 import json
 import plistlib
 import re
+import subprocess
+import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from types import SimpleNamespace
@@ -184,6 +186,30 @@ def test_the_generator_refuses_a_policy_the_app_would_refuse(tmp_path, capsys):
     keys.write_text("[]", encoding="utf-8")
     assert make_mobileconfig.main([str(signed), "--keys", str(keys), "--out", str(out)]) == 1
     assert "keys file must be a JSON object" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("settings, valid", [({}, True), ({"voice.engine": "off"}, True),
+                                             ({"voice.engine": "invalid"}, False)])
+def test_profile_generation_checks_policy_without_installed_dependencies(tmp_path, settings, valid):
+    """The standalone MDM helper runs in the build host's standard-library Python."""
+    document = {"schema": policy.SCHEMA, "organization": "Acme", "settings": settings}
+    source = tmp_path / "policy.json"
+    source.write_text(json.dumps(document), encoding="utf-8")
+    output = tmp_path / "policy.mobileconfig"
+    result = subprocess.run(
+        [sys.executable, "-I", "-S", str(ROOT / "packaging/policy/make_mobileconfig.py"),
+         str(source), "--out", str(output)],
+        capture_output=True, text=True, timeout=15,
+    )
+    if valid:
+        assert result.returncode == 0, result.stderr
+        payload = plistlib.loads(output.read_bytes())["PayloadContent"][0]
+        assert json.loads(payload["Policy"]) == document
+    else:
+        assert result.returncode == 1
+        assert "Lumi would refuse this policy" in result.stderr
+        assert "voice.engine" in result.stderr
+        assert not output.exists()
 
 
 def test_a_signed_policy_and_its_keys_travel_in_one_profile(tmp_path, monkeypatch):

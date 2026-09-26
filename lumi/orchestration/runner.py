@@ -30,6 +30,7 @@ import time
 from typing import TYPE_CHECKING, Any, Callable, Optional
 
 from ..engine.exclusions import ExclusionRules
+from ..engine.hooks import HookRunner
 from ..engine.policies import ExecutionPolicy, project_execution_policy
 from ..engine.sandbox import PathSandbox
 from ..engine.session import Session
@@ -215,6 +216,7 @@ class LocalSpecialistRunner:
         audit_logger: Optional[Callable[..., None]] = None,
         specialist_backend_resolver: Optional[Callable[[str], Any]] = None,
         mcp_manager: Any = None,
+        hook_runner_for: Optional[Callable[[str], Any]] = None,
     ):
         self.backend = backend
         self.project_path = project_path
@@ -236,6 +238,8 @@ class LocalSpecialistRunner:
         # session-level default. See AppState._build_specialist_backend
         # for the production wiring.
         self._specialist_backend_resolver = specialist_backend_resolver
+        # Maps the project root to the hooks a specialist runs; see _hook_runner.
+        self._hook_runner_for = hook_runner_for
 
     def __call__(self, node: PlanNode, graph: PlanGraph) -> SpecialistResult:
         if self.cancel_event.is_set():
@@ -280,6 +284,24 @@ class LocalSpecialistRunner:
         if override is None:
             return self.backend
         return override
+
+    def _hook_runner(self, project_root: str) -> Optional[HookRunner]:
+        """The hooks a specialist runs: the person's, as in a chat session in the project.
+
+        The app passes ``hook_runner_for`` (AppState.specialist_hook_runner):
+        its shared runner scoped with the project's approved capability-pack
+        hooks, as a chat session's is, so Settings reloads reach it too. Built
+        outside the app, a runner with settings loads their ``hooks`` itself,
+        as `lumi run` does. Looked up from the project root
+        as each specialist starts, so a pack approved or withdrawn meanwhile
+        counts from the next one. These are the person's own configuration,
+        not repository content, so project trust doesn't decide them. A
+        lookup that raises leaves the specialist blocked (``__call__``) rather
+        than running without its guards.
+        """
+        if self._hook_runner_for is not None:
+            return self._hook_runner_for(project_root)
+        return HookRunner(self.settings) if self.settings is not None else None
 
     def _run_node(self, node: PlanNode, graph: PlanGraph) -> SpecialistResult:
         # Specialists run in Full-auto, which an organization can leave out
@@ -373,6 +395,7 @@ class LocalSpecialistRunner:
         # protected branches / budget cap / external paths during tool dispatch.
         session._settings_ref = self.settings
         session._mcp_manager = self.mcp_manager
+        session.hook_runner = self._hook_runner(project_root)
 
         result = self._drive_session(session, node, graph)
 
@@ -470,6 +493,25 @@ class LocalSpecialistRunner:
         full_text = "".join(text_chunks).strip() or crash_msg
         duration_ms = (time.time() - started_at) * 1000.0
 
+        if self.cancel_event.is_set():
+            # Stopped: the node is abandoned and nothing more is asked of
+            # the model. Repairing a planner's or verifier's envelope below
+            # would be a model request of its own, after the person pressed
+            # Stop.
+            return SpecialistResult(
+                status=NodeStatus.ABANDONED,
+                confidence=0.0,
+                summary="Stopped before this step finished.",
+                data={
+                    "tool_calls": tool_calls,
+                    "error_count": error_count,
+                    "step_count": step_count,
+                    "hit_step_limit": hit_step_limit,
+                    "duration_ms": round(duration_ms, 1),
+                    "structured_output_repaired": False,
+                },
+            )
+
         # Did the specialist actually produce something? Used to soften the
         # step-limit penalty when the work landed despite running long.
         produced_output = bool(full_text) or tool_calls > 0
@@ -555,7 +597,10 @@ class LocalSpecialistRunner:
         The repository's ``allow`` rules count only while the user trusts the
         project and the file is the version ``trust`` read
         (gui/workspace_trust.py). Nobody can answer a specialist's approval
-        prompt, so a ``prompt`` rule refuses the call.
+        prompt, so a ``prompt`` rule refuses the call unless the person's
+        ``permission_request`` hook allows it (_hook_runner). An organization
+        ``prompt`` rule is refused without asking the hook
+        (Session._permission_hook_decision).
         """
         return project_execution_policy(
             "full-auto", project_root, honor_allows=trust.honor_policy_allows, policy_digest=trust.policy_digest,

@@ -314,9 +314,9 @@ def start_autonomous_mission(
     What this does:
     1. Parses the spec, builds the roadmap, persists to disk.
     2. Builds production hooks via `autonomous_factory`.
-    3. Wires `IntentService.on_event` so terminal sub-mission events
-       reach both the GUI (existing chain) and the dispatch tracker
-       (so `wait_for_dispatch` unblocks).
+    3. Binds the GUI emitter as `IntentService.on_event` and adds the
+       dispatch tracker as a listener, so terminal sub-mission events
+       reach both (and `wait_for_dispatch` unblocks).
     4. Constructs + starts the daemon. Registers it on AppState.
     5. Returns the daemon so the caller can stop / inspect it.
 
@@ -731,31 +731,23 @@ def _spawn_autonomous_daemon(
     `start_autonomous_mission` (fresh start) and
     `resume_autonomous_mission` (existing roadmap on disk).
 
-    Builds production hooks, wires the IntentService combined
-    callback, hardcodes PLAN_DEEP as the planner spec (v0.5.4a1
+    Builds production hooks, adds the dispatch tracker as an
+    IntentService listener for the daemon's lifetime, hardcodes
+    PLAN_DEEP as the planner spec (v0.5.4a1
     consolidation — was per-tier-routed via PLANNER_BY_TIER), and
     constructs + starts the daemon, registers on AppState. The
     roadmap is assumed to already be persisted to disk — caller's
     job.
     """
-    # Prep the dispatch tracker — must be ready BEFORE we wire
-    # IntentService.on_event so we don't lose any terminal events.
+    # The dispatch tracker hears the sub-missions' terminal events as a
+    # listener of the service (below), not through `on_event`: every intent
+    # command from the page rebinds that to its own connection, which cut a
+    # tracker there off and left `wait_for_dispatch` waiting.
     tracker = DispatchTracker()
 
-    # Wrap the existing on_event chain so terminal sub-mission events
-    # ALSO reach the tracker. The GUI emitter still gets every event
-    # (so the chat shows mid-iteration tool calls naturally).
-    def _combined(ws_event: dict) -> None:
-        try:
-            tracker.feed_event(ws_event)
-        except Exception:
-            logger.debug("tracker.feed_event raised", exc_info=True)
-        try:
-            on_event(ws_event)
-        except Exception:
-            logger.debug("on_event raised", exc_info=True)
-
-    intent_service: IntentService = state.get_intent_service(on_event=_combined)
+    # The page's emitter gets every event, so the chat shows mid-iteration
+    # tool calls naturally.
+    intent_service: IntentService = state.get_intent_service(on_event=on_event)
 
     # The daemon's stop_event is what the dispatch tracker's wait()
     # listens on for fast user-stop unblocking. Build it here, pass
@@ -792,6 +784,10 @@ def _spawn_autonomous_daemon(
         planner_specialization=planner_spec,
         specialist_backend_resolver=specialist_resolver,
         mcp_manager=getattr(state, "mcp_manager", None),
+        # The reflect pass's specialist runs the person's hooks like the
+        # others (AppState.specialist_hook_runner); a stub state without it
+        # gets the Settings hooks (LocalSpecialistRunner._hook_runner).
+        hook_runner_for=getattr(state, "specialist_hook_runner", None),
     )
 
     config = AutonomousMissionConfig(
@@ -835,6 +831,12 @@ def _spawn_autonomous_daemon(
         state._autonomous_daemons = daemons_dict
     daemons_dict[intent_id] = daemon
 
+    # Listening starts before the first dispatch and ends with the daemon's
+    # thread, so a finished mission doesn't go on collecting other plans'
+    # outcomes.
+    listener = tracker.feed_event
+    hooks.exit_hook = lambda: intent_service.remove_listener(listener)
+    intent_service.add_listener(listener)
     daemon.start()
     return daemon
 

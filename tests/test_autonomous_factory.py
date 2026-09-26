@@ -16,12 +16,14 @@ from __future__ import annotations
 
 import threading
 import time
+from unittest.mock import MagicMock, patch
 
 
 from lumi.gui.autonomous_factory import (
     DispatchTracker,
     build_reflect_goal,
     make_check_context_factory,
+    make_reflect_runner,
     parse_reflect_verdict,
     _last_balanced_json_block,
 )
@@ -29,6 +31,7 @@ from lumi.gui.roadmap import (
     AcceptanceCriterion,
     Roadmap,
 )
+from lumi.orchestration import IntentService, NodeSpecialization, NodeStatus, SpecialistResult
 from lumi.orchestration.reflect import ReflectPassResult
 
 
@@ -127,6 +130,38 @@ class TestDispatchTracker:
         # Doesn't raise.
         tracker.feed_event({"event": "intent.complete"})
         tracker.feed_event({})
+
+    def test_a_cancelled_sub_mission_releases_the_wait_before_it_stops(self, tmp_path, monkeypatch):
+        # The stall ceiling cancels a sub-mission that may never stop by
+        # itself (a hung tool) and relies on the cancel to end this wait.
+        monkeypatch.setenv("LUMI_STATE_HOME", str(tmp_path / "state"))
+        tracker = DispatchTracker()
+        service = IntentService(project_path=str(tmp_path), backend=MagicMock(),
+                                all_tools=[], on_event=tracker.feed_event)
+        running, release = threading.Event(), threading.Event()
+
+        def hung(node, graph):
+            running.set()
+            release.wait(timeout=10)
+            return SpecialistResult(status=NodeStatus.ABANDONED, confidence=0.0)
+
+        with patch("lumi.orchestration.intent_service.LocalSpecialistRunner", side_effect=lambda **kw: hung):
+            intent_id = service.start_intent("hang")
+            tracker.watch(intent_id)
+            assert running.wait(timeout=5)
+            assert service.cancel(intent_id) is True
+            # A deadline turns a wait that never ends into a failure, not a hang.
+            give_up = threading.Event()
+            deadline = threading.Timer(3, give_up.set)
+            deadline.start()
+            outcome = tracker.wait(intent_id, stop_event=give_up, poll_seconds=0.05)
+            deadline.cancel()
+            still_running = service._get(intent_id).thread.is_alive()
+            release.set()
+
+        assert outcome.success is False
+        assert outcome.error == "cancelled"
+        assert still_running
 
     def test_forget_drops_state(self):
         tracker = DispatchTracker()
@@ -368,6 +403,143 @@ class TestLastBalancedJsonBlock:
     def test_braces_inside_string_dont_count(self):
         block = _last_balanced_json_block('{"text": "has {brace} inside"}')
         assert block == '{"text": "has {brace} inside"}'
+
+
+# ── make_reflect_runner: what the GUI hears of a REFLECT pass ───────────
+
+
+_CONTINUE = '```json\n{"verdict": "continue", "summary": "one criterion to go"}\n```'
+
+
+def _reflect_runner(tmp_path, events, *, cancel_event=None):
+    return make_reflect_runner(
+        backend=object(),
+        project_path=str(tmp_path),
+        project_instructions="",
+        settings=None,
+        roadmap_path=str(tmp_path / "roadmap.md"),
+        cancel_event=cancel_event,
+        on_session_event=events.append,
+    )
+
+
+def _one_browser_check_left():
+    rm = _build_test_roadmap([
+        ("bash", "tests pass", True),
+        ("chrome", "the settings page shows a toggle", False),
+        ("manual", "the toggle reads well", False),
+    ])
+    return rm, ReflectPassResult(
+        chrome_pending=[rm.acceptance_criteria[1]],
+        manual_pending=[rm.acceptance_criteria[2]],
+    )
+
+
+def test_reflect_session_events_are_tagged_and_fall_within_their_pass(tmp_path):
+    """The GUI keeps a REFLECT pass's session out of the conversation's turn
+    by the `_source` tag IntentService gives a plan's specialists, and draws
+    each event under the pass whose reflect.start came before it (app.js,
+    "Plan activity")."""
+    events: list = []
+    originals: list[dict] = []
+    nodes: list[str] = []
+
+    def runner_factory(**kwargs):
+        forward = kwargs["on_session_event"]
+
+        def runner(node, graph):
+            assert node.specialization == NodeSpecialization.REFLECT
+            nodes.append(node.id)
+            for event in (
+                {"event": "session.start", "model": "stub"},
+                {"event": "tool.call", "name": "file_edit", "call_id": "call_1",
+                 "arguments": {"path": "roadmap.md"}},
+                {"event": "session.end", "outcome": "changed_unverified"},
+            ):
+                originals.append(event)
+                forward(event)
+            return SpecialistResult(status=NodeStatus.DONE, confidence=1.0, summary=_CONTINUE)
+
+        return runner
+
+    rm, pass_result = _one_browser_check_left()
+    run_reflect = _reflect_runner(tmp_path, events)
+    with patch("lumi.gui.autonomous_factory.LocalSpecialistRunner", side_effect=runner_factory):
+        first = run_reflect(rm, pass_result)
+        second = run_reflect(rm, pass_result, decision_context="User chose option `a`.")
+    assert first.verdict == second.verdict == "continue"
+
+    session_kinds = {"session.start", "tool.call", "session.end"}
+    session = [e for e in events if e["event"] in session_kinds]
+    assert len(session) == 6, "two passes, three events each"
+    assert all(e["_source"] == "intent" for e in session)
+    assert session[1]["arguments"] == {"path": "roadmap.md"}
+    assert all("_source" not in e and "intent_id" not in e for e in originals), "the session's own events stay as they were"
+
+    # Each pass has an id of its own, and is named for the GUI.
+    starts = [e for e in events if e["event"] == "reflect.start"]
+    assert len({e["intent_id"] for e in starts}) == 2
+    assert [e["node_id"] for e in starts] == nodes
+    assert [e["text"] for e in starts] == [
+        "Check the roadmap against its acceptance criteria",
+        "Act on the decision, then check the roadmap against its acceptance criteria",
+    ]
+    assert {(e["specialization"], e["goal"]) for e in starts} == {
+        ("reflect", "1 of 2 criteria met, 1 to check in the browser, 1 for you to judge"),
+    }
+
+    # The daemon thread sends a pass's start, its session, then its done.
+    running = None
+    seen: dict[str, int] = {}
+    for event in events:
+        if event["event"] == "reflect.start":
+            assert running is None
+            running = event["intent_id"]
+        elif event["event"] == "reflect.done":
+            assert event["intent_id"] == running
+            assert (event["status"], event["error"]) == ("done", "")
+            running = None
+        else:
+            assert event["intent_id"] == running, f"{event['event']} outside its pass"
+            seen[running] = seen.get(running, 0) + 1
+    assert running is None
+    assert sorted(seen.values()) == [3, 3]
+
+
+def test_reflect_done_says_whether_the_pass_finished_was_stopped_or_broke(tmp_path):
+    """A stop interrupts the pass's session, whose error the runner reports
+    as BLOCKED: the GUI shows that pass as stopped, not broken."""
+    events: list = []
+    stop = threading.Event()
+
+    def finishes(node, graph):
+        return SpecialistResult(status=NodeStatus.DONE, confidence=1.0, summary=_CONTINUE)
+
+    def stopped_mid_session(node, graph):
+        stop.set()
+        return SpecialistResult(status=NodeStatus.BLOCKED, confidence=0.0, summary="")
+
+    def breaks(node, graph):
+        raise RuntimeError("boom")
+
+    rm, pass_result = _one_browser_check_left()
+    run_reflect = _reflect_runner(tmp_path, events, cancel_event=stop)
+    with patch("lumi.gui.autonomous_factory.LocalSpecialistRunner",
+               side_effect=lambda **kwargs: finishes):
+        finished = run_reflect(rm, pass_result)
+    with patch("lumi.gui.autonomous_factory.LocalSpecialistRunner",
+               side_effect=lambda **kwargs: stopped_mid_session):
+        run_reflect(rm, pass_result)
+    stop.clear()
+    with patch("lumi.gui.autonomous_factory.LocalSpecialistRunner",
+               side_effect=lambda **kwargs: breaks):
+        broken = run_reflect(rm, pass_result)
+
+    ends = [(e["status"], e["error"]) for e in events if e["event"] == "reflect.done"]
+    assert ends == [("done", ""), ("abandoned", ""), ("blocked", "boom")]
+    # What the daemon gets back is unchanged.
+    assert finished.verdict == "continue" and not finished.error
+    assert broken.error == "REFLECT runner raised: boom"
 
 
 # ── make_check_context_factory ──────────────────────────────────────────

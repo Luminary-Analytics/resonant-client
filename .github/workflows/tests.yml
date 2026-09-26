@@ -71,4 +71,4 @@ jobs:
           node-version: '22'
 
       - name: Test draft recovery and appearance
-        run: node --test tests/ui_recovery.test.cjs tests/appearance.test.cjs tests/autonomous_view.test.cjs tests/vscode_extension.test.cjs
+        run: node --test tests/ui_recovery.test.cjs tests/appearance.test.cjs tests/autonomous_view.test.cjs tests/vscode_extension.test.cjs tests/voice_input.test.cjs

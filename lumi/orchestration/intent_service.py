@@ -4,20 +4,35 @@ IntentService — owns active intents, drives `GraphWalker` in worker threads.
 One service instance per AppState. Each `start_intent(text)` returns immediately
 with an intent_id; the actual work happens on a background thread. Events are
 forwarded through an `on_event` callback (the GUI wires this to a WebSocket
-emitter). Every state change persists to disk so the user can reload mid-run.
+emitter, and rebinds it for each connection) and to every listener added with
+`add_listener`. Every state change persists to disk so the user can reload
+mid-run.
 
-Cancellation: each active intent owns a `threading.Event`. `cancel()` sets it;
-the walker checks it between nodes and the runner checks it before each
-specialist Session.
+Cancellation: each active intent owns a `threading.Event`. `cancel()` sets it
+and emits `intent.cancelling`. The running specialist's Session shares the
+event, so it makes no further model request or tool call; the walker starts no
+new node, abandons those that never ran (`plan.stopped`), and the worker then
+emits `intent.cancelled`, once, when the plan has stopped.
 
-Pause: each active intent owns a `pause_event`. `pause()` sets it; the worker
-loops on a short sleep while the flag is up, between node executions. `resume()`
-clears it.
+Pause: each active intent owns a `pause_event`. `pause()` sets it; the walker
+starts no new node while the flag is up (the specialist already running
+finishes first). `resume()` clears it. Cancel, pause and resume apply only
+while the intent's worker runs: a finished intent reports False.
+
+Viewers: a plan the person follows in the Plan tab (/plan, a Mission's Build
+this roadmap) is started with a `viewer`, the emitter of the page that
+started it, and its events go there instead of `on_event`. A page that
+connects while the plan runs takes it over (`attach_viewer`), as does one
+that acts on it (`route_to`), so a reload doesn't leave the plan's events
+going to a socket that is gone. An autonomous session's plans have no
+viewer: their events keep reaching `on_event`, where the session waits for
+their end.
 """
 
 from __future__ import annotations
 
 import logging
+import os
 import threading
 import time
 from dataclasses import dataclass, field
@@ -65,6 +80,29 @@ class _ActiveIntent:
     started_at: float = field(default_factory=time.time)
     completed_at: float = 0.0
     status: str = "running"  # "running" | "paused" | "completed" | "cancelled" | "failed"
+    # The project it runs in. A rebuilt service adopts running intents, even
+    # after a project switch.
+    project_path: str = ""
+    # Where its events go instead of `on_event`: the page that started it,
+    # or the last one to connect while it ran or to act on it. None for an
+    # autonomous session's plan.
+    viewer: Optional[Callable[[dict], None]] = None
+
+
+def _path_key(path: str) -> str:
+    return os.path.normcase(os.path.normpath(path or ""))
+
+
+def _graph_dict(graph: PlanGraph) -> dict:
+    """`graph.to_dict()` for a graph its walker thread may be extending."""
+    for _ in range(3):
+        try:
+            return graph.to_dict()
+        except RuntimeError:
+            # A node was added while the nodes were being read; adding one is
+            # quick, so reading again succeeds.
+            continue
+    return graph.to_dict()
 
 
 # ── The service ─────────────────────────────────────────────────────────
@@ -84,6 +122,7 @@ class IntentService:
         on_event: Optional[Callable[[dict], None]] = None,
         specialist_backend_resolver: Optional[Callable[[str], Any]] = None,
         mcp_manager: Any = None,
+        hook_runner_for: Optional[Callable[[str], Any]] = None,
     ):
         self.project_path = project_path
         self.backend = backend
@@ -91,17 +130,40 @@ class IntentService:
         self.project_instructions = project_instructions or ""
         self.settings = settings
         self.on_event = on_event or (lambda ev: None)
+        # Replaced, never changed in place, so `_emit` reads it without the lock.
+        self._listeners: tuple[Callable[[dict], None], ...] = ()
         # v0.5.8a1 — per-specialist backend routing. See
         # LocalSpecialistRunner.__init__ for the resolver contract.
         self.specialist_backend_resolver = specialist_backend_resolver
         self.mcp_manager = mcp_manager
+        # The person's hooks for each specialist (LocalSpecialistRunner._hook_runner).
+        self.hook_runner_for = hook_runner_for
         self._active: dict[str, _ActiveIntent] = {}
         self._lock = threading.Lock()
+
+    # ── Listeners ──────────────────────────────────────────────────
+
+    def add_listener(self, listener: Callable[[dict], None]) -> None:
+        """Send `listener` every event too, until `remove_listener`.
+
+        `on_event` belongs to the page: the app rebinds it to the connection
+        of each intent command. Anything else that needs the events listens
+        here, or the next command cuts it off; an autonomous mission's
+        dispatch tracker would then wait for sub-missions that have ended.
+        """
+        with self._lock:
+            if listener not in self._listeners:
+                self._listeners = (*self._listeners, listener)
+
+    def remove_listener(self, listener: Callable[[dict], None]) -> None:
+        with self._lock:
+            self._listeners = tuple(known for known in self._listeners if known != listener)
 
     # ── Lifecycle ──────────────────────────────────────────────────
 
     def start_intent(
         self, text: str, *, planner_specialization: Optional[str] = None,
+        viewer: Optional[Callable[[dict], None]] = None,
     ) -> str:
         """Bootstrap a fresh plan-graph from `text` and start a worker thread.
 
@@ -118,6 +180,11 @@ class IntentService:
 
         Raises ValueError for empty text, an unknown specialization, or an
         organization policy that doesn't allow Full-auto (lumi/policy.py).
+
+        `viewer` receives the plan's events instead of `on_event`: the
+        emitter of the page that follows it in the Plan tab. An autonomous
+        session leaves it out, since it waits on `on_event` for the end of
+        each plan it starts.
         """
         text = (text or "").strip()
         if not text:
@@ -161,16 +228,18 @@ class IntentService:
             audit_logger=self._make_audit_logger(graph.intent_id),
             specialist_backend_resolver=self.specialist_backend_resolver,
             mcp_manager=self.mcp_manager,
+            hook_runner_for=self.hook_runner_for,
         )
         walker = GraphWalker(
             runner=runner,
             on_event=lambda ev: self._on_walker_event(graph, ev),
             cancel_event=cancel_event,
+            pause_event=pause_event,
         )
 
         thread = threading.Thread(
             target=self._run_walker,
-            args=(graph, walker, cancel_event, pause_event),
+            args=(graph, walker, cancel_event),
             name=f"intent-{graph.intent_id[:8]}",
             daemon=True,
         )
@@ -181,6 +250,8 @@ class IntentService:
             cancel_event=cancel_event,
             pause_event=pause_event,
             thread=thread,
+            project_path=self.project_path,
+            viewer=viewer,
         )
         with self._lock:
             self._active[graph.intent_id] = active
@@ -200,38 +271,114 @@ class IntentService:
         return graph.intent_id
 
     def cancel(self, intent_id: str) -> bool:
-        active = self._get(intent_id)
+        active = self._get_running(intent_id)
         if not active:
             return False
         active.cancel_event.set()
         active.status = "cancelled"
-        log_decision(self.project_path, intent_id, summary="intent cancel requested")
-        self._emit({"event": "intent.cancelled", "intent_id": intent_id})
+        log_decision(active.project_path, intent_id, summary="intent cancel requested")
+        # Not yet `intent.cancelled`: the running step is still ending. The
+        # worker sends that when the walk is over.
+        self._emit({"event": "intent.cancelling", "intent_id": intent_id})
         return True
 
     def pause(self, intent_id: str) -> bool:
-        active = self._get(intent_id)
+        active = self._get_running(intent_id)
         if not active:
             return False
         active.pause_event.set()
         active.status = "paused"
-        log_decision(self.project_path, intent_id, summary="intent paused")
+        log_decision(active.project_path, intent_id, summary="intent paused")
         self._emit({"event": "intent.paused", "intent_id": intent_id})
         return True
 
     def resume(self, intent_id: str) -> bool:
-        active = self._get(intent_id)
+        active = self._get_running(intent_id)
         if not active:
             return False
         active.pause_event.clear()
         active.status = "running"
-        log_decision(self.project_path, intent_id, summary="intent resumed")
+        log_decision(active.project_path, intent_id, summary="intent resumed")
         self._emit({"event": "intent.resumed", "intent_id": intent_id})
         return True
 
     def list_active(self) -> list[str]:
         with self._lock:
             return list(self._active.keys())
+
+    def adopt_running(self, previous: Optional["IntentService"]) -> None:
+        """Keep a replaced service's running intents reachable from this one.
+
+        The app builds a new service when its backend, project or tools
+        change. An intent started before that keeps running under the service
+        that started it, and its events still flow from there; without this,
+        its Stop, Pause and Resume would report it finished while it carried
+        on.
+        """
+        if previous is None or previous is self:
+            return
+        with previous._lock:
+            running = {
+                intent_id: active
+                for intent_id, active in previous._active.items()
+                if active.thread.is_alive()
+            }
+        with self._lock:
+            for intent_id, active in running.items():
+                self._active.setdefault(intent_id, active)
+
+    def attach_viewer(
+        self, viewer: Callable[[dict], None], *, project_path: Optional[str] = None,
+    ) -> list[dict]:
+        """Hand the running plans to a page that connects, and describe them.
+
+        After a reload the page that started a plan is gone, and so is the
+        socket its events went to. Every plan started with a viewer that is
+        still running (in `project_path`, when given) sends its events to
+        `viewer` from now on. They are returned oldest first, for the page to
+        follow: id, text, whether the plan is paused or stopping, and its
+        graph as it stands. The graph is read after the switch, so a change
+        it misses reaches `viewer` as an event.
+
+        An autonomous session's plans are left alone: they have no viewer.
+        """
+        wanted = _path_key(project_path) if project_path else None
+        with self._lock:
+            candidates = sorted(self._active.values(), key=lambda active: active.started_at)
+        plans: list[dict] = []
+        for active in candidates:
+            if active.viewer is None or not self._is_running(active):
+                continue
+            if wanted is not None and _path_key(active.project_path) != wanted:
+                continue
+            active.viewer = viewer
+            # Checked again after the switch: a plan listed as running
+            # announces its end to `viewer`; one whose end went out
+            # meanwhile is left out.
+            if not self._is_running(active):
+                continue
+            plans.append({
+                "intent_id": active.intent_id,
+                "text": active.graph.intent,
+                "paused": active.pause_event.is_set(),
+                "stopping": active.cancel_event.is_set(),
+                "started_at": active.started_at,
+                "snapshot": _graph_dict(active.graph),
+            })
+        return plans
+
+    def route_to(self, intent_id: str, viewer: Callable[[dict], None]) -> bool:
+        """Send a plan's events to `viewer` from now on.
+
+        For a page that acts on a plan (Stop, Pause, ...) which another page
+        took over by connecting since. Refused for a plan started without a
+        viewer: an autonomous session's plans keep reaching `on_event`.
+        """
+        active = self._get(intent_id)
+        if active is None or active.viewer is None:
+            return False
+        active.viewer = viewer
+        return True
 
     def get_graph(self, intent_id: str) -> Optional[PlanGraph]:
         active = self._get(intent_id)
@@ -243,7 +390,9 @@ class IntentService:
     # ── Snapshots / restore ────────────────────────────────────────
 
     def list_snapshots(self, intent_id: str) -> list[dict]:
-        return list_snapshots(self.project_path, intent_id=intent_id)
+        active = self._get(intent_id)
+        project_path = active.project_path if active else self.project_path
+        return list_snapshots(project_path, intent_id=intent_id)
 
     def restore_snapshot(self, intent_id: str, ts_ms: int) -> bool:
         """Restore a graph from an old snapshot. The intent must not be running.
@@ -253,12 +402,15 @@ class IntentService:
         active = self._get(intent_id)
         if active and active.thread.is_alive():
             return False
-        snap = restore_snapshot(self.project_path, ts_ms=ts_ms, intent_id=intent_id)
+        project_path = active.project_path if active else self.project_path
+        snap = restore_snapshot(project_path, ts_ms=ts_ms, intent_id=intent_id)
         if not snap:
             return False
-        save_graph(snap, self.project_path)
+        save_graph(snap, project_path)
+        if active:
+            active.graph = snap
         log_decision(
-            self.project_path, intent_id,
+            project_path, intent_id,
             summary="snapshot restored", ts_ms=ts_ms,
         )
         self._emit({
@@ -277,11 +429,35 @@ class IntentService:
         with self._lock:
             return self._active.get(intent_id)
 
+    def _get_running(self, intent_id: str) -> Optional[_ActiveIntent]:
+        active = self._get(intent_id)
+        if active and self._is_running(active):
+            return active
+        return None
+
+    @staticmethod
+    def _is_running(active: _ActiveIntent) -> bool:
+        # Finished intents stay in `_active` for get_graph; pausing or
+        # cancelling one would only relabel it and announce a change that
+        # never happens. `completed_at` is set before the final event goes
+        # out, while the thread is still alive: a stop accepted after that
+        # would never be followed by `intent.cancelled`.
+        return active.thread.is_alive() and not active.completed_at
+
     def _emit(self, payload: dict) -> None:
-        try:
-            self.on_event(payload)
-        except Exception:
-            logger.exception("on_event handler raised; swallowing to keep worker alive")
+        # A plan's viewer, when it has one, replaces `on_event` for its events.
+        # It is read per event from the entry a rebuilt service shares: the
+        # service that started a plan keeps sending its events, and a page
+        # that took the plan over through the new service still gets them.
+        active = self._get(str(payload.get("intent_id") or ""))
+        send = active.viewer if active is not None and active.viewer is not None else self.on_event
+        # The page first: it hears that a plan ended before a listener, such
+        # as a mission's tracker, acts on it.
+        for handler in (send, *self._listeners):
+            try:
+                handler(payload)
+            except Exception:
+                logger.exception("Intent event handler raised; swallowing to keep worker alive")
 
     def _forward_session_event(self, intent_id: str, event: dict) -> None:
         """Wrap an engine-session event with the intent_id and ship to the GUI."""
@@ -365,6 +541,12 @@ class IntentService:
                     all_done=event.payload.get("all_done"),
                     node_count=event.payload.get("node_count"),
                 )
+            elif event.kind == "plan.stopped":
+                log_decision(
+                    self.project_path, graph.intent_id,
+                    summary="plan stopped",
+                    abandoned=len(event.payload.get("abandoned") or []),
+                )
         except Exception:
             logger.debug("audit log raised", exc_info=True)
 
@@ -385,23 +567,21 @@ class IntentService:
         graph: PlanGraph,
         walker: GraphWalker,
         cancel_event: threading.Event,
-        pause_event: threading.Event,
     ) -> None:
-        """Worker-thread entry point. Honors pause via a poll loop."""
+        """Worker-thread entry point. The walker honors pause before each node."""
         try:
-            # If paused before we even started, wait it out (with cancel-priority).
-            self._wait_while_paused(pause_event, cancel_event)
             walker.run(graph)
         except Exception as exc:
             logger.exception("Walker crashed for intent %s", graph.intent_id)
+            with self._lock:
+                if graph.intent_id in self._active:
+                    self._active[graph.intent_id].status = "failed"
+                    self._active[graph.intent_id].completed_at = time.time()
             self._emit({
                 "event": "intent.failed",
                 "intent_id": graph.intent_id,
                 "error": str(exc),
             })
-            with self._lock:
-                if graph.intent_id in self._active:
-                    self._active[graph.intent_id].status = "failed"
             return
 
         # Walker returned normally — mark done, snapshot final state.
@@ -411,10 +591,12 @@ class IntentService:
         except Exception:
             logger.debug("final persist raised", exc_info=True)
 
-        # Auto-extract a skill if this graph qualifies. Best-effort.
+        # Auto-extract a skill if this graph qualifies. Best-effort. A plan
+        # the person stopped isn't a procedure to repeat, even if every step
+        # that ran had finished.
         skill_id = None
         try:
-            if is_extraction_candidate(graph):
+            if not cancel_event.is_set() and is_extraction_candidate(graph):
                 skill = extract_skill(graph)
                 if skill:
                     skill_id = skill.id
@@ -440,9 +622,3 @@ class IntentService:
             "intent_id": graph.intent_id,
             "extracted_skill_id": skill_id,
         })
-
-    @staticmethod
-    def _wait_while_paused(pause_event: threading.Event, cancel_event: threading.Event) -> None:
-        # Cheap poll loop — pause is a low-frequency event so a 0.1s tick is fine.
-        while pause_event.is_set() and not cancel_event.is_set():
-            time.sleep(0.1)

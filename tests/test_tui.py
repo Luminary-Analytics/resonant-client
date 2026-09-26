@@ -550,12 +550,6 @@ class LocalOllama(StreamingBackend):
         return list(MODELS)
 
 
-def _no_settings():
-    # main() hands Settings to the audit log and the GitHub tools when it can
-    # load them. Unloaded, that process-wide state can't reach other tests.
-    raise RuntimeError("no Settings in this test")
-
-
 def _run_main(monkeypatch, tmp_path, argv: list[str], keys: str = "", *,
               detected=({"ollama": OLLAMA},), name: str = "ollama") -> str:
     """
@@ -571,7 +565,11 @@ def _run_main(monkeypatch, tmp_path, argv: list[str], keys: str = "", *,
     monkeypatch.setattr(tui, "_detect_backends", lambda *args: next(scans, detected[-1]))
     monkeypatch.setattr(tui, "create_backend", lambda kind, url, model=None: LocalOllama(url, model, name=name))
     monkeypatch.setattr(tui, "OllamaBackend", LocalOllama)  # so /model lists and switches models
-    monkeypatch.setattr("lumi.gui.settings.SettingsManager", _no_settings)
+    # Session construction now requires valid settings. Keep its audit, usage
+    # and trust state isolated while exercising the real terminal setup.
+    from lumi.gui.settings import SettingsManager
+    monkeypatch.setenv("LUMI_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.setattr("lumi.gui.settings.SettingsManager", lambda: SettingsManager(tmp_path / "settings.json"))
     monkeypatch.setattr(tui, "_history_path", lambda: tmp_path / "tui_history")
     shown = io.StringIO()
     output = Vt100_Output(shown, lambda: Size(rows=24, columns=WIDTH), term="xterm")

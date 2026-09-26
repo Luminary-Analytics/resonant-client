@@ -21,6 +21,8 @@ is the factory that builds those production hooks for live use.
 - `build_reflect_goal` — pure function that takes a roadmap +
   ReflectPassResult and produces the goal string for the REFLECT
   specialist. Easy to unit-test; no model required.
+- `reflect_pass_goal` — the one line the GUI shows for a REFLECT
+  pass, in place of that goal (its first line is `mode: full`).
 - `parse_reflect_verdict` — pure function that parses the JSON
   envelope from the REFLECT specialist's output. Tolerant of common
   drift modes (extra prose, fenced or unfenced JSON, missing keys).
@@ -40,6 +42,7 @@ import re
 import shutil
 import subprocess
 import threading
+import time
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -81,6 +84,10 @@ logger = logging.getLogger(__name__)
 _TERMINAL_EVENTS = frozenset({
     "intent.complete",
     "intent.failed",
+    # Sent the moment a cancel is accepted; `intent.cancelled` follows once
+    # the walk has stopped. The stall ceiling cancels a sub-mission that may
+    # never stop by itself and relies on the first to unblock its wait.
+    "intent.cancelling",
     "intent.cancelled",
 })
 
@@ -97,7 +104,9 @@ class DispatchTracker:
         1. `watch(intent_id)` BEFORE the corresponding sub-mission is
            dispatched (avoid losing events to a race).
         2. `wait(intent_id)` from the daemon thread.
-        3. Connect `feed_event` into IntentService's `on_event` chain.
+        3. Add `feed_event` as a listener of the IntentService
+           (`add_listener`), not as its `on_event`, which the app
+           rebinds to each connection's emitter.
     """
 
     def __init__(self) -> None:
@@ -122,7 +131,7 @@ class DispatchTracker:
 
         if kind == "intent.complete":
             outcome = DispatchOutcome(success=True, handle=intent_id)
-        elif kind == "intent.cancelled":
+        elif kind in ("intent.cancelling", "intent.cancelled"):
             outcome = DispatchOutcome(
                 success=False,
                 error="cancelled",
@@ -354,6 +363,22 @@ def build_reflect_goal(
     return "\n".join(lines)
 
 
+def reflect_pass_goal(roadmap: Roadmap, pass_result: ReflectPassResult) -> str:
+    """The line the GUI shows for a REFLECT pass: where the criteria stand
+    as it starts. The specialist's own goal (`build_reflect_goal`) is a
+    prompt, and its first line is `mode: full`."""
+    passed, total = roadmap.acceptance_summary()
+    line = f"{passed} of {total} criteria met"
+    browser = len(pass_result.chrome_pending)
+    if browser:
+        line += f", {browser} to check in the browser"
+    # `[manual]` criteria never count as met; the pass lists them for the person.
+    manual = len(pass_result.manual_pending)
+    if manual:
+        line += f", {manual} for you to judge"
+    return line
+
+
 def _criterion_status_label(c: AcceptanceCriterion) -> str:
     """Compact human-readable label for the criterion's current state.
     Used inside the REFLECT goal-text so the model has a quick index
@@ -554,6 +579,7 @@ def make_reflect_runner(
     on_session_event: Optional[Callable[[dict], None]] = None,
     specialist_backend_resolver: Optional[Callable[[str], Any]] = None,
     mcp_manager: Any = None,
+    hook_runner_for: Optional[Callable[[str], Any]] = None,
 ) -> Callable[..., FullReflectOutcome]:
     """Build a callable suitable for `DaemonHooks.run_full_reflect`.
 
@@ -570,18 +596,22 @@ def make_reflect_runner(
     `decision_context: str = ""` kwarg. When non-empty, it's threaded
     into the REFLECT prompt via `build_reflect_goal` so the model can
     act on the user's response to a previous decision_request.
+
+    `on_session_event` hears each pass as a one-step plan with an id of
+    its own (the pass's graph): `reflect.start`, then the specialist's
+    session events, tagged `_source: "intent"` with that id as
+    IntentService tags a plan's specialists, then `reflect.done`. The
+    tag keeps the session out of the conversation's turn; the GUI draws
+    the pass under a card of its own (app.js, "Plan activity").
     """
-    runner = LocalSpecialistRunner(
-        backend=backend,
-        project_path=project_path,
-        all_tools=list(AGENT_TOOLS) + (mcp_manager.get_all_tools() if mcp_manager else []),
-        project_instructions=project_instructions or "",
-        settings=settings,
-        cancel_event=cancel_event,
-        on_session_event=on_session_event,
-        specialist_backend_resolver=specialist_backend_resolver,
-        mcp_manager=mcp_manager,
-    )
+    all_tools = list(AGENT_TOOLS) + (mcp_manager.get_all_tools() if mcp_manager else [])
+    emit = on_session_event or (lambda ev: None)
+
+    def _emit_lifecycle(payload: dict) -> None:
+        try:
+            emit(payload)
+        except Exception:
+            logger.debug("on_session_event raised for %s", payload.get("event"), exc_info=True)
 
     def _run_reflect(
         roadmap: Roadmap,
@@ -600,17 +630,71 @@ def make_reflect_runner(
             specialization=NodeSpecialization.REFLECT,
         )
         graph.add_node(node)
+        pass_id = graph.intent_id
+
+        def _forward(event: dict) -> None:
+            # A copy, as IntentService._forward_session_event makes: the
+            # runner still reads the session's own event after this.
+            out = dict(event)
+            out["intent_id"] = pass_id
+            out["_source"] = "intent"
+            emit(out)
+
+        # A runner per pass, as IntentService builds one per plan, so the
+        # session's events carry this pass's id.
+        runner = LocalSpecialistRunner(
+            backend=backend,
+            project_path=project_path,
+            all_tools=all_tools,
+            project_instructions=project_instructions or "",
+            settings=settings,
+            cancel_event=cancel_event,
+            on_session_event=_forward,
+            specialist_backend_resolver=specialist_backend_resolver,
+            mcp_manager=mcp_manager,
+            hook_runner_for=hook_runner_for,
+        )
+
+        _emit_lifecycle({
+            "event": "reflect.start",
+            "intent_id": pass_id,
+            "text": (
+                "Act on the decision, then check the roadmap against its acceptance criteria"
+                if decision_context
+                else "Check the roadmap against its acceptance criteria"
+            ),
+            "node_id": node.id,
+            "specialization": NodeSpecialization.REFLECT,
+            "goal": reflect_pass_goal(roadmap, pass_result),
+            "ts": time.time(),
+        })
+
+        def _done(status: str, error: str = "") -> None:
+            _emit_lifecycle({
+                "event": "reflect.done",
+                "intent_id": pass_id,
+                "node_id": node.id,
+                "status": status,
+                "error": error,
+                "ts": time.time(),
+            })
 
         try:
             result = runner(node, graph)
         except Exception as exc:
             logger.exception("REFLECT runner crashed")
+            _done(NodeStatus.BLOCKED, str(exc))
             return FullReflectOutcome(
                 pass_result=pass_result,
                 verdict="continue",
                 error=f"REFLECT runner raised: {exc}",
                 summary="REFLECT model session failed",
             )
+
+        # A stop during the pass ends its session with an error, which the
+        # runner reports as BLOCKED: it was stopped, not broken.
+        stopped = result.status == NodeStatus.ABANDONED or bool(cancel_event and cancel_event.is_set())
+        _done(NodeStatus.ABANDONED if stopped else result.status)
 
         if result.status == NodeStatus.ABANDONED:
             return FullReflectOutcome(
@@ -727,6 +811,7 @@ def build_autonomous_mission_hooks(
     planner_specialization: Optional[str] = None,
     specialist_backend_resolver: Optional[Callable[[str], Any]] = None,
     mcp_manager: Any = None,
+    hook_runner_for: Optional[Callable[[str], Any]] = None,
     enable_skill_extraction: bool = True,
     enable_skill_curator: bool = True,
     enable_skill_loader: bool = True,
@@ -735,9 +820,10 @@ def build_autonomous_mission_hooks(
     implementation.
 
     The caller is responsible for:
-    1. Connecting `dispatch_tracker.feed_event` into the IntentService's
-       `on_event` chain (so terminal sub-mission events reach the
-       tracker; other events still flow to the GUI).
+    1. Adding `dispatch_tracker.feed_event` as a listener of
+       `intent_service` before the daemon starts (so terminal
+       sub-mission events reach the tracker) and removing it when the
+       daemon ends (`DaemonHooks.exit_hook`).
     2. Calling `daemon.stop()` will also need to set `daemon_stop_event`
        — the daemon's own `_stop_event` is the real signal; this
        parameter is the same Event passed in so the dispatch wait
@@ -931,6 +1017,7 @@ def build_autonomous_mission_hooks(
             on_session_event=on_session_event,
             specialist_backend_resolver=specialist_backend_resolver,
             mcp_manager=mcp_manager,
+            hook_runner_for=hook_runner_for,
         ),
         check_context_factory=make_check_context_factory(
             project_path=project_path,

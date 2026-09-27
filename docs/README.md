@@ -38,6 +38,7 @@ guide belongs in that navigation; historical records stay out of it.
 - [Install, configure providers, and run](../README.md)
 - [Plans: free for individuals, and what's planned for organizations](plans.md)
 - [Lumi account and Lumi Cloud: signing in, enrolling this computer, sharing a conversation, managed enrollment](lumi-cloud.md)
+- [Sending feedback: what a report holds, what never leaves, and the contract with Lumi Cloud](feedback.md)
 - [Projects, sessions, search, and provider selection](desktop-workflow.md)
 - [The terminal UI: permission modes, project trust and commands](terminal-ui.md)
 - [Previews, project notes, skills, and named acceptance checks](priority-improvements.md)

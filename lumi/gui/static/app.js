@@ -4367,6 +4367,15 @@ class LumiApp {
             case 'session_share':
                 this._renderShareDialog(event);
                 break;
+            case 'feedback_status':
+                this.handleFeedbackStatus?.(event);
+                break;
+            case 'feedback_preview':
+                this.handleFeedbackPreview?.(event);
+                break;
+            case 'feedback_result':
+                this.handleFeedbackResult?.(event);
+                break;
             case 'team_library':
                 this.teamLibrary = event;
                 this._updateTeamPromptsButton();
@@ -7429,6 +7438,8 @@ class LumiApp {
                         this.send({ command: 'save_diagnostics' });
                         break;
                     case 'about': this._settingsActivePage = 'about'; this.switchView('settings'); break;
+                    // The menu item can't take focus, so focus returns to the Menu button.
+                    case 'send-feedback': this.openFeedbackDialog?.(menuButton); break;
                 }
                 closeAppMenu();
             });
@@ -7566,6 +7577,7 @@ class LumiApp {
             { id: 'preview',    icon: '\u25A1', label: 'Toggle preview panel',     hint: '',        action: () => document.getElementById('preview-toggle')?.click() },
             { id: 'sidebar',    icon: '\u2261', label: 'Toggle sidebar',           hint: 'Ctrl+Shift+D', action: () => document.getElementById('sidebar-toggle')?.click() },
             { id: 'shortcuts',  icon: '\u2328', label: 'Keyboard shortcuts',       hint: 'Ctrl+/', action: () => this.toggleShortcutsOverlay() },
+            { id: 'send-feedback', icon: '\u2709', label: 'Send feedback',          hint: '',       action: () => this.openFeedbackDialog?.() },
             ...(this._canOpenInBrowser()
                 ? [{ id: 'open-in-browser', icon: '\u2197', label: 'Open in browser', hint: '', action: () => this._openInBrowser() }]
                 : []),
@@ -13812,6 +13824,7 @@ applyMixin(LumiApp.prototype, window.LumiSettingsView, 'settings-view');
 applyMixin(LumiApp.prototype, window.LumiRunCards, 'run-cards');
 applyMixin(LumiApp.prototype, window.LumiEmployeeTasks, 'employee-tasks');
 applyMixin(LumiApp.prototype, window.LumiPanelsView, 'panels-view');
+applyMixin(LumiApp.prototype, window.LumiFeedbackView, 'feedback-view');
     applyMixin(LumiApp.prototype, window.LumiSwarmView, 'swarm-view');
     applyMixin(LumiApp.prototype, window.LumiCollaborationView, 'collaboration-view');
     applyMixin(LumiApp.prototype, window.LumiManagedCollaborationView, 'managed-collaboration-view');

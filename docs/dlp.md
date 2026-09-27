@@ -39,6 +39,12 @@ provider: recall queries, memories (including the codebase index's file
 summaries) and session summaries. Text a block rule matches isn't sent there,
 redactions apply, and a withheld entry (below) never goes into a summary.
 
+They apply to [feedback](feedback.md) sent to Lumi Cloud too (purpose `feedback`): the message and reply-to
+address as `prompt`, the diagnostics as `attachment`. A block refuses the report, redactions apply to what is
+sent, and a reply-to address the rules would change is left out. The copy the dialog offers instead has the
+same redactions, and there's none when a block refused the report. In offline mode a report that can't leave
+is refused before the rules see it.
+
 The check sees each request as it will be sent, after the
 [secret scan](../README.md) has removed saved keys: the instructions (Lumi's
 own, the project's instructions and notes, memory, team notes, skills,
@@ -287,7 +293,7 @@ request that couldn't be checked: too large, the service failed (with
   DLP checks what Lumi hands them (instructions, history and the message), not
   what they read themselves. Turn them off with `security.cli_adapters: false`
   if that matters.
-- Text that isn't a model request, apart from Engram's: dictation audio (its
+- Text that isn't a model request, apart from Engram's and feedback: dictation audio (its
   transcript is checked when it's sent), MCP servers' and web tools' requests,
   sharing a conversation or a hand-off with Lumi Cloud, SONN task graphs, and
   the audit log's own content capture and OpenTelemetry export.

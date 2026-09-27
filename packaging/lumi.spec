@@ -109,6 +109,9 @@ datas = [
      "lumi/gui/static"),
     (str(PKG_ROOT / "gui" / "static" / "panel_frame.js"),
      "lumi/gui/static"),
+    # Send feedback: the dialog (lumi/feedback.py).
+    (str(PKG_ROOT / "gui" / "static" / "feedback_view.js"),
+     "lumi/gui/static"),
     (str(PKG_ROOT / "gui" / "static" / "local_access.js"),
      "lumi/gui/static"),
     (str(PKG_ROOT / "gui" / "static" / "appearance.js"),

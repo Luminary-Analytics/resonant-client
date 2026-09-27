@@ -149,6 +149,10 @@ class LumiSettingsView {
         document.getElementById('account-connections')?.addEventListener('click', () => openSettings('provider_connections'));
         document.getElementById('account-usage')?.addEventListener('click', () => openSettings('sonn_account'));
         document.getElementById('account-pet')?.addEventListener('click', () => this._setCompanion(!this.settings?.general?.show_companion));
+        document.getElementById('account-feedback')?.addEventListener('click', () => {
+            this._closeAccountMenu();
+            this.openFeedbackDialog?.(trigger);
+        });
         document.getElementById('echo-hide')?.addEventListener('click', () => {
             this._setCompanion(false); trigger.focus();
         });
@@ -329,7 +333,9 @@ class LumiSettingsView {
         return [
             row(`Lumi ${esc(info.version)}`, `The coding agent by Luminary Analytics. ${managed}`),
             row('Free for individuals', 'The whole agent, every tool, provider and feature in this app, works without an account: with your own API keys, your ChatGPT sign-in, or models on your own computer.'),
-            row('What leaves this computer', 'Your prompts, code and keys go only to the model providers you choose. Luminary Analytics receives only the update check, which you can turn off in Updates.'),
+            row('What leaves this computer', 'Your prompts, code and keys go only to the model providers you choose. Luminary Analytics receives only the update check, which you can turn off in Updates. Feedback you choose to send goes to the Lumi Cloud you use.'),
+            `<div class="settings-row"><div class="settings-row-copy"><span class="settings-row-label">Feedback</span><div class="settings-row-hint">Report a problem or suggest an idea. You see what’s sent before it goes, and your keys never are.</div></div>
+                <div class="settings-row-value"><button type="button" class="btn-sm" id="about-send-feedback" aria-haspopup="dialog">Send feedback…</button></div></div>`,
             row('For teams and organizations', 'Lumi Cloud adds central policy, members, devices and usage reporting; if your organization uses it, sign in from Lumi account. Without it, organizations set policy on each computer (see docs/enterprise-policy.md).'),
             row('License', `Lumi’s source is available under the ${esc(info.license)} license.${info.notices ? ` Third-party components and their licenses: <code>${esc(info.notices)}</code>` : ''}`),
         ].join('');
@@ -1831,7 +1837,7 @@ class LumiSettingsView {
             {id:'model_evaluations', title:'Model evaluations', group:'Advanced', icon:'chart', description:'Compare models on your own tasks, and review model quality and runtime diagnostics.', sections:['model_comparisons', 'model_evaluations'], keywords:'compare comparison benchmark evaluate models tasks switch pass rate'},
             {id:'iteration_checkpoints', title:'Checkpoints & recovery', group:'Advanced', icon:'history', description:'Inspect saved iterations and recovery options.', sections:['iteration_checkpoints']},
             {id:'lumi_account', title:'Lumi account', group:'Personal', icon:'person', description:'Sign in to Lumi Cloud and use your organization’s policy on this computer.', sections:['lumi_account'], keywords:'lumi cloud organization team company sign in enroll device computer managed policy seat slack teams microsoft chat tasks remote requests'},
-            {id:'about', title:'About Lumi', group:'Personal', icon:'book', description:'What Lumi is, what it costs and what it sends where.', sections:['about'], keywords:'version license free plan pricing account privacy telemetry notices MIT'},
+            {id:'about', title:'About Lumi', group:'Personal', icon:'book', description:'What Lumi is, what it costs and what it sends where.', sections:['about'], keywords:'version license free plan pricing account privacy telemetry notices MIT feedback bug report idea'},
             {id:'updates', title:'Updates', group:'Advanced', icon:'history', description:'Choose how Lumi updates itself and which releases it takes.', sections:['updates','update_status','update_file'], keywords:'update upgrade version release beta channel pin stable automatic manual off file offline installer bundle air-gapped'},
         ];
     }
@@ -2589,6 +2595,7 @@ class LumiSettingsView {
             exclusions.focus();
         });
         document.getElementById('audit-verify')?.addEventListener('click', () => this.send({command: 'audit_status'}));
+        document.getElementById('about-send-feedback')?.addEventListener('click', event => this.openFeedbackDialog?.(event.currentTarget));
         this._bindUpdateCheck();
         this._bindUpdateFile();
         this._bindLumiAccount();

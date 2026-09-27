@@ -144,6 +144,17 @@ reach your Lumi: matching skills are offered to the agent, and the **❝**
 button beside the message box inserts prompts. **Team library** on this page
 shows what's synced, with **Sync now**. See [team library](team-library.md).
 
+## Sending feedback
+
+**Help › Send Feedback…** (also in the command palette, the profile menu and
+About Lumi) sends a bug report, an idea or other feedback to this Lumi
+Cloud's feedback inbox, which only its staff can read. You needn't sign in;
+while you're signed in here, the report carries your account so staff see
+who sent it.
+With no Lumi Cloud address, or when it can't be reached, the report waits
+on this computer and goes later. What a report holds, what never leaves
+and how it's checked first: [Sending feedback](feedback.md).
+
 ## For administrators: enrolling managed computers
 
 To enroll computers without anyone signing in:

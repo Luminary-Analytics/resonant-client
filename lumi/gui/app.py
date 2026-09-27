@@ -2322,6 +2322,10 @@ class AppState:
     def _cloud_changed(self, status: dict) -> None:
         """Lumi Cloud's status changed (a sign-in, an enrollment, a check-in)."""
         self._push_ws_event({"event": "cloud_status", "data": status})
+        # Feedback waiting for an address or a sign-in may go now (lumi/feedback.py).
+        from .. import feedback
+
+        feedback.wake()
         marker = (status.get("policy_version"), status.get("policy_source"))
         if marker == getattr(self, "_cloud_policy_marker", None):
             return

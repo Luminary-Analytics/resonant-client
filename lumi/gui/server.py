@@ -457,6 +457,15 @@ def main():
     except Exception:
         logger.exception("Lumi Cloud check-ins failed to start (non-fatal)")
 
+    # Feedback saved on this computer goes to Lumi Cloud when it can (lumi/feedback.py).
+    try:
+        from lumi import feedback
+
+        from .app import state as app_state
+        feedback.start_background(app_state.cloud, app_state.settings)
+    except Exception:
+        logger.exception("Sending waiting feedback failed to start (non-fatal)")
+
     launch_gui(
         host=args.host,
         port=args.port,

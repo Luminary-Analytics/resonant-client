@@ -3917,6 +3917,130 @@ async def _cmd_save_diagnostics(ctx: CommandContext) -> None:
         })
 
 
+# ── Feedback (lumi/feedback.py) ──────────────────────────────────────────
+# Preparing, sending and flushing can wait on Lumi Cloud or a DLP service, so
+# each runs as its own task: Stop and everything else the page sends stay live.
+# Any failure still answers the dialog, which would otherwise wait forever.
+
+_FEEDBACK_TASKS: set[asyncio.Task] = set()
+_FEEDBACK_FAILED = "Lumi couldn't send or save the report. Try again, or copy it."
+
+
+def _feedback_backend(ctx: CommandContext) -> dict[str, str]:
+    """The provider type and model in use, for the report's diagnostics (never a key)."""
+    spec = getattr(ctx.state, "backend_spec", None)
+    return {"provider": str(getattr(spec, "backend_type", "") or ""), "model": str(getattr(spec, "model", "") or "")}
+
+
+def _feedback_task(work) -> None:
+    task = asyncio.create_task(work())
+    _FEEDBACK_TASKS.add(task)
+    task.add_done_callback(_FEEDBACK_TASKS.discard)
+
+
+async def _feedback_state(ctx: CommandContext, **extra: Any) -> None:
+    from .. import feedback
+
+    status = await asyncio.to_thread(feedback.status, ctx.state.cloud)
+    await ctx.send({"event": "feedback_status", "data": {**status, **extra}})
+
+
+async def _feedback_copy(ctx: CommandContext, code: str, form: Any, preview_id: str = "") -> str:
+    """The report as text for Copy to clipboard: none for a form to fix, a stale review, or what DLP refused."""
+    from .. import feedback
+
+    if code in ("invalid", "preview", "dlp"):
+        return ""
+    return await asyncio.to_thread(feedback.copy_text, form, settings=ctx.state.settings, preview_id=preview_id,
+                                   **_feedback_backend(ctx))
+
+
+@command("feedback_status")
+async def _cmd_feedback_status(ctx: CommandContext) -> None:
+    """The Send feedback dialog: where reports go, as whom, and how many wait on this computer."""
+    await _feedback_state(ctx)
+
+
+@command("feedback_preview")
+async def _cmd_feedback_preview(ctx: CommandContext) -> None:
+    """The report the form makes, exactly as it would be sent (with diagnostics)."""
+    from .. import feedback
+
+    form = ctx.msg.get("form")
+    request = ctx.msg.get("request")
+
+    async def run() -> None:
+        try:
+            data = await asyncio.to_thread(feedback.preview, ctx.state.cloud, form, settings=ctx.state.settings,
+                                           **_feedback_backend(ctx))
+        except feedback.FeedbackError as exc:
+            await ctx.send({"event": "feedback_preview", "request": request, "error": exc.as_dict(),
+                            "copy_text": await _feedback_copy(ctx, exc.code, form)})
+            return
+        except Exception:
+            logger.exception("Preparing a feedback report failed")
+            await ctx.send({"event": "feedback_preview", "request": request, "copy_text": "",
+                            "error": {"code": "error", "message": _FEEDBACK_FAILED, "field": ""}})
+            return
+        await ctx.send({"event": "feedback_preview", "request": request, "data": data})
+
+    _feedback_task(run)
+
+
+@command("feedback_send")
+async def _cmd_feedback_send(ctx: CommandContext) -> None:
+    """Send a report, or keep it on this computer to send later; a refusal says why and offers a copy."""
+    from .. import feedback
+
+    form = ctx.msg.get("form")
+    preview_id = str(ctx.msg.get("preview_id") or "")
+
+    async def run() -> None:
+        try:
+            outcome = await asyncio.to_thread(feedback.submit, ctx.state.cloud, form, settings=ctx.state.settings,
+                                              preview_id=preview_id, **_feedback_backend(ctx))
+        except feedback.FeedbackError as exc:
+            await ctx.send({"event": "feedback_result", "ok": False, **exc.as_dict(),
+                            "copy_text": await _feedback_copy(ctx, exc.code, form, preview_id)})
+        except Exception:
+            logger.exception("Sending feedback failed")
+            copy = ""
+            try:
+                copy = await _feedback_copy(ctx, "error", form, preview_id)
+            except Exception:
+                logger.debug("Couldn't make the feedback copy either", exc_info=True)
+            await ctx.send({"event": "feedback_result", "ok": False, "code": "error", "field": "",
+                            "message": _FEEDBACK_FAILED, "copy_text": copy})
+        else:
+            await ctx.send({"event": "feedback_result", "ok": True, **outcome.as_dict()})
+        await _feedback_state(ctx)
+
+    _feedback_task(run)
+
+
+@command("feedback_flush")
+async def _cmd_feedback_flush(ctx: CommandContext) -> None:
+    """Send now: try every report waiting on this computer."""
+    from .. import feedback
+
+    async def run() -> None:
+        try:
+            result = await asyncio.to_thread(feedback.flush, ctx.state.cloud, ctx.state.settings, force=True)
+        except Exception:
+            logger.exception("Sending the waiting feedback failed")
+            result = {"sent": 0, "dropped": 0, "waiting": await asyncio.to_thread(feedback.waiting), "failed": True}
+        await _feedback_state(ctx, flushed=result)
+
+    _feedback_task(run)
+
+
+@command("feedback_discard")
+async def _cmd_feedback_discard(ctx: CommandContext) -> None:
+    """Delete the reports waiting on this computer."""
+    from .. import feedback
+
+    await _feedback_state(ctx, discarded=await asyncio.to_thread(feedback.discard))
+
 
 @command("folder_dialog")
 async def _cmd_folder_dialog(ctx: CommandContext) -> None:

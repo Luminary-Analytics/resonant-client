@@ -44,6 +44,7 @@ day. `LUMI_STATE_HOME` moves the whole folder.
 | `update.check` | An [update](updates.md) check finishes | `result` (`found`, `none`, `error`), version, feed |
 | `update.deferred`, `update.install` | An update waits for a running agent turn, or its installer starts and Lumi closes | version, feed, `reason` |
 | `update.skipped`, `update.postponed`, `update.cancelled` | You skip an update, choose to be reminded later, or close the update window | version, feed |
+| `feedback.sent`, `feedback.queued`, `feedback.refused`, `feedback.dropped` | A [feedback](feedback.md) report went to Lumi Cloud, waits on this computer, wasn't sent or kept, or was removed while waiting | `kind`, `size` in bytes, `diagnostics`; `queued` and `attributed` when sent; `reason` otherwise (and Lumi Cloud's `status` when it refused). Never the text, reply-to or install id |
 | `error` | A turn reports an error | code, message by capture level |
 | `team.start`, `team.stop`, `team.complete` | A [team](swarming.md#under-an-organization-policy) starts, you stop it, or it completes | run, provider and model, the workers' provider and model, plan mode, writable folders and check names, rounds, whether it applies changes, objective by capture level; `by` (`owner` or `orchestrator`) |
 | `team.participant.start`, `team.participant.end` | A team worker or orchestrator turn starts or ends | run, attempt, kind (`reader`, `writer`, `coordinator`, `answer`), provider, model, `outcome`, error by capture level |

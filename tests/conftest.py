@@ -41,7 +41,7 @@ def _no_organization_policy():
     # AppState turns the secret scan on (a policy can lock it) would otherwise
     # mark every later test's history in the same worker. The audit log and
     # usage records are recreated for each test, under its isolated home.
-    from lumi import audit, budgets, dlp, license as lumi_license, offline, pricing, secret_scan, updater, usage
+    from lumi import audit, budgets, dlp, feedback, license as lumi_license, offline, pricing, secret_scan, updater, usage
     from lumi.engine import review_gate, second_approval
 
     def reset():
@@ -53,6 +53,7 @@ def _no_organization_policy():
         updater.reset_for_tests()
         secret_scan.reset()
         dlp.reset_for_tests()
+        feedback.reset_for_tests()
         audit.set_for_tests(None)
         pricing.reset()
         usage.set_for_tests(None)

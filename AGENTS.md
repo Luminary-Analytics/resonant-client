@@ -359,6 +359,14 @@ host enrollment and actual packaged/learned-benefit qualification remain open.
   Lumi's replies and one line per action, never tool results, after
   `secret_scan` removes saved keys and secret patterns. Keep new event kinds
   out of the copy unless they carry only what the person or Lumi said.
+- Feedback (`feedback.py`, `static/feedback_view.js`, docs/feedback.md) goes
+  to the configured Lumi Cloud's `POST /api/v1/feedback` through
+  `net.client_options`, after `secret_scan` with patterns on and
+  `dlp.check_text` (purpose `feedback`); offline mode refuses it unless the
+  host is allowed. With diagnostics, only the report the dialog showed is
+  sent (its `preview_id`). The account token goes only while the person is
+  signed in, and a queued report only as the account that wrote it. Audit
+  records name the kind and size, never the text, reply-to or install id.
 - The team library (`team_library.py`) is the organization's published
   skills and prompts, synced from Lumi Cloud into `team/library.json` and
   deleted on sign-out. Team skills are listed for the agent like pack skills
@@ -449,7 +457,7 @@ python -m ruff check .
 python -m pytest -q
 node --check lumi/gui/static/app.js
 node --check lumi/gui/static/settings_view.js
-node --test tests/ui_recovery.test.cjs tests/appearance.test.cjs tests/autonomous_view.test.cjs tests/vscode_extension.test.cjs tests/voice_input.test.cjs tests/extension_panels.test.cjs
+node --test tests/ui_recovery.test.cjs tests/appearance.test.cjs tests/autonomous_view.test.cjs tests/vscode_extension.test.cjs tests/voice_input.test.cjs tests/extension_panels.test.cjs tests/feedback_view.test.cjs
 git diff --check
 ```
 

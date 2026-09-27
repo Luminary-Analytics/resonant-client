@@ -206,6 +206,14 @@ class CloudClient:
         managed = self.managed()
         return str(managed.get("url") or self._section().get("url") or "")
 
+    @property
+    def sign_in_url(self) -> str:
+        """The address the person signed in at, which a machine policy's ``url`` can since have replaced.
+
+        Feedback (lumi/feedback.py) names the account only to that Lumi Cloud.
+        """
+        return str(self._section().get("url") or "")
+
     def device(self) -> dict:
         device = self._section().get("device")
         return dict(device) if isinstance(device, dict) and device.get("id") else {}
@@ -513,6 +521,14 @@ class CloudClient:
         token = str(answer.get("access_token") or "")
         self._device_access = (token, time.monotonic() + max(60, int(answer.get("expires_in") or 3600)) - 60)
         return token
+
+    def account_token(self) -> str:
+        """The signed-in person's access token, refreshed when it has expired (feedback, lumi/feedback.py).
+
+        CloudError with code ``signed_out`` when nobody is signed in. Only for a
+        request to this Lumi Cloud that should name the person.
+        """
+        return self._access_token()
 
     def account_call(self, method: str, path: str, **kwargs: Any) -> dict:
         """Lumi Cloud's API as the signed-in person (shared sessions, lumi/share.py); {} for no content."""

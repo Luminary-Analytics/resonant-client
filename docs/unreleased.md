@@ -8,6 +8,99 @@ The heartbeat remains paused. Documentation maintenance does not resume work,
 spending or grants, and changes no native implementation or installed bundle.
 The dated September 15/18 records below are historical.
 
+## September 27 sending feedback, first pass (source only, not released)
+
+**Send feedback** ([Sending feedback](feedback.md)): Help › Send Feedback…,
+the command palette, the profile menu and About Lumi open a dialog that sends
+a bug report, an idea or other feedback to the Lumi Cloud set in Settings ›
+Lumi account, whose staff-only inbox receives it (`POST /api/v1/feedback`).
+
+- **The report** (`lumi/feedback.py`): the kind, a message of up to 5,000
+  characters and an optional reply-to address; always the app's version,
+  update channel, operating system and architecture, and an install id
+  derived from a random secret made on first use, separately for each Lumi
+  Cloud and for signed-out or each account's reports, so signed-out reports
+  can't be linked to an account's.
+- **Diagnostics, off by default**: Python's version, the platform, whether
+  it's a packaged build, the provider type and model (never a key), offline
+  mode, and the end of the startup log (60 whole lines, 6,000 characters)
+  redacted by the diagnostics bundle before it's cut, with the home folder
+  written as `~`. The dialog shows the whole report as JSON first, and Send
+  sends that report (`preview_id`); a changed form, Lumi Cloud or account is
+  prepared again and shown before anything goes.
+- **Before it leaves**: offline mode first, which refuses the report unless
+  the Lumi Cloud host is allowed, before it's prepared or DLP-checked (with no
+  Lumi Cloud set up, refused rather than kept); then `secret_scan` with its
+  patterns on, whatever Settings says; then the organization's DLP rules
+  (`dlp.check_text`, purpose `feedback`), whose block refuses the report and
+  whose redactions apply. A refusal says why and offers **Copy to
+  clipboard**, with the same redactions, except when DLP refused it.
+- **Sending** through `net.client_options`, never following redirects. The
+  access token goes only while the person is signed in to that very Lumi
+  Cloud (`CloudClient.sign_in_url`), so staff see who sent it; a waiting
+  report goes as its writer's account only while that account is signed in,
+  and only to the Lumi Cloud it was written for. The dialog's commands run
+  as their own tasks, so the page's socket stays live while Lumi Cloud
+  answers, and any failure still answers the dialog.
+- **Waiting reports**: with no Lumi Cloud address, a network error, a 5xx,
+  408, 401 or 403, a 429, or a token that can't be refreshed now, the report
+  waits in `feedback/queue.json` (20 reports, 512 KB, 30 days). A background
+  thread retries: 10 minutes, doubling to 6 hours, or a 429's `Retry-After`;
+  setting an address or signing in wakes it. Each is checked again first.
+  The dialog shows **Send now** (which still waits out `Retry-After`) and
+  **Discard** (a report being sent can't be taken back). Five reports per ten
+  minutes, queued ones included.
+- **The record**: `feedback.sent` (with `attributed`: whether it actually
+  went with the account), `feedback.queued`, `feedback.refused`,
+  `feedback.dropped`, with the kind and size, never the text.
+- `CloudClient.account_token()` gives the feedback sender the signed-in
+  person's token (refreshed when needed), and `CloudClient.sign_in_url` the
+  address they signed in at. The About page's "What leaves this computer"
+  now mentions feedback.
+
+Validation:
+
+- `tests/test_feedback.py` (72) against an `httpx.MockTransport` Lumi Cloud:
+  the contract's fields; install ids that differ signed in and out and per
+  Lumi Cloud; the form's checks (17 refusal cases); text as sent; secrets
+  removed with the scan off in Settings; DLP blocking, redacting, a reply-to
+  it would change, diagnostics as an attachment and a policy Lumi can't use;
+  offline mode with and without an allowed host, refusing before DLP looks
+  and turned on while reports wait; the account only while signed in to that
+  Lumi Cloud (including the real `CloudClient` signed in to the fake Lumi
+  Cloud of `tests/test_cloud.py`), never for a report written signed out,
+  not for another account, not after the sign-in ended, and kept when the
+  token can't be had now; queueing without an address, unreachable, busy and
+  unauthorized, backoff and its cap, `Retry-After` in ASCII digits only and
+  honoured by **Send now**, one failure ending a round, an unexpected failure
+  keeping what was sent, a waiting report only for its own Lumi Cloud,
+  refusals not kept and redirects not followed, drops (refused, DLP,
+  expired), the queue's bounds, the rate limit, Discard (also while a report
+  is on its way), the background thread; the preview sent exactly while the
+  log grows, and refused when missing, changed, moved, stale or used; the log
+  redacted before it's cut; the home folder as `~`; the copy text with DLP;
+  the dialog's WebSocket commands, their failures and a socket left live,
+  and no token in anything the page is told.
+- `tests/feedback_view.test.cjs` (14): the dialog's checks and wording, and
+  its flow against a stand-in page: focus in and back, errors per field and
+  announced, sending, stale previews never sent (also one answered after an
+  edit), refusals with the copy (and without a clipboard), results after the
+  dialog closed, Send now and Discard, and Tab staying inside.
+- `tests/feedback.browser.cjs`, in headless Edge against the source app
+  (`tests/fixtures/feedback_ui_server.py`, a fake Lumi Cloud on loopback):
+  opened from Help with the pointer, then from the command palette, the
+  profile menu and About by keyboard; validation; the diagnostics preview
+  with a token, a saved key and the home folder removed, and the report
+  received equal to the one shown; queued while Lumi Cloud answered 503 and
+  sent with **Send now**; refused in offline mode, copied to the clipboard,
+  and with diagnostics checked, refused before any report was prepared;
+  contrast of at least 4.5:1 for the report, its status and notices, the
+  error, the counter and the destination in both themes; at 375 px no
+  sideways scrolling, the dialog on screen and targets of at least 24 px;
+  Tab and Escape.
+- **Not covered:** a real Lumi Cloud, the packaged app and the desktop
+  window's clipboard; a screen reader.
+
 ## September 27 offline and air-gapped operation, first pass (source only, not released)
 
 **Offline mode** (Settings > Offline mode, or the policy's `offline.enabled`

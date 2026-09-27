@@ -54,6 +54,27 @@
   - Panels are listed under View, which is used with the pointer, and in the
     command palette for the keyboard. Contrast inside a panel is the pack's
     own, not measured here.
+- **Also added September 27**: the Send feedback dialog
+  ([Sending feedback](feedback.md)), with real key presses in headless Edge
+  (tests/feedback.browser.cjs), in both themes and at 375 px wide.
+  - It opens from Help with the pointer, and from the command palette, the
+    profile menu and About Lumi by keyboard; focus starts in the message.
+  - Tab and Shift+Tab stay inside it, and Escape closes it and returns focus
+    to what opened it (the Menu button when it came from Help). When the
+    control holding focus goes away (the waiting reports' **Send now** once
+    they're sent), focus moves to the message box, not out of the dialog.
+  - A field's error is tied to it (`aria-describedby`, `aria-invalid`), and
+    Send moves focus to the first field to fix and says the error on the
+    status line, since a field that already had focus isn't read again.
+    Refusals are announced (`role="alert"`), progress politely
+    (`role="status"`), and the report it will send can be scrolled from the
+    keyboard. When no report could be made (offline mode), its empty box is
+    hidden rather than left as a tab stop. A result that arrives after the
+    dialog closed is shown as a notification.
+  - The report, its status line and notices, the error text, the character
+    counter and the destination line measured at least 4.5:1 in both themes.
+    At 375 px the dialog stays on screen with no sideways scrolling, and its
+    buttons are at least 24 px.
 
 ## Fixed during this review
 

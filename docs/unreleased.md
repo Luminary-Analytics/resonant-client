@@ -62,7 +62,8 @@ wording is a draft for counsel.
 Validation on September 27, 2026:
 
 - `ruff check .` (0.16.9) is clean; `node --check` passes for `app.js` and
-  `settings_view.js`; the six Node UI test files pass (147 tests).
+  `settings_view.js`; the six Node UI test files pass (152 tests, with main
+  merged in).
 - With an isolated home, `test_about.py`, `test_linux_packages.py`,
   `test_release_supply_chain.py`, `test_docs_links.py`,
   `test_code_editors.py`, `test_content_security_policy.py`,

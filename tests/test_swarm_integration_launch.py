@@ -115,6 +115,7 @@ def test_late_check_exception_cannot_overwrite_new_owner_cancelled_observation(s
             (json.dumps({"checks": [{"key": "check", "argv": ["fixture"], "timeout_seconds": 1}]}),))
     monkeypatch.setattr(integration, "_head", lambda _: '1' * 40)
     monkeypatch.setattr(integration, "_clean", lambda _: True)
+    monkeypatch.setattr(integration, "_unchanged", lambda _: True)
     monkeypatch.setattr(integration, "_path", lambda _: integration.root)
     def fenced(*args, **kwargs):
         with integration.store._connection(write=True) as connection:
@@ -140,6 +141,7 @@ def test_stop_after_actual_check_exit_preserves_output_without_claiming_pass(set
                                      "timeout_seconds": 5}]}),))
     monkeypatch.setattr(integration, "_head", lambda _: '1' * 40)
     monkeypatch.setattr(integration, "_clean", lambda _: True)
+    monkeypatch.setattr(integration, "_unchanged", lambda _: True)
     monkeypatch.setattr(integration, "_path", lambda _: integration.root)
     original = integration._execute
     def stopped_after_observation(*args, **kwargs):
@@ -162,6 +164,7 @@ def test_broken_gate_protocol_retains_actual_partial_output_as_uncertain(setup, 
             (json.dumps({"checks": [{"key": "check", "argv": ["fixture"], "timeout_seconds": 5}]}),))
     monkeypatch.setattr(integration, "_head", lambda _: '1' * 40)
     monkeypatch.setattr(integration, "_clean", lambda _: True)
+    monkeypatch.setattr(integration, "_unchanged", lambda _: True)
     monkeypatch.setattr(integration, "_path", lambda _: integration.root)
     code = ("import sys,json,base64,os; "
         "print(json.dumps({'version':1,'kind':'ready'}),flush=True); sys.stdin.readline(); "

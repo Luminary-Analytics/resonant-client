@@ -476,3 +476,20 @@ def test_unbound_effectful_sidecars_are_rejected_before_model_admission(tmp_path
     with pytest.raises(ExecutionGuardError, match="sidecars"):
         list(session.run("Perform bounded work"))
     assert not guard.records and backend.stream_count == 0
+
+
+def test_a_guarded_participant_hears_before_its_last_request(tmp_path):
+    # Live Team workers used their whole allowance reading files and stopped
+    # with nothing submitted; the last request now asks for the answer.
+    (tmp_path / "a.txt").write_text("alpha", encoding="utf-8")
+    guard = RecordingGuard()
+    backend = StreamingBackend(scripts=[[tool_call("file_read", {"path": "a.txt"}, "read-1"), done()],
+                                        [tool_call("file_read", {"path": "a.txt"}, "read-2"), done()],
+                                        [text_delta("Final: a.txt says alpha."), done()]])
+    session = Session(backend, execution_guard=guard, max_steps=10, max_model_requests=3)
+    session.project_path = str(tmp_path)
+    session.sandbox = PathSandbox(str(tmp_path))
+    events = list(session.run("Inspect a.txt", input_origin="generated"))
+    notices = ["last model request" in (call["user_msg"] or "") for call in backend.stream_calls]
+    assert notices == [False, False, True]
+    assert any(event.get("text") == "Final: a.txt says alpha." for event in events)

@@ -3965,6 +3965,14 @@ class Session:
                     # Do not append a synthetic "continue" user turn: keeping
                     # history append-only and sparse improves KV-prefix reuse.
                     current_msg = ""
+                # A Team participant about to spend its last request answers now,
+                # rather than stopping mid-exploration with nothing submitted (live
+                # workers hit their allowance while still reading files).
+                if (self._execution_boundary is not None and self.max_model_requests is not None
+                        and model_requests == self.max_model_requests - 1):
+                    current_msg = (f"{current_msg}\n\n" if current_msg else "") + (
+                        "This is your last model request for this assignment. Stop exploring and give "
+                        "your final answer now from what you have found, saying what you could not check.")
                 continue
             else:
                 if self.hook_runner:

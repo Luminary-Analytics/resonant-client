@@ -35,7 +35,7 @@ these services; it is not required for ordinary chat-based coding.
 | Configuration | `gui/settings.py`, `network_defaults.py`, `gui/project_instructions.py` | Settings, endpoint resolution, layered repository instructions |
 | Client security | `engine/exclusions.py`, `gui/workspace_trust.py`, `gui/retention.py` | File exclusion rules, trust for repository content, transcript retention |
 | Organization policy | `policy.py`, `packaging/policy/` | Machine policy sources, signatures, locked settings and allowlists |
-| Data loss prevention | `dlp.py`, `dlp_detectors.py` | The policy's `dlp` rules on every outgoing model request (`Session._model_stream`, `auxiliary_stream`, `dlp.check_text`): linear-time detectors and checked patterns, flag/redact/block, the optional external service, `dlp.*` audit records |
+| Data loss prevention | `dlp.py`, `dlp_detectors.py` | The policy's `dlp` rules on every outgoing model request (`Session._model_stream`, `auxiliary_stream`, `dlp.check_text`), and on what goes to Engram: text normalized, then linear-time detectors and checked patterns, flag/redact/block, the optional external service, `dlp.*` audit records. Backends are `@dlp.guard_backend`: while a policy applies they refuse a request that didn't come through `dlp.send` |
 | Audit log | `audit.py`, `file_lock.py` | Hash-chained local records of every turn's events (recorded by `Session.run`), capture levels, OTLP export |
 | Model routing | `engine/model_roles.py`, `capabilities.py` | Role models, fallback chains (`Session._next_fallback`), capability inference with policy overrides |
 | GitHub | `engine/github_tools.py` | Pull request tools over the REST API: read reviews, checks and job logs; open, comment, update. Token from Settings or `GITHUB_TOKEN` |

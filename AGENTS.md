@@ -109,9 +109,13 @@ host enrollment and actual packaged/learned-benefit qualification remain open.
 - Every outgoing model request passes the organization's DLP rules (`dlp.py`)
   on the exact request, after `secret_scan`: `Session._model_stream` and
   `request_purpose.auxiliary_stream` apply them, and any other call that
-  sends text to a model checks it with `dlp.check_text` (`tests/test_dlp.py`
-  lists every such call). Redact only text, never structure: tool arguments
-  stay valid JSON and signed reasoning is left out, not edited. `dlp.*` audit
+  sends text to a model checks it with `dlp.check_text`. Send the checked
+  request with `dlp.send` (fixed text under `dlp.permit`): every model backend
+  class is `@dlp.guard_backend`, which refuses other calls while a policy
+  applies, and `tests/test_dlp.py` counts each use of a request method and
+  each model endpoint. Redact only text, never structure: tool arguments stay
+  valid JSON and signed reasoning is left out, not edited. A withheld entry
+  stays out of summaries, image descriptions and Engram. `dlp.*` audit
   records and block messages name rules, actions, kinds and counts, never the
   matched text, and Settings shows rule names, never keywords or patterns. A
   `dlp` section Lumi can't use refuses requests (`policy.blocked_reason`)

@@ -35,8 +35,8 @@ day. `LUMI_STATE_HOME` moves the whole folder.
 | `file.change` | A successful `file_write`, `file_edit` or `file_replace`, or a Codex file change | path |
 | `approval` | You or a permission hook decides a prompted call, or a trusted project's `lumi-policy.json` `allow` rule runs a call Auto-edit would ask about | tool, `by` (`user`, `hook` or `project_policy`), `decision` |
 | `privacy.redaction` | The secret scan removed credentials before a request | counts by kind |
-| `dlp.finding` | The organization's [DLP rules](dlp.md) or DLP service flagged, redacted or blocked content in a model request | rule, `action`, content `kind`, `count`, `purpose`, provider, model, `source` (`rule` or `service`); never the matched text. Content already recorded for a session, provider and model isn't recorded again; each block is |
-| `dlp.error` | A model request couldn't be checked, so it was refused (or, for the DLP service with `on_error: allow`, sent with the built-in rules applied) | `reason` (`too_large`, `service`, `internal`), `error`, `on_error`, purpose, provider, model |
+| `dlp.finding` | The organization's [DLP rules](dlp.md) or DLP service flagged, redacted or blocked content in a model request (or in what Lumi sends Engram: `purpose` `memory`) | rule, `action`, content `kind`, `count`, `purpose`, provider, model, `source` (`rule` or `service`); never the matched text. Content already recorded for a session, provider and model isn't recorded again; each block is |
+| `dlp.error` | A model request couldn't be checked, so it was refused (or, for the DLP service with `on_error: allow`, sent with the built-in rules applied), or a backend refused a request that skipped the check | `reason` (`too_large`, `service`, `internal`, `unchecked`), `error` (for `unchecked`, the backend method), `on_error`, purpose, provider, model |
 | `settings.change` | Settings saves a change | section and key names, never values |
 | `trust.decision` | A project is trusted, restricted or forgotten | project, decision |
 | `model.fallback` | A request failed and the turn continued with a [fallback model](models.md) | from and to model, reason by capture level |

@@ -24,7 +24,20 @@ Every request Lumi makes to a model:
   [Team](swarming.md) workers, in the app's process and in worker processes;
 - the requests around them: session titles, compaction summaries, the text
   sent with images to the vision model, the planning check, a specialist's
-  structured-output repair, skill extraction and SONN employee advice.
+  structured-output repair, skill extraction, SONN employee advice and the
+  question of a `[vision]` acceptance check.
+
+Model backends enforce this themselves: while an organization policy applies,
+a backend refuses a request that didn't come through the check, so a code path
+that skipped it fails with an error (and a `dlp.error` record) instead of
+sending. Backend classes are `@dlp.guard_backend`; checked requests reach them
+through `dlp.send`.
+
+The rules also apply to what Lumi sends Engram, the optional memory server
+(`engine/memory.py`, Settings' `engram` section), although it isn't a model
+provider: recall queries, memories (including the codebase index's file
+summaries) and session summaries. Text a block rule matches isn't sent there,
+redactions apply, and a withheld entry (below) never goes into a summary.
 
 The check sees each request as it will be sent, after the
 [secret scan](../README.md) has removed saved keys: the instructions (Lumi's
@@ -37,15 +50,34 @@ A rule's `scope` limits it to kinds of content:
 
 | Kind | What it covers |
 | --- | --- |
-| `prompt` | What the person typed, including steering messages and assignments Lumi generates for workers |
+| `prompt` | What the person typed, including steering messages |
 | `attachment` | `@file:`, `@diff:`, `@issue:`, hand-offs and other context attachments, and text that describes an attached image or document |
 | `tool_result` | Tool results, including file contents the agent read, and codebase index snippets |
 | `instructions` | System and project instructions, project and team notes, memory and skills |
 | `model_output` | The model's earlier replies, its tool calls' arguments and its reasoning, sent back with the conversation |
 
-Some text mixes kinds: a compaction summary quotes requests, replies and tool
-results, and so does the transcript sent to the summarizer. Every rule checks
-that text, whatever its scope.
+Some text mixes kinds, and every rule checks it, whatever its scope: a
+compaction summary quotes requests, replies and tool results, and so does the
+transcript sent to the summarizer; and a message Lumi writes into the
+conversation (a hook's context, a nudge after repeated tool calls, a recovery
+prompt, a Team worker's assignment) can quote tool arguments and results. The
+new message and its copy in the conversation are always checked alike.
+
+### How text is compared
+
+Rules read a normalized copy of each text, so formatting doesn't hide a match:
+
+- Unicode spaces (such as no-break and narrow no-break spaces) count as a
+  space, dashes (en and em dashes, the minus sign, non-breaking hyphens) as a
+  hyphen, and digits of any script, including full-width ones, as ASCII digits;
+- compatibility characters read as their plain form (full-width letters, the
+  "ﬁ" ligature as "fi"), unless that form is longer than two characters;
+- invisible characters are ignored: zero-width spaces and joiners, word
+  joiners, soft hyphens and direction marks;
+- a space in a keyword matches any run of whitespace, line breaks included.
+
+A redaction covers the original characters, invisible ones inside the match
+included. Combining accents aren't merged with the letter before them.
 
 ## Actions
 
@@ -53,17 +85,26 @@ that text, whatever its scope.
 - **redact**: each match is replaced with `[REDACTED:<rule>]` in the copy that
   is sent. The conversation on this computer keeps the original, and a quiet
   notice in the conversation says how many matches were redacted and by which
-  rules. Tool call arguments are JSON: only their string values (and whole
-  numbers) change, so the structure stays valid. A model's reasoning can be
-  signed by its provider and can't be edited; reasoning with a match is left
-  out of the request instead.
+  rules. Tool call arguments are JSON: their keys, string values and numbers
+  are checked, and only those change, so the structure stays valid (two keys
+  redacted alike are numbered, `[REDACTED:credit_card] #2`). Arguments with a
+  duplicated key go out as the JSON the tool received, each key's last value,
+  even when nothing matched, so a value the tool never saw isn't sent either.
+  A model's reasoning can be signed by its provider and can't be edited;
+  reasoning with a match is left out of the request instead, whether a rule
+  or the DLP service found it.
 - **block**: the request isn't sent. The turn fails with a message that names
   the rule and where it matched ("us_ssn in your message"), never the text.
   The conversation entry it came from is kept on this computer but marked, and
-  later requests send a notice in its place while it still matches a block
-  rule, so **Continue** or a new message works without it. A block in the
-  instructions or an attachment has no entry to leave out: remove the content
-  or ask the administrator.
+  later requests send a notice in its place, so **Continue** or a new message
+  works without it. Without a DLP service, a marked entry goes out again once
+  no rule blocks it (an administrator relaxed the rule); with one, it stays
+  out, since only the service could say it's fine now. Compaction summaries,
+  including the tool calls' commands and paths they keep, leave marked entries
+  out too, and their images aren't described. The notice is marked as
+  Lumi's, not the person's words, so SONN doesn't learn from it. A block in
+  the instructions or an attachment has no entry to leave out: remove the
+  content or ask the administrator.
 
 When one request has matches for several rules, a block wins. Redactions that
 overlap become one.
@@ -72,10 +113,10 @@ overlap become one.
 
 | Detector | What it finds |
 | --- | --- |
-| `credit_card` | Card numbers of 13 to 19 digits, written together or in groups separated by single spaces or hyphens (4-4-4-4, 4-6-5), with a card network's prefix and length (Visa, Mastercard, American Express, Discover, JCB, Diners Club, UnionPay) and a valid Luhn check digit |
-| `us_ssn` | US Social Security numbers written with hyphens or spaces (`123-45-6789`), except numbers never issued (area 000, 666 or 900-999, group 00, serial 0000). Nine digits without separators aren't matched: they're too often something else |
+| `credit_card` | Card numbers of 13 to 19 digits, written together or in groups separated by single spaces, hyphens or dots (4-4-4-4, 4-6-5), with a card network's prefix and length (Visa, Mastercard, American Express, Discover, JCB, Diners Club, UnionPay) and a valid Luhn check digit |
+| `us_ssn` | US Social Security numbers written with hyphens or spaces (`123-45-6789`, `SSN-123-45-6789`), except numbers never issued (area 000, 666 or 900-999, group 00, serial 0000) and numbers inside a longer one (`1-123-45-6789`). Nine digits without separators aren't matched: they're too often something else |
 | `iban` | IBANs, compact or in groups of four, with the registered length for their country and a valid mod-97 check |
-| `secrets` | The credential formats of the secret scan: private keys, cloud and platform keys and tokens, JSON web tokens, passwords in URLs and in `.env` lines. Only the secret is matched, so `DB_PASSWORD=` stays readable |
+| `secrets` | The credential formats of the secret scan: private keys, cloud and platform keys and tokens, JSON web tokens, passwords in URLs and in `.env` lines. Only the secret is matched, so `DB_PASSWORD=` stays readable. Two limits keep the scan linear: a token whose first part contains `-eyJ` isn't recognized, and a private key's body may run over at most two further `-----BEGIN` lines on the way to its `END` (with more, only the last whole key is matched) |
 | `email` | Email addresses. Usually left off: commit metadata and documentation are full of them |
 
 A detector runs only when the policy lists it.
@@ -84,21 +125,28 @@ A detector runs only when the policy lists it.
 
 - **Keywords**: words or phrases, such as project code names. Matching ignores
   case unless `case_sensitive` is true, and matches whole words unless
-  `whole_word` is false (so "Falcon" doesn't match "Falconry").
-- **Patterns**: Python regular expressions. Matching ignores case unless
-  `case_sensitive` is true. Because a scan must take time proportional to the
-  text, whatever the text, a pattern is refused when:
+  `whole_word` is false (so "Falcon" doesn't match "Falconry"). A space in a
+  keyword matches any run of whitespace ("Project Falcon" matches it split
+  across two lines), and keywords are normalized like the text.
+- **Patterns**: Python regular expressions, run on the normalized text.
+  Matching ignores case unless `case_sensitive` is true. Because a scan must
+  take time proportional to the text, whatever the text, a pattern is refused
+  when:
   - a repeat has no upper limit: write `{0,100}` for `*`, `{1,100}` for `+`
     and `{n,m}` for `{n,}`;
   - it uses a backreference or a conditional group (`\1`, `(?P=name)`,
     `(?(1)…)`);
-  - it can match more than 256 characters, or match empty text;
+  - it can match more than 128 characters, or match empty text;
   - repeats compete for the same characters too much: `\d{1,20}\d{1,20}` could
     split a run of digits 400 ways and is refused, while
     `[a-z0-9-]{1,63}\.corp\.example\.com` is fine, because nothing the first
-    repeat gives back can start a dot. Lumi multiplies the ways a pattern
-    could match at one position by its longest match, and refuses more than 16
-    ways or a product over 128.
+    repeat gives back can start a dot. Lumi counts the ways a pattern could
+    match at one position and the steps each takes: the characters it reads,
+    plus all the work of a lookaround (`(?=…)`, `(?!…)`, `(?<=…)`, `(?<!…)`)
+    or atomic group each time it runs, so a lookaround inside a repeat counts
+    once per repetition. It refuses more than 16 ways, or ways times steps
+    over 128. A pattern at that limit takes a few hundred milliseconds per
+    megabyte of the worst text.
 
   The policy's error message names the rule and what to change.
 
@@ -170,8 +218,9 @@ Lumi posts JSON:
 ```
 
 `purpose` is `primary` for a turn's requests and names auxiliary ones
-(`title`, `compression`, `planning`, …). Items are sent once: text the service
-already allowed or redacted isn't sent again while Lumi runs.
+(`title`, `compression`, `planning`, `memory` for Engram, …). Items are sent
+once: text the service already judged isn't sent again while Lumi runs. Text
+it blocked is refused again without asking.
 
 The service answers with one of:
 
@@ -184,17 +233,23 @@ The service answers with one of:
 - `redactions` are literal text to replace wherever it appears (or only in
   `item`) with `[REDACTED:<rule>]`: up to 1,000, each up to 10,000
   characters.
-- `items` in a block names the items the service objects to, so Lumi can
-  leave their conversation entries out of later requests. Without it, the
-  request is refused and nothing is marked.
+- `items` in a block names the items the service objects to, so Lumi leaves
+  their conversation entries out of later requests (and refuses their text
+  again without asking). Without it, the whole request was the problem, so
+  every conversation entry in it that the service hadn't allowed before is
+  left out of later requests: often more than needed, so name the items.
 - `rule` names the verdict in messages and records (`dlp-service` if it's
   missing or not a valid name). Lumi never shows the service's other fields.
+
+A conversation entry that was blocked isn't sent to the service again: while
+a service is configured, it stays out of later requests (a notice goes in its
+place), because asking again could only refuse the request again.
 
 A failure (a timeout, no connection, an HTTP error, an answer that isn't one
 of the above, or more than 4,000,000 characters of new text) follows
 `on_error`: `"block"` (the default) refuses the request, and `"allow"` sends
-it with the built-in rules applied. Either way the audit log records a
-`dlp.error`.
+it with the built-in rules applied, still without any entry that was blocked
+before. Either way the audit log records a `dlp.error`.
 
 ## Records
 
@@ -212,14 +267,19 @@ request that couldn't be checked: too large, the service failed (with
 
 - Every detector and rule scans in time proportional to the text. A megabyte
   of adversarial text (long digit runs, card-like groups, repeated key
-  headers, secret prefixes) takes 0.03 to 0.3 seconds on the development machine
-  for the five detectors, 200 keywords and two patterns together
-  (`tests/test_dlp.py`). A conversation's earlier text isn't scanned again:
-  results are kept by text for the life of the process.
+  headers, secret prefixes, text the patterns' fixed parts are in so their
+  regular expressions run, and text that needs normalizing) takes 0.05 to 0.6
+  seconds on the development machine, busy with other work, for the five
+  detectors, 200 keywords and two patterns together; the test fails at one
+  second (`tests/test_dlp.py`). A conversation's earlier text isn't scanned
+  again: results are kept by text for the life of the process.
 - A request with more than 16,000,000 characters of text isn't checked, so it
   isn't sent.
-- Images and other binary attachments aren't scanned; only their text
-  descriptions are. Neither are tool definitions.
+- Images and other binary attachments are outside the check: Lumi can't read
+  them. Only their text descriptions are checked. An image goes to the vision
+  model named in Models for roles to be described (unless its message was
+  withheld, or a block rule matches its text), and to a chat model that can
+  see images, as it is. Tool definitions aren't checked either.
 
 ## What DLP doesn't cover yet
 
@@ -227,10 +287,10 @@ request that couldn't be checked: too large, the service failed (with
   DLP checks what Lumi hands them (instructions, history and the message), not
   what they read themselves. Turn them off with `security.cli_adapters: false`
   if that matters.
-- Text that isn't a model request: dictation audio (its transcript is checked
-  when it's sent), MCP servers' and web tools' requests, sharing a conversation
-  or a hand-off with Lumi Cloud, SONN task graphs, and the audit log's own
-  content capture and OpenTelemetry export.
+- Text that isn't a model request, apart from Engram's: dictation audio (its
+  transcript is checked when it's sent), MCP servers' and web tools' requests,
+  sharing a conversation or a hand-off with Lumi Cloud, SONN task graphs, and
+  the audit log's own content capture and OpenTelemetry export.
 - A new DLP section applies to text already in a conversation from the next
   request on; nothing sent before it is recalled.
 - Detection is pattern-based: there's no named-entity or document

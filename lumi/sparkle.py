@@ -29,6 +29,8 @@ The delegate (``_delegate_class``) answers Sparkle on the main thread:
   update, so an update window left open could start one much later; the
   download request itself is checked (``download_refusal``) and a refused
   one is pointed at an address Sparkle's downloader won't load;
+* whether to go on with an update it found: not one this copy's channel or
+  pin doesn't take (``may_proceed``), whichever feed listed it;
 * whether to install now: while an agent turn runs Sparkle waits, and Lumi
   lets it carry on once the turn ends (``postpone``), so an update never cuts
   a turn off;
@@ -53,6 +55,8 @@ import sys
 import threading
 from pathlib import Path
 from typing import Any, Callable
+
+from . import update_channels
 
 logger = logging.getLogger(__name__)
 
@@ -206,8 +210,23 @@ class SparkleUpdater:
         return self._refusal or self._offline_refusal(self.feed_url(), "the update check")
 
     def may_proceed(self, version: str) -> str:
-        """Why Sparkle may not go on with ``version`` it just found, or "": offline mode came on after the check."""
-        return self._refusal
+        """Why Sparkle may not go on with ``version`` it just found, or "".
+
+        Offline mode came on after the check, or the update isn't one this
+        copy's channel or pin takes (recorded as ``update.refused``). Choosing
+        the feed already means that, but one key signs every macOS feed, so
+        someone who can change the update site could serve the beta feed, or
+        a newer line's, at this copy's address. The version is part of what a
+        feed's signature covers, so it is checked here too.
+        """
+        if self._refusal:
+            return self._refusal
+        prefs = self._preferences
+        pin = getattr(prefs, "pin", "")
+        reason = update_channels.refusal_for(version, getattr(prefs, "channel", "stable"), pin)
+        if reason:
+            self._record("update.refused", stage="pin" if pin else "channel", to_version=version, reason=reason)
+        return reason
 
     def download_refusal(self, url: str, version: str) -> str:
         """Why Sparkle may not download ``url`` now, or "". A refusal is recorded (``update.refused``).
@@ -215,10 +234,18 @@ class SparkleUpdater:
         This is the check that counts for downloads: Sparkle asks
         ``may_proceed`` only when it finds an update, and a person can press
         Install Update in a window that stayed open long after. It refuses
-        after ``stop``, and whenever offline mode refuses the download's host
-        now, which the feed names.
+        after ``stop``, whenever offline mode refuses the download's host now,
+        which the feed names, and when the address can't be read at all.
+        Offline mode checks the address Sparkle starts with; Sparkle follows
+        a redirect from there without asking (the disk image's signature is
+        still checked).
         """
-        reason = self._refusal or self._offline_refusal(url, "the update download")
+        if self._refusal:
+            reason = self._refusal
+        elif not url:
+            reason = "Lumi couldn't read the update's download address."
+        else:
+            reason = self._offline_refusal(url, "the update download")
         if reason:
             self._download_refused = True
             self._record("update.refused", stage="download", to_version=version, reason=reason)
@@ -529,7 +556,10 @@ def _delegate_class() -> Any:
             reason = call(self, "download_refusal", url, _version(item),
                           default="Lumi couldn't check the update's download address.")
             if reason:
-                request.setURL_(NSURL.URLWithString_(REFUSED_DOWNLOAD_URL))
+                try:
+                    request.setURL_(NSURL.URLWithString_(REFUSED_DOWNLOAD_URL))
+                except Exception:  # never into Sparkle; a real NSMutableURLRequest always takes it
+                    logger.exception("Couldn't stop the update's download (%s)", reason)
 
         @objc.typedSelector(b"Z@:@@")
         def updater_shouldDownloadReleaseNotesForUpdate_(self, updater, item):

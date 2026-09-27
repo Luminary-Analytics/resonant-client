@@ -17,8 +17,14 @@ sign`` on the unsigned feed makes the signature, as it does for the disk image
 Only the macOS feeds are signed. WinSparkle doesn't read the block, and the
 Windows feeds that installed copies poll stay exactly as they were.
 
+The signature covers bytes, so a feed must reach the Pages site exactly as
+it was signed: packaging/update_appcast.py writes "\\n" line ends on every
+platform, the site's ``.gitattributes`` keeps Git from converting them, and
+packaging/push_pages.py checks the staged blobs before it pushes.
+
     python packaging/feed_signature.py attach FEED SIGNATURE
     python packaging/feed_signature.py split FEED CONTENT_OUT   # prints the signature
+    python packaging/feed_signature.py strip FEED               # removes the block, to sign again
     python packaging/feed_signature.py verify FEED PUBLIC_KEY   # needs the cryptography package
 """
 
@@ -52,6 +58,19 @@ def split(data: bytes) -> tuple[bytes, str, int | None]:
             except ValueError:
                 length = None
     return data[:at], signature, length
+
+
+def strip(data: bytes) -> bytes:
+    """The feed without its last signing block, whatever its line ends: what a new signature covers.
+
+    For re-signing a feed whose block no longer verifies (a publish that
+    changed the bytes after signing; publish_macos.ps1 -ResignFeeds). A feed
+    without a block is returned as it is.
+    """
+    at = data.rfind(PREFIX.rstrip(b"\n"))
+    if at < 0 or data.find(SUFFIX, at) < 0:
+        return data
+    return data[:at]
 
 
 def block(signature: str, length: int) -> bytes:
@@ -103,6 +122,8 @@ def main(argv: list[str] | None = None) -> int:
     split_command = commands.add_parser("split", help="Write the signed content to OUT and print the signature")
     split_command.add_argument("feed", type=Path)
     split_command.add_argument("out", type=Path)
+    strip_command = commands.add_parser("strip", help="Remove the signing block, so the feed can be signed again")
+    strip_command.add_argument("feed", type=Path)
     verify_command = commands.add_parser("verify", help="Check the block with PUBLIC_KEY")
     verify_command.add_argument("feed", type=Path)
     verify_command.add_argument("public_key")
@@ -119,6 +140,11 @@ def main(argv: list[str] | None = None) -> int:
                 return 1
             args.out.write_bytes(content)
             print(signature)
+            return 0
+        if args.command == "strip":
+            data = args.feed.read_bytes()
+            args.feed.write_bytes(strip(data))
+            print(f"{args.feed}: {'signing block removed' if strip(data) != data else 'no signing block'}")
             return 0
         if verify(args.feed, args.public_key):
             print(f"{args.feed}: signature verified")

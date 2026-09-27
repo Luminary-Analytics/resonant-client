@@ -63,6 +63,11 @@ behaves as on Windows ([Updates](updates.md)):
   verifies (`SURequireSignedFeed`), so what a feed lists and where it says
   to download from are the release's own. A feed that fails is an update
   error. The Windows feeds keep their addresses and contents.
+- **The channel and the pin hold whatever feed arrives.** One key signs every
+  macOS feed, so Lumi also checks the version Sparkle found: on the stable
+  channel only a stable release, with a pin only a stable release of that
+  line. Anything else is refused (`update.refused`), even from a correctly
+  signed feed served at the wrong address.
 - **Installing.** When Sparkle finds a newer version it shows its window:
   **Install Update**, **Remind Me Later** or **Skip This Version**. It
   downloads and checks the update, then asks to close Lumi. **While an agent
@@ -73,7 +78,7 @@ behaves as on Windows ([Updates](updates.md)):
   (`found`, `none` or `error`), `update.deferred`, `update.install`, and your
   choices as `update.skipped`, `update.postponed` (Remind Me Later) and
   `update.cancelled`; and `update.refused` for a download offline mode
-  stopped.
+  stopped, or an update the channel or pin doesn't take.
 - **Offline mode** stops it as it stops WinSparkle: Sparkle isn't started
   unless the update site is an allowed host, and turning offline mode on
   refuses every check and download from then on. Update checks start again
@@ -81,7 +86,9 @@ behaves as on Windows ([Updates](updates.md)):
   an update window can stay open long after, so Lumi also checks each
   download as Sparkle starts it: after offline mode came on, or to a host
   offline mode doesn't allow, the download is refused before it connects
-  (Sparkle says the download failed, and the audit log says why).
+  (Sparkle says the download failed, and the audit log says why). Sparkle
+  follows a redirect from an allowed host without asking Lumi; the disk
+  image's signature is checked all the same.
 
 Only the app updates itself: `lumi` in Terminal (the terminal UI) and the
 chat gateway don't start Sparkle, and a copy running from source never loads
@@ -204,10 +211,15 @@ the CI workflow:
 - opens Lumi.app as Finder does, with no arguments: the app serves its page,
   keeps running with its window, and writes a startup log without errors;
 - installs the PKG and checks that copy leaves updates to device management;
-- on Windows, rehearses the release's macOS publishing
-  (`packaging/publish_macos.ps1`) with a throwaway key on a scratch copy of
-  the `gh-pages` branch: the disk image and every macOS feed are signed and
-  verify, the Windows feeds don't change, and nothing is pushed.
+- on Windows, where the release publishes, rehearses its gh-pages
+  publishing for two releases in a row (`scripts/rehearse_pages_publish.py`):
+  both jobs' scripts with a throwaway key, pushed with
+  `packaging/push_pages.py` to a copy of the branch on the runner, and each
+  pushed commit's feeds and disk images verified byte for byte. The Windows
+  feeds don't change in the macOS job, a feed changed after signing is
+  refused, a feed a bad publish broke is repaired (`publish_macos.ps1
+  -ResignFeeds`), and a checkout with Git's own defaults gets every file
+  unchanged. Nothing is pushed to GitHub.
 
 `tests.yml` also runs the updater's tests on `macos-latest`
 (`tests/test_sparkle.py` and the feed, Pages and PKG tests), with the pinned
@@ -224,6 +236,9 @@ framework:
   the release signs it, and refuses one changed after signing, one signed
   with another key and an unsigned one;
 - it offers nothing older than the version running, or the same;
+- a copy on the stable channel refuses a beta, and a pinned copy a newer
+  line's release, even from a correctly signed feed; the beta channel takes
+  the beta;
 - a download Lumi refuses (offline mode came on after Sparkle found the
   update, or the download's host isn't allowed) never reaches the server,
   while an allowed one does;

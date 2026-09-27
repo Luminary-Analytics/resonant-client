@@ -93,7 +93,8 @@ The [audit log](audit-log.md) records what the updater does, on both platforms:
   macOS; a failed download is an `error` with `stage: download`);
 - `update.deferred`: an update waited for a turn;
 - `update.refused` (macOS): offline mode stopped a download before it
-  started, with the reason;
+  started, or the update found isn't one the channel or pin takes (a beta on
+  the stable channel, another line's release with a pin), with the reason;
 - `update.install`: the installer started;
 - `update.skipped`, `update.postponed` and `update.cancelled`: your choices in
   the update window (on macOS, Skip This Version, Remind Me Later, and a
@@ -160,7 +161,9 @@ The release workflow writes them with `packaging/update_appcast.py`:
   Sparkle the release's version without the dash (`0.21.0beta.1`), because
   Sparkle compares versions only up to a dash; `sparkle:shortVersionString`
   keeps `0.21.0-beta.1`. The first macOS release creates
-  `appcast-macos.xml`, empty if that release is a beta.
+  `appcast-macos.xml`, empty if that release is a beta. The macOS feeds are
+  signed, all with the same key, so a Mac also checks the version it found
+  against its channel and pin, whichever feed listed it.
 - `packaging/publish_pages.py` keeps each of those lines' newest installer on
   the site, besides the newest three releases, so pinned installs can still
   download their update. The disk image sits beside the Windows installer in

@@ -96,9 +96,11 @@ job, then runs `packaging/publish_macos.ps1`: it EdDSA-signs the final DMG with
 `winsparkle-tool` and the same key, checks that signature against
 `lumi/updater.py`'s key, publishes the DMG to Pages and adds it to the macOS
 feeds, and signs each macOS feed it wrote the same way (Sparkle's signed feeds,
-below). The job then adds the files to the GitHub Release. `build-macos.yml`
-rehearses that script on every packaging change with a throwaway key on a
-scratch copy of `gh-pages`, pushing nothing. See [Lumi on macOS](macos.md).
+below). A feed already on the site whose signature doesn't verify stops the
+publish ([Repairing the macOS feeds](#repairing-the-macos-feeds)). The job
+checks the site byte for byte, adds the files to the GitHub Release, and
+pushes the site ([Publishing gh-pages byte for
+byte](#publishing-gh-pages-byte-for-byte)). See [Lumi on macOS](macos.md).
 
 The macOS feeds are signed because Lumi.app sets `SURequireSignedFeed`: Sparkle
 reads a feed only when the signing block at its end (`packaging/feed_signature.py`,
@@ -111,6 +113,25 @@ informational items, and every download still needs its EdDSA signature (or
 the Developer ID, below). The Windows feeds stay as they are: WinSparkle
 doesn't read a feed signature, and installed copies poll `appcast.xml`
 unchanged.
+
+One key signs every macOS feed, and Sparkle checks only a feed's own bytes,
+so someone who can change the Pages site could serve the beta feed, or a
+newer line's, at the stable or a pinned copy's address without breaking a
+signature. Lumi.app therefore checks the version Sparkle found against its
+channel and pin too (`SparkleUpdater.may_proceed`, `update_channels.refusal_for`):
+the stable channel takes only stable releases, a pin only its line's, and a
+refusal is an `update.refused` record. Two limits remain:
+
+- **An old feed, replayed.** A feed signed for an earlier release still
+  verifies, and Sparkle's signed feeds have no expiry, so serving it again
+  keeps Macs on the version they have (it can't install anything older).
+  Nothing in Sparkle tells a replayed feed from a quiet week; Lumi doesn't
+  try, so as not to lock out real updates.
+- **Redirects.** Offline mode checks each download's address as Sparkle
+  starts it; Sparkle follows a redirect from an allowed host without asking,
+  and exposes no hook for it. The disk image's signature is checked all the
+  same, so a redirect can't change what's installed. GitHub Pages doesn't
+  redirect the downloads it serves.
 
 ## The release environment
 
@@ -149,9 +170,14 @@ All of this is free for a public repository. A private one needs GitHub Team
 or Enterprise for environments, their secrets and the tag rule, and
 Enterprise for required reviewers; make the repository private only on such a
 plan, or the release jobs lose the protection above. Keep the name `release`:
-the AWS release role trusts GitHub's OIDC subject
+the AWS release role is to trust GitHub's OIDC subject
 `repo:Luminary-Analytics/resonant-client:environment:release`, so the same
-environment and tag rule gate it too.
+environment and tag rule gate it too. Put the `v*` tag rule in place before
+any role trusts that identity: while the environment is unprotected, a job
+from any branch can enter it and get the identity. No workflow asks for an
+OIDC token (`permissions: id-token: write`) today, and
+`tests/test_release_supply_chain.py` keeps it that way; the change that adds
+one must come after the tag rule.
 
 The workflow is hardened in the same spirit:
 
@@ -167,6 +193,71 @@ The workflow is hardened in the same spirit:
   overwrite what the other published. GitHub keeps one waiting job per group:
   a third arrival (two tags pushed together) cancels the waiting one, which
   then needs a rerun; the lease still keeps anything from being overwritten.
+
+## Publishing gh-pages byte for byte
+
+Sparkle reads a macOS feed only when its signature verifies over the bytes
+Pages serves, and Pages serves what the gh-pages commit holds. Git for
+Windows, where both publishing jobs run, is installed with
+`core.autocrlf=true`: it turns `"\n"` into `"\r\n"` when it checks files out
+and back when it commits them, so a feed signed as written on the runner
+wasn't what the branch held (a review of this pipeline found every signed
+feed broken that way, before any was published). Now:
+
+- `packaging/update_appcast.py` writes the feeds, and `publish_pages.py` the
+  page and `macos.json`, with `"\n"` on every platform.
+- Both jobs run `git config --global core.autocrlf false` before they check
+  out gh-pages (after the source checkout, which is unaffected), and the
+  site carries a `.gitattributes` with `* -text` (`publish_pages.py` writes
+  it), so every later checkout gets the committed bytes whatever Git's
+  settings.
+- `packaging/push_pages.py` stages the site and then reads the staged blobs,
+  never the working copy: `.gitattributes` must say `* -text`, every macOS
+  feed must verify with the app's key, and every disk image a macOS feed
+  lists must have the length and signature the feed gives it. Only then does
+  it commit the index as one fresh commit and push it with the lease.
+  `publish-macos` runs the same check (`--check`) before it adds anything to
+  the GitHub Release; `--check --rev gh-pages` checks a pushed commit.
+- `build-macos.yml` rehearses all of it on `windows-latest` for two releases
+  in a row (`scripts/rehearse_pages_publish.py`): the release's Git setting,
+  both jobs' scripts with a throwaway key, a push to a copy of the branch on
+  the runner, and a check of each pushed commit. It also shows that a feed
+  changed after signing is refused, and that a checkout with Git's own
+  defaults gets every file byte for byte. Nothing is pushed to GitHub.
+  Locally: `python scripts/rehearse_pages_publish.py --pages <a gh-pages
+  checkout> --isolate-git-config` (Windows, with PowerShell).
+
+## Repairing the macOS feeds
+
+A macOS feed whose signing block doesn't verify, after a publish went wrong,
+stops the next publish on purpose: signing it again is a person's decision. Macs meanwhile get update error 1000 (and Sparkle's safe
+mode after 20 days). To repair it you need the EdDSA private key, which
+GitHub never shows, so this uses its backup, on Windows (winsparkle-tool is
+a Windows program):
+
+1. Check out gh-pages byte for byte:
+   `git -c core.autocrlf=false clone --branch gh-pages https://github.com/Luminary-Analytics/resonant-client pages`.
+2. See which feeds fail: `pwsh packaging/publish_macos.ps1 -Site pages -CheckFeeds -PublicKey <EDDSA_PUBLIC_KEY>`
+   (the key in `lumi/updater.py`).
+3. Sign those again: `pwsh packaging/publish_macos.ps1 -Site pages -ResignFeeds -PublicKey <key> -PrivateKeyFile <key file>`.
+   It checks each feed first, signs again only those that don't verify, and
+   checks them all afterwards. Delete the key file when it's done.
+4. Publish: `python packaging/push_pages.py pages --message "Sign the macOS feeds again" --tool packaging/winsparkle/WinSparkle-0.9.2/bin/winsparkle-tool.exe`
+   (as LA-Rich). It commits nothing unless the staged feeds and disk images
+   verify, and its lease refuses the push if a release published meanwhile.
+5. Confirm what Pages serves: `python packaging/feed_signature.py verify <downloaded appcast-macos.xml> <key>`
+   for each feed.
+
+A disk image that doesn't match its feed can't be repaired this way: publish
+a new release instead. `scripts/rehearse_pages_publish.py` runs these steps
+on a branch it breaks the way Git for Windows once did.
+
+Rotating the key is not covered. One key signs the Windows installers, the
+disk images and the macOS feeds, and every installed copy trusts only that
+key (Sparkle and WinSparkle each have their own way to move to a new one).
+`-ResignFeeds` signs the feeds with whatever key it's given, but
+`push_pages.py` checks feeds and disk images against one key, so a rotation
+needs a plan of its own first.
 
 ## Signing and publication
 
@@ -246,7 +337,8 @@ ordinary CI. Keep mocked wire-contract tests distinct from live model evidence.
 | `packaging/update_appcast.py` | Stable, beta and release-line update feeds, for Windows and macOS |
 | `lumi/updater.py`, `lumi/update_channels.py` | WinSparkle client and verification key; update mode, channel, pin and platform |
 | `packaging/build_macos.sh`, `packaging/fetch_sparkle.sh` | macOS app, DMG and PKG; pinned Sparkle; Apple signing and notarization |
-| `packaging/publish_macos.ps1`, `packaging/feed_signature.py` | Signing the DMG and the macOS feeds, checked with the app's key, and laying them out on Pages |
+| `packaging/publish_macos.ps1`, `packaging/feed_signature.py` | Signing the DMG and the macOS feeds, checked with the app's key, and laying them out on Pages; checking or re-signing the feeds |
+| `packaging/push_pages.py`, `scripts/rehearse_pages_publish.py` | Publishing gh-pages from the staged blobs, byte for byte and verified; its rehearsal on Windows |
 | `lumi/sparkle.py` | Sparkle 2 on macOS through PyObjC: the delegate and the main-thread hand-off |
 | `.github/workflows/build-macos.yml`, `packaging/smoke_gui.py` | macOS build and smoke test on every change, the updater included; a publishing rehearsal with a throwaway key |
 

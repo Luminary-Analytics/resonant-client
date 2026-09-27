@@ -139,9 +139,13 @@ host enrollment and actual packaged/learned-benefit qualification remain open.
   PyObjC, main thread, app only) with the same EdDSA key and its own feeds
   (`appcast-macos*.xml`); never put macOS items in the Windows feeds. The
   macOS feeds are signed (`SURequireSignedFeed`, `packaging/feed_signature.py`):
-  whatever writes one signs it again (`packaging/publish_macos.ps1`). Sparkle's
+  whatever writes one signs it again (`packaging/publish_macos.ps1`), and
+  gh-pages must hold exactly the bytes signed: write feeds and pages with
+  LF line ends, keep the site's `.gitattributes` (`* -text`), and publish only
+  through `packaging/push_pages.py`, which verifies the staged blobs. Sparkle's
   delegate checks each download request as it starts (`download_refusal`),
-  not only the check. Running
+  not only the check, and the found version against the channel and pin
+  (`may_proceed`), since one key signs every macOS feed. Running
   from source never loads WinSparkle or Sparkle, and an MSI, PKG, deb or rpm install (`lumi-install.json`) never
   updates itself. A macOS configuration profile that can't be used fails closed like
   any machine policy (`policy.managed_preferences_policy`).

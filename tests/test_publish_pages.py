@@ -35,6 +35,18 @@ def test_new_installer_is_copied_and_linked(tmp_path):
     assert (site / ".nojekyll").exists()
 
 
+def test_the_site_tells_git_to_keep_every_byte(tmp_path):
+    # The macOS feeds are signed over their bytes; Git for Windows would
+    # otherwise change their line ends on the way to Pages and back.
+    pages = _load()
+    site = tmp_path / "site"
+    site.mkdir()
+    pages.publish(site, _installer(tmp_path, "0.19.2"), "0.19.2")
+    rules = (site / ".gitattributes").read_bytes()
+    assert b"* -text" in rules.splitlines() and b"\r" not in rules
+    assert b"\r" not in (site / "index.html").read_bytes()
+
+
 def test_only_the_newest_installers_are_kept_by_numeric_version(tmp_path):
     pages = _load()
     site = tmp_path / "site"

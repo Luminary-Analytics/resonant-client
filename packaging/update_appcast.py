@@ -239,7 +239,12 @@ def _write(path: Path, template: ET.Element, title: str, description: str,
         channel.append(copy.deepcopy(item))
     tree = ET.ElementTree(rss)
     ET.indent(tree, space="    ")
-    tree.write(path, encoding="utf-8", xml_declaration=True)
+    # A binary handle, so every platform writes the same bytes with "\n" line
+    # ends: given a file name, ElementTree writes in text mode, which is
+    # "\r\n" on Windows, where the release publishes. The macOS feeds are
+    # signed over exactly these bytes (packaging/publish_macos.ps1).
+    with open(path, "wb") as handle:
+        tree.write(handle, encoding="utf-8", xml_declaration=True)
     return path
 
 

@@ -14,7 +14,10 @@ Settings > Updates, or an organization policy, sets three values:
 Each channel and release line has its own feed beside the installers on the
 update site; ``packaging/update_appcast.py`` writes them. WinSparkle and
 Sparkle take a feed URL, not a filter, so choosing the feed is how the choice
-is enforced. macOS has feeds of its own (``appcast-macos.xml`` and so on,
+is enforced. On macOS the update Sparkle found is checked against it too
+(``refusal_for``, from lumi/sparkle.py): the macOS feeds are signed, but with
+one key for all of them, so the beta feed could be served at the stable
+feed's address without breaking a signature. macOS has feeds of its own (``appcast-macos.xml`` and so on,
 listing disk images), so the Windows feeds every installed copy polls keep
 their addresses and contents; ``platform_name`` picks the set.
 
@@ -65,6 +68,9 @@ MANAGED_INSTALLERS = {
     "rpm": ("the RPM package", "your package manager"),
 }
 _PIN = re.compile(r"(0|[1-9]\d{0,3})\.(0|[1-9]\d{0,3})")
+# A release version as the feeds give it (0.21.0-beta.1), as a Mac bundle
+# gives it (0.21.0beta.1), or a development build's (0.19.2.dev11).
+_RELEASE = re.compile(r"(\d+)\.(\d+)\.(\d+)(?:[.-]?(dev|alpha|a|beta|b|rc)\.?(\d+))?", re.IGNORECASE)
 
 
 def parse_pin(value: Any) -> str:
@@ -128,6 +134,32 @@ def platform_name() -> str:
     if sys.platform == "darwin":
         return "macos"
     return "windows" if sys.platform == "win32" else "linux"
+
+
+def refusal_for(version: str, channel: str, pin: str) -> str:
+    """Why a copy on ``channel``, or pinned to ``pin``, doesn't take ``version``; "" when it does.
+
+    What choosing the feed means, checked on the version itself: a pin takes
+    only stable releases of its line, the stable channel only stable
+    releases, and the beta channel anything. A version Lumi can't read is
+    refused wherever there's something to check.
+    """
+    if not pin and channel == "beta":
+        return ""
+    text = str(version or "").strip().removeprefix("v")
+    match = _RELEASE.fullmatch(text)
+    if not match:
+        where = f"the {pin} release line" if pin else "the stable channel"
+        return f"Lumi can't tell what release {text or 'this update'} is, so this copy on {where} doesn't take it."
+    major, minor, _patch, prerelease, _number = match.groups()
+    if pin:
+        if prerelease or f"{int(major)}.{int(minor)}" != pin:
+            return (f"Lumi {text} isn't a stable release of the {pin} line this copy stays on "
+                    "(Settings > Updates).")
+        return ""
+    if prerelease:
+        return f"Lumi {text} is a beta, and this copy takes stable releases (Settings > Updates > Channel)."
+    return ""
 
 
 def feed_name(channel: str, pin: str, platform: str = "windows") -> str:

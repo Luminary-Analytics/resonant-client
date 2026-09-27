@@ -43,7 +43,7 @@ day. `LUMI_STATE_HOME` moves the whole folder.
 | `budget.warning`, `budget.approval`, `budget.block` | A [budget](usage-and-costs.md#budgets) alerts, asks (with the answer) or stops a turn | owner, scope, period, spend, threshold, `decision` |
 | `update.check` | An [update](updates.md) check finishes | `result` (`found`, `none`, `error`), version, feed |
 | `update.deferred`, `update.install` | An update waits for a running agent turn, or its installer starts and Lumi closes | version, feed, `reason` |
-| `update.refused` | Offline mode stops an update's download before it starts (macOS) | version, feed, `to_version`, `stage`, `reason` |
+| `update.refused` | Offline mode stops an update's download before it starts, or the update found isn't one the channel or pin takes (macOS) | version, feed, `to_version`, `stage` (`download`, `channel`, `pin`), `reason` |
 | `update.skipped`, `update.postponed`, `update.cancelled` | You skip an update, choose to be reminded later, or close the update window | version, feed |
 | `oversight.notice_shown` | The [organization oversight](organization-oversight.md) notice for the policy in force was confirmed: the app's button, a typed yes at an interactive terminal, or a chat of the chat gateway (its button or reply). Model requests may start | organization, surface (`app`, `terminal`, `gateway`), the acknowledgment's id, fingerprint, the notice's SHA-256, computer user, whether it was signed, the chat's session for a chat, `version`, `activity`, `messages`, `security_flags`, `retention_days`, `project_paths`, `unattended`, `enabled` |
 | `oversight.notice_forgotten` | Confirmed oversight notices were forgotten: the computer left the organization or signed out of Lumi Cloud | why |

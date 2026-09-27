@@ -74,7 +74,9 @@ runs lint/tests, builds the bundle and Inno Setup installer, signs the installer
 for WinSparkle and creates a GitHub Release. For stable `X.Y.Z` tags it then
 copies the installer to the Pages site under `downloads/vX.Y.Z/`, keeps the
 newest three installers, points the new appcast entry at that copy, and
-publishes `gh-pages` as one fresh commit. GitHub Pages then deploys it.
+publishes `gh-pages` as one fresh commit (`packaging/push_pages.py`, which
+first checks the staged bytes, the signed macOS feeds included). GitHub Pages
+then deploys it.
 
 Installed apps download from Pages, not from the GitHub Release, because the
 source repository may be private and its Release assets then need sign-in.
@@ -91,9 +93,10 @@ the Windows job has published, `publish-macos` runs
 checks the signature with the key in `lumi/updater.py`), copies the DMG (and
 for stable tags the PKG) into the same `downloads/vX.Y.Z/` folder on Pages,
 adds the DMG to the macOS feeds (`appcast-macos*.xml`) and signs each feed it
-wrote with that key, as Lumi.app requires. The job then adds the DMG, PKG,
-macOS SBOM and notices to the GitHub Release and pushes gh-pages again as one
-fresh commit. The Windows feeds aren't touched. A failed macOS job doesn't
+wrote with that key, as Lumi.app requires. The job then checks the site as
+Git will hold it, adds the DMG, PKG, macOS SBOM and notices to the GitHub
+Release, and pushes gh-pages again as one fresh commit. The Windows feeds
+aren't touched. A failed macOS job doesn't
 hold the Windows release back. The jobs that sign run in the `release`
 environment ([below](#signing-and-infrastructure)).
 
@@ -134,6 +137,10 @@ use a file to preserve literal text and newlines.
   with the key from `lumi/updater.py`); Macs ignore a feed without one. The
   download page offers the disk image, and says how to open it when the run
   warned that it isn't notarized.
+- What Pages serves verifies, byte for byte: in a clone of the branch,
+  `python packaging/push_pages.py <clone> --check --rev gh-pages` (add
+  `--tool packaging/winsparkle/WinSparkle-0.9.2/bin/winsparkle-tool.exe`
+  where the cryptography package isn't installed).
 - The working tree and pushed branch state match the intended result.
 
 Existing installations discover the release on their next update check;
@@ -292,6 +299,13 @@ that update.
   both jobs rather than editing any of them by hand. Adding the macOS files
   to the published release needs the repository's immutable releases off,
   as they are now.
+- **"has a signing block that doesn't verify" or push_pages.py refused the
+  site:** nothing was pushed. A macOS feed's bytes no longer match its
+  signature (a publish changed them after signing); follow
+  [Repairing the macOS feeds](docs/release-pipeline.md#repairing-the-macos-feeds),
+  then rerun the failed jobs. Never commit gh-pages by hand with Git's line
+  end conversion on: publish with `packaging/push_pages.py`, which checks the
+  staged bytes first.
 - **Sparkle's pin:** `packaging/fetch_sparkle.sh` holds Sparkle's version and
   SHA-256 (take it from the release asset's digest on GitHub, not from a
   download alone), and `packaging/third-party-components.json` its version

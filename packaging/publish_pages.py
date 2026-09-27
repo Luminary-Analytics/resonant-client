@@ -25,8 +25,13 @@ also rewrites index.html with links to the newest stable release's files; a
 beta doesn't. Run update_appcast.py afterwards with
 --download-base "<pages-url>/downloads" (and the same --platform) so the
 feeds point at these files. The release workflow publishes the result as a
-single fresh gh-pages commit, so removed installers do not accumulate in
-branch history.
+single fresh gh-pages commit (packaging/push_pages.py), so removed installers
+do not accumulate in branch history.
+
+The site also gets a ``.gitattributes`` that keeps Git from changing any
+file's bytes. The macOS feeds are signed over their exact bytes, and Git for
+Windows, where the release publishes, otherwise converts line ends as it
+commits files and checks them out.
 """
 from __future__ import annotations
 
@@ -44,6 +49,8 @@ RELEASE = re.compile(r"(\d+)\.(\d+)\.(\d+)(?:-(alpha|beta|rc)\.(\d+))?")
 _PRE_RANK = {"alpha": 0, "beta": 1, "rc": 2}
 PLATFORMS = ("windows", "macos")
 MACOS_STATUS = "macos.json"
+# Every file on the site byte for byte, whatever core.autocrlf says.
+GIT_ATTRIBUTES = b"# packaging/publish_pages.py: Git keeps every file here byte for byte.\n* -text\n"
 
 
 def _version_key(version: str) -> tuple[int, ...] | None:
@@ -108,6 +115,7 @@ def publish(site: Path, installer: Path, version: str, keep: int = KEEP, lines: 
         # for an older, pinned line (say 0.19.3 after 0.20.1) is not.
         (site / "index.html").write_text(render_page(stable[0]), encoding="utf-8", newline="\n")
     (site / ".nojekyll").touch()
+    (site / ".gitattributes").write_bytes(GIT_ATTRIBUTES)
     return target
 
 

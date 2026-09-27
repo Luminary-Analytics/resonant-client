@@ -209,6 +209,19 @@ def _mac_versions(path: Path) -> list[str]:
     return [item.findtext(f"{SPARKLE}shortVersionString") for item in channel.findall("item")]
 
 
+def test_feeds_are_the_same_bytes_on_every_platform(site, tmp_path):
+    # "\n" line ends, also on Windows, where the release publishes: the macOS
+    # feeds are signed over exactly these bytes.
+    feeds = _load()
+    written = _release(feeds, site, tmp_path, "0.21.0") + _mac_release(feeds, site, tmp_path, "0.21.0")
+    assert {"appcast.xml", "appcast-beta.xml", "appcast-macos.xml", "appcast-macos-beta.xml"} <= {
+        path.name for path in written}
+    for path in written:
+        data = path.read_bytes()
+        assert data.startswith(b"<?xml version='1.0' encoding='utf-8'?>\n<rss"), path.name
+        assert b"\r" not in data, path.name
+
+
 def test_the_macos_bundle_version_drops_only_the_dash():
     feeds = _load()
     assert feeds.macos_bundle_version("0.21.0") == "0.21.0"
@@ -293,6 +306,25 @@ def test_a_feed_that_doesnt_match_its_signature_fails(site, tmp_path):
     assert not signing.verify(feed, public)
     with pytest.raises(ValueError, match="Ed25519"):
         signing.attach(site / "appcast-macos-beta.xml", "bm90IGEgc2lnbmF0dXJl")
+
+
+def test_a_feed_can_be_signed_again(site, tmp_path, capsys):
+    # A key rotation, or a publish that changed a feed's bytes after signing
+    # (publish_macos.ps1 -ResignFeeds): the old block goes, whatever its line
+    # ends, and the feed is signed over what's left.
+    feeds, signing = _load(), _feed_signature()
+    old, _ = _key()
+    new, new_public = _key()
+    _mac_release(feeds, site, tmp_path, "0.21.0")
+    feed = site / "appcast-macos.xml"
+    unsigned = feed.read_bytes()
+    signing.attach(feed, _signature(old, unsigned))
+    assert signing.strip(feed.read_bytes()) == unsigned
+    assert signing.strip(feed.read_bytes().replace(b"\n", b"\r\n")) == unsigned.replace(b"\n", b"\r\n")
+    assert signing.strip(unsigned) == unsigned
+    assert signing.main(["strip", str(feed)]) == 0 and feed.read_bytes() == unsigned
+    signing.attach(feed, _signature(new, unsigned))
+    assert signing.verify(feed, new_public)
 
 
 def test_the_feed_signature_command_line(site, tmp_path, capsys):

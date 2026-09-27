@@ -350,6 +350,59 @@ class TestWhatSparkleMayReach:
         assert (failed["data"]["result"], failed["data"]["code"], failed["data"]["domain"]) == (
             "error", -1009, "NSURLErrorDomain")
 
+    def test_an_address_lumi_cant_read_is_refused(self, mac, records):
+        engine = start(UpdatePreferences())
+        assert "couldn't read the update's download address" in engine.download_refusal("", "0.21.0")
+        [refused] = records()
+        assert (refused["type"], refused["data"]["stage"]) == ("update.refused", "download")
+
+
+class TestTheChannelAndPinHold:
+    """One key signs every macOS feed, so the update Sparkle found is checked against the channel and pin too.
+
+    Someone who can change the update site could otherwise serve the beta
+    feed, or a newer line's, at a stable or pinned copy's address.
+    """
+
+    def test_the_stable_channel_takes_only_stable_releases(self, mac, records):
+        engine = start(UpdatePreferences())
+        assert engine.may_proceed("0.21.0") == ""
+        assert "is a beta, and this copy takes stable releases" in engine.may_proceed("0.22.0-beta.1")
+        assert engine.may_proceed("0.22.0beta.1")  # as a Mac bundle version gives it
+        assert engine.may_proceed("0.19.2.dev11")
+        assert "can't tell what release" in engine.may_proceed("")
+        first = records()[0]
+        assert (first["type"], first["data"]["stage"], first["data"]["to_version"]) == (
+            "update.refused", "channel", "0.22.0-beta.1")
+        assert len(records()) == 4
+
+    def test_a_pin_takes_only_stable_releases_of_its_line(self, mac, records):
+        engine = start(UpdatePreferences(channel="beta", pin="0.20"))  # the pin wins
+        assert engine.may_proceed("0.20.3") == ""
+        assert "isn't a stable release of the 0.20 line" in engine.may_proceed("0.21.0")
+        assert "isn't a stable release of the 0.20 line" in engine.may_proceed("0.20.4-beta.1")
+        assert [record["data"]["stage"] for record in records()] == ["pin", "pin"]
+
+    def test_the_beta_channel_takes_betas_and_releases(self, mac, records):
+        engine = start(UpdatePreferences(channel="beta"))
+        assert engine.may_proceed("0.22.0-beta.1") == "" and engine.may_proceed("0.21.0") == ""
+        assert records() == []
+
+    def test_offline_mode_comes_first(self, mac, records):
+        engine = start(UpdatePreferences())
+        engine.stop("Offline mode: the update check needs luminary-analytics.github.io.")
+        assert engine.may_proceed("0.22.0-beta.1").startswith("Offline mode")
+        assert records() == []  # recorded when a download is refused, not here
+
+    def test_it_is_what_an_update_from_a_file_takes(self):
+        # The same rule as Settings > Updates > Install an update from a file (lumi/update_file.py).
+        assert update_channels.refusal_for("0.21.0", "stable", "") == ""
+        assert update_channels.refusal_for("v0.21.0-rc.1", "stable", "")
+        assert update_channels.refusal_for("0.21.0-rc.1", "beta", "") == ""
+        assert update_channels.refusal_for("0.20.9", "stable", "0.20") == ""
+        assert update_channels.refusal_for("0.2.0", "stable", "0.20")
+        assert update_channels.refusal_for("anything", "beta", "") == ""
+
 
 @pytest.mark.skipif(sys.platform == "win32", reason="packaging/fetch_sparkle.sh runs on macOS")
 def test_fetching_sparkle_never_uses_what_it_cant_verify(tmp_path):
@@ -545,6 +598,12 @@ def test_a_refused_download_request_gets_an_address_sparkle_wont_load():
     # Unsure is refused too.
     owner.download_refusal = lambda url, version: 1 / 0
     assert download(NSMutableURLRequest.requestWithURL_(NSURL.URLWithString_(dmg))) == sparkle.REFUSED_DOWNLOAD_URL
+    # A request whose address can't be read is asked about as "" (refused by
+    # the engine), and nothing it raises reaches Sparkle.
+    asked.clear()
+    owner.download_refusal = lambda url, version: asked.append((url, version)) or ("refused" if not url else "")
+    delegate.updater_willDownloadUpdate_withRequest_(None, item, object())
+    assert asked == [("", "0.21.0")]
 
 
 # ── On a Mac with the pinned framework: Sparkle itself ──────────────────────
@@ -639,14 +698,14 @@ def host_app(tmp_path):
 class _Cycles:
     """A SparkleUpdater for a test bundle: what it records, and one update cycle at a time."""
 
-    def __init__(self, host, feed):
+    def __init__(self, host, feed, *, channel="stable", pin=""):
         self.events = []
         self.finished = []
         self.feed = feed
         self.engine = sparkle.SparkleUpdater(
             Path(FRAMEWORK), record=lambda kind, **data: self.events.append((kind, data)),
             turn_running=lambda: False, close_app=lambda: None, host_bundle=host)
-        assert self.engine.start(SimpleNamespace(mode="manual", feed_url=feed))
+        assert self.engine.start(SimpleNamespace(mode="manual", feed_url=feed, channel=channel, pin=pin))
         # The delegate looks each answer up on its owner, so these stand in for Lumi's own.
         self.engine.feed_url = lambda: self.feed
         cycle_finished = self.engine.cycle_finished
@@ -753,6 +812,20 @@ def test_sparkle_offers_nothing_older_than_what_runs(feeds, host_app):
     # The same feed updates what is older, the release's own beta included.
     assert _Cycles(host_app("0.20.0"), feed).run() == [FOUND]
     assert _Cycles(host_app("0.21.0-beta.1", bundle_version="0.21.0beta.1"), feed).run() == [FOUND]
+
+
+@with_sparkle
+def test_sparkle_takes_only_what_the_channel_or_pin_takes_whichever_feed_it_reads(feeds, host_app):
+    """The beta feed, or a newer line's, at a stable or pinned copy's address: correctly signed, still refused."""
+    feeds.publish("0.21.0-beta.1")
+    beta_feed = feeds.url("appcast-macos-beta.xml")
+    [(kind, data)] = _Cycles(host_app(), beta_feed).run()  # a copy on the stable channel
+    assert (kind, data["stage"], data["to_version"]) == ("update.refused", "channel", "0.21.0-beta.1")
+    assert _Cycles(host_app(), beta_feed, channel="beta").run() == [
+        ("update.check", {"result": "found", "to_version": "0.21.0-beta.1"})]
+    feeds.publish("0.21.0")
+    [(kind, data)] = _Cycles(host_app(), feeds.url("appcast-macos.xml"), pin="0.20").run()
+    assert (kind, data["stage"], data["to_version"]) == ("update.refused", "pin", "0.21.0")
 
 
 @with_sparkle

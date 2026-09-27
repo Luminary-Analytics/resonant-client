@@ -112,6 +112,33 @@ Windows installer. See [Lumi on macOS](macos.md) and [Updates](updates.md).
   launchd to replace the app; CI instead verifies every signature it
   publishes with the app's key.
 
+### Second review fixes (September 27)
+
+- **The signed feeds now reach Pages as signed.** On the Windows runner the
+  feeds were written with `\r\n` line ends and signed so, and Git for
+  Windows committed them with `\n`: every published macOS feed would have
+  failed its signature, and the next publish would have stopped. The feeds
+  are now written with `\n` everywhere, both jobs turn `core.autocrlf` off
+  before checking out gh-pages, the site carries a `.gitattributes` with
+  `* -text`, and `packaging/push_pages.py` commits only after the staged
+  blobs verify: every macOS feed's signature, and each disk image's length
+  and signature. `build-macos.yml` rehearses two releases in a row on
+  Windows, as the release publishes (`scripts/rehearse_pages_publish.py`),
+  checking each pushed commit, a feed changed after signing, and a checkout
+  with Git's own defaults.
+- **The channel and pin hold whatever feed arrives.** One key signs every
+  macOS feed, so the version Sparkle found is checked too: a copy on the
+  stable channel refuses a beta, a pinned copy anything outside its line
+  (`update.refused`). A replayed old feed can still keep Macs where they are;
+  that's documented as a limit.
+- **Repairing a feed.** `publish_macos.ps1 -CheckFeeds` and `-ResignFeeds`
+  check, and sign again, the macOS feeds a site has. A publish no longer
+  skips a feed whose signature doesn't verify: it stops and points at the
+  repair ([Repairing the macOS feeds](release-pipeline.md#repairing-the-macos-feeds)).
+- **Smaller:** a download address Lumi can't read is refused; Sparkle
+  follows redirects without asking, which is documented; the AWS role must
+  wait for the `v*` tag rule, and no workflow asks for an OIDC token.
+
 Not verified: an update installed on a real Mac (no macOS release is
 published yet), Gatekeeper's first launch of a downloaded build, the native
 window beyond starting, dictation, computer use, the Keychain prompt, and a

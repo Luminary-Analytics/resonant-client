@@ -254,3 +254,34 @@ def test_signing_required_without_credentials_fails_the_release(tmp_path):
     assert result.returncode != 0
     assert "WINDOWS_SIGNING_REQUIRED" in result.stdout + result.stderr
     assert target.read_bytes() == b"MZ"
+
+
+def _jobs(workflow: str) -> dict[str, str]:
+    """Each job's text in a workflow file, by name."""
+    text = (ROOT / ".github" / "workflows" / workflow).read_text(encoding="utf-8")
+    parts = re.split(r"^  ([a-z][\w-]*):\n", text.split("\njobs:\n", 1)[1], flags=re.M)
+    return dict(zip(parts[1::2], parts[2::2]))
+
+
+def test_gh_pages_is_published_byte_for_byte_and_checked_before_it_is_pushed():
+    # The macOS feeds are signed over their bytes. Git for Windows, where the
+    # release publishes, would convert line ends on checkout and commit unless
+    # told not to before the checkout, and only push_pages.py checks the
+    # staged blobs before pushing.
+    release = {name: job for name, job in _jobs("release.yml").items() if "ref: gh-pages" in job}
+    rehearsal = _jobs("build-macos.yml")["publish-dry-run"]
+    assert set(release) == {"release", "publish-macos"}
+    for name, job in [*release.items(), ("publish-dry-run", rehearsal)]:
+        setting = job.find("git config --global core.autocrlf false")
+        assert 0 <= setting < job.index("ref: gh-pages"), name
+    for name, job in release.items():
+        assert "python packaging/push_pages.py gh-pages-checkout" in job, name
+        assert "git push" not in job and "git add" not in job, name
+    assert "scripts/rehearse_pages_publish.py" in rehearsal
+
+
+def test_no_workflow_asks_for_an_oidc_token():
+    # A cloud role that trusts the release environment's identity is only as
+    # safe as that environment's tag rule (docs/release-pipeline.md).
+    for workflow in (ROOT / ".github" / "workflows").glob("*.yml"):
+        assert "id-token" not in workflow.read_text(encoding="utf-8"), workflow.name

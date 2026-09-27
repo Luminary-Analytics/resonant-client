@@ -188,3 +188,25 @@ def test_a_refused_request_fails_its_task_cleanly_and_the_orchestrator_retries_i
     assert refused == []  # Settled as known, not held as uncertain.
     assert [row["state"] for row in run["attempts"] if row["kind"] == "worker"].count("failed") == 1
     assert any("provider status 429" in (row.get("observation_error") or "") for row in run["request_inputs"])
+
+
+def test_two_unusable_orchestrator_turns_in_a_row_hand_the_team_back(team):
+    # A live model replied twice without a valid plan; a third turn would only
+    # spend the allowance again.
+    service, capture, outputs, backends = team
+    outputs += ["I will look at the files first.", "Still thinking about it."]
+    run_id = start(service, capture, rounds=2)
+    deadline = time.monotonic() + 30
+    view = None
+    while time.monotonic() < deadline:
+        view = service.operate(capture, {"request_id": f"view-{time.monotonic()}", "run_id": run_id})
+        if view["autonomy"]["phase"] == "needs_owner":
+            break
+        time.sleep(.05)
+    assert view["autonomy"]["phase"] == "needs_owner", view["autonomy"]
+    assert "could not produce a usable plan twice" in view["autonomy"]["detail"]
+    time.sleep(1.5)  # Several loop ticks: no third orchestrator turn starts.
+    coordinators = [row for row in service.operate(capture, {"request_id": "last", "run_id": run_id})["run"]["attempts"]
+                    if row["kind"] == "coordinator"]
+    assert len(coordinators) == 2 and len(backends) == 2
+    assert view["run"]["run"]["state"] == "running" and not view["run"]["coordinator_proposals"]

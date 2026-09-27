@@ -181,15 +181,21 @@ class TeamAutopilot:
             return False
         if self.final_report is not None:
             return False
-        if latest["id"] in self._retried:
+        # This failed turn was itself the retry of the one before it: stop asking
+        # the model and hand over to the owner.
+        previous = coordinators[-2] if len(coordinators) > 1 else None
+        if previous is not None and previous["id"] in self._retried:
             if self.closing:
                 # The work is done and accepted; only the summary is missing.
                 self.final_report = "The orchestrator did not write a final report. See the accepted findings."
                 return False
             self._set("needs_owner", "The orchestrator could not produce a usable plan twice. Plan the next step yourself.")
             return True
-        self._request_plan(capture, runner, snapshot, note="The orchestrator is trying its turn again.")
-        self._retried.add(latest["id"])
+        if latest["id"] in self._retried:
+            return True  # Its retry is being prepared.
+        if self._request_plan(capture, runner, snapshot, note="The orchestrator is trying its turn again."):
+            # The next turn is this one's retry.
+            self._retried.add(latest["id"])
         return True
 
     def _accept_results(self, capture, runner, snapshot) -> bool:

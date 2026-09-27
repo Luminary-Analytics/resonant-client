@@ -149,10 +149,12 @@ host enrollment and actual packaged/learned-benefit qualification remain open.
   `Session.run` before each turn and each model request, and
   `oversight.refusal` at entry points outside a turn: the app's message
   box, plans, missions, autonomous sessions, Team's `policy_refusal` and
-  `TeamGovernance.refusal`, model comparisons, evaluations, dictation). A
-  new entry point runs through
-  `Session.run` and refuses before it starts; `TestEveryPath` fails if code
-  calls the turn loop another way. Confirmation (`oversight.acknowledge`)
+  `TeamGovernance.refusal`, model comparisons, evaluations, dictation, and
+  requests outside a turn: planning classification, titles, structured
+  repair, `[vision]` checks, skill extraction). A new entry point runs
+  through `Session.run` and refuses before it starts, and a new request
+  outside a turn asks too; `TestEveryPath` fails if code calls the turn
+  loop another way. Confirmation (`oversight.acknowledge`)
   comes only from a person: the notice's own button (never a status push,
   a timer or a painted page, and focus never moves onto it), a typed yes at
   an interactive terminal, or a gateway chat's button or reply for that

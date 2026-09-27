@@ -1086,6 +1086,11 @@ class Session:
             self._guarded_no_hooks()
             if not callable(getattr(self.backend, "classify", None)):
                 return False  # Unsupported classification does not reserve or start a request.
+            # Nothing reaches a model before an organization's oversight notice is
+            # confirmed (lumi/oversight.py): no planning, and the turn's own
+            # refusal (Session.run) says why. It comes before DLP, as in a turn.
+            if self._oversight_checkpoint():
+                return False
             # The prompt carries the person's message, so DLP checks it like a turn;
             # a block skips planning, and the turn's own request reports it.
             prompt = dlp.check_text(

@@ -35,9 +35,12 @@ now.
   participant's start and model request, through `TeamGovernance.refusal`;
   a personal team's reviews and bookkeeping stay available), model
   comparisons, evaluations, a
-  schedule's Run now, dictation, AI Employee advice and tasks from chat. A
-  test fails if any code calls the turn loop other than through
-  `Session.run`.
+  schedule's Run now, dictation, AI Employee advice and tasks from chat.
+  Model requests outside a turn wait too: the terminal UI's planning
+  classification, a session's automatic title, a specialist's
+  structured-output repair, `[vision]` acceptance checks and a mission's
+  skill extraction. A test fails if any code calls the turn loop other than
+  through `Session.run`.
 - **Terminals ask for a typed yes.** Interactive `lumi run` (standard input
   and error both terminals) and the terminal UI print the notice and wait
   for `yes`; anything else stops without sending anything (`lumi run` exits
@@ -130,18 +133,22 @@ Python 3.13 venv, `PYTHONNOUSERSITE=1`):
   contrast of its text, reason and button: 13.4:1, 13.4:1, 11.4:1 (dark),
   14.1:1, 14.1:1, 6.2:1 (light). The real `~/.resonant` and Credential Manager
   were unchanged.
-- With data loss prevention: `tests/test_oversight.py` (101 tests) adds
-  records that carry DLP's redacted form (message, reply, title, a tool's
-  path, a flag excerpt) and leave out what a block rule matched; a turn a
-  DLP service refused sharing no text, and later turns carrying the
-  service's redactions; an unconfirmed notice refusing before any DLP check
-  (no service call, no `dlp.*` audit record); an unusable `dlp` section
-  withholding the text. `tests/test_dlp.py` (`dlp.shareable`: rules by kind,
-  a failed check, no rules, an unusable section, the service's redactions
-  and named and whole-request blocks, which requests still don't read) and
-  `tests/test_security_flags.py` (an excerpt redacted before its window is
-  cut, no excerpt for withheld text). The suite without Team tests: 5,095
-  passed, 10 skipped.
+- `tests/test_oversight.py` (102 tests) adds model requests outside a turn
+  waiting for the notice (planning classification, a title,
+  structured-output repair, a `[vision]` check; each checked to fail
+  without its gate) and, with data loss prevention: records that carry
+  DLP's redacted form (message, reply, title, a tool's path, a flag
+  excerpt) and leave out what a block rule matched; a turn a DLP service
+  refused sharing no text, and later turns carrying the service's
+  redactions; an unconfirmed notice refusing before any DLP check (no
+  service call, no `dlp.*` audit record); an unusable `dlp` section
+  withholding the text. `tests/test_dlp.py` (`dlp.shareable`: rules by
+  kind, a failed check, no rules, an unusable section, the service's
+  redactions and named and whole-request blocks, which requests still
+  don't read) and `tests/test_security_flags.py` (an excerpt redacted
+  before its window is cut, no excerpt for withheld text). The suite
+  without Team tests: 5,096 passed, 10 skipped; Team's policy, session
+  guard and provider request tests: 187 passed.
 - End to end against Lumi Cloud (lumi-cloud #33 at 9e55060: its development
   server on a throwaway SQLite database, loopback only) and this branch's
   source app in a throwaway home, driven in headless Edge: sign-in through

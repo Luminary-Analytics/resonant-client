@@ -93,6 +93,12 @@ hasn't confirmed its notice on this computer, Lumi sends nothing to a model:
   **Run now** (the person's own action, unlike the schedule itself),
   dictation, AI Employee advice, and tasks from chat (the chat is told why).
   The server refuses a message even if a page sends one.
+- Model requests outside a turn wait too: the terminal UI's planning
+  classification (`Session.should_plan`), a session's automatic title after
+  its first turn, a specialist's structured-output repair, `[vision]`
+  acceptance checks and a mission's skill extraction. A policy can arrive
+  while a turn runs, so each asks again rather than trusting the turn's
+  start.
 - `Session.run` asks before the turn and again before **each model
   request**, so a policy that arrives mid-turn with a notice the person
   hasn't confirmed stops the turn there. A refused turn never reaches the

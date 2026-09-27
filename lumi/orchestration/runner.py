@@ -550,7 +550,7 @@ class LocalSpecialistRunner:
             subgoals, parse_ok = self._parse_subgoals(full_text)
             if not parse_ok:
                 repaired = self._repair_structured_output(
-                    session.backend, full_text, _PLAN_OUTPUT_SCHEMA,
+                    session.backend, full_text, _PLAN_OUTPUT_SCHEMA, session=session,
                 )
                 if repaired is not None:
                     subgoals, parse_ok = self._parse_subgoals(json.dumps(repaired))
@@ -563,7 +563,7 @@ class LocalSpecialistRunner:
             verdict, findings, parse_ok = self._parse_verdict(full_text)
             if not parse_ok:
                 repaired = self._repair_structured_output(
-                    session.backend, full_text, _VERIFY_OUTPUT_SCHEMA,
+                    session.backend, full_text, _VERIFY_OUTPUT_SCHEMA, session=session,
                 )
                 if repaired is not None:
                     verdict, findings, parse_ok = self._parse_verdict(json.dumps(repaired))
@@ -639,11 +639,22 @@ class LocalSpecialistRunner:
         )
 
     @staticmethod
-    def _repair_structured_output(backend: Any, text: str, schema: dict) -> Optional[dict]:
-        """Use constrained decoding when a specialist's JSON fence drifted."""
+    def _repair_structured_output(backend: Any, text: str, schema: dict, *,
+                                  session: Any = None) -> Optional[dict]:
+        """Use constrained decoding when a specialist's JSON fence drifted.
+
+        With the specialist's ``session``, nothing is repaired while the
+        organization's oversight notice waits for the person (a policy can
+        arrive during the specialist's turn; lumi/oversight.py).
+        """
         generator = getattr(backend, "generate_structured", None)
         if not callable(generator) or not text:
             return None
+        if session is not None:
+            from .. import oversight
+
+            if oversight.admit(session).refusal:
+                return None
         try:
             from ..dlp import check_text, send
 

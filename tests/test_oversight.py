@@ -521,6 +521,54 @@ class TestEveryPath:
         assert results[0]["status"] == "failed" and "confirm Acme's oversight notice in the Lumi app" in \
             results[0]["text"]
 
+    def test_requests_outside_a_turn_wait_for_the_notice(self, org, tmp_path, monkeypatch):
+        """Planning classification, a session's title, structured-output repair and [vision] checks."""
+        from lumi.gui import session_titles
+        from lumi.orchestration.acceptance_check import VisionRunner
+        from lumi.orchestration.runner import LocalSpecialistRunner
+
+        org(EVERYTHING)
+        asked, titles = [], []
+
+        class Model(NeverCalled):
+            def classify(self, prompt, max_tokens=20):
+                asked.append("classify")
+                return "COMPLEX"
+
+            def generate_structured(self, prompt, schema, max_tokens=2048):
+                asked.append("repair")
+                return {"subgoals": []}
+
+        backend = Model()
+        session = _session(tmp_path, backend)
+        monkeypatch.setattr(session_titles, "generate_session_title",
+                            lambda backend, prompt, cancel, **kwargs: titles.append(prompt) or "Billing rebuild")
+        record = SimpleNamespace(title_source="auto", title="New task", id="conv-1", save=lambda: None)
+        state = SimpleNamespace(backend=SimpleNamespace(handles_tools=False), session=None,
+                                project=SimpleNamespace(project_path=str(tmp_path), current_session=record))
+        vision = VisionRunner(_call=lambda *args: asked.append("vision") or "yes")
+
+        async def title():
+            session_titles.schedule_title_refinement(state, None, record, "rebuild the billing service")
+            await state._session_title_task
+
+        def repair():
+            return LocalSpecialistRunner._repair_structured_output(backend, "not json", {"type": "object"},
+                                                                   session=session)
+
+        assert session.should_plan("rebuild the billing service") is False
+        assert repair() is None
+        asyncio.run(title())
+        verdict, answer = vision.ask(b"png", "Is the chart visible?")
+        assert (verdict, asked, titles) == (False, [], []) and "confirm Acme's oversight notice" in answer
+        # Once the notice is confirmed, each of them reaches the model.
+        _shown()
+        assert session.should_plan("rebuild the billing service") is True
+        assert repair() == {"subgoals": []}
+        asyncio.run(title())
+        assert vision.ask(b"png", "Is the chart visible?")[0] is True
+        assert asked == ["classify", "repair", "vision"] and titles == ["rebuild the billing service"]
+
 
 # ── Confirming the notice: a signed acknowledgment ──────────────────────────
 

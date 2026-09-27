@@ -106,6 +106,20 @@ host enrollment and actual packaged/learned-benefit qualification remain open.
   the audit log (`audit.py`); run new entry points through it rather than
   `_run_turn`. Record content only through `audit.content` (capture levels)
   and paths through `audit.name`; never record setting or key values.
+- Every outgoing model request passes the organization's DLP rules (`dlp.py`)
+  on the exact request, after `secret_scan`: `Session._model_stream` and
+  `request_purpose.auxiliary_stream` apply them, and any other call that
+  sends text to a model checks it with `dlp.check_text`. Send the checked
+  request with `dlp.send` (fixed text under `dlp.permit`): every model backend
+  class is `@dlp.guard_backend`, which refuses other calls while a policy
+  applies, and `tests/test_dlp.py` counts each use of a request method and
+  each model endpoint. Redact only text, never structure: tool arguments stay
+  valid JSON and signed reasoning is left out, not edited. A withheld entry
+  stays out of summaries, image descriptions and Engram. `dlp.*` audit
+  records and block messages name rules, actions, kinds and counts, never the
+  matched text, and Settings shows rule names, never keywords or patterns. A
+  `dlp` section Lumi can't use refuses requests (`policy.blocked_reason`)
+  while the rest of the policy applies. See [DLP](docs/dlp.md).
 - Model calls outside a turn go through `engine/request_purpose.auxiliary_stream`
   with a purpose, so `usage.py` records them. Prices come from `pricing.py`;
   a model without a known price is unpriced (`None`), never $0. Budgets
@@ -358,6 +372,21 @@ host enrollment and actual packaged/learned-benefit qualification remain open.
   Keep the SDK (`sdk/python/lumi_extension`) standard-library only and the
   protocol backward compatible; a breaking change needs a new
   `manifest_version`. Tests start real providers with `sys.executable`.
+- Capability-pack panels (`gui/extension_panels.py`, `static/panels_view.js`,
+  docs/extensions.md#panels) never run in the app's origin: an `<iframe
+  sandbox="allow-scripts">`, never `allow-same-origin`, whose files come only
+  from `/panels/<panel token>/` with their own Content-Security-Policy
+  (`connect-src 'none'`, `sandbox allow-scripts`). Each request checks the
+  pack again and serves only files the approval covered, as approved. The
+  bridge answers only that frame (`event.source`, origin `"null"`): the
+  project name and theme; composer text that is never sent, is checked with
+  the server first, and never starts the message with `!` or `/` or carries
+  an attaching @mention; a notice marked as the pack's. A panel can't close
+  itself (Escape comes over the bridge script's private port), and focus
+  never returns to the composer. Widening the bridge needs a security review.
+  The desktop window refuses bridge calls that aren't plain identifiers
+  (`webview_bridge.checked_bridge_call`); only WebView2 desktop windows open
+  panels.
 - Pack signatures (`engine/pack_signing.py`, `lumi-pack.sig`) are checked
   whenever a pack loads. They name a pack's publisher and never approve it.
   An invalid signature makes the pack unverifiable. Only the organization's
@@ -399,7 +428,7 @@ python -m ruff check .
 python -m pytest -q
 node --check lumi/gui/static/app.js
 node --check lumi/gui/static/settings_view.js
-node --test tests/ui_recovery.test.cjs tests/appearance.test.cjs tests/autonomous_view.test.cjs tests/vscode_extension.test.cjs tests/voice_input.test.cjs
+node --test tests/ui_recovery.test.cjs tests/appearance.test.cjs tests/autonomous_view.test.cjs tests/vscode_extension.test.cjs tests/voice_input.test.cjs tests/extension_panels.test.cjs
 git diff --check
 ```
 

@@ -18,6 +18,7 @@ through Ollama or EXO, SONN, or your company's own gateway.
 ## Running Lumi for an organization
 
 - [Organization policy](enterprise-policy.md)
+- [Data loss prevention](dlp.md)
 - [Deploying on Windows: the MSI, Intune, Configuration Manager and Group Policy](deploy-windows.md)
 - [The audit log and OpenTelemetry export](audit-log.md)
 - [Running Lumi without a UI: CI and containers](headless.md)

@@ -256,6 +256,8 @@ class LumiSettingsView {
             }).join('');
             const providerNote = pack.scope === 'project'
                 ? '<p class="editor-help">Lumi uses model providers only from personal packs (in ~/.lumi/packs), so these stay off here.</p>' : '';
+            // Panels run the pack's HTML and scripts in a sandboxed frame (docs/extensions.md#panels).
+            const panels = (pack.ui_panels || []).map(panel => `<li>${esc(panel.title)} · <code>${esc(panel.entry)}</code></li>`).join('');
             const signature = pack.signature || {};
             const signed = {
                 verified: `Signed by ${esc(signature.publisher)} · key <code>${keyId(signature.key_id)}</code> · verified`,
@@ -280,6 +282,7 @@ class LumiSettingsView {
                     ${hooks ? `<h4>Hooks (shell commands)</h4><ul>${hooks}</ul>` : '<p class="editor-help">No hooks.</p>'}
                     ${servers ? `<h4>MCP servers</h4><ul>${servers}</ul>` : '<p class="editor-help">No MCP servers.</p>'}
                     ${providers ? `<h4>Model providers (run for each request to their models)</h4>${providerNote}<ul>${providers}</ul>` : ''}
+                    ${panels ? `<h4>Panels (its pages and scripts, in a sandbox with no network access except WebRTC)</h4><ul>${panels}</ul>` : ''}
                     ${pinned ? `<h4>Repository files its commands run</h4><ul>${pinned}</ul>` : ''}
                     <p class="editor-help">${(pack.agents || []).length} agents · ${(pack.skills || []).length} skills · content digest <code>${esc((pack.digest || '').slice(0, 12))}</code></p>
                 </details>
@@ -532,8 +535,31 @@ class LumiSettingsView {
             ['Shell rules', String(policy.shell_rules || 0)],
             ['MCP servers', `${list(policy.mcp_allowed, 'all')}${policy.mcp_allow_stdio ? '' : ' · command-based servers off'}`],
             ['Capability packs', list(policy.packs_allowed, 'all')],
+            ['Data loss prevention', this._renderDlpRules(policy, esc)],
         ];
         return rows.map(([label, value]) => `<div class="settings-row"><div class="settings-row-copy"><span class="settings-row-label">${label}</span></div><div class="settings-row-value settings-policy-value">${value}</div></div>`).join('');
+    }
+
+    /**
+     * The organization's DLP rules (lumi/dlp.py), read-only: names, actions
+     * and what they check. Keywords and patterns aren't sent to the page, and
+     * nothing here turns a rule off.
+     */
+    _renderDlpRules(policy, esc) {
+        if (policy.dlp_error) {
+            return `<span class="editor-error" role="alert">${esc(policy.dlp_error)} Lumi won’t send model requests until it’s fixed.</span>`;
+        }
+        const dlp = policy.dlp;
+        if (!dlp || (!(dlp.rules || []).length && !dlp.service)) return 'None';
+        const actions = {flag: 'recorded', redact: 'redacted before sending', block: 'blocks the request'};
+        const rules = (dlp.rules || []).map(rule => {
+            const scope = (rule.scope || []).length ? ` · ${esc(rule.scope.join(', ').replace(/_/g, ' '))}` : '';
+            return `<li><code>${esc(rule.name)}</code> ${esc(actions[rule.action] || rule.action)}${scope}</li>`;
+        }).join('');
+        const service = dlp.service
+            ? `<div class="settings-row-hint">Also checked by <code>${esc(dlp.service)}</code>${dlp.service_on_error === 'allow' ? '; if it can’t answer, requests go out with only the rules above' : '; if it can’t answer, nothing is sent'}.</div>`
+            : '';
+        return `${rules ? `<ul class="settings-policy-list">${rules}</ul>` : ''}${service}<div class="settings-row-hint">Applied to everything sent to a model provider. Managed by ${esc(policy.organization)}.</div>`;
     }
 
     _renderModelComparisons() {
@@ -1678,7 +1704,7 @@ class LumiSettingsView {
             {id:'voice', title:'Voice', group:'Personal', icon:'mic', description:'Dictate messages instead of typing them.', sections:['voice'], keywords:'dictation dictate speech microphone mic push-to-talk transcription transcribe whisper speech-to-text voice input'},
             {id:'sonn_account', title:'SONN account & credits', group:'Personal', icon:'person', description:'Your authenticated SONN identity and prepaid credit balance.', sections:['sonn_account'], keywords:'billing invitation balance'},
             {id:'cost_tracking', title:'Usage & cost', group:'Personal', icon:'chart', description:'Review tracked model usage and local spending alerts.', sections:['cost_tracking'], keywords:'tokens budget'},
-            {id:'issue_trackers', title:'Issue trackers', group:'Integrations', icon:'book', description:'Read Jira and Linear issues, and comment on them, from a conversation.', sections:['issue_trackers', 'issue_tracker_keys'], keywords:'jira linear atlassian issue ticket story bug github gitlab'},
+            {id:'issue_trackers', title:'Issue trackers', group:'Integrations', icon:'book', description:'Read Jira, Linear, GitHub and GitLab issues, and comment on them, from a conversation.', sections:['issue_trackers', 'code_hosts', 'issue_tracker_keys'], keywords:'jira linear atlassian issue ticket story bug github gitlab enterprise server self-managed hosts token'},
             {id:'provider_connections', title:'Connections', group:'Integrations', icon:'globe', description:'Connect model providers and manage their endpoints and API keys.', sections:['provider_connections','network','api_keys'], keywords:'ChatGPT Codex OpenRouter SONN login authentication proxy certificates TLS keychain'},
             {id:'code_editors', title:'Code editors', group:'Integrations', icon:'plug', description:'Use Lumi from VS Code and JetBrains IDEs: send the selection, see Lumi’s changes.', sections:['code_editors'], keywords:'vs code vscode cursor windsurf vscodium jetbrains intellij pycharm webstorm rider goland ide extension plugin selection diff'},
             {id:'creative_editors', title:'Creative editors', group:'Integrations', icon:'cube', description:'Work with Blender, Unity, and Unreal Engine 5.', sections:['creative_editors']},
@@ -1968,9 +1994,9 @@ class LumiSettingsView {
                     { key: 'kimi', label: 'Moonshot API key', type: 'password',
                       hint: 'MOONSHOT_API_KEY is also supported and takes effect when no stored key exists.' },
                     { key: 'github', label: 'GitHub token', type: 'password',
-                      hint: 'Lets the agent read pull request reviews and checks, and open, update and comment on pull requests. GITHUB_TOKEN or GH_TOKEN also work.' },
+                      hint: 'Lets the agent read pull request reviews and checks, and open, update and comment on pull requests. Sent only to github.com and the hosts under Issue trackers > Your code hosts. GITHUB_TOKEN or GH_TOKEN also work.' },
                     { key: 'gitlab', label: 'GitLab token', type: 'password',
-                      hint: 'The same for merge requests on GitLab (api scope). GITLAB_TOKEN also works.' },
+                      hint: 'The same for merge requests on GitLab (api scope), sent only to gitlab.com and the hosts under Issue trackers > Your code hosts. GITLAB_TOKEN also works.' },
                     { key: 'bitbucket', label: 'Bitbucket token', type: 'password',
                       hint: 'An access token, or username:app-password, for Bitbucket Cloud pull requests. BITBUCKET_TOKEN also works.' },
                     { key: 'azure_devops', label: 'Azure DevOps token', type: 'password',
@@ -2009,6 +2035,8 @@ class LumiSettingsView {
                       hint: 'Saved tasks that run unattended at set times (Settings > Scheduled tasks). Off stops them running and stops new ones being added.' },
                     { key: 'editor_bridge', label: 'Code editors', type: 'toggle', default: true,
                       hint: 'Lets the VS Code extension and JetBrains tools on this computer add files to your message and show what Lumi changed (Settings > Code editors).' },
+                    { key: 'extension_panels', label: 'Panels from capability packs', type: 'toggle', default: true,
+                      hint: 'Pages that approved packs add under View > Panels. Each runs in a sandbox with no network access except WebRTC; it can add text to your message but not send it.' },
                 ]
             },
             {
@@ -2019,6 +2047,16 @@ class LumiSettingsView {
                       hint: 'JIRA_URL also works.' },
                     { key: 'jira_email', label: 'Jira email', type: 'text', placeholder: 'you@example.com',
                       hint: 'For Jira Cloud, the account the API token belongs to. Leave it empty for Jira Server or Data Center.' },
+                ]
+            },
+            {
+                id: 'code_hosts', title: 'Your code hosts',
+                note: 'Lumi sends your GitHub token only to github.com and your GitLab token only to gitlab.com, besides the hosts listed here. An issue link or pull request on any other host is refused, so a link can’t send your token to someone else’s server.',
+                fields: [
+                    { key: 'github_hosts', label: 'GitHub Enterprise Server hosts', type: 'lines', placeholder: 'github.example.com',
+                      hint: 'One host per line. LUMI_GITHUB_HOSTS also works, and in GitHub Actions the server it runs on is included.' },
+                    { key: 'gitlab_hosts', label: 'GitLab hosts', type: 'lines', placeholder: 'gitlab.example.com',
+                      hint: 'Self-managed GitLab, one host per line. LUMI_GITLAB_HOSTS also works, and in GitLab CI the server it runs on is included.' },
                 ]
             },
             {

@@ -39,6 +39,191 @@ tests in each run. Three of the causes were in the runtime, not the tests.
   what the team was doing. The benchmark harness keeps the reason for its
   own stops (`reason` in `observations.json`).
 
+## September 27 Panels from capability packs (source only, not released)
+
+**Capability packs can add panels.** A pack's `ui_panels` (an id, a title and
+an entry HTML file) are pages the person opens under **View > Panels** or
+from the command palette ("Open panel: …"). A panel opens in a dialog and
+talks to Lumi through a bridge: it reads the project's name and the theme,
+adds text to the message box without sending it, and shows a notice marked
+as its pack's. See [Panels](extensions.md#panels).
+
+**How a panel is kept apart.**
+- It runs in `<iframe sandbox="allow-scripts">`: an opaque origin with no
+  access to Lumi's page, its storage (which holds the launch token) or its
+  socket.
+- Its files come from `/panels/<panel token>/`. The token is made when the
+  panel opens and withdrawn when it closes or its page goes; it isn't the
+  launch token. Each response has a Content-Security-Policy of its own: no
+  network except WebRTC, only the panel's own files, `sandbox allow-scripts`.
+  Fetch Metadata refuses a panel URL opened as a top-level page.
+- Every file is checked as it's served: panels allowed; the pack approved,
+  enabled, allowed by policy and unchanged; the file one the approval covered
+  and its bytes the approved ones. A pack found unchanged is trusted for 3
+  seconds, so a panel's many files hash it once, and panel files are read on
+  threads of their own, off the app socket's pool.
+- A revoked, disabled or changed pack's open panel stops loading at once. Its
+  next addition to the message box is refused (each is checked with the
+  server), and it closes when panels are next listed, which happens after
+  pack changes in Settings, or when the app's connection drops.
+- The page takes bridge messages only from that frame, with origin `"null"`,
+  limited in size and rate.
+- Text a panel adds loses invisible characters and padding, is at most 20
+  lines, has its @mentions split apart (`@ file:`) so they attach nothing,
+  and is refused if the message would then start with `!` or `/` and run as
+  a command. The caret goes to where the text starts.
+- A panel can't close itself: Escape reaches the page only over a private
+  port that Lumi's bridge script holds and uses for a real key press. When a
+  panel closes, focus goes to the Menu or command palette button, never the
+  message box.
+- A panel's notices show in its dialog as "Panel · *pack*: …", apart from
+  Lumi's, and approvals show above panels.
+- The app page's policy now names `frame-src 'self'`, which also keeps a
+  panel from navigating itself to another site.
+- The desktop window refuses pywebview bridge calls whose name or id isn't a
+  plain identifier: pywebview writes both into script it runs in the page.
+  Panels open only in a browser or the WebView2 window (Windows), where a
+  sandboxed frame's messages didn't reach pywebview in a probe. WebKit
+  (macOS, Linux) and Qt give the bridge to every frame.
+
+**Settings and policy.** Settings > Privacy & security > **Panels from
+capability packs** (`security.extension_panels`, on by default); a policy
+can lock it off. Packs a policy refuses have no panels, and a policy that
+can't be used turns panels off.
+
+**The manifest.** `ui_panels` used to be shown for review and do nothing.
+Lumi now checks it when a pack loads: a panel with a bad id, title or entry
+makes the manifest invalid, and the pack stays off. The schema
+(`sdk/schema/lumi-pack.schema.json`) describes panels, Settings > Capability
+packs lists them for review, and `lumi extension check` lists them.
+
+**Code host tokens go only to trusted hosts.** An issue link
+(`@issue:https://…/owner/repo/issues/1`, or the `issue_view` tool) could name
+any host, and Lumi sent the GitHub or GitLab token there. Now:
+- the GitHub token goes only to github.com, to hosts listed in Settings >
+  Issue trackers > **Your code hosts** (`code_hosts.github_hosts`) or
+  `LUMI_GITHUB_HOSTS`, and in GitHub Actions to the hosts of
+  `GITHUB_SERVER_URL` and `GITHUB_API_URL`;
+- the GitLab token goes only to gitlab.com, `code_hosts.gitlab_hosts`,
+  `LUMI_GITLAB_HOSTS` and GitLab CI's `CI_SERVER_HOST` (and
+  `CI_API_V4_URL`'s host);
+- a request to any other host is refused before it's made, with a message
+  saying where to list the host;
+- a policy can set either list; then the environment can't add to it;
+- a redirect away from a GitLab host no longer carries the token (httpx
+  keeps the `PRIVATE-TOKEN` header, unlike `Authorization`).
+
+A GitHub Enterprise or self-managed GitLab origin found by its name (a host
+containing "github" or "gitlab") now needs listing too. See
+[which hosts get the token](github.md#which-hosts-get-the-token).
+
+**Not covered.** Browsers don't apply the Content-Security-Policy to WebRTC
+(Edge ignores `webrtc 'block'`), so a panel's script can send what it sees
+(the project's name, the theme and what's typed into it) to a server of its
+choosing. Panels don't open in the macOS and Linux desktop window, and one
+opens at a time.
+
+## September 27 data loss prevention for outgoing content (source only, not released)
+
+**An organization's DLP rules check every request before it leaves for a
+model provider** ([data loss prevention](dlp.md)). A policy's new `dlp`
+section (`"version": 1`) enables built-in detectors and adds rules:
+
+- Detectors: payment card numbers (network prefix and Luhn checked), US Social
+  Security numbers (with separators), IBANs (country length and mod-97
+  checked), the secret scan's credential formats, and email addresses (only
+  when listed).
+- Rules: keywords and phrases (whole words, ignoring case by default; a space
+  matches any run of whitespace) and regular expressions. A pattern that could
+  scan slowly is refused when the policy loads: unbounded or competing
+  repeats, backreferences, matches over 128 characters, and lookarounds or
+  atomic groups whose work, counted each time they run, is too much.
+- Rules read a normalized copy of the text: Unicode spaces, dashes and digits
+  (full-width ones too) in their ASCII form, compatibility characters in their
+  plain form, zero-width characters and soft hyphens ignored. Redactions cover
+  the original characters.
+- Each detector or rule flags, redacts (`[REDACTED:<rule>]` in the copy that is
+  sent; the conversation keeps the original) or blocks, optionally for some
+  kinds of content only (prompts, attachments, tool results, instructions,
+  model output). Messages Lumi writes into a conversation (hook context,
+  nudges) are checked by every rule, since they can quote tool output.
+- An optional external DLP service gets the text after the built-in
+  redactions and answers allow, redact or block; `on_error` says what a
+  failure does (block by default). Its verdicts are remembered per text.
+
+**Where it applies.** `Session._model_stream` (turns in the app, `lumi run`,
+scheduled tasks, the gateway, the terminal UI, sub-agents, specialists and Team
+workers in and out of process) and `request_purpose.auxiliary_stream` (titles,
+compaction, image descriptions, skill extraction, which now goes through it)
+check the exact request, after the secret scan. The planning check, a
+specialist's structured-output repair, SONN employee advice and a `[vision]`
+acceptance check's question check their text with `dlp.check_text`. Every
+model backend's request methods are guarded (`dlp.guard_backend`): while a
+policy applies, a call that didn't come through the check (`dlp.send`, or
+`dlp.permit` for fixed text) is refused instead of sent. `tests/test_dlp.py`
+also counts every use of those methods and every model endpoint in the code,
+so a new one fails until it's reviewed. What Lumi sends Engram (recall
+queries, memories, session summaries) passes the rules too.
+
+**What people see.**
+- A redaction leaves a quiet notice in the conversation naming the rules and
+  counts.
+- A block fails the turn with a message naming the rule and where it matched,
+  never the content. The entry it came from is left out of later requests
+  (with a DLP service, for good, and it isn't sent to the service again), and
+  the failed card offers **Continue** without **Retry**.
+- **Settings > Privacy & security > Organization policy** lists the rules'
+  names, actions and scope, read-only; keywords and patterns never reach the
+  page.
+- A `dlp` section that can't be used (an unknown key, an unsupported version,
+  a refused pattern) refuses every model request with the reason, while the
+  rest of the policy applies (`policy.blocked_reason`).
+
+**Records.** `dlp.finding` (rule, action, content kind, count, purpose,
+provider, model, source) and `dlp.error` in the audit log, never matched text;
+content already recorded for a session and model isn't recorded again.
+
+**Tool arguments and withheld entries.** Tool call arguments are checked key
+by key and value by value and stay valid JSON; arguments with a duplicated
+key go out as the tool read them (each key's last value). Signed reasoning with
+a match is left out, never edited, whether a rule or the service found it. A
+withheld entry's notice is marked as Lumi's (so SONN doesn't learn from it as
+the person's words), works for entries saved without content, and stays out of
+compaction summaries along with its tool call's command and path; its images
+aren't described.
+
+**Also changed.**
+- Four `secret_scan` patterns scanned some text in quadratic time (50 KB of
+  `-eyJ`, `a.`, `TOKEN` or a private key's BEGIN line repeated took 0.4 to
+  1.8 seconds per pattern). They're linear now and find what they did before
+  (a token after a hyphen, `-https://user:password@…`, a truncated key before a
+  whole one), with two documented limits: a token whose first part contains
+  `-eyJ`, and a key body with more than two further BEGIN lines before its END.
+
+**Not yet.** Images (their descriptions are checked), dictation audio, tool
+definitions and what the Codex and Claude Code CLIs read themselves aren't
+checked; sharing, hand-offs, MCP and web tool requests aren't model requests
+and aren't covered; the service can't carry a credential.
+
+**Validation.**
+- `tests/test_dlp.py` (198 tests): detectors (with Unicode formatting),
+  rules, the pattern check (lookarounds included), strict parsing, every
+  action, scopes, JSON keys and duplicated keys, signed reasoning, turns, tool
+  results, titles, compaction, planning, repair, vision questions, Engram, a
+  guarded worker Session, the Team runtime's in-process worker and a real
+  worker process that loads the policy from `LUMI_POLICY_FILE`, the external
+  service through `httpx.MockTransport` (conversations continuing after its
+  blocks), the backend guard, audit records and timing checks. A megabyte of
+  each of 23 adversarial inputs scans in 0.05 to 0.6 seconds on the development machine,
+  under load; the test fails at a second.
+- `tests/test_secret_scan.py` covers the restored matches, the two limits and
+  the patterns' speed on adversarial text.
+- `tests/dlp_ui.browser.cjs` passed five runs in a row in Edge against
+  the source app, with scripted inference, a fixture policy and a loopback DLP
+  service that redacts a name. It covers the redaction notice, what the model
+  and the service received, the block with **Continue**, the withheld entry,
+  the audit records and the Settings rows at desktop and phone widths.
+
 ## September 27 Team: a team's results in its chat (source only, not released)
 
 **Use in chat.** The Team panel's **Use in chat** adds `@team:<run id>` to the

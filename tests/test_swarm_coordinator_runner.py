@@ -93,7 +93,7 @@ def test_stop_during_planner_generation_does_not_admit_late_proposal(setup):
     backend = GatedBackend(events=[text_delta(response()), done()])
     runner = start(setup, backend)
     try:
-        assert backend.entered.wait(3)
+        assert backend.entered.wait(20)
         runner.stop()
         assert runner.inspect(setup[2].attempt_id)["alive"]
         backend.release.set()

@@ -64,7 +64,7 @@ def test_identical_parallel_evidence_can_publish_while_winner_is_open_for_read(f
             counts["publish"] += 1
             number = counts["publish"]
         if number == 2:
-            assert reading.wait(5)
+            assert reading.wait(60)
         return real_publish(source, destination)
 
     def synchronized_flush(fd):
@@ -73,7 +73,7 @@ def test_identical_parallel_evidence_can_publish_while_winner_is_open_for_read(f
             counts["flush"] += 1
             number = counts["flush"]
         if number <= 2:
-            flushed.wait(timeout=5)  # Both publishers observed the address absent.
+            flushed.wait(timeout=60)  # Both publishers observed the address absent.
 
     def held_read(path):
         if path != target:
@@ -86,7 +86,7 @@ def test_identical_parallel_evidence_can_publish_while_winner_is_open_for_read(f
         with path.open("rb") as stream:
             observed = stream.read()
             reading.set()
-            assert release.wait(5)
+            assert release.wait(60)
             return observed
 
     monkeypatch.setattr(os, "fsync", synchronized_flush)
@@ -95,8 +95,8 @@ def test_identical_parallel_evidence_can_publish_while_winner_is_open_for_read(f
     with ThreadPoolExecutor(max_workers=2) as pool:
         futures = [pool.submit(artifacts.publish_bytes, context, content) for context in contexts[:2]]
         try:
-            assert reading.wait(5), [(future.done(), repr(future.exception()) if future.done() else "pending") for future in futures]
-            finished, _ = wait(futures, timeout=5, return_when=FIRST_COMPLETED)
+            assert reading.wait(60), [(future.done(), repr(future.exception()) if future.done() else "pending") for future in futures]
+            finished, _ = wait(futures, timeout=30, return_when=FIRST_COMPLETED)
             assert finished, "The second publisher must not wait for the first reader to close"
             next(iter(finished)).result()  # A replacement race fails here on Windows.
         finally:

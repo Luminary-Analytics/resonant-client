@@ -7,7 +7,7 @@ import time
 import pytest
 
 from lumi.engine.swarming import Scope
-from lumi.engine.swarming.models import Conflict, ScopeDenied, SwarmError
+from lumi.engine.swarming.models import Conflict, RevisionConflict, ScopeDenied, SwarmError
 from lumi.engine.swarming.service import CapturedSession, SwarmRuntime
 from lumi.gui.runtime import BackendSpec
 from lumi.gui.settings import SettingsManager
@@ -58,15 +58,50 @@ def view(desktop, run_id):
 
 
 def operate(desktop, run_id, action, request_id, **payload):
+    """One owner action at the revision just seen, as the panel sends it.
+
+    The runner's lease renewal (every 5 s) also advances the revision, so on a
+    busy runner one can land between the view and the action, which is then
+    refused before anything commits. The owner refreshes and sends it again.
+    """
     service, capture, *_ = desktop
-    revision = view(desktop, run_id)["run"]["revision"]
-    return service.operate(capture, {"action": action, "request_id": request_id, "run_id": run_id,
-                                    "expected_revision": revision, **payload})["run"]
+    for attempt in range(3):
+        revision = view(desktop, run_id)["run"]["revision"]
+        try:
+            return service.operate(capture, {"action": action, "request_id": request_id, "run_id": run_id,
+                                            "expected_revision": revision, **payload})["run"]
+        except RevisionConflict:
+            if attempt == 2:
+                raise
+
+
+# Creating a writer's worktree, running its worker and committing its result
+# go through owned Git processes: seconds each on a loaded runner.
+PIPELINE_SECONDS = 90
+
+
+def progress(desktop, run_id):
+    """Where the run got to, for a wait that timed out: its state, each
+    attempt, writer and worker (with its error) and each operation."""
+    service = desktop[0]
+    current = view(desktop, run_id)
+    runner = service._runners.get(run_id, (None, None))[1]
+    return {"run": current["run"]["state"],
+            "attempts": [(row["state"], row["process_state"]) for row in current["attempts"]],
+            "writers": [row["state"] for row in current["writer_worktrees"]],
+            "workers": [(row["state"], row["error"]) for row in (runner.inspect_all() if runner else [])],
+            "operations": [(row["kind"], row["state"], row["error"]) for row in current["integration_operations"]]}
+
+
+def submitted(desktop, run_id):
+    until(lambda: len(view(desktop, run_id)["submissions"]) == 1, timeout=PIPELINE_SECONDS,
+          describe=lambda: progress(desktop, run_id))
 
 
 def settled(desktop, run_id):
     until(lambda: bool(view(desktop, run_id)["integration_operations"]) and all(
-        row["state"] not in {"queued", "running"} for row in view(desktop, run_id)["integration_operations"]), timeout=15)
+        row["state"] not in {"queued", "running"} for row in view(desktop, run_id)["integration_operations"]),
+        timeout=PIPELINE_SECONDS, describe=lambda: progress(desktop, run_id))
     return view(desktop, run_id)
 
 
@@ -99,7 +134,7 @@ def test_writer_changes_combine_under_a_long_project_path(desktop):
     # paths pass everywhere, and this one passes where PATH_MAX is large.
     service, capture, project, _ = desktop
     run_id = service.operate(capture, request())["run"]["run"]["id"]
-    until(lambda: len(view(desktop, run_id)["submissions"]) == 1, timeout=15)
+    submitted(desktop, run_id)
     writer = view(desktop, run_id)["writer_worktrees"][0]
     operate(desktop, run_id, "prepare_candidate", "prepare", writer_ids=[writer["id"]])
     current = settled(desktop, run_id)
@@ -111,7 +146,7 @@ def test_writer_reaches_exact_reviewed_application_and_preserves_dirty_checkout(
     original = git(project, "rev-parse", "HEAD")
     run_id = service.operate(capture, request())["run"]["run"]["id"]
     service.operate(capture, request())  # Exact setup retry never dispatches again.
-    until(lambda: len(view(desktop, run_id)["submissions"]) == 1, timeout=15)
+    submitted(desktop, run_id)
     current = view(desktop, run_id)
     (project / "personal.txt").write_text("my unfinished work\n")
     assert len(instances) == 1
@@ -167,7 +202,7 @@ def test_recovered_writer_git_discovery_cannot_block_stop(desktop, monkeypatch):
     now = [time.time()]
     service._store(capture).clock = lambda: now[0]
     run_id = service.operate(capture, request())["run"]["run"]["id"]
-    until(lambda: len(view(desktop, run_id)["submissions"]) == 1, timeout=15)
+    submitted(desktop, run_id)
     old = service._runners[run_id][1]
     old._maintenance_stop.set()
     old._maintenance.join(timeout=1)
@@ -180,7 +215,7 @@ def test_recovered_writer_git_discovery_cannot_block_stop(desktop, monkeypatch):
     real_integration = service_module.SwarmIntegration
     def slow_git(*args, **kwargs):
         entered.set()
-        assert release.wait(5)
+        assert release.wait(60)
         return real_integration(*args, **kwargs)
     outcome = []
     thread = None
@@ -195,18 +230,18 @@ def test_recovered_writer_git_discovery_cannot_block_stop(desktop, monkeypatch):
                 outcome.append(type(exc).__name__)
         thread = threading.Thread(target=resume)
         thread.start()
-        assert entered.wait(3)
+        assert entered.wait(60)  # the resumed run reaches its Git discovery
         started = time.monotonic()
         stopped = operate(captured, run_id, "stop", "stop-during-git")
         assert time.monotonic() - started < 1
         assert stopped["run"]["stop_requested"] == 1
         assert stopped["run"]["state"] == "recovery_required"  # Stop does not bypass explicit recovery settlement.
         release.set()
-        thread.join(timeout=5)
+        thread.join(timeout=60)
         assert not thread.is_alive() and outcome == ["RevisionConflict"]
         assert not reopened._runners
     finally:
         release.set()
         if thread:
-            thread.join(timeout=5)
+            thread.join(timeout=60)
         reopened.close()

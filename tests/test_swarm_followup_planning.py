@@ -58,7 +58,9 @@ def team(setup):
                 output = json.dumps(plan(follow_up=bool(data["existing_work"])))
             elif "Hold independent peer" in str(kwargs):
                 entered.set()
-                deadline = time.monotonic() + 20
+                # Held while the test plans a follow-up around it: a generous
+                # bound, since each step waits on workers on a loaded runner.
+                deadline = time.monotonic() + 180
                 while not release.wait(.01):
                     if kwargs.get("cancel_event") and kwargs["cancel_event"].is_set():
                         return
@@ -101,9 +103,16 @@ def decide(f, proposal=None):
         sha256=proposal["sha256"], accept=True, evidence="Owner reviewed this exact scoped proposal"))
 
 
+def peers(f):
+    """The run's attempts and the runner's workers, for a wait that timed out."""
+    return {"attempts": [(row["kind"], row["state"]) for row in view(f)["run"]["attempts"]],
+            "workers": [(row["state"], row["error"]) for row in f.runner.inspect_all()]}
+
+
 def start_peers(f):
     decide(f)
-    assert f.entered.wait(5)
+    # Two workers start after the owner's decision; allow for a loaded runner.
+    assert f.entered.wait(60), f"The held peer never started its request: {peers(f)}"
     until(lambda: len(view(f)["run"]["submissions"]) == 1)
     until(lambda: sum(row["alive"] for row in f.runner.inspect_all()) == 1)
 
@@ -211,7 +220,7 @@ def test_stop_remains_responsive_during_planner_launch_preflight(team, monkeypat
     original = f.runner.start_coordinator
     def held(*args, **kwargs):
         entered.set()
-        assert release.wait(5)
+        assert release.wait(60)
         return original(*args, **kwargs)
     monkeypatch.setattr(f.runner, "start_coordinator", held)
     message = command(f, "request_plan", coordinator_requests=2, read_roots=[])
@@ -223,7 +232,7 @@ def test_stop_remains_responsive_during_planner_launch_preflight(team, monkeypat
     thread = threading.Thread(target=launch)
     thread.start()
     try:
-        assert entered.wait(2)
+        assert entered.wait(60)
         before = len(f.backends)
         start = time.monotonic()
         f.service.operate(f.capture, command(f, "stop"))
@@ -232,7 +241,7 @@ def test_stop_remains_responsive_during_planner_launch_preflight(team, monkeypat
             f.service.operate(f.capture, command(f, "request_plan", coordinator_requests=1, read_roots=[]))
     finally:
         release.set()
-        thread.join(5)
+        thread.join(60)
     assert not thread.is_alive() and errors and len(f.backends) == before
 
 
@@ -263,7 +272,7 @@ class Backend(StreamingBackend):
             yield text_delta({json.dumps(plan(follow_up=True))!r})
         elif 'Hold independent peer' in text:
             Path({str(entered)!r}).touch()
-            deadline=time.monotonic()+30
+            deadline=time.monotonic()+180
             while not Path({str(release)!r}).exists():
                 if kwargs.get('cancel_event') and kwargs['cancel_event'].is_set(): return
                 if time.monotonic()>deadline: raise RuntimeError('fixture peer deadline')
@@ -281,14 +290,15 @@ raise SystemExit(main(backend_factory=lambda spec: Backend(name=spec.backend_typ
     f.runner._writer_process_factory = lambda: ManagedWorkerProcess(command=script, cancel_grace=.2)
     try:
         decide(f)
-        until(lambda: entered.exists() and len(view(f)["run"]["submissions"]) == 1, timeout=12)
-        until(lambda: sum(row["alive"] for row in f.runner.inspect_all()) == 1, timeout=8)
+        # Two owned child processes start (Python and the engine) and one runs.
+        until(lambda: entered.exists() and len(view(f)["run"]["submissions"]) == 1, timeout=90, describe=lambda: peers(f))
+        until(lambda: sum(row["alive"] for row in f.runner.inspect_all()) == 1, timeout=90, describe=lambda: peers(f))
         before = view(f)["run"]
         peer = next(row for row in before["workers"] if row["alive"])
         assert peer["process_alive"] and peer["pid"]
         message = command(f, "request_plan", coordinator_requests=2, read_roots=[])
         f.service.operate(f.capture, message)
-        until(lambda: len(view(f)["run"]["coordinator_proposals"]) == 2, timeout=12)
+        until(lambda: len(view(f)["run"]["coordinator_proposals"]) == 2, timeout=90, describe=lambda: peers(f))
         inputs = json.loads(captured.read_text(encoding="utf-8"))
         assert FINDING in str(planning_data(inputs)["recent_untrusted_findings"])
         assert planning_data(inputs)["coordinator_read_roots"] == []

@@ -331,7 +331,7 @@ class LumiSettingsView {
             row('Free for individuals', 'The whole agent, every tool, provider and feature in this app, works without an account: with your own API keys, your ChatGPT sign-in, or models on your own computer.'),
             row('What leaves this computer', 'Your prompts, code and keys go only to the model providers you choose. Luminary Analytics receives only the update check, which you can turn off in Updates.'),
             row('For teams and organizations', 'Lumi Cloud adds central policy, members, devices and usage reporting; if your organization uses it, sign in from Lumi account. Without it, organizations set policy on each computer (see docs/enterprise-policy.md).'),
-            row('License', `Lumi’s source is available under the ${esc(info.license)} license.${info.notices ? ` Third-party components and their licenses: <code>${esc(info.notices)}</code>` : ''}`),
+            row('License', `© Luminary Analytics. All rights reserved. Licensed under the ${esc(info.license)}.${info.notices ? ` Third-party components and their licenses: <code>${esc(info.notices)}</code>` : ''}`),
         ].join('');
     }
 
@@ -1831,7 +1831,7 @@ class LumiSettingsView {
             {id:'model_evaluations', title:'Model evaluations', group:'Advanced', icon:'chart', description:'Compare models on your own tasks, and review model quality and runtime diagnostics.', sections:['model_comparisons', 'model_evaluations'], keywords:'compare comparison benchmark evaluate models tasks switch pass rate'},
             {id:'iteration_checkpoints', title:'Checkpoints & recovery', group:'Advanced', icon:'history', description:'Inspect saved iterations and recovery options.', sections:['iteration_checkpoints']},
             {id:'lumi_account', title:'Lumi account', group:'Personal', icon:'person', description:'Sign in to Lumi Cloud and use your organization’s policy on this computer.', sections:['lumi_account'], keywords:'lumi cloud organization team company sign in enroll device computer managed policy seat slack teams microsoft chat tasks remote requests'},
-            {id:'about', title:'About Lumi', group:'Personal', icon:'book', description:'What Lumi is, what it costs and what it sends where.', sections:['about'], keywords:'version license free plan pricing account privacy telemetry notices MIT'},
+            {id:'about', title:'About Lumi', group:'Personal', icon:'book', description:'What Lumi is, what it costs and what it sends where.', sections:['about'], keywords:'version license EULA terms copyright free plan pricing account privacy telemetry notices'},
             {id:'updates', title:'Updates', group:'Advanced', icon:'history', description:'Choose how Lumi updates itself and which releases it takes.', sections:['updates','update_status','update_file'], keywords:'update upgrade version release beta channel pin stable automatic manual off file offline installer bundle air-gapped'},
         ];
     }

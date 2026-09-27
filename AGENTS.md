@@ -39,6 +39,12 @@ host enrollment and actual packaged/learned-benefit qualification remain open.
   `resonant-policy.json`) are still read; do not write new state under them.
   The update feed URL and repository name stay until a bridge release moves
   the feed (see [Unreleased](docs/unreleased.md)).
+- Lumi is proprietary ([LICENSE](LICENSE)). The Extension SDK (`sdk/`) and
+  the VS Code extension (`lumi/code_editors/vscode/`) are MIT-licensed so
+  others can build and ship extensions; never move app code into them.
+  Shipped third-party code keeps its notice in `THIRD_PARTY_NOTICES.txt`
+  (`packaging/third-party-components.json` for anything that isn't a Python
+  package), and the copyleft gate stays.
 - Follow the [harness north star](docs/agentic-harness-north-star.md): correct
   completion, verification, maintainability, and time to a trustworthy result
   come before token efficiency.

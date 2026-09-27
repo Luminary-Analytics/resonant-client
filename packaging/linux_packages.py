@@ -105,11 +105,15 @@ Upstream-Name: Lumi
 Source: {HOMEPAGE}
 
 Files: *
-Copyright: Luminary Analytics
-License: MIT
- Lumi's source is available under the MIT license; see LICENSE in the
- repository. The bundle in /opt/lumi also contains third-party components
- under their own licenses, listed in
+Copyright: 2026 Luminary Analytics. All rights reserved.
+License: proprietary
+ Lumi is proprietary software. You may use it only under a written license
+ from Luminary Analytics or under the Lumi End User License Agreement
+ provided with the software. No other rights are granted.
+ .
+ The Visual Studio Code extension in /opt/lumi/_internal/lumi/code_editors/vscode
+ is under the MIT License (LICENSE.txt there). The bundle in /opt/lumi also
+ contains third-party components under their own licenses, listed in
  /opt/lumi/_internal/licenses/THIRD_PARTY_NOTICES.txt.
 """
 
@@ -283,7 +287,7 @@ Name:           lumi
 Version:        {package_version(version)}
 Release:        1
 Summary:        {SUMMARY}
-License:        MIT
+License:        Proprietary
 URL:            {HOMEPAGE}
 BuildArch:      {arch}
 # PyInstaller bundles its libraries; only the C library comes from the system.

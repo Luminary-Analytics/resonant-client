@@ -127,6 +127,9 @@ class TestNotices:
         assert names == {"httpx", "keyring"}
         text = notices.render(packages, notices.load_components())
         assert text.startswith("Lumi third-party notices")
+        # Lumi's own terms, since the bundle doesn't ship the repository's LICENSE.
+        assert "itself is © Luminary Analytics, all rights reserved" in text
+        assert "the Lumi End User License Agreement." in text
         assert "WinSparkle 0.9.2 — MIT" in text
         httpx = next(item for item in packages if item["name"] == "httpx")
         assert httpx["texts"], "httpx ships its license file"

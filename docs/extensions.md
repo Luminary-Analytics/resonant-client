@@ -7,7 +7,8 @@ usual tools. A pack can also add [panels](#panels): pages of its own that
 the person opens in Lumi, which run in a sandbox. You don't need Lumi's
 source to write either; this page and the
 SDK in [`sdk/`](https://github.com/Luminary-Analytics/resonant-client/tree/main/sdk)
-are the whole contract.
+are the whole contract. The SDK is under the MIT License (`sdk/LICENSE`),
+unlike Lumi itself, so packs can include it.
 
 This is the Extension SDK, version 1. Code: `lumi/engine/provider_extensions.py`
 and, for panels, `lumi/gui/extension_panels.py`.

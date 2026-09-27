@@ -17,8 +17,8 @@ from tests.test_swarm_writers import git
 
 
 @pytest.fixture
-def desktop(tmp_path):
-    project = tmp_path / "project"
+def desktop(tmp_path, request):
+    project = tmp_path / getattr(request, "param", "project")
     (project / "src").mkdir(parents=True)
     (project / "src" / "value.txt").write_text("original\n")
     (project / "personal.txt").write_text("committed personal\n")
@@ -89,6 +89,21 @@ def test_unsupported_writer_host_is_rejected_before_reservation(desktop, monkeyp
         service.operate(capture, request())
     assert not instances and not service.busy
     assert service.operate(capture, {"request_id": "inspect"})["run"] is None
+
+
+@pytest.mark.parametrize("desktop", ["long-project-" + "p" * 48], indirect=True)
+def test_writer_changes_combine_under_a_long_project_path(desktop):
+    # A live team's changes couldn't be combined: Git names a worktree's admin
+    # folder (.git/worktrees/<name>) after its folder, and the long candidate
+    # name took it past Windows' path limit ("'$GIT_DIR' too big"). Shorter
+    # paths pass everywhere, and this one passes where PATH_MAX is large.
+    service, capture, project, _ = desktop
+    run_id = service.operate(capture, request())["run"]["run"]["id"]
+    until(lambda: len(view(desktop, run_id)["submissions"]) == 1, timeout=15)
+    writer = view(desktop, run_id)["writer_worktrees"][0]
+    operate(desktop, run_id, "prepare_candidate", "prepare", writer_ids=[writer["id"]])
+    current = settled(desktop, run_id)
+    assert current["integration_candidates"][0]["state"] == "ready", current["integration_operations"]
 
 
 def test_writer_reaches_exact_reviewed_application_and_preserves_dirty_checkout(desktop):

@@ -425,6 +425,17 @@ def parse(data: Any, *, source: str, trusted_keys: dict[str, str] | None = None,
     reviewers = settings.get("review.reviewers", [])
     if not isinstance(reviewers, list) or not all(isinstance(name, str) for name in reviewers):
         raise PolicyError("'review.reviewers' must list GitHub usernames or organization/team names.")
+    for name in ("code_hosts.github_hosts", "code_hosts.gitlab_hosts"):
+        # The hosts that may receive the GitHub or GitLab token (engine/github_tools.token_hosts).
+        if name in settings:
+            from .net import host_names
+
+            if not isinstance(settings[name], list):
+                raise PolicyError(f"'{name}' must list host names.")
+            try:
+                host_names(settings[name])
+            except ValueError as exc:
+                raise PolicyError(f"'{name}': {exc}") from exc
     permissions = _section(document, "permissions")
     modes = permissions.get("allowed_modes")
     allowed_modes = _patterns(modes, "permissions.allowed_modes") if modes is not None else None

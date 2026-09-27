@@ -3496,6 +3496,9 @@ async def websocket_endpoint(ws: WebSocket):
         state._navigation_viewers.discard(ws)
         if getattr(state, "_ws_ref", None) is ws:
             state._ws_ref = None
+        # The page is gone, and with it any panel it showed.
+        from .extension_panels import grants as panel_grants
+        panel_grants.revoke_owner(id(ws))
 
 
 _STREAM_DELTA_COALESCE_SECONDS = 0.012
@@ -4010,6 +4013,12 @@ async def editor_endpoint(request):
     return await handle(request, state)
 
 
+async def extension_panel_endpoint(request):
+    """A file of an open capability-pack panel, for its sandboxed frame (gui/extension_panels.py)."""
+    from .extension_panels import serve
+    return await serve(request, state, bridge_file=_STATIC_DIR / "panel_frame.js")
+
+
 async def ui_state_endpoint(request):
     from starlette.responses import JSONResponse
     from .ui_state import ui_state
@@ -4071,6 +4080,8 @@ app = Starlette(
         Route("/api/access", access_endpoint, methods=['GET', 'POST']),
         Route("/api/ui-state", ui_state_endpoint, methods=['GET', 'POST']),
         Route("/api/editor/{action}", editor_endpoint, methods=['GET', 'POST']),
+        # Checked by its own panel tokens, which only this app's socket issues.
+        Route("/panels/{token}/{path:path}", extension_panel_endpoint, methods=['GET', 'HEAD']),
         WebSocketRoute("/ws", websocket_endpoint),
         Mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static"),
     ],

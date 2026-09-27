@@ -23,7 +23,12 @@
     "permissions": {"type": "array", "items": {"type": "string"}},
     "commands": {"type": "array", "items": {"type": "object"}},
     "recipes": {"type": "array", "items": {"type": "object"}},
-    "ui_panels": {"type": "array", "items": {"type": "object"}},
+    "ui_panels": {
+      "type": "array",
+      "maxItems": 10,
+      "items": {"$ref": "#/$defs/panel"},
+      "description": "Pages the app shows in a sandboxed frame. See docs/extensions.md#panels."
+    },
     "metadata": {"type": "object"}
   },
   "required": ["id"],
@@ -34,6 +39,20 @@
       "maxItems": 20,
       "items": {"type": "string", "minLength": 1},
       "description": "A program and its arguments. A relative program path runs from inside the pack; a bare name is looked up on PATH."
+    },
+    "panel": {
+      "type": "object",
+      "properties": {
+        "id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,39}$"},
+        "title": {"type": "string", "minLength": 1, "maxLength": 60},
+        "entry": {
+          "type": "string",
+          "maxLength": 300,
+          "pattern": "\\.[Hh][Tt][Mm][Ll]?$",
+          "description": "An .html file inside the pack, such as panels/stats/index.html; no part of the path may start with a dot. The panel can load the files in its folder and below."
+        }
+      },
+      "required": ["id", "title", "entry"]
     },
     "provider": {
       "type": "object",

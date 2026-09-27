@@ -8,6 +8,15 @@ approves. The refresh token goes in the credential store
 (name, email, organizations) is shown in Settings > Lumi account and is
 separate from the local display name and from any SONN or ChatGPT identity.
 
+**The account's tokens belong to the Lumi Cloud that issued them.** When a
+sign-in completes, its address is recorded (``cloud.account_url``, read with
+``SettingsManager.stored``, so no policy lock stands in for it). Refreshing,
+account calls and revoking go only there. When the address this computer
+uses changes (a machine policy's ``cloud.url``, an enrollment, another
+address typed in Settings), the person counts as signed out for the new one:
+nothing of the account is sent to it, the tokens stay for the old one, and
+Settings says so (``status()["signed_in_elsewhere"]``).
+
 **Enrolling** registers an Ed25519 key this computer generates (the private
 half goes in the credential store as ``api_keys.lumi_cloud_device_key``) with
 one organization: either the person picks one they have a seat in, or a
@@ -77,16 +86,34 @@ class CloudError(Exception):
 
 
 def normalize_url(url: str) -> str:
-    """A Lumi Cloud address: https, or http only on this computer (development)."""
+    """A Lumi Cloud address: https, or http only on this computer (development).
+
+    Never with a user name or password (``https://user:pass@host``): they
+    would be sent with every request and shown wherever the address is.
+    """
     text = str(url or "").strip().rstrip("/")
     parts = urlsplit(text)
+    if "@" in parts.netloc:
+        raise CloudError("Enter the Lumi Cloud address without a user name or password.")
     if not parts.hostname:
         raise CloudError("Enter the Lumi Cloud address, such as https://cloud.example.com.")
     if parts.scheme != "https" and not (parts.scheme == "http" and parts.hostname in LOOPBACK_HOSTS):
         raise CloudError("Lumi Cloud must use https (http only works for a server on this computer).")
     if parts.query or parts.fragment:
         raise CloudError("Enter just the Lumi Cloud address, without ? or #.")
+    try:
+        parts.port  # noqa: B018 - a port that isn't a number raises ValueError here, not mid-request
+    except ValueError as exc:
+        raise CloudError("The Lumi Cloud address has a port that isn't a number.") from exc
     return f"{parts.scheme}://{parts.netloc}{parts.path}"
+
+
+def same_address(one: str, other: str) -> bool:
+    """Whether two Lumi Cloud addresses are the same one (False when either isn't one Lumi uses)."""
+    try:
+        return bool(one) and bool(other) and normalize_url(one) == normalize_url(other)
+    except CloudError:
+        return False
 
 
 def _now() -> datetime:
@@ -216,16 +243,35 @@ class CloudClient:
 
     @property
     def url(self) -> str:
+        """The Lumi Cloud this computer uses: the machine policy's, else the one saved in Settings.
+
+        An address with a user name or password is never used or shown: "".
+        """
         managed = self.managed()
-        return str(managed.get("url") or self._section().get("url") or "")
+        value = str(managed.get("url") or self._section().get("url") or "")
+        return "" if "@" in urlsplit(value).netloc else value
 
     @property
-    def sign_in_url(self) -> str:
-        """The address the person signed in at, which a machine policy's ``url`` can since have replaced.
+    def account_url(self) -> str:
+        """The Lumi Cloud that issued the sign-in's tokens, recorded when the sign-in completed; "" for none.
 
-        Feedback (lumi/feedback.py) names the account only to that Lumi Cloud.
+        Read as saved, whatever a policy locks; only ``_finish_sign_in`` writes it.
         """
-        return str(self._section().get("url") or "")
+        stored = getattr(self.settings, "stored", None)
+        value = stored("cloud", "account_url", "") if callable(stored) else self._section().get("account_url")
+        return str(value or "")
+
+    def _account_here(self) -> bool:
+        """Whether the person's sign-in was issued by the Lumi Cloud this computer uses now."""
+        return same_address(self.account_url, self.url)
+
+    def _signed_out_here(self) -> CloudError:
+        issued = self.account_url
+        if issued and self.settings.get("api_keys", REFRESH_SECRET):
+            return CloudError(f"Your Lumi Cloud sign-in is for {urlsplit(issued).netloc}, and this computer now "
+                              f"uses {urlsplit(self.url).netloc or 'no Lumi Cloud'}. Sign in again here.",
+                              code="signed_out")
+        return CloudError("Sign in to Lumi Cloud first.", code="signed_out")
 
     def device(self) -> dict:
         device = self._section().get("device")
@@ -238,12 +284,16 @@ class CloudClient:
         from . import policy
 
         state = policy.load()
+        has_tokens = bool(self.settings.get("api_keys", REFRESH_SECRET))
+        here = has_tokens and self._account_here()
         return {
             "url": self.url,
             "url_locked": bool(managed.get("url")),
             "managed_organization": str(managed.get("organization_id") or ""),
-            "signed_in": bool(self.settings.get("api_keys", REFRESH_SECRET)),
-            "account": section.get("account") or {},
+            # Signed in to the Lumi Cloud this computer uses now; a sign-in another one issued doesn't count.
+            "signed_in": here,
+            "signed_in_elsewhere": self.account_url if has_tokens and not here else "",
+            "account": (section.get("account") or {}) if has_tokens else {},
             "signing_in": self._pending is not None,
             "device": {k: v for k, v in device.items() if k != "trusted_keys"},
             "last_checkin": section.get("last_checkin") or "",
@@ -318,7 +368,8 @@ class CloudClient:
             pending = _PendingSignIn(url=target, verifier=verifier, loopback=loopback)
             self._pending = pending
             self.last_error = ""
-            self._save(url=target)
+            # The address is saved when the sign-in completes (_finish_sign_in): a sign-in
+            # that's cancelled or fails leaves the Lumi Cloud this computer uses as it was.
         authorize = f"{target}/oauth/authorize?" + urlencode({
             "response_type": "code", "client_id": CLIENT_ID, "redirect_uri": loopback.redirect_uri,
             "state": state, "code_challenge": _challenge(verifier), "code_challenge_method": "S256",
@@ -365,8 +416,16 @@ class CloudClient:
             "grant_type": "authorization_code", "code": code, "redirect_uri": pending.loopback.redirect_uri,
             "client_id": CLIENT_ID, "code_verifier": pending.verifier,
         })
+        previous, issued = self.settings.get("api_keys", REFRESH_SECRET) or "", self.account_url
+        if previous and issued and not same_address(issued, pending.url):
+            # An earlier sign-in, at another Lumi Cloud: revoked there, where it was issued, never here.
+            self._revoke(issued, previous)
         self._store_tokens(tokens)
-        account = self.refresh_account(url=pending.url)
+        # These tokens are this Lumi Cloud's: recorded now, where the sign-in completed, and used nowhere else.
+        self._save(url=pending.url, account_url=pending.url)
+        me = self._call("GET", f"{pending.url}/api/v1/me",
+                        headers={"Authorization": f"Bearer {self._access[0]}"})
+        account = self._keep_account(me)
         from . import audit
 
         audit.record("cloud.signed_in", url=pending.url, organizations=len(account.get("organizations") or []))
@@ -378,15 +437,23 @@ class CloudClient:
         self.settings.set("api_keys", REFRESH_SECRET, refresh)
         self._access = (access, time.monotonic() + max(60, int(tokens.get("expires_in") or 3600)) - 60)
 
-    def _access_token(self) -> str:
-        if self._access and self._access[1] > time.monotonic():
+    def _access_token(self, *, refresh: bool = False) -> str:
+        """The account's access token, refreshed at the Lumi Cloud that issued it and never another.
+
+        CloudError ``signed_out`` when nobody is signed in, or when the sign-in
+        is another Lumi Cloud's than the one this computer uses now. ``refresh``
+        gets a new one even when the one held hasn't expired (a 401 for it).
+        """
+        if not self._account_here():
+            raise self._signed_out_here()
+        if not refresh and self._access and self._access[1] > time.monotonic():
             return self._access[0]
-        refresh = self.settings.get("api_keys", REFRESH_SECRET) or ""
-        if not refresh:
+        refresh_token = self.settings.get("api_keys", REFRESH_SECRET) or ""
+        if not refresh_token:
             raise CloudError("Sign in to Lumi Cloud first.", code="signed_out")
         try:
-            tokens = self._call("POST", f"{self.url}/oauth/token", data={
-                "grant_type": "refresh_token", "refresh_token": refresh, "client_id": CLIENT_ID})
+            tokens = self._call("POST", f"{self.account_url}/oauth/token", data={
+                "grant_type": "refresh_token", "refresh_token": refresh_token, "client_id": CLIENT_ID})
         except CloudError as exc:
             if exc.code == "invalid_grant":
                 self._forget_account()
@@ -395,10 +462,11 @@ class CloudClient:
         self._store_tokens(tokens)
         return self._access[0]
 
-    def refresh_account(self, *, url: str = "") -> dict:
-        """Fetch the person and their organizations (roles and seats) again."""
-        me = self._call("GET", f"{url or self.url}/api/v1/me",
-                        headers={"Authorization": f"Bearer {self._access_token()}"})
+    def refresh_account(self) -> dict:
+        """Fetch the person and their organizations (roles and seats) again, from the Lumi Cloud that signed them in."""
+        return self._keep_account(self.account_call("GET", "/api/v1/me"))
+
+    def _keep_account(self, me: dict) -> dict:
         user = me.get("user") if isinstance(me.get("user"), dict) else {}
         account = {
             "user_id": str(user.get("id") or ""),
@@ -418,20 +486,29 @@ class CloudClient:
     def _forget_account(self) -> None:
         self.settings.set("api_keys", REFRESH_SECRET, "")
         self._access = None
-        self._save(account={})
+        self._save(account={}, account_url="")
+
+    def _revoke(self, issued: str, refresh: str) -> None:
+        """Revoke a refresh token at the Lumi Cloud that issued it; best effort."""
+        try:
+            self._call("POST", f"{issued}/oauth/revoke", data={"token": refresh})
+        except CloudError:
+            logger.info("Couldn't reach Lumi Cloud to revoke the sign-in; forgetting it here")
 
     def sign_out(self) -> None:
-        """Sign this app out of Lumi Cloud. An enrolled computer stays enrolled."""
+        """Sign this app out of Lumi Cloud. An enrolled computer stays enrolled.
+
+        The sign-in is revoked where it was issued (``account_url``), even when
+        this computer now uses another Lumi Cloud, and never anywhere else.
+        """
         refresh = self.settings.get("api_keys", REFRESH_SECRET) or ""
-        if refresh and self.url:
-            try:
-                self._call("POST", f"{self.url}/oauth/revoke", data={"token": refresh})
-            except CloudError:
-                logger.info("Couldn't reach Lumi Cloud to revoke the sign-in; forgetting it here")
+        issued = self.account_url
+        if refresh and issued:
+            self._revoke(issued, refresh)
         self._forget_account()
         from . import audit, oversight
 
-        audit.record("cloud.signed_out", url=self.url)
+        audit.record("cloud.signed_out", url=issued or self.url)
         # The oversight notice is confirmed again after signing back in (lumi/oversight.py).
         oversight.forget_notice("Signed out of Lumi Cloud")
         self._changed()
@@ -445,7 +522,12 @@ class CloudClient:
         return self._enroll(payload, headers={"Authorization": f"Bearer {self._access_token()}"}, how="joined")
 
     def enroll_managed(self) -> dict:
-        """Enroll with the machine policy's enrollment token (device management)."""
+        """Enroll with the machine policy's enrollment token (device management).
+
+        The address the person signed in at (``account_url``) stays as it was:
+        when the machine policy's Lumi Cloud is another one, the person counts
+        as signed out for it.
+        """
         managed = self.managed()
         token = str(managed.get("enrollment_token") or "")
         if not (managed.get("url") and token):
@@ -561,20 +643,27 @@ class CloudClient:
         return token
 
     def account_call(self, method: str, path: str, **kwargs: Any) -> dict:
-        """Lumi Cloud's API as the signed-in person (shared sessions, lumi/share.py); {} for no content."""
-        token = self._access_token()
-        return self._call(method, f"{self.url}{path}", headers={"Authorization": f"Bearer {token}"}, **kwargs)
+        """Lumi Cloud's API as the signed-in person (shared sessions, lumi/share.py); {} for no content.
 
-    def account_token(self) -> str:
-        """The signed-in person's desktop access token, refreshed when it has expired.
+        Only at the Lumi Cloud that issued the sign-in, while this computer uses
+        it (CloudError ``signed_out`` otherwise).
+        """
+        token = self._access_token()
+        return self._call(method, f"{self.account_url}{path}", headers={"Authorization": f"Bearer {token}"},
+                          **kwargs)
+
+    def account_token(self, *, refresh: bool = False) -> str:
+        """The signed-in person's desktop access token, refreshed when it has expired (or ``refresh``).
 
         A managed computer sends it with the person's confirmation of the
         oversight notice (``Lumi-Account-Token``, lumi/oversight.py), so Lumi
         Cloud can check the confirmation is theirs, and feedback sent while
-        signed in carries it (lumi/feedback.py). CloudError (``signed_out``)
-        when nobody is signed in.
+        signed in carries it (lumi/feedback.py). Only for a request to
+        ``account_url``, the Lumi Cloud that issued it. CloudError
+        (``signed_out``) when nobody is signed in, or the sign-in is another
+        Lumi Cloud's than the one this computer uses.
         """
-        return self._access_token()
+        return self._access_token(refresh=refresh)
 
     def device_call(self, method: str, path: str, *, headers: dict | None = None, **kwargs: Any) -> dict:
         """Lumi Cloud's device API as this computer (tasks from chat, lumi/remote_tasks.py); {} for no content."""

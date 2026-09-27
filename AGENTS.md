@@ -168,7 +168,13 @@ host enrollment and actual packaged/learned-benefit qualification remain open.
   send versions, usage counts per model and turn outcome counts
   (`activity.py`), never prompts, code, paths or titles. A downloaded policy applies only when it verifies against machine
   keys, or keys pinned when the person joined, and a joined organization
-  never replaces a machine policy (`policy._with_cloud_policy`).
+  never replaces a machine policy (`policy._with_cloud_policy`). The
+  account's tokens go only to the Lumi Cloud that issued them
+  (`CloudClient.account_url`, recorded when a sign-in completes, never by an
+  enrollment or a lock): refresh, `account_call`, `account_token` and
+  revocation use it, and a computer that now uses another Lumi Cloud counts as
+  signed out there. A policy's `settings` never lock `cloud.*` keys other
+  than `cloud.remote_tasks`; Lumi Cloud addresses never carry a user name.
 - Organization oversight (`oversight.py`, `security_flags.py`) is the only
   path that sends people's turns to Lumi Cloud: off unless the policy's
   `oversight` section asks (a key or version Lumi doesn't know turns it off,

@@ -570,3 +570,161 @@ def test_the_organizations_shared_credit_stops_model_requests(fake):
     budgets.set_shared_credit({"organization": "Acme", "period": "2000-01", "credit_usd": 1.0, "spent_usd": 5.0})
     assert not any(r.scope == "organization" for r in budgets.rules())
     budgets.reset()
+
+
+# ── The account's tokens stay with the Lumi Cloud that issued them ─────────
+# Two Lumi Clouds on one transport: A (the fake above, which signs the person
+# in) and B, which only records what it's sent. Whatever moves this computer to
+# B (a machine policy, an enrollment, another address in Settings), nothing of
+# A's sign-in may reach B, and A's sign-in isn't lost either.
+
+B_URL = "https://b.example.test"
+
+
+class OtherCloud:
+    """Lumi Cloud B: records every request; knows none of A's tokens."""
+
+    def __init__(self) -> None:
+        self.seen: list[httpx.Request] = []
+
+    def __call__(self, request: httpx.Request) -> httpx.Response:
+        self.seen.append(request)
+        path = request.url.path
+        if path == "/oauth/token":
+            return httpx.Response(400, json={"error": "invalid_grant", "error_description": "Unknown token."})
+        if path == "/api/v1/devices":
+            return httpx.Response(201, json={"device_id": "dev_b", "organization": {"id": "org_b", "name": "B"},
+                                             "trusted_keys": {}})
+        if path == "/api/v1/devices/token":
+            return httpx.Response(200, json={"access_token": "devtok_b", "expires_in": 3600})
+        if path == "/api/v1/devices/checkin":
+            return httpx.Response(200, json={"next_checkin_seconds": 3600})
+        return httpx.Response(200, json={})
+
+    def holds(self, *secrets: str) -> bool:
+        """Whether any request B got carried one of ``secrets``, in a header or in its body."""
+        for request in self.seen:
+            text = request.content.decode("utf-8", "replace") + " ".join(request.headers.values())
+            if any(secret and secret in text for secret in secrets):
+                return True
+        return False
+
+
+def _signed_in_at_a(fake: FakeCloud) -> tuple[cloud.CloudClient, OtherCloud, str, str]:
+    other = OtherCloud()
+    client = _client(fake)
+    client.seen = []  # every request, to either Lumi Cloud
+
+    def route(request: httpx.Request) -> httpx.Response:
+        client.seen.append(request)
+        return fake(request) if request.url.host == "cloud.example.test" else other(request)
+
+    client._transport = httpx.MockTransport(route)
+    _sign_in(client, fake)
+    return client, other, client._access[0], client.settings.get("api_keys", cloud.REFRESH_SECRET)
+
+
+def _machine_policy(tmp_path, monkeypatch, cloud_section: dict) -> None:
+    machine = tmp_path / "machine-policy.json"
+    machine.write_text(json.dumps({"schema": "lumi.policy/v1", "organization": "B Corp", "cloud": cloud_section}),
+                       encoding="utf-8")
+    monkeypatch.setattr(policy, "machine_policy_file", lambda: machine)
+    policy.load(force=True)
+
+
+def test_the_sign_in_records_the_lumi_cloud_that_issued_it(fake):
+    opened: list[str] = []
+    client = _client(fake, opened)
+    client.begin_sign_in(URL)
+    # A sign-in that doesn't complete changes nothing: not the address, not the account's.
+    assert client.status()["url"] == "" and client.account_url == ""
+    client.cancel_sign_in()
+    _wait(lambda: not client.status()["signing_in"])
+    _sign_in(client, fake)
+    assert (client.url, client.account_url) == (URL, URL)
+    assert client.status()["signed_in"] and client.status()["signed_in_elsewhere"] == ""
+
+
+def test_a_managed_enrollment_elsewhere_never_gets_the_account(fake, tmp_path, monkeypatch):
+    client, other, access, refresh = _signed_in_at_a(fake)
+    _machine_policy(tmp_path, monkeypatch, {"url": B_URL, "enrollment_token": "lce_b"})
+    client.background_step()  # the machine policy enrolls the computer at B
+    assert client.device()["organization_id"] == "org_b"
+    assert (client.url, client.account_url) == (B_URL, URL)
+    status = client.status()
+    assert not status["signed_in"] and status["signed_in_elsewhere"] == URL
+    client._access = None  # an hour later: whatever asks for the account now
+    for call in (lambda: client.account_call("GET", "/api/v1/library"), client.account_token,
+                 client.refresh_account):
+        with pytest.raises(cloud.CloudError, match="Sign in again here") as refused:
+            call()
+        assert refused.value.code == "signed_out"
+    from lumi import team_library
+
+    with pytest.raises(team_library.LibraryError, match="Sign in again here"):
+        team_library.sync(client)
+    assert not other.holds(access, refresh)
+    # A's sign-in isn't lost: nothing refreshed it at B, and B couldn't end it.
+    assert fake.refresh_tokens[refresh] is False
+    assert client.settings.get("api_keys", cloud.REFRESH_SECRET) == refresh
+    # Signing out revokes it at A, where it was issued, never at B.
+    client.sign_out()
+    assert refresh not in fake.refresh_tokens
+    assert not other.holds(refresh) and not any(request.url.path == "/oauth/revoke" for request in other.seen)
+    assert client.status()["signed_in_elsewhere"] == "" and client.account_url == ""
+
+
+def test_another_address_in_settings_never_gets_the_account(fake):
+    client, other, access, refresh = _signed_in_at_a(fake)
+    client.settings.update_section("cloud", {"url": B_URL})  # a hand edit, or an older version's Settings
+    assert client.status()["signed_in_elsewhere"] == URL and not client.status()["signed_in"]
+    client._access = None
+    with pytest.raises(cloud.CloudError, match="Sign in again here"):
+        client.account_call("GET", "/api/v1/me")
+    assert other.seen == [] and not other.holds(access, refresh)
+    # Back at A, the sign-in works as before.
+    client.settings.update_section("cloud", {"url": URL})
+    assert client.status()["signed_in"]
+    assert client.refresh_account()["email"] == "ada@example.com"
+
+
+def test_signing_in_somewhere_else_revokes_the_old_sign_in_where_it_was_issued(fake):
+    client, other, _access, refresh = _signed_in_at_a(fake)
+    # The first sign-in was issued at A/old (recorded so); the next one completes at A.
+    client.settings.update_section("cloud", {"account_url": "https://cloud.example.test/old"})
+    _sign_in(client, fake)
+    revokes = [request for request in client.seen if request.url.path.endswith("/oauth/revoke")]
+    assert [str(request.url) for request in revokes] == ["https://cloud.example.test/old/oauth/revoke"]
+    assert not other.holds(refresh) and client.account_url == URL
+
+
+def test_a_policy_cant_lock_the_lumi_cloud_address(fake):
+    for name in ("cloud.url", "cloud.account_url", "cloud.account", "cloud.device"):
+        with pytest.raises(policy.PolicyError, match="can't lock"):
+            policy.parse({"schema": "lumi.policy/v1", "organization": "Acme", "settings": {name: B_URL}},
+                         source="test")
+    assert policy.parse({"schema": "lumi.policy/v1", "organization": "Acme",
+                         "settings": {"cloud.remote_tasks": False}}, source="test")
+    with pytest.raises(policy.PolicyError, match="true or false"):
+        policy.parse({"schema": "lumi.policy/v1", "settings": {"cloud.remote_tasks": "off"}}, source="test")
+    with pytest.raises(policy.PolicyError, match="user name or password"):
+        policy.parse({"schema": "lumi.policy/v1", "cloud": {"url": "https://ada:pw@cloud.example.test"}},
+                     source="test")
+
+
+def test_a_downloaded_policy_cant_move_this_computer_to_another_lumi_cloud(fake):
+    client, other, _access, _refresh = _signed_in_at_a(fake)
+    client.enroll("org_acme")  # joined in the app; the organization's keys are pinned
+    fake.publish({"settings": {"cloud.url": B_URL}})  # signed by the organization's key
+    with pytest.raises(cloud.CloudError, match="can't lock 'cloud.url'"):
+        client.check_in()
+    assert client.url == URL and not policy.load().cloud
+    assert other.seen == [] and client.status()["signed_in"]
+
+
+def test_an_address_with_a_user_name_is_never_used_or_shown(fake):
+    with pytest.raises(cloud.CloudError, match="user name or password"):
+        cloud.normalize_url("https://ada:secret@cloud.example.test")
+    client = _client(fake)
+    client.settings.update_section("cloud", {"url": "https://ada:secret@cloud.example.test"})
+    assert client.url == "" and "secret" not in json.dumps(client.status())

@@ -374,6 +374,15 @@ class LumiSettingsView {
                     canEnroll ? button('enroll', 'Use on this computer', `data-org="${esc(org.id)}" aria-label="Use ${esc(org.name)} on this computer"`) : ''));
             }
         } else {
+            if (s.signed_in_elsewhere) {
+                // The sign-in belongs to the Lumi Cloud that issued it (lumi/cloud.py): never sent to this one.
+                let issued = s.signed_in_elsewhere;
+                try { issued = new URL(s.signed_in_elsewhere).host; } catch (_err) { /* shown as saved */ }
+                const now = s.url ? `<code>${esc(s.url)}</code>${s.url_locked ? ', set by your organization’s policy' : ''}` : 'no Lumi Cloud';
+                parts.push(row(`Signed in to ${esc(issued)}${s.account && s.account.email ? ` as ${esc(s.account.email)}` : ''}`,
+                    `This computer now uses ${now}. Lumi keeps that sign-in for ${esc(issued)} and never sends it to another Lumi Cloud, so you count as signed out here. Sign in below to use this one, or sign out of ${esc(issued)}.`,
+                    button('sign_out', `Sign out of ${esc(issued)}`)));
+            }
             const address = this._cloudUrlDraft ?? s.url ?? '';
             const hint = s.url_locked ? 'Set by your organization’s policy.' : 'Your organization’s Lumi Cloud, such as https://cloud.example.com.';
             parts.push(`<div class="settings-row"><div class="settings-row-copy"><label class="settings-row-label" for="cloud-url">Lumi Cloud address</label><div class="settings-row-hint">${hint}</div></div>

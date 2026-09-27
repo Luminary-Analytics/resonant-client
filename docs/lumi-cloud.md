@@ -28,6 +28,17 @@ This account is separate from your display name and from any SONN or ChatGPT
 sign-in. **Sign out** ends it on Lumi Cloud too. Your organization can also
 sign the app out from Lumi Cloud.
 
+**Your sign-in belongs to the Lumi Cloud that issued it.** Lumi records its
+address when the sign-in completes (a sign-in you cancel changes nothing),
+and refreshes it, uses it and signs it out only there. If this computer later
+uses another Lumi Cloud (your organization's policy enrolls it somewhere
+else, or the address changes), you count as signed out for the new one:
+nothing of your sign-in is sent to it, and Settings > Lumi account says
+you're still signed in to the first one, with **Sign out of** it. Signing in
+at another Lumi Cloud ends the earlier sign-in where it was issued. An
+address with a user name or password in it (`https://name:secret@…`) isn't
+accepted.
+
 ## Using your organization on this computer
 
 Next to an organization where you have a seat, choose **Use on this

@@ -8,6 +8,56 @@ The heartbeat remains paused. Documentation maintenance does not resume work,
 spending or grants, and changes no native implementation or installed bundle.
 The dated September 15/18 records below are historical.
 
+## September 27 Lumi Cloud sign-in: the account's tokens stay with the Lumi Cloud that issued them (security fix, source only, not released)
+
+**What was wrong.** `CloudClient` refreshed the sign-in, made account calls
+and revoked it at whatever Lumi Cloud address the computer used at that
+moment, and several things changed that address after the person signed in:
+a machine policy's managed enrollment (about 20 seconds after launch), a
+sign-in that was only started, and a `settings` lock on `cloud.url` in a
+machine or downloaded organization policy. The next account call, such as
+the team library sync the page asks for at startup, then posted the person's
+refresh token to the new address; its `invalid_grant` made Lumi forget the
+sign-in, and **Sign out** revoked it at the new address, so the token stayed
+valid where it was issued.
+
+- **The issuing address is recorded when the sign-in completes**
+  (`cloud.account_url`, read as saved with `SettingsManager.stored`, so no
+  policy lock stands in for it). Neither an enrollment nor a sign-in that's
+  started rewrites it, and a started sign-in no longer changes the address
+  until it completes.
+- **Refreshing, account calls (`account_call`, `account_token`,
+  `refresh_account`) and revoking go only to that address.** When the
+  computer uses another Lumi Cloud, the person counts as signed out for it
+  (`status()["signed_in_elsewhere"]`): nothing of the account is sent there,
+  the tokens are kept for the first one, and Settings > Lumi account says so,
+  with **Sign out of** that Lumi Cloud, which revokes where it was issued.
+  Signing in at another Lumi Cloud revokes the earlier sign-in where it was
+  issued.
+- **A policy's `settings` can no longer lock `cloud.*` keys** other than
+  `cloud.remote_tasks` (true or false): such a policy is invalid. The machine
+  policy's own `cloud` section stays the way to set the address.
+- **An address with a user name or password** (`https://name:secret@…`) is
+  refused everywhere one is accepted, and a policy whose `cloud.url` has one
+  is invalid; a saved one is neither used nor shown.
+- Feedback names the account only when its report goes to the issuing
+  address.
+- A sign-in made before this change has no recorded address and isn't used;
+  sign in again. (Lumi Cloud isn't deployed, so no released install has one.)
+
+Validation: `tests/test_cloud.py` (8 new tests) with the real `CloudClient`
+against two fake Lumi Clouds on one transport: after a machine policy
+enrolls the computer at the second one, and after its address changes in
+Settings, no request there carries the first one's access or refresh token,
+the sign-in isn't lost, and signing out revokes at the first one; signing in
+elsewhere revokes the earlier sign-in where it was issued; policies locking
+`cloud.url`, `cloud.account_url` and other `cloud.*` keys are refused, and a
+downloaded organization policy that locks `cloud.url` isn't applied; a
+started sign-in changes nothing until it completes; an address with a user
+name is refused, and a saved one neither used nor shown. The existing
+`tests/test_cloud.py`, `tests/test_remote_tasks.py`, `tests/test_oversight.py`
+and `tests/test_offline_features.py` pass.
+
 ## September 27 sending feedback, first pass (source only, not released)
 
 **Send feedback** ([Sending feedback](feedback.md)): Help › Send Feedback…,

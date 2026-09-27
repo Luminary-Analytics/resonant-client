@@ -534,27 +534,23 @@ def offline_refusal(url: str) -> str:
 def _account(cloud: Any, url: str) -> tuple[str, str]:
     """The Lumi Cloud id and email of the person signed in to ``url``, or ("", "").
 
-    A sign-in counts only for the address it was made at: when an
-    organization's policy has since named another Lumi Cloud, reports go there
-    without the account, and its token never goes to a host it wasn't issued by.
+    A sign-in counts only for the Lumi Cloud that issued it (the client's
+    ``account_url``, recorded when the sign-in completed): when reports go
+    anywhere else, they go without the account, and its token never goes to a
+    host that didn't issue it.
     """
-    from .cloud import CloudError, normalize_url
+    from .cloud import same_address
 
     if not url:
         return "", ""
     try:
         status = cloud.status()
+        issued = str(getattr(cloud, "account_url", "") or "")
     except Exception:  # no account is the safe answer to any problem here
         logger.debug("Couldn't read the Lumi Cloud sign-in for feedback", exc_info=True)
         return "", ""
     account = status.get("account") if isinstance(status.get("account"), dict) else {}
-    if not status.get("signed_in") or not account.get("user_id"):
-        return "", ""
-    try:
-        signed_in_at = normalize_url(str(getattr(cloud, "sign_in_url", "") or ""))
-    except CloudError:
-        return "", ""
-    if signed_in_at != url:
+    if not status.get("signed_in") or not account.get("user_id") or not same_address(issued, url):
         return "", ""
     return str(account.get("user_id")), str(account.get("email") or "")
 

@@ -283,6 +283,17 @@ class SettingsManager:
                 return value
             return default
 
+    def stored(self, section: str, key: str, default: Any = None) -> Any:
+        """The value saved in settings.json, whatever an organization policy locks.
+
+        For state Lumi records itself that no policy may stand in for, such as
+        the Lumi Cloud address that issued the sign-in (lumi/cloud.py). Never
+        for ``api_keys``, whose values live in the credential store.
+        """
+        with self._lock:
+            sect = self._data.get(section, DEFAULTS.get(section))
+            return sect.get(key, default) if isinstance(sect, dict) else default
+
     def set(self, section: str, key: str | None, value: Any) -> None:
         """Set a value and persist. set('general', 'theme', 'light') or set('hooks', None, [...])."""
         with self._lock:

@@ -39,11 +39,11 @@ class Cloud:
     """The parts of CloudClient feedback uses: its address, where and as whom the person signed in, their token."""
 
     def __init__(self, url: str = URL, *, user_id: str = "", email: str = "ada@example.com",
-                 sign_in_url: str | None = None) -> None:
+                 account_url: str | None = None) -> None:
         self.url = url
         self.user_id = user_id
         self.email = email
-        self.sign_in_url = url if sign_in_url is None else sign_in_url
+        self.account_url = url if account_url is None else account_url
         self.token_calls = 0
 
     def status(self) -> dict:
@@ -373,7 +373,7 @@ def test_a_token_that_cant_be_had_now_keeps_the_report(inbox):
 
 def test_the_account_goes_only_to_the_lumi_cloud_it_signed_in_at(inbox):
     # A policy has since named another Lumi Cloud: reports go there, without the account or its token.
-    moved = Cloud(url=OTHER, user_id="usr_ada", sign_in_url=URL)
+    moved = Cloud(url=OTHER, user_id="usr_ada", account_url=URL)
     feedback.submit(moved, form(), now=NOW)
     assert str(inbox.requests[-1].url) == OTHER + "/api/v1/feedback"
     assert "authorization" not in inbox.requests[-1].headers and moved.token_calls == 0
@@ -398,7 +398,7 @@ def test_the_real_cloud_client_sends_its_access_token_only_when_signed_in(inbox,
     feedback.submit(client, form(), now=NOW)
     assert "authorization" not in inbox.requests[-1].headers
     _sign_in(client, cloud_fake)
-    assert client.sign_in_url == URL
+    assert client.account_url == URL
     feedback.submit(client, form(), now=NOW + 1)
     token = inbox.requests[-1].headers["authorization"][len("Bearer "):]
     assert token in cloud_fake.access_tokens
@@ -607,7 +607,7 @@ def test_the_background_thread_sends_when_woken(inbox, monkeypatch):
     try:
         time.sleep(0.3)
         assert inbox.requests == [] and feedback.waiting() == 1  # still nowhere to send it
-        cloud.url = cloud.sign_in_url = URL
+        cloud.url = cloud.account_url = URL
         feedback.wake()
         deadline = time.monotonic() + 10
         while feedback.waiting() and time.monotonic() < deadline:

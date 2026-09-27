@@ -214,6 +214,16 @@ Python 3.13 venv, `PYTHONNOUSERSITE=1`):
   verified against their versions. No contract mismatch. The model saw each
   prompt only after its confirmation (the stub's log). The real home and
   Credential Manager were unchanged.
+- Repeated after the second review, with this branch at 64dc235 and Lumi
+  Cloud at ecdc10b (the 64-character fingerprint on both sides; the cloud
+  source exported with `git archive`, a fresh database): the same steps and
+  results. Both acknowledgments matched their versions (1, then 2) with
+  64-character fingerprints, verified signatures and the member as whom they
+  count (`attribution: person`); the turns were stored as `app` (attended)
+  and `headless` (unattended, twice); the `block` run was refused with no
+  model request. `lumi run` there had standard input from NUL, which
+  Windows' `isatty` calls a terminal: it counted as unattended only once a
+  console handle was required (64dc235).
 - Not run: a packaged build, a deployed Lumi Cloud, a real Telegram or Slack
   chat, a real terminal (the typed yes was driven through the code's own
   prompts), screen readers.

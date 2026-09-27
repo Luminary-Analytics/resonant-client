@@ -127,6 +127,21 @@ def test_chat_template_residue_after_the_json_is_dropped(residue):
         parse(json.dumps(proposal()) + residue + "\nThat is my plan.")
 
 
+def test_a_missing_last_brace_or_stray_closing_braces_are_tolerated_and_nothing_else():
+    # A live orchestrator's closing turn wrote its JSON without the last "}",
+    # and its retry added a second "}" after it.
+    text = json.dumps(proposal(), indent=2)
+    assert len(parse(text[:-1].rstrip()).work_items) == 1
+    assert len(parse(text + "\n\n}").work_items) == 1
+    assert len(parse(text + "}\n]").work_items) == 1
+    for broken in (text[:-1].rstrip()[:-2],  # cut inside the work items: two closers missing
+                   text.replace('"summary": "Independent', '"summary": "Indep', 1)[:-40],  # cut inside a string
+                   text + "\n}\nThat is my plan.",  # prose after the stray brace
+                   "[" + text + "]"):  # not an object
+        with pytest.raises(PlanRejected, match="one strict JSON object|missing or unsupported"):
+            parse(broken)
+
+
 @pytest.mark.parametrize("role", ["explore", "verify"])
 def test_a_read_only_item_cannot_declare_check_criteria(role):
     # Nothing runs checks on findings: such an item could never be accepted.

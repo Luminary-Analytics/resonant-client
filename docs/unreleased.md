@@ -8,6 +8,32 @@ The heartbeat remains paused. Documentation maintenance does not resume work,
 spending or grants, and changes no native implementation or installed bundle.
 The dated September 15/18 records below are historical.
 
+## September 27 Team: a team's results in its chat (source only, not released)
+
+**Use in chat.** The Team panel's **Use in chat** adds `@team:<run id>` to the
+conversation's message without sending it. The attachment
+(`engine/swarming/chat_context.py`) carries:
+
+- the objective and the orchestrator's final report;
+- the accepted results, each saying how it was accepted;
+- the applied revision.
+
+It says the content is model-written, removes secret patterns and saved keys,
+and stays for the conversation like a hand-off (`ContextBroker.STICKY`). Only
+the conversation's own personal teams can be attached, and reading one creates
+no team state.
+
+**What Lumi recorded, beside the report.** A live closing report said both
+workers had asked the orchestrator a question when only one had. The Team
+panel and the `@team:` attachment now show the team's recorded counts next to
+the report, and the orchestrator's follow-up and closing turns receive them as
+`team_record` to cite.
+
+**Plans with near-miss JSON.** A live Nemotron orchestrator ended its round-2
+plan without the last `}`, and its retry added a stray `}` after it. The team
+was handed back even though its work was done and applied. The plan parser now
+accepts those two shapes. Anything else still refuses the plan.
+
 ## September 27 Team: under an organization policy (source only, not released)
 
 **Personal teams run where a policy applies.** Before, any organization policy

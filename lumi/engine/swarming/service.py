@@ -25,6 +25,7 @@ from . import collaboration_desktop, managed_collaboration_desktop
 from . import connections as team_connections
 from . import organization
 from .autopilot import MAX_ROUNDS, TeamAutopilot
+from .chat_context import chat_context, team_record
 from .integration import CheckSpec, SwarmIntegration
 from .models import Conflict, IdempotencyConflict, RevisionConflict, ScopeDenied, SwarmError, require_id
 from .organization import TeamGovernance
@@ -438,6 +439,22 @@ class SwarmRuntime:
         self._watch(self._stores[key], capture.scope)
         return self._stores[key]
 
+    def chat_context(self, workspace: str, scope: Scope, run_id: str) -> dict[str, str]:
+        """One of a conversation's retained teams, as that conversation's context (``@team:``).
+
+        Reads only: a project that never ran a team gets no team state from
+        this. The scope is the conversation's own, so another conversation's
+        team is refused like any run outside its scope (chat_context.py).
+        """
+        require_id(run_id)
+        store = self._stores.get(_path_key(workspace))
+        if store is None:
+            path = Path(self._state_root(workspace)) / "swarm" / "state.sqlite"
+            if not path.is_file():
+                raise ScopeDenied("Run is unavailable in this scope")
+            store = SwarmStore(path, read_only=True)
+        return chat_context(store.snapshot(scope, run_id))
+
     def captured_run(self, run_id: str, project: str, session_id: str) -> CapturedSession | None:
         """Resolve controls for a known run without consulting current selection."""
         pair = self._runners.get(run_id) or self._recoveries.get(run_id)
@@ -500,6 +517,8 @@ class SwarmRuntime:
     def _view(self, capture, store, run_id=None, *, after=0):
         run_id = run_id or self._latest(store, capture.scope)
         snapshot = store.snapshot(capture.scope, run_id) if run_id else None
+        # Counted before the panel's bounded message list is cut.
+        record = team_record(snapshot) if snapshot else None
         if snapshot:
             # The owner can inspect all evidence, but one panel response stays
             # bounded. Full history remains in replay/artifact interfaces.
@@ -572,6 +591,8 @@ class SwarmRuntime:
                 "run": snapshot,
                 "coordinator_planning": self._planning_view(store, run_id, snapshot) if snapshot else None,
                 "autonomy": self._autonomy_view(store, run_id, snapshot),
+                # Beside the orchestrator's model-written report (chat_context.team_record).
+                "team_record": record,
                 "collaboration": collaboration_desktop.view(store, capture.scope, run_id) if run_id and capture.scope.tenant_id == f"personal:{capture.scope.owner_id}" else None,
                 "managed_collaboration": self._managed_sharing[run_id].view() if run_id in self._managed_sharing else managed_collaboration_desktop.historical_view(store, capture.scope, run_id),
                 "events": [asdict(event) for event in store.events(capture.scope, run_id, after=after)] if run_id else [],

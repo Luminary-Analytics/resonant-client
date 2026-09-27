@@ -77,8 +77,11 @@ opens this panel with the objective filled in and this option chosen. Check
 the limits and press **Start orchestrated team**. The coordinator becomes the
 team's orchestrator, and you don't approve each step:
 
-- Its plans run once the runtime has validated them against the team's
-  scopes, criteria and request allowance, as it would for your approval.
+- Its plans run after the checks your approval would get: the exact
+  proposal, the team's policy, tools, criteria and dependencies. Each task
+  must still fit the team's scopes and remaining request allowance when it
+  starts. A task that overlaps running work waits for it; when nothing can
+  start, the team is handed back to you.
 - Workers' findings are accepted **under your grant**, so later tasks and the
   next round can use them. The record says so: executor `autonomy:<owner>`,
   "Accepted under the owner's autonomy grant, not reviewed". It never claims
@@ -88,8 +91,8 @@ team's orchestrator, and you don't approve each step:
 - When a running worker asks the orchestrator a question or reports a blocker,
   the orchestrator answers in the same round: a short answer turn replies with
   `swarm_send` from the objective, the team's work and its findings. It has no
-  file access, spends up to 3 of the team's unallocated requests and proposes
-  no work.
+  file access, spends up to 3 of the team's unallocated requests that planned
+  tasks don't need (it needs at least two) and proposes no work.
 - When a round's work is accepted, the orchestrator plans again from the
   findings and from workers' messages to it. It can finish early by proposing
   no more work. After the last round, a closing turn writes the final report
@@ -100,9 +103,12 @@ report. You can pause, steer or stop the team at any time. The orchestrator
 loop runs in the app that owns the team. After a restart or a lost host,
 **Recover** and **Continue** the team as for any retained team: the loop then
 resumes from the retained plans. Each accepted plan that started work counts
-as a round, and a report already written finishes the team. A task or turn
-retried before the restart may be retried once more. See
-`engine/swarming/autopilot.py`.
+as a round, and a report already written finishes the team. What you chose
+at **Continue** stands: a failed task you didn't select stays failed, and a
+task retried before the restart isn't retried again. A step on the writers'
+changes that failed before it counts too, so a failed application isn't tried
+again. An orchestrator turn retried before the restart may be retried once
+more. See `engine/swarming/autopilot.py`.
 
 File changes wait for you to check, apply and accept them, unless you also
 turn on **Apply changes that pass every check**, offered when the team has
@@ -269,6 +275,11 @@ Each check specifies an executable, literal arguments entered one per line,
 and a timeout from one to 1,200 seconds. These commands execute locally with
 your account's permissions. They are owner-selected verification, not commands
 chosen by a worker. Do not put shell quoting, pipes or redirects in argument lines.
+Each check starts from the combined change's exact revision (files an earlier
+check left are removed first) and runs without Lumi's model-provider keys in
+its environment, since it runs code the writers wrote. Checks verify writers'
+changes; read-only tasks, including those a coordinator proposes, are
+accepted by review.
 
 For each manual writer, select **Implement file changes**, narrow its writable
 roots within the team's roots, and list its required check names. The total

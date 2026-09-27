@@ -5,7 +5,9 @@ team's captured setup. From then on this host loop takes the owner steps the
 orchestrator (the team's coordinator model) would otherwise wait on:
 
 - it accepts each orchestrator plan. The supervisor still validates the plan
-  exactly as for an owner decision: declared scopes, criteria and allowance;
+  exactly as for an owner decision (its exact envelope, policy, tools,
+  criteria and dependencies); scopes and the request allowance are checked
+  again when each task is assigned;
 - it accepts each read result under the grant (``accept_under_grant``), so the
   next round can use it. The receipt says so and never claims owner review;
 - it retries a failed task, or an orchestrator turn without a usable plan, once;
@@ -39,7 +41,7 @@ import time
 from typing import Any
 
 from .coordinator import ANSWER_WORKER_PREFIX
-from .models import AdmissionClosed, Conflict, RevisionConflict
+from .models import AdmissionClosed, Conflict, RevisionConflict, ScopeDenied, StaleAuthority
 
 logger = logging.getLogger(__name__)
 
@@ -48,11 +50,13 @@ _IN_FLIGHT = frozenset({"pending", "ready", "leased", "running", "submitted"})
 _RUNNING = frozenset({"ready", "leased", "running"})
 MAX_ROUNDS = 8
 PLAN_EVIDENCE = ("Accepted by the team's orchestrator under the owner's autonomy grant: plans within this team's "
-                 "scopes, criteria and request allowance run without a separate approval.")
+                 "policy, tools and criteria run without a separate approval.")
 CLOSING_EVIDENCE = "The team used its rounds; the orchestrator's closing turn may not start more work."
 RESULT_EVIDENCE = ("Accepted under the owner's autonomy grant so the orchestrator's next round can use it; "
                    "the owner has not reviewed it.")
 RETRY_EVIDENCE = "Retried once automatically under the owner's autonomy grant."
+STALE_EVIDENCE = ("Declined under the owner's autonomy grant: the team's work changed after this plan's input was "
+                  "prepared; the orchestrator plans again from the current work.")
 APPLY_EVIDENCE = ("Applied under the owner's autonomy grant: every declared check passed on these exact combined "
                   "changes. The owner has not reviewed them.")
 WRITER_EVIDENCE = ("Accepted under the owner's autonomy grant: the exact combined changes passed every declared "
@@ -84,6 +88,10 @@ class TeamAutopilot:
     TICK = 0.4
     # Consecutive refused steps (about ten seconds) before the owner is told.
     REFUSALS = 25
+    # Passes that find planned tasks dispatch refuses, with nothing running,
+    # before the owner is told: the scheduler (every 0.2 s) may still hold a
+    # refusal from before the last task finished.
+    STUCK_PASSES = 3
     # An answer turn's request allowance, from the team's unallocated requests.
     # Its last request offers no tools, so 3 leave two chances to swarm_send.
     ANSWER_REQUESTS = 3
@@ -104,6 +112,7 @@ class TeamAutopilot:
         self._operations: dict[tuple, int] = {}
         self._answered: set[int] = set()
         self._requests = 0
+        self._stuck = 0
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
 
@@ -115,25 +124,66 @@ class TeamAutopilot:
         started work was a round. A plan that proposed no work (or a closing
         turn's rejected proposal) was the final report, so the team finishes.
         Otherwise, once every round's work is done, the next turn is the closing
-        turn. Retries start fresh: a task or turn retried before may be retried
-        once more.
+        turn. What the owner chose at Continue stands: a task retried before, or
+        left failed, isn't retried, and failed integration steps count. An
+        orchestrator turn retried before may be retried once more.
         """
         autopilot = cls(runtime, run_id, rounds=grant["rounds"], apply=grant.get("apply") is True)
-        planned = [row for row in snapshot["coordinator_proposals"] if not any(
-            attempt["id"] == row["attempt_id"] and attempt["worker_id"].startswith(ANSWER_WORKER_PREFIX)
-            for attempt in snapshot["attempts"])]
-        worked = [row for row in planned if row["state"] == "accepted"
-                  and json.loads(row["payload_json"])["plan"]["work_items"]]
-        autopilot.round = max(1, min(len(worked), autopilot.rounds))
-        reports = [row for row in planned if (row["state"] == "accepted" and not json.loads(
-            row["payload_json"])["plan"]["work_items"]) or row["decision_evidence"] == CLOSING_EVIDENCE]
-        if reports:
-            autopilot.final_report = json.loads(reports[-1]["payload_json"])["plan"]["summary"]
-            autopilot.closing = reports[-1]["decision_evidence"] == CLOSING_EVIDENCE
-        elif len(worked) >= autopilot.rounds and any(row["state"] == "pending" for row in planned):
-            autopilot.closing = True  # The pending plan is the closing turn's.
+        report, worked, later = cls.retained_plans(snapshot)
+        if report is not None:
+            autopilot.final_report = report
+            autopilot.closing = worked >= autopilot.rounds or any(
+                row["decision_evidence"] == CLOSING_EVIDENCE for row in snapshot["coordinator_proposals"])
+        elif later and worked < autopilot.rounds:
+            autopilot.round = worked + 1  # That later turn plans the next round.
+        elif later:
+            autopilot.closing = True  # That later turn is the closing turn.
+        autopilot.round = max(autopilot.round, min(max(worked, 1), autopilot.rounds))
+        # What the owner chose at Continue stands: failed tasks they didn't
+        # select stay failed, and a task retried before isn't retried again.
+        attempts: dict[str, int] = {}
+        for row in snapshot["attempts"]:
+            if row["kind"] == "worker":
+                attempts[row["work_item_id"]] = attempts.get(row["work_item_id"], 0) + 1
+        autopilot._retried = {item for item, count in attempts.items() if count > 1} | {
+            row["id"] for row in snapshot["work_items"] if row["state"] in {"failed", "cancelled"}}
+        # Integration steps that already ran count, so a failed application isn't tried again.
+        for row in snapshot["integration_operations"]:
+            if row["state"] in {"failed", "cancelled", "uncertain"}:
+                payload = json.loads(row.get("payload_json") or "{}")
+                target = {"prepare_candidate": tuple(sorted(payload.get("writer_ids", []))),
+                          "run_check": (payload.get("candidate_id"), payload.get("check_key")),
+                          "apply": (payload.get("candidate_id"),)}.get(row["kind"])
+                action = "apply_candidate" if row["kind"] == "apply" else row["kind"]
+                if target is not None:
+                    autopilot._operations[(action, target)] = autopilot._operations.get((action, target), 0) + 1
         autopilot._set("resumed", "The orchestrator loop resumed after the team was continued.")
         return autopilot
+
+    @staticmethod
+    def retained_plans(snapshot: dict[str, Any]) -> tuple[str | None, int, bool]:
+        """From a team's retained plans: its report (if written), rounds of work, and a later turn.
+
+        A round is an accepted plan that started work; the report is a plan
+        that proposed none, or a closing turn's rejected one. ``later`` says a
+        planning turn exists after the last round's plan (pending, failed or
+        still running): the next round's turn, or the closing one.
+        """
+        planners = [row["id"] for row in snapshot["attempts"] if row["kind"] == "coordinator"
+                    and not row["worker_id"].startswith(ANSWER_WORKER_PREFIX)]
+        proposals = {row["attempt_id"]: row for row in snapshot["coordinator_proposals"]}
+        report, worked, last = None, 0, -1
+        for index, attempt in enumerate(planners):
+            proposal = proposals.get(attempt)
+            if proposal is None:
+                continue
+            plan = json.loads(proposal["payload_json"])["plan"]
+            if proposal["state"] == "accepted" and plan["work_items"]:
+                worked, last = worked + 1, index
+            elif (proposal["state"] == "accepted" and not plan["work_items"]) or (
+                    proposal["decision_evidence"] == CLOSING_EVIDENCE):
+                report, last = plan["summary"], index
+        return report, worked, report is None and len(planners) > last + 1
 
     # ── lifecycle ─────────────────────────────────────────────────────────
 
@@ -166,9 +216,10 @@ class TeamAutopilot:
                 if not self.step():
                     return
                 refused = 0
-            except (Conflict, RevisionConflict, AdmissionClosed) as exc:
+            except (Conflict, RevisionConflict, AdmissionClosed, StaleAuthority, ScopeDenied) as exc:
                 # The owner or a worker changed the team; look again. A step
-                # the runtime keeps refusing is the owner's to resolve.
+                # the runtime keeps refusing (a result from before a restart,
+                # say) is the owner's to resolve.
                 refused += 1
                 if refused >= self.REFUSALS:
                     self._set("needs_owner", f"The team keeps refusing the orchestrator's next step ({exc}). "
@@ -202,15 +253,25 @@ class TeamAutopilot:
                 self._set("stopped", f"The team is {state}.")
             return False
         if state != "running":
-            self._set("paused", "The team is paused. Resume it to let the orchestrator continue.")
+            self._set("paused", {
+                "paused": "The team is paused. Resume it to let the orchestrator continue.",
+                "pausing": "The team is pausing.", "stopping": "The team is stopping.",
+                "recovery_required": "The team needs recovery. Recover and continue it to let the orchestrator go on.",
+            }.get(state, f"The team is {state.replace('_', ' ')}."))
             return True
         scheduler = self.runtime._schedulers.get(self.run_id)
         error = scheduler.inspect()["error"] if scheduler is not None else ""
         if error:
             # Nothing would start the tasks it was about to dispatch.
             return self._hand_back(f"The team stopped starting workers ({error}). Inspect it and continue it yourself.")
-        active = [row for row in snapshot["attempts"] if row["kind"] == "coordinator"
-                  and (row["state"] in {"leased", "running", "uncertain"} or row["process_state"] != "stopped")]
+        coordinators = [row for row in snapshot["attempts"] if row["kind"] == "coordinator"]
+        active = [row for row in coordinators if row["state"] in {"leased", "running"} or row["process_state"] != "stopped"]
+        if not active and any(row["state"] == "uncertain" for row in coordinators):
+            # Its request's outcome can't be known here, and it holds the
+            # team's allowance, so the team can't finish on its own.
+            return self._hand_back("An orchestrator turn's model request ended without a known outcome (for example, "
+                                   "the connection dropped mid-answer), so the team can't finish on its own. Stop it, "
+                                   "or restart the app and recover it to settle that request.")
         if active and active[-1]["worker_id"].startswith(ANSWER_WORKER_PREFIX):
             self._set("answering", f"Round {self.round}: the orchestrator is answering a worker's question.")
             return True
@@ -224,11 +285,29 @@ class TeamAutopilot:
                 return True
         work = snapshot["work_items"]
         writers = [row for row in work if row["state"] == "submitted" and json.loads(row["specification"])["write_roots"]]
-        if writers and not self.apply:
+        running = any(row["state"] in _RUNNING for row in work)
+        if writers and not self.apply and not running:
             return self._hand_back("Writers submitted changes. Check and apply them, then accept them to continue.")
         # Wait for the round's running workers, so their changes combine once.
-        if writers and not any(row["state"] in _RUNNING for row in work):
+        if writers and self.apply and not running:
             return self._integrate(capture, runner, snapshot, writers)
+        blocked = scheduler.inspect()["blocked"] if scheduler is not None else {}
+        stuck = [row for row in work if row["state"] == "ready" and row["id"] in blocked]
+        if stuck and not any(row["state"] in {"leased", "running"} for row in work):
+            # Nothing runs and dispatch refuses what's left (for example, the
+            # request allowance can't fund it): waiting wouldn't change that.
+            self._stuck += 1
+            if self._stuck < self.STUCK_PASSES:
+                self._set("working", f"Round {self.round}: waiting for planned tasks to start.")
+                return True
+            return self._hand_back(f"The team can't start {len(stuck)} planned task{'s' * (len(stuck) != 1)}: "
+                                   f"{blocked[stuck[0]['id']]}. Stop the team or continue it yourself.")
+        self._stuck = 0
+        readers = [row for row in work if row["state"] == "submitted" and not json.loads(row["specification"])["write_roots"]
+                   and json.loads(row["specification"])["criteria"] != ["owner_review"]]
+        if readers and not running:
+            return self._hand_back("A read-only task declared checks that nothing runs, so it can't be accepted "
+                                   "automatically. Review it yourself or stop the team.")
         if any(row["state"] in _IN_FLIGHT for row in work):
             running = sum(row["state"] in {"leased", "running"} for row in work)
             self._set("working", f"Round {self.round}: {running} of {len(work)} tasks running.")
@@ -238,7 +317,8 @@ class TeamAutopilot:
             return self._hand_back("A worker's model request ended without a known outcome (for example, the "
                                    "connection dropped mid-answer). Reconcile it or stop the team.")
         if any(row["state"] != "accepted" for row in work):
-            return self._hand_back("A task failed after its automatic retry. Retry, change or stop the team.")
+            return self._hand_back("A task failed after its automatic retry, or you stopped it. Retry, change or "
+                                   "stop the team.")
         return self._settle(capture, runner, snapshot)
 
     @staticmethod
@@ -261,8 +341,18 @@ class TeamAutopilot:
         plan = json.loads(proposal["payload_json"])["plan"]
         # The closing turn may not start work; its summary is the report either way.
         accept = not (self.closing and plan["work_items"])
-        self._command(runner, "decide_proposal", {"proposal_id": proposal["id"], "sha256": proposal["sha256"],
-                                                  "accept": accept, "evidence": PLAN_EVIDENCE if accept else CLOSING_EVIDENCE})
+        try:
+            self._command(runner, "decide_proposal", {"proposal_id": proposal["id"], "sha256": proposal["sha256"],
+                                                      "accept": accept, "evidence": PLAN_EVIDENCE if accept else CLOSING_EVIDENCE})
+        except Conflict as exc:
+            if not accept or "graph changed" not in str(exc):
+                raise
+            # The team's work changed while it planned: decline it with the
+            # reason; the orchestrator plans again once the round settles.
+            self._command(runner, "decide_proposal", {"proposal_id": proposal["id"], "sha256": proposal["sha256"],
+                                                      "accept": False, "evidence": STALE_EVIDENCE})
+            self._set("working", f"Round {self.round}: a plan was made on out-of-date work, so it was declined.")
+            return True
         if accept and plan["work_items"]:
             scheduler = self.runtime._schedulers.get(self.run_id)
             if scheduler is None:
@@ -285,6 +375,9 @@ class TeamAutopilot:
             return False
         if self.final_report is not None:
             return False
+        if latest["cancel_requested"]:
+            return self._hand_back("You stopped the orchestrator's turn, so it isn't retried. Plan the next step "
+                                   "yourself or stop the team.")
         # This failed turn was itself the retry of the one before it: stop asking
         # the model and hand over to the owner.
         previous = coordinators[-2] if len(coordinators) > 1 else None
@@ -311,14 +404,24 @@ class TeamAutopilot:
         running = {row["id"]: row for row in snapshot["attempts"]
                    if row["kind"] == "worker" and row["state"] in {"leased", "running"}}
         coordinators = {row["id"] for row in snapshot["attempts"] if row["kind"] == "coordinator"}
+        answer_turns = {row["id"] for row in snapshot["attempts"] if row["kind"] == "coordinator"
+                        and row["worker_id"].startswith(ANSWER_WORKER_PREFIX)}
+        # A question sent while an answer turn ran reached that turn's input.
+        seen = {row["message_id"] for row in snapshot["receipts"]
+                if row["stage"] == "context" and row["recipient_attempt_id"] in answer_turns}
         questions = [row["sequence"] for row in snapshot["messages"]
                      if row["recipient_attempt_id"] in coordinators and row["kind"] in {"question", "blocker"}
-                     and row["sender_attempt_id"] in running and row["sequence"] not in self._answered]
+                     and row["sender_attempt_id"] in running and row["sequence"] not in self._answered
+                     and row["id"] not in seen]
         if not questions or self.final_report is not None:
             return False
         planning = self.runtime._planning_view(runner.store, self.run_id, snapshot)
-        if planning["remaining_requests"] < 1:
-            # No allowance to answer now: the next round's planning reads them.
+        scheduler = self.runtime._schedulers.get(self.run_id)
+        queued = sum(row["state"] in {"pending", "ready"} for row in snapshot["work_items"])
+        spare = planning["remaining_requests"] - queued * (scheduler.requests_per_worker if scheduler else 0)
+        if spare < 2:
+            # Planned work needs the rest, and an answer turn needs two requests
+            # (its last one offers no tools): the next round's planning reads them.
             self._answered.update(questions)
             return False
         self._refusal("request_plan")
@@ -326,7 +429,7 @@ class TeamAutopilot:
         self.runtime._answer_workers(capture, run_id=self.run_id, questions=questions,
                                      request_id=f"autopilot_{self.run_id}_{self._requests}",
                                      expected_revision=snapshot["run"]["revision"],
-                                     requests=min(self.ANSWER_REQUESTS, planning["remaining_requests"]))
+                                     requests=min(self.ANSWER_REQUESTS, spare))
         self._answered.update(questions)
         self._set("answering", f"Round {self.round}: the orchestrator is answering a worker's question.")
         return True
@@ -352,6 +455,10 @@ class TeamAutopilot:
     def _retry_failed(self, capture, runner, snapshot) -> bool:
         for item in snapshot["work_items"]:
             if item["state"] not in {"failed", "cancelled"} or item["id"] in self._retried:
+                continue
+            tries = [row for row in snapshot["attempts"] if row["work_item_id"] == item["id"]]
+            if tries and tries[-1]["cancel_requested"]:
+                self._retried.add(item["id"])  # The owner stopped it; that decision stands.
                 continue
             if any(row["work_item_id"] == item["id"] and row["process_state"] != "stopped" for row in snapshot["attempts"]):
                 continue  # A retry needs every earlier attempt stopped and accounted for.
@@ -392,6 +499,11 @@ class TeamAutopilot:
                or worktrees.get(row["id"], {}).get("state") != "ready" for row in attempts):
             self._set("integrating", "Waiting for the writers to finish.")
             return True
+        if any(worktrees[row["id"]]["epoch"] != snapshot["run"]["epoch"] for row in attempts):
+            # Changes finished before the team was recovered can't be combined
+            # under the new host's authority (workflow.py): they are the owner's.
+            return self._hand_back("Writers finished changes before the team was recovered. Check and apply them "
+                                   "yourself, or send them back to redo them.")
         ids = sorted(worktrees[row["id"]]["id"] for row in attempts)
         def members(row):
             return {item["id"] for item in json.loads(row["manifest_json"])["writers"]}
@@ -453,17 +565,19 @@ class TeamAutopilot:
         code = "" if receipt["exit_code"] is None else f", exit code {receipt['exit_code']}"
         evidence = (f"The combined changes failed the declared check {key} ({receipt['state'].replace('_', ' ')}{code}). "
                     "Sent back under the owner's autonomy grant to fix, with the check's output.")
-        for member in json.loads(candidate["manifest_json"])["writers"]:
-            attempt = attempts.get(member["attempt_id"])
-            if attempt is None or attempt["state"] != "submitted":
-                continue
+        members = [attempts.get(member["attempt_id"]) for member in json.loads(candidate["manifest_json"])["writers"]]
+        members = [attempt for attempt in members if attempt is not None and attempt["state"] == "submitted"]
+        if not members:
+            return self._hand_back(f"The check {key} failed on the combined changes. Inspect them.")
+        # Every writer in the change goes back in this one step: which change
+        # broke the check isn't known, and each retry sees the check's output.
+        for attempt in members:
             self._command(runner, "reject", {"attempt_id": attempt["id"], "attempt_epoch": attempt["epoch"],
                                              "evidence": evidence})
             # Unlike a refused request, a failed check needs no pause before the retry.
             self._failed_at[attempt["work_item_id"]] = time.monotonic() - RETRY_DELAY_SECONDS
-            self._set("working", f"Round {self.round}: the check {key} failed; sending the writers back to fix it.")
-            return True
-        return self._hand_back(f"The check {key} failed on the combined changes. Inspect them.")
+        self._set("working", f"Round {self.round}: the check {key} failed; sending the writers back to fix it.")
+        return True
 
     def _accept_writers(self, runner, snapshot, candidate) -> bool:
         """The checked changes are applied: accept each of their writers under the grant."""

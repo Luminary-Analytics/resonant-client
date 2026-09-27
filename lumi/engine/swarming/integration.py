@@ -720,8 +720,14 @@ class SwarmIntegration:
                 self.store._event(connection, authority.run_id, "candidate_check_intent", {"candidate_id": candidate_id, "receipt_id": identity})
             observed = None
             try:
+                # Each check starts from exactly the candidate's revision: files an
+                # earlier check left (caches, generated code) are removed from this
+                # Lumi-owned worktree first. Checks run code the writers wrote, so
+                # they get the environment without Lumi's provider keys.
+                self._git(path, "clean", "-ffdxq", effect=(authority, "check", identity))
+                from lumi.secrets_store import child_env
                 observed = self._execute(authority, "check", identity, check["argv"], path,
-                    timeout_seconds=check["timeout_seconds"], max_output_bytes=65536)
+                    environment=child_env(), timeout_seconds=check["timeout_seconds"], max_output_bytes=65536)
                 if observed.interruption is not None:
                     raise observed.interruption
                 self._admit(authority)

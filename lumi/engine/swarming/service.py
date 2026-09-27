@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 from dataclasses import asdict, dataclass, replace
+import logging
 import hashlib
 import json
 import os
@@ -29,6 +30,8 @@ from .recovery import SwarmRecovery, record_run_host
 from .scheduler import SwarmScheduler
 from .tools import SWARM_TOOL_NAMES
 from .workers import SwarmWorkerRunner
+
+logger = logging.getLogger(__name__)
 
 _READ_TOOLS = frozenset({"file_read", "glob", "grep", "artifact_read"}) | SWARM_TOOL_NAMES
 _WRITE_TOOLS = frozenset({"file_write", "file_edit"})
@@ -470,13 +473,13 @@ class SwarmRuntime:
                 "execution_mode": self._execution_mode(capture), "managed": self._managed_view(capture, run_id),
                 "run": snapshot,
                 "coordinator_planning": self._planning_view(store, run_id, snapshot) if snapshot else None,
-                "autonomy": self._autonomy_view(store, run_id),
+                "autonomy": self._autonomy_view(store, run_id, snapshot),
                 "collaboration": collaboration_desktop.view(store, capture.scope, run_id) if run_id and capture.scope.tenant_id == f"personal:{capture.scope.owner_id}" else None,
                 "managed_collaboration": self._managed_sharing[run_id].view() if run_id in self._managed_sharing else managed_collaboration_desktop.historical_view(store, capture.scope, run_id),
                 "events": [asdict(event) for event in store.events(capture.scope, run_id, after=after)] if run_id else [],
                 "message": unavailable or "Workers share scoped findings and isolated changes. Submitted results await independent review."}
 
-    def _autonomy_view(self, store, run_id):
+    def _autonomy_view(self, store, run_id, snapshot=None):
         """The orchestrator loop's status, or the retained grant once this host no longer runs it."""
         if not run_id:
             return None
@@ -484,9 +487,21 @@ class SwarmRuntime:
         if autopilot is not None:
             return autopilot.inspect()
         grant = self._setup(store, run_id)[0].get("autonomy")
+        if not grant:
+            return None
+        if snapshot is None:
+            return {"enabled": True, "active": False, "rounds": grant["rounds"], "apply": grant.get("apply") is True,
+                    "phase": "stopped", "detail": "The orchestrator loop isn't running on this host.",
+                    "final_report": None}
+        # Rebuilt from the retained plans (autopilot.TeamAutopilot.retained_plans).
+        report, worked, _ = TeamAutopilot.retained_plans(snapshot)
+        done = snapshot["run"]["state"] in _TERMINAL
         return {"enabled": True, "active": False, "rounds": grant["rounds"], "apply": grant.get("apply") is True,
-                "phase": "stopped", "detail": "The orchestrator loop isn't running on this host. Continue the team yourself.",
-                "final_report": None} if grant else None
+                "round": max(1, min(worked, grant["rounds"])), "closing": False,
+                "phase": "finished" if done and snapshot["run"]["state"] == "completed" else "stopped",
+                "detail": (f"The team is {snapshot['run']['state']}." if done else
+                           "The orchestrator loop isn't running on this host. Recover and continue the team to resume it."),
+                "final_report": report}
 
     def _planning_view(self, store, run_id, snapshot):
         setup, _ = self._setup(store, run_id)
@@ -570,9 +585,31 @@ class SwarmRuntime:
         # Stop can close runner admission while slow scope/process setup runs.
         # Any ambiguous launch leaves its committed pending intent/reservation;
         # repeating the owner request never obtains another dispatch opportunity.
-        runner.start_coordinator(context, spec, plans)
+        self._start_turn(runner, context, spec, plans)
         with self._lock:
             return self._view(capture, store, run_id)
+
+    def _start_turn(self, runner, context, spec, plans) -> None:
+        """Launch an admitted orchestrator turn; one that never launched is settled as such.
+
+        Its admission is already committed. If the runner refused it before
+        taking the turn (the team paused in between, or its input was refused),
+        nothing was invoked: record that, as the scheduler does for a closed
+        dispatch, so the turn doesn't hold the team forever. Any other failure
+        may have crossed the launcher, so the turn stays pending for recovery
+        and is never replayed.
+        """
+        try:
+            runner.start_coordinator(context, spec, plans)
+        except (SwarmError, ValueError):
+            if context.attempt_id not in runner._workers:
+                try:
+                    self._command(runner.supervisor, runner.authority, "worker_stopped", {
+                        "attempt_id": context.attempt_id, "attempt_epoch": context.epoch, "outcome": "cancelled",
+                        "evidence": "The host refused to launch this orchestrator turn before invoking it"})
+                except Exception:  # noqa: BLE001 - the original refusal is the one to report
+                    logger.exception("Could not settle an orchestrator turn that never launched")
+            raise
 
     def _answer_workers(self, capture, *, run_id: str, questions: list[int], request_id: str,
                         expected_revision: int, requests: int):
@@ -614,7 +651,7 @@ class SwarmRuntime:
             spec = copy.deepcopy(pair[0].backend_spec)
         # As for planning: launch outside the control lock; a committed turn
         # whose launch is ambiguous stays visible, never replayed.
-        runner.start_coordinator(context, spec, answers)
+        self._start_turn(runner, context, spec, answers)
 
     def _start(self, capture, store, message):
         if self.settings.get("swarming", "version", 1) != 1 or self.settings.get("swarming", "enabled", False) is not True:

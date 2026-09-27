@@ -733,7 +733,7 @@ window.LumiSwarmView = class LumiSwarmView {
         try { policy = JSON.parse(snapshot.run.policy_json); } catch (_) { /* Missing limits cannot authorize a change. */ }
         const cap = policy.max_workers;
         const limit = snapshot.run.worker_limit;
-        const known = Number.isInteger(cap) && cap >= 1 && cap <= 4 && Number.isInteger(limit) && limit >= 1 && limit <= cap;
+        const known = Number.isInteger(cap) && cap >= 1 && cap <= 8 && Number.isInteger(limit) && limit >= 1 && limit <= cap;
         nodes['concurrency-form'].hidden = !known;
         if (!known) { this._swarmConcurrencyCap = null; return; }
         if (this._swarmConcurrencyCap !== cap) {
@@ -829,7 +829,7 @@ window.LumiSwarmView = class LumiSwarmView {
             const displayState = attempt.state === 'submitted' ? (work?.state || attempt.state)
                 : ['leased', 'running'].includes(attempt.state) && ['paused', 'pausing', 'stopping'].includes(runtime?.state) ? runtime.state : attempt.state;
             node.querySelector('summary').textContent = `${name} · ${this._swarmStateLabel(displayState)}`;
-            const rows = [['Task', work?.objective || (attempt.kind === 'coordinator' ? 'Propose investigations for owner review' : 'Task details unavailable')], ['Model', grant.model ? `${grant.model.provider} · ${grant.model.model}` : 'Unavailable'],
+            const rows = [['Task', work?.objective || (attempt.kind === 'coordinator' ? this._swarmTurnPurpose(attempt) : 'Task details unavailable')], ['Model', grant.model ? `${grant.model.provider} · ${grant.model.model}` : 'Unavailable'],
                 ['Read access', (grant.read_roots || []).join(', ') || 'No file access'], ['Write access', (grant.write_roots || []).join(', ') || 'Read only'], ['Execution', this._swarmStateLabel(attempt.process_state)]];
             if (runtime) {
                 rows.push(['Worker activity', `${this._swarmStateLabel(runtime.state)} · ${runtime.alive ? 'still active' : (runtime.termination_recorded ? 'exit confirmed' : 'exit not confirmed')}`]);
@@ -983,7 +983,7 @@ window.LumiSwarmView = class LumiSwarmView {
                     return entry;
                 }));
             }
-            node.querySelector('[data-proposal-state]').textContent = {pending: 'Awaiting your plan review', accepted: 'Plan approved', rejected: 'Plan rejected'}[proposal.state] || 'Plan state unavailable';
+            node.querySelector('[data-proposal-state]').textContent = {pending: this._swarmState?.autonomy ? 'Being decided by the orchestrator' : 'Awaiting your plan review', accepted: 'Plan approved', rejected: 'Plan rejected'}[proposal.state] || 'Plan state unavailable';
             node.querySelector('[data-proposal-decision]').hidden = !proposal.decision_evidence;
             node.querySelector('[data-proposal-decision]').textContent = proposal.decision_evidence
                 ? `${this._swarmState?.autonomy ? 'Decision' : 'Owner decision'}: ${proposal.decision_evidence}` : '';
@@ -1328,8 +1328,13 @@ window.LumiSwarmView = class LumiSwarmView {
 
     _renderSwarmInbox(snapshot) {
         const messages = [];
+        // An orchestrator the owner let run the team takes their plan, result and
+        // retry decisions (autopilot.py) until it hands the team back to them.
+        const autonomy = this._swarmState?.autonomy;
+        const orchestrated = Boolean(autonomy?.active) && autonomy.phase !== 'needs_owner';
+        if (autonomy?.active && autonomy.phase === 'needs_owner') messages.push(`The orchestrator handed the team back: ${String(autonomy.detail || '').slice(0, 2000)}`);
         const plans = (snapshot?.coordinator_proposals || []).filter(row => row.state === 'pending').length;
-        if (plans) messages.push(`${plans} proposed plan${plans === 1 ? ' needs' : 's need'} your review before its investigations can start.`);
+        if (plans && !orchestrated) messages.push(`${plans} proposed plan${plans === 1 ? ' needs' : 's need'} your review before its investigations can start.`);
         const scheduling = snapshot?.scheduling;
         if (scheduling?.error) messages.push(`Scheduling needs attention: ${String(scheduling.error).slice(0, 2000)}`);
         const blocked = Object.values(scheduling?.blocked || {});
@@ -1340,10 +1345,11 @@ window.LumiSwarmView = class LumiSwarmView {
         const unknownActions = (snapshot?.action_receipts || []).filter(row => row.state === 'uncertain').length;
         if (unknownActions) messages.push(`${unknownActions} tool action${unknownActions === 1 ? ' needs' : 's need'} reconciliation. Its effects are not confirmed.`);
         const pending = (snapshot?.work_items || []).filter(row => row.state === 'submitted').length;
-        if (pending) messages.push(`${pending} investigation${pending === 1 ? ' has' : 's have'} submitted findings awaiting independent verification.`);
+        if (pending && !orchestrated) messages.push(`${pending} investigation${pending === 1 ? ' has' : 's have'} submitted findings awaiting independent verification.`);
         const failed = (snapshot?.work_items || []).filter(row => ['failed', 'uncertain'].includes(row.state)).length;
-        if (failed) messages.push(`${failed} investigation${failed === 1 ? ' needs' : 's need'} review before another attempt.`);
-        if (!messages.length) messages.push('No decisions need your attention.');
+        if (failed && !orchestrated) messages.push(`${failed} investigation${failed === 1 ? ' needs' : 's need'} review before another attempt.`);
+        if (!messages.length) messages.push(orchestrated ? 'The orchestrator is making the team’s decisions under your grant. You’ll see here if it hands the team back.'
+            : 'No decisions need your attention.');
         this._swarmNodes.inbox.replaceChildren(...messages.map(text => { const item = document.createElement('li'); item.textContent = text; return item; }));
     }
 
@@ -1359,7 +1365,7 @@ window.LumiSwarmView = class LumiSwarmView {
         const recoveryOwned = Boolean(this._swarmState?.run?.recovery?.owns_lease);
         const work = this._swarmState?.run?.work_items || [];
         const planning = this._swarmState?.coordinator_planning;
-        nodes['followup-form'].hidden = !run || !planning;
+        nodes['followup-form'].hidden = !run || !planning || Boolean(this._swarmState?.autonomy?.active);
         if (run && planning && this._swarmFollowupRun !== run.id) {
             this._swarmFollowupRun = run.id;
             const draft = this._swarmFollowupDrafts.get(run.id) || {requests: String(planning.default_requests || 1), roots: (planning.read_roots || []).join(', ')};
@@ -1517,6 +1523,13 @@ window.LumiSwarmView = class LumiSwarmView {
         select.replaceChildren(new Option('Same as this session', ''),
             ...choices.map(choice => new Option(choice.label, JSON.stringify({provider: choice.provider, model: choice.model}))));
         select.value = [...select.options].some(option => option.value === kept) ? kept : '';
+    }
+
+    /** What a coordinator attempt is for: an owner-reviewed proposal, an orchestrator's plan, or its answers. */
+    _swarmTurnPurpose(attempt) {
+        if (!this._swarmState?.autonomy) return 'Propose investigations for owner review';
+        return String(attempt.worker_id || '').startsWith('orchestrator-answer-')
+            ? 'Answer workers’ questions' : 'Plan the team’s work, or write its report';
     }
 
     _swarmCoordinatorName() {

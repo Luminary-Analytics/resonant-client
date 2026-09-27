@@ -251,6 +251,10 @@ def parse_plan(
             raise PlanRejected("Only implement work items may request write scope")
         if role == "implement" and (not writes or "owner_review" in criteria):
             raise PlanRejected("Writer work requires write scope and independently executed criteria")
+        # Nothing runs checks on a reader's findings: only a review accepts
+        # them, so a read-only item with check criteria could never finish.
+        if role != "implement" and criteria != ("owner_review",):
+            raise PlanRejected("Read-only work items use exactly owner_review; checks verify implement items")
         candidates = FILE_TOOL_NAMES | SWARM_TOOL_NAMES
         if role == "implement":
             candidates = (candidates | WRITE_TOOL_NAMES) - {"swarm_submit"}

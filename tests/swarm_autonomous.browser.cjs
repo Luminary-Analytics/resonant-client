@@ -71,12 +71,30 @@ test('The orchestrator runs a team from the panel and reports back', {timeout: 9
         // Workers can run on another model than the orchestrator's (the session's).
         await page.getByLabel('Worker model').selectOption({label:'ollama · fixture-worker'});
         await page.getByLabel('Total model requests').fill('20');
+        // While the orchestrator runs the team, the panel asks the owner for none
+        // of the decisions it takes, and offers no follow-up planning of its own.
+        await page.evaluate(()=>{
+            window.__ownerPrompts=[]; window.__orchestratedInbox=false; window.__followupShown=false;
+            new MutationObserver(()=>{
+                const text=document.querySelector('[data-swarm="inbox"]')?.innerText||'';
+                if(/your review|awaiting independent verification|review before another attempt/.test(text))window.__ownerPrompts.push(text);
+                if(text.includes('making the team’s decisions under your grant'))window.__orchestratedInbox=true;
+                const form=document.querySelector('[data-swarm="followup-form"]');
+                if(form&&!form.hidden&&app._swarmState?.autonomy?.active)window.__followupShown=true;
+            }).observe(document.body,{subtree:true,childList:true,characterData:true,attributes:true});
+        });
         await page.getByRole('button',{name:'Start orchestrated team'}).click();
         const report=page.locator('[data-swarm="orchestrator-report-text"]');
         await report.waitFor({state:'visible',timeout:45000});
         const text=await report.innerText();
         assert.match(text,/^Final report: quoted CSV fields preserve commas\. The orchestrator read 2 findings and 1 worker question/);
         await page.waitForFunction(()=>app._swarmState?.run?.run?.state==='completed');
+        assert.deepEqual(await page.evaluate(()=>window.__ownerPrompts),[]);
+        assert.equal(await page.evaluate(()=>window.__orchestratedInbox),true);
+        assert.equal(await page.evaluate(()=>window.__followupShown),false);
+        // Orchestrator turns say what each was for.
+        const purposes=await page.evaluate(()=>[...document.querySelectorAll('.swarm-worker')].map(node=>node.textContent).join('\n'));
+        assert.ok(purposes.includes('Plan the team’s work, or write its report')&&purposes.includes('Answer workers’ questions'),purposes.slice(0,2000));
         assert.equal(starts.length,1);
         assert.deepEqual(starts[0].autonomy,{rounds:2});
         assert.equal(starts[0].plan_mode,'coordinator');

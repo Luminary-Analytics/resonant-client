@@ -272,6 +272,8 @@ class BrowserManager:
         self._extension_id: str = ""
         self._session_name: str = _browser_session_name
         self._extension_context_signature: tuple[str, str] = ("", "")
+        # The offline mode switches the Chrome this manager started has (lumi/offline.py).
+        self._network_rules: tuple[str, ...] = ()
         self._lock = threading.RLock()
 
     # ── lifecycle ────────────────────────────────────────────────────
@@ -279,6 +281,25 @@ class BrowserManager:
     @property
     def is_connected(self) -> bool:
         return self._conn is not None
+
+    def _offline_problem(self) -> str:
+        """Why the Chrome at hand can't be used under offline mode now, or "".
+
+        A Chrome this manager started with other network rules is closed, so
+        ensure_started starts it again with the current ones. One it didn't
+        start can't be limited, so it isn't used while offline mode is on.
+        """
+        from .. import offline
+
+        rules = tuple(offline.chrome_arguments())
+        if self._launched_by_us:
+            if rules != self._network_rules:
+                self.close()
+            return ""
+        if rules and (self.is_connected or _port_is_open(_CDP_PORT)):
+            return ("Error: Offline mode: browsing needs a browser Lumi starts itself, so it can limit where it "
+                    "connects. Close the Chrome window Lumi opened earlier and try again.")
+        return ""
 
     def _http(self, path: str, method: str = "GET") -> Any:
         import httpx
@@ -296,6 +317,10 @@ class BrowserManager:
     def ensure_started(self) -> str:
         """Launch Chrome if needed and attach to a tab. Returns a status line."""
         with self._lock:
+            # Offline mode limits Lumi's browser by how Chrome is started.
+            problem = self._offline_problem()
+            if problem:
+                return problem
             if self.is_connected:
                 self._sync_session_indicator()
                 return "Browser already connected"
@@ -507,6 +532,12 @@ class BrowserManager:
         ]
         if _HEADLESS:
             args.append("--headless=new")
+        # Offline mode: Chrome reaches only this computer and allowed hosts,
+        # pages' own requests and scripts included (lumi/offline.py).
+        from .. import offline
+
+        rules = tuple(offline.chrome_arguments())
+        args.extend(rules)
 
         self._extension_path = _prepare_extension(profile, self._session_name, _GROUP_COLOR)
         if self._extension_path:
@@ -530,6 +561,7 @@ class BrowserManager:
         except Exception as exc:
             return f"Error: could not start Chrome: {exc}"
         self._launched_by_us = True
+        self._network_rules = rules
 
         deadline = time.time() + _LAUNCH_TIMEOUT
         while time.time() < deadline:
@@ -614,6 +646,7 @@ class BrowserManager:
                         pass
             self._proc = None
             self._launched_by_us = False
+            self._network_rules = ()
 
     # ── page helpers ─────────────────────────────────────────────────
 

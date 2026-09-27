@@ -1,0 +1,250 @@
+# Offline and air-gapped operation
+
+Lumi works without the internet. It uses models on this computer (Ollama, EXO)
+or an inference server your organization runs, and it can take updates and a
+license from files. **Offline mode** makes sure of it: Lumi then reaches only
+this computer and the hosts you allow, and anything else it would have
+reached is refused at once, with the reason.
+
+Offline mode is for air-gapped networks and for organizations that allow no
+traffic to the internet. It works without a license, like the rest of Lumi.
+
+## Turning it on
+
+**Settings > Offline mode** (under Security):
+
+| Setting | Values | Effect |
+|---|---|---|
+| **Offline mode** (`offline.enabled`) | off (default), on | Lumi connects only to this computer and the allowed hosts. |
+| **Allowed hosts** (`offline.allowed_hosts`) | one per line | Hosts Lumi may reach besides this computer. |
+
+It applies at once: the next request Lumi makes is checked, also in a turn
+that's already running. The page shows what it does now: the hosts Lumi
+reaches, the providers it hides from Models and why, whether update checks
+continue, and the offline license.
+
+An allowed host is one of:
+
+- a name: `llm.corp.example`;
+- every name under a domain: `*.corp.example` (not `corp.example` itself; list
+  that too if you need it);
+- an address: `10.20.0.5`, `fd00::5`;
+- a network: `10.20.0.0/16`.
+
+Leave out the scheme and port; a pasted URL keeps only its host. `*`, a whole
+top-level domain (`*.com`) and `0.0.0.0/0` are refused: they would turn
+offline mode off.
+
+This computer is always reachable: `localhost`, the loopback addresses
+(`127.0.0.0/8`, `::1`), `0.0.0.0` and `::`, and this computer's own name.
+Lumi decides that from the name as written and never looks it up, so
+`localhost.example.com` or `127.0.0.1.nip.io` is another computer, whatever it
+resolves to. Another computer on your network, such as an Ollama server at
+`10.0.0.131`, is reachable only when it's allowed.
+
+## What works offline
+
+- Ollama and EXO on this computer, as always.
+- Ollama or EXO on another computer, and an OpenAI-compatible server your
+  organization runs (vLLM, LiteLLM, a gateway): add it under
+  **Settings > Connections** or **Network**, and allow its host. A connection
+  that signs in (OAuth, Microsoft Entra ID) needs its token endpoint allowed
+  too, such as `login.microsoftonline.com`.
+- Everything that stays on this computer: sessions, file editing, the agent's
+  tools, language servers, checks and previews, project notes, capability
+  packs already installed and approved, the audit log, usage records and
+  budgets.
+- The team library as last synced, and hand-offs already picked up.
+- Lumi's browser, for pages on this computer and allowed hosts.
+- Updates and a license, from files (below).
+
+If Lumi reaches allowed hosts through a proxy (Settings > Network), allow the
+proxy's host too.
+
+## What offline mode refuses
+
+Each refusal says `Offline mode: <feature> needs <host>; allow it or turn
+offline mode off.` When your organization's policy turns offline mode on, the
+message says to ask your administrator.
+
+| Feature | What happens |
+|---|---|
+| Models from cloud providers (Anthropic, OpenAI, OpenRouter, Kimi, SONN) and connections to hosts that aren't allowed | Hidden from Models, with the reason. A saved conversation that uses one refuses its next turn; fallback models that can't be reached are skipped. |
+| Codex and Claude Code | Hidden and refused even when their hosts are allowed: they run as their own programs, whose connections Lumi can't check. |
+| Providers from capability packs (extensions) | Hidden and refused for the same reason. |
+| Lumi Cloud: sign-in, check-ins, sharing, the team library, hand-offs, reviews, second approvals, tasks from chat | Refused unless your Lumi Cloud's host is allowed. Sign-in says so before opening the browser. |
+| Update checks and downloads | WinSparkle doesn't start, and turning offline mode on stops it at once, unless the update site (`luminary-analytics.github.io`) is allowed. **Check for updates** says why. Install updates from a file instead. |
+| The agent's browsing (`browser_navigate`, new tabs) | Refused for other hosts, and the model is told why. Lumi's Chrome starts with switches that send everything else to a closed port on this computer, so pages' own requests and scripts can't reach other hosts either. A Chrome that Lumi didn't start isn't used while offline mode is on. |
+| Pull requests (GitHub, GitLab, Bitbucket, Azure DevOps) and issue trackers (Jira, Linear) | Refused unless their host is allowed, including the push before a pull request opens. |
+| The OpenTelemetry export of the audit log | Records aren't sent to a collector that isn't allowed; Settings > Privacy & security shows why. The local audit log carries on. |
+| MCP servers over HTTP | Don't connect unless their host is allowed; the MCP status shows why. |
+| Installing a capability pack from Git (and from your organization's registry) | Refused before Git starts, unless the repository's host is allowed. |
+| Dictation through a transcription service | Refused unless the service's host is allowed. |
+| The Team preview | Can't start or change team work while offline mode is on: its workers don't follow offline mode yet. Viewing and stopping still work. |
+
+## Where it is enforced
+
+- Lumi's HTTP clients are built with `net.client_options`, which checks each
+  request, redirects included, before it connects (`lumi/offline.py`): Lumi
+  Cloud, model requests to Anthropic, OpenAI and every OpenAI-compatible
+  endpoint (connections, EXO, SONN, OpenRouter, Kimi), model lists of
+  connections, sign-in token endpoints, pull requests, issue trackers, HTTP MCP
+  servers, dictation and the OpenTelemetry export.
+- Where an address leaves Lumi's process, Lumi checks it before handing it
+  over: Git for packs and pull-request pushes, the update feed WinSparkle
+  reads, the page Lumi Cloud sign-in opens, and Lumi's Chrome.
+- A model turn, and each auxiliary request (titles, summaries), is refused
+  before anything is sent when its provider can't be reached, and discovery
+  doesn't probe providers that can't be.
+- As a backstop for the whole process, once offline mode has been on, a host
+  name lookup in Lumi for anything else fails at once, whichever library
+  makes it. That covers the remaining clients, such as Ollama's own API calls,
+  provider catalogs, the chat gateway and Engram, with a generic message
+  ("a network connection needs …"). Their requests look up the host first,
+  IP addresses included; an asynchronous connection straight to an IP address
+  is checked only by Lumi's own clients.
+
+**Not covered yet.** Offline mode doesn't limit programs that run as their own
+processes: commands the agent runs (its shell, jobs, previews and checks),
+MCP servers started as commands, hooks, and language servers. Use your
+firewall, or the machine's network policy, for those. The shell sandbox
+doesn't cut off the network either.
+
+## For administrators
+
+Lock offline mode in the organization policy's `settings` (see
+[Organization policy](enterprise-policy.md)):
+
+```json
+"settings": {
+  "offline.enabled": true,
+  "offline.allowed_hosts": ["llm.corp.example", "10.20.0.0/16"]
+}
+```
+
+- When the policy turns offline mode on, only the hosts the policy allows are
+  reachable; hosts people list in Settings don't apply. With no
+  `offline.allowed_hosts`, only each computer itself is reachable.
+- A policy whose values Lumi can't apply (a host list that isn't a list, `*`,
+  a network such as `0.0.0.0/0`) is invalid as a whole, like any invalid
+  policy.
+- Allow your Lumi Cloud's host if computers should keep checking in and
+  receiving policy.
+- Set `updates.mode` to `off` as well if you deploy new versions yourself.
+
+## Updates from a file
+
+On a computer without the internet, bring the update over by hand:
+
+1. On a connected computer, download from the update site the installer
+   (`lumi-setup-X.Y.Z.exe`) and the feed that lists it: `appcast.xml`, or
+   `appcast-beta.xml` or `appcast-X.Y.xml` for the beta channel or a release
+   line. Keep them in one folder, or put both in a .zip.
+2. On the offline computer, open **Settings > Updates > Install an update from
+   a file**, give the installer, the folder or the .zip, and choose **Check**.
+3. When it checks out, choose **Install and restart**.
+
+Lumi checks the file as the online updater checks a download:
+
+- the feed lists the installer, with its size and `sparkle:edSignature`;
+- the installer's bytes carry a valid EdDSA (Ed25519) signature by the key
+  built into Lumi (`updater.EDDSA_PUBLIC_KEY`, the key WinSparkle uses), so a
+  changed installer, or one that isn't a Lumi release, is refused;
+- the size matches, and the version is newer than this copy and one your
+  update settings would take (the beta channel for betas; the release line
+  you pin).
+
+With updates off, or on a copy installed from the MSI, the PKG, a .deb or an
+.rpm, a file is refused too: your organization or package manager updates
+Lumi. Installing never happens while an agent turn runs. Lumi runs a copy of
+exactly the bytes it checked, records `update.install` in the audit log with
+the installer's SHA-256, and closes so the installer can replace its files.
+Windows asks for administrator rights, as it does for a downloaded update.
+
+`lumi updates verify <installer, folder or .zip>` runs the same check from the
+command line and prints the result as JSON, without installing. It also works
+on macOS and Linux, for checking a bundle before carrying it to a Windows
+computer.
+
+**macOS and Linux.** Lumi doesn't update itself there (see
+[Updates](updates.md)), so it doesn't install from a file either; the Settings
+page says what to do instead. Install the new PKG with your device management
+or `sudo installer -pkg lumi-X.Y.Z.pkg -target /` (check it first with
+`pkgutil --check-signature`), or the new .deb or .rpm with `apt` or `dnf`, or
+replace the AppImage or tarball. A copy running from source can verify a file
+but not install it.
+
+## The offline license
+
+A license is a signed file that states the organization, the number of seats,
+when it expires and whether it covers offline use. **Settings > Offline mode**
+and `lumi license status` show it. In this first version the license only
+records and labels your organization's offline entitlement: offline mode and
+every other feature work without one, and nothing stops when it expires.
+
+```json
+{
+  "license": {"schema": "lumi.license/v1", "license_id": "acme-2026-001", "organization": "Acme",
+              "seats": 50, "offline": true, "issued_at": "2026-09-27T00:00:00Z",
+              "expires_at": "2027-09-30T23:59:59Z"},
+  "key_id": "luminary-2026",
+  "signature": "<base64 Ed25519 signature>"
+}
+```
+
+The signature covers the `license` object's canonical JSON (sorted keys, no
+spaces, UTF-8), as for a [signed policy](enterprise-policy.md#signed-policies-and-offline-use).
+
+**Where Lumi looks for the license,** first match wins:
+
+1. `license.json` beside the machine policy file: `%ProgramData%\Lumi\` on
+   Windows, `/Library/Application Support/Lumi/` on macOS, `/etc/lumi/` on
+   Linux;
+2. the file `LUMI_LICENSE_FILE` names, when there is none there;
+3. the copy `lumi license install <file>` keeps in `~/.lumi/license.json`.
+
+**Which keys it trusts.** A license verifies only against keys built into Lumi
+(Luminary Analytics' license-signing keys) or keys an administrator sets:
+`LicenseKeys` under `HKLM\SOFTWARE\Policies\Luminary Analytics\Lumi` (the
+ADMX template has it), the `LicenseKeys` key of the macOS configuration
+profile, or `license-keys.json` beside the machine policy file, each a JSON
+object such as `{"luminary-2026": "<base64 public key>"}`. Keys in your own
+folders or environment are never trusted. No production key is built into
+this version yet, so for now an administrator installs Luminary's public key
+in one of those places.
+
+**Commands:**
+
+- `lumi license status` (`--json` for scripts) shows the license in force;
+- `lumi license verify <file>` checks a file without installing it;
+- `lumi license install <file>` checks it and keeps a copy for Lumi.
+
+### Signing licenses (Luminary Analytics)
+
+`scripts/sign_license.py` makes keys and licenses with the standard library
+and `cryptography`:
+
+```sh
+# Once: a signing key. Keep the private key offline; the command prints the public entry.
+python scripts/sign_license.py keygen --out luminary-license.pem --key-id luminary-2026
+# A license for an organization.
+python scripts/sign_license.py sign --key luminary-license.pem --key-id luminary-2026 \
+    --organization "Acme" --seats 50 --expires 2027-09-30 --offline --out acme.lumi-license.json
+# The public entry again, and a check of a license against it.
+python scripts/sign_license.py public-key --key luminary-license.pem --key-id luminary-2026
+python scripts/sign_license.py verify acme.lumi-license.json --public-key <base64> --key-id luminary-2026
+```
+
+`--expires` takes a date (the end of that day, UTC) or an ISO 8601 time. The
+script checks each license it signs as Lumi will. Put the public entry in
+`BUILTIN_KEYS` in `lumi/license.py` for a release, or give it to the
+organization's administrator for `license-keys.json` or `LicenseKeys`.
+
+## Status
+
+Source only, not released. Covered by `tests/test_offline.py`,
+`tests/test_offline_features.py`, `tests/test_update_file.py` and
+`tests/test_license.py`, with mock transports and fakes: no test reaches
+another computer. A real air-gapped installation, a real Chrome under
+offline mode and installing a real signed installer from a file haven't been
+exercised.

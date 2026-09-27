@@ -73,10 +73,13 @@ def client_credentials_token(token_url: str, client_id: str, client_secret: str,
     if audience:
         form["audience"] = audience
     try:
-        with httpx.Client(**client_options(timeout=30.0, transport=transport)) as client:
+        with httpx.Client(**client_options(timeout=30.0, transport=transport, feature="signing in")) as client:
             response = client.post(token_url, data=form, headers={"Accept": "application/json"})
     except httpx.HTTPError as exc:
-        raise SignInError(f"The token endpoint didn't answer ({type(exc).__name__}).") from exc
+        from .offline import message_for
+
+        raise SignInError(message_for(exc) or f"The token endpoint didn't answer ({type(exc).__name__}).") \
+            from exc
     try:
         body = response.json()
     except ValueError:

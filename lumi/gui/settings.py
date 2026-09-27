@@ -65,6 +65,14 @@ DEFAULTS = {
         # carry those keys load fine — Python dict tolerance ignores
         # unknown keys; nothing reads them anymore.
     },
+    # Settings > Offline mode (lumi/offline.py): no outbound connections but
+    # this computer and these hosts (names, *.domain, addresses, networks).
+    # An organization's policy can lock either; when it turns offline mode
+    # on, only the hosts it allows apply.
+    "offline": {
+        "enabled": False,
+        "allowed_hosts": [],
+    },
     # Secrets are masked before settings are sent to the frontend.
     "api_keys": {"anthropic": "", "openai": "", "kimi": "", "openrouter": "", "sonn": "", "telegram_bot": "", "otlp": "",
                  "github": "", "gitlab": "", "bitbucket": "", "azure_devops": "", "jira": "", "linear": "", "slack_bot": "", "slack_app": ""},

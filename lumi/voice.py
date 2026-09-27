@@ -275,7 +275,8 @@ def transcribe(settings: Any, audio: bytes, audio_type: str, *, project: str = "
     started = time.monotonic()
     outcome, text = "error", ""
     try:
-        with httpx.Client(**net.client_options(timeout=timeout, transport=transport, verify=tls)) as client:
+        with httpx.Client(**net.client_options(timeout=timeout, transport=transport, verify=tls,
+                                               feature=f"dictation with {name}")) as client:
             response = client.post(f"{base}/audio/transcriptions", headers=headers, data=data, files=files)
         if response.status_code >= 400:
             raise VoiceError(_failure(name, response, base, model))
@@ -291,7 +292,8 @@ def transcribe(settings: Any, audio: bytes, audio_type: str, *, project: str = "
     except httpx.TimeoutException:
         raise VoiceError(f"{name} didn't answer in time. Try a shorter recording.") from None
     except httpx.HTTPError as exc:
-        raise VoiceError(f"Lumi couldn't reach {name} ({type(exc).__name__}).") from None
+        raise VoiceError(net.offline_message(exc) or f"Lumi couldn't reach {name} ({type(exc).__name__}).") \
+            from None
     finally:
         elapsed = time.monotonic() - started
         # Dictation is priced per minute, not per token, so it is recorded

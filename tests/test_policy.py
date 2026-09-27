@@ -279,7 +279,7 @@ class TestTemplates:
         keys = {p.get("key") for p in admx.iterfind(".//p:policy", ns)}
         assert keys == {lumi_policy.REGISTRY_KEY}
         values = {e.get("valueName") for e in admx.iter() if e.get("valueName")}
-        assert values == {"Policy", "PolicyFile", "PolicyKeys"}
+        assert values == {"Policy", "PolicyFile", "PolicyKeys", "LicenseKeys"}
 
     def test_mobileconfig_carries_a_valid_policy(self):
         profile = plistlib.loads((ROOT / "packaging" / "policy" / "lumi-policy.mobileconfig").read_bytes())

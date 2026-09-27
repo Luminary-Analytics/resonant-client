@@ -9,6 +9,7 @@ from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 
+from . import net
 from .sonn import SonnBackend
 
 
@@ -28,7 +29,8 @@ def read_account(api_key: str, *, base_url: str, transport=None) -> dict:
         raise ValueError("Enter your SONN private invitation in Settings → API keys to connect your account.")
     url = workspace_url(base_url)
     try:
-        with httpx.Client(timeout=8.0, transport=transport, follow_redirects=False) as client:
+        with httpx.Client(**net.client_options(timeout=8.0, transport=transport, feature="SONN"),
+                          follow_redirects=False) as client:
             with client.stream("GET", url, headers={"Authorization": f"Bearer {api_key}"}) as response:
                 if response.status_code in (401, 403):
                     raise ValueError("SONN could not verify your account. Check your private invitation.")
@@ -40,8 +42,9 @@ def read_account(api_key: str, *, base_url: str, transport=None) -> dict:
                     if len(payload) > 2_000_000:
                         raise ValueError("SONN returned an oversized account response.")
         data = json.loads(payload)
-    except httpx.HTTPError:
-        raise ValueError("Cannot reach your SONN account. Check the connection and project URL.") from None
+    except httpx.HTTPError as exc:
+        raise ValueError(net.offline_message(exc)
+                         or "Cannot reach your SONN account. Check the connection and project URL.") from None
     except (json.JSONDecodeError, UnicodeDecodeError):
         raise ValueError("SONN returned an invalid account response.") from None
     if not isinstance(data, dict) or not isinstance(data.get("identity"), dict):

@@ -43,6 +43,21 @@ Before running the installer, WinSparkle asks Lumi whether it can close:
 The installer asks for administrator rights, since Lumi is installed for all
 users.
 
+## Installing an update from a file
+
+A computer without the internet, or one in [offline mode](offline.md), takes
+updates from a file: the installer and the update feed that lists it,
+downloaded elsewhere. **Settings > Updates > Install an update from a file**
+checks the installer's EdDSA signature against the same built-in key, its
+size, and that it is newer and on your channel or release line, then hands it
+to the same install flow: never during an agent turn, an `update.install`
+record, and Lumi closes for the installer. `lumi updates verify <file>` runs
+the check from the command line. See
+[Updates from a file](offline.md#updates-from-a-file).
+
+In offline mode Lumi doesn't check the update site unless it is an allowed
+host: WinSparkle doesn't start, and turning offline mode on stops it at once.
+
 The [audit log](audit-log.md) records what the updater does:
 
 - `update.check`: `found`, `none` or `error`;
@@ -80,7 +95,8 @@ Lock any of the three with the organization policy's `settings` (see
   [Deploying on Windows](deploy-windows.md),
   [Deploying on macOS](deploy-macos.md) and [Lumi on Linux](deploy-linux.md).
 - `lumi updates` prints the settings in effect as JSON, without checking for
-  updates.
+  updates. Its `offline` field says why offline mode keeps Lumi from the
+  update site, if it does.
 
 ## How the feeds work
 

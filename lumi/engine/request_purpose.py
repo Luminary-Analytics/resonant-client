@@ -7,8 +7,15 @@ def auxiliary_stream(backend, purpose: str, *, usage_context: dict | None = None
     ``purpose`` names the request in the usage records (lumi/usage.py);
     ``usage_context`` adds the session, project and agent when known.
     ``record=False`` leaves recording to the caller: a Team participant's
-    requests are recorded by the host that admits them.
+    requests are recorded by the host that admits them. A provider offline
+    mode can't reach answers with its reason instead (lumi/offline.py), as a
+    turn does.
     """
+    from .. import offline
+
+    refusal = offline.backend_refusal(backend)
+    if refusal:
+        return iter([("error", {"message": refusal})])
     method = getattr(backend, "stream_auxiliary", None)
     stream = method(purpose=purpose, **kwargs) if callable(method) else backend.stream(**kwargs)
     return _recorded(stream, backend, purpose, dict(usage_context or {})) if record else stream

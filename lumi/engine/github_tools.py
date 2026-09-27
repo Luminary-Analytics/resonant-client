@@ -74,7 +74,35 @@ _REMOTE = re.compile(r"^(?:https?://(?:[^@/]+@)?([^/:]+)(?::\d+)?/|git@([^:]+):|
                      r"([^/]+)/(.+?)(?:\.git)?/?$")
 
 
+def remote_host(url: str) -> str:
+    """The host a Git remote URL reaches (https, ssh or scp-like), or "" for a local path."""
+    text = str(url or "").strip()
+    if not text or text.startswith(("/", ".", "file:")) or re.match(r"^[A-Za-z]:[\\/]", text):
+        return ""
+    match = re.match(r"^[A-Za-z][A-Za-z0-9+.-]*://(?:[^@/]*@)?(\[[^\]/]+\]|[^/:?#]+)", text)
+    if match is None:
+        match = re.match(r"^(?:[^@/:]+@)?(\[[^\]/]+\]|[^:/]+):", text)  # user@host:owner/repo
+    # Anything else is a path on this computer, as Git reads it.
+    return match.group(1).strip("[]").lower() if match else ""
+
+
+def _check_push(cwd: str, remote: str) -> None:
+    """Refuse a push offline mode doesn't allow before Git connects (lumi/offline.py)."""
+    from .. import offline
+
+    if not offline.enabled():
+        return
+    url = _git(cwd, "remote", "get-url", "--push", remote)
+    host = remote_host(url)
+    if host and not offline.host_allowed(host):
+        raise GitHubError(offline.message("pushing to Git", host))
+
+
 def _git(cwd: str, *args: str) -> str:
+    if args and args[0] == "push":
+        # The pull request tools push the branch first; its remote is the one argument that isn't a flag.
+        remote = next((arg for arg in args[1:] if not arg.startswith("-")), "origin")
+        _check_push(cwd, remote)
     try:
         completed = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True, timeout=30)
     except (OSError, subprocess.TimeoutExpired) as exc:
@@ -126,10 +154,13 @@ def _request(repo: Repo, method: str, path: str, *, json: Any = None, params: di
         # Authorization header when a redirect leaves the API's origin.
         # GraphQL lives at /api/graphql on GitHub Enterprise Server, not under /api/v3.
         url = (repo.api.removesuffix("/v3") + path) if path == "/graphql" else repo.api + path
-        with httpx.Client(**client_options(timeout=30.0, transport=_transport), follow_redirects=True) as client:
+        with httpx.Client(**client_options(timeout=30.0, transport=_transport, feature="GitHub"),
+                          follow_redirects=True) as client:
             response = client.request(method, url, headers=headers, json=json, params=params)
     except httpx.HTTPError as exc:
-        raise GitHubError(f"GitHub didn't answer: {type(exc).__name__}") from exc
+        from ..offline import message_for
+
+        raise GitHubError(message_for(exc) or f"GitHub didn't answer: {type(exc).__name__}") from exc
     if response.status_code >= 400:
         try:
             message = str(response.json().get("message") or "")

@@ -366,10 +366,13 @@ def parse(data: Any, *, source: str, trusted_keys: dict[str, str] | None = None,
     settings = _section(document, "settings")
     if not all(isinstance(k, str) and "." in k for k in settings):
         raise PolicyError("'settings' must map 'section.key' names to values.")
+    from .offline_rules import validate_policy_settings as validate_offline_settings
     from .update_channels import validate_policy_settings
 
     try:
         validate_policy_settings(settings)
+        # A list Lumi can't read must not become "no hosts" or "all hosts".
+        validate_offline_settings(settings)
     except ValueError as exc:
         raise PolicyError(str(exc)) from exc
     if "security.shell_sandbox" in settings and settings["security.shell_sandbox"] not in ("off", "project"):

@@ -1521,6 +1521,13 @@ class Session:
                 "Computer use is turned off (Settings > Privacy & security, or your "
                 "organization's policy)."
             )
+        # Offline mode keeps the network tools offered, and refuses what they
+        # can't reach with the reason (lumi/offline.py).
+        from .. import offline
+
+        offline_refusal = offline.tool_refusal(tool_name, tool_args)
+        if offline_refusal:
+            raise ToolBoundaryViolation(offline_refusal)
         prepared = dict(tool_args)
         working_dir = self.project_path or os.getcwd()
 
@@ -1888,9 +1895,10 @@ class Session:
         """Switch to the next usable fallback model; returns whether it did.
 
         A fallback the organization's policy doesn't allow, or one a budget
-        can't price, is skipped, as is one whose backend can't be built.
+        can't price, is skipped, as is one whose backend can't be built or
+        that offline mode can't reach.
         """
-        from .. import audit, budgets
+        from .. import audit, budgets, offline
         from ..policy import current as current_policy
 
         try:
@@ -1914,6 +1922,8 @@ class Session:
                 backend = factory()
             except Exception as exc:
                 logger.info("Fallback %s unavailable: %s", label, exc)
+                continue
+            if offline.backend_refusal(backend):
                 continue
             self.backend = backend
             short = str(error or "").strip().splitlines()[0][:160] if str(error or "").strip() else "an error"
@@ -2172,6 +2182,15 @@ class Session:
             )
         if refusal:
             yield make_event(EngineEvent.ERROR, message=refusal)
+            return
+        # Offline mode (lumi/offline.py): a provider this computer may not
+        # reach, or one whose own process Lumi can't check (Codex, Claude Code,
+        # extensions), is refused before anything is sent.
+        from .. import offline
+
+        refusal = offline.backend_refusal(self.backend)
+        if refusal:
+            yield make_event(EngineEvent.ERROR, message=refusal, code="offline")
             return
         refusal = self._budget_refusal(backend_name, str(last_done_model or ""))
         if refusal:

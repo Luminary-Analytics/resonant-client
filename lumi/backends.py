@@ -23,6 +23,7 @@ from typing import Iterator, Tuple
 
 import httpx
 
+from . import net
 from .protocol import build_tool_system_prompt, parse_dsml_tool_calls, parse_tool_calls
 from .content import content_text, normalize_content, ollama_message_content, text_fallback
 from .capabilities import (
@@ -2501,7 +2502,11 @@ class KimiBackend:
             ).start()
 
         try:
-            with httpx.Client(timeout=self._timeout, transport=self._transport, **self._tls_options()) as client:
+            # The shared factory, so offline mode refuses a server it doesn't
+            # allow before connecting (lumi/offline.py). This stream serves
+            # every OpenAI-compatible endpoint, on-premises servers included.
+            with httpx.Client(**net.client_options(timeout=self._timeout, transport=self._transport,
+                                                   feature=self.PROVIDER_LABEL, **self._tls_options())) as client:
                 # This inherited stream also serves SONN/OpenRouter/EXO. A
                 # guarded invocation cannot silently start another generation,
                 # but a rate limit (429) refused the request before generating
@@ -2844,7 +2849,8 @@ class KimiBackend:
                 yield (EVENT_ERROR, {"message": self._timeout_error_message()})
             else:
                 yield (EVENT_ERROR, {
-                    "message": f"{self.PROVIDER_LABEL} API connection failed: {type(exc).__name__}"
+                    "message": net.offline_message(exc)
+                    or f"{self.PROVIDER_LABEL} API connection failed: {type(exc).__name__}"
                 })
         except Exception as exc:
             if stream_state["idle_timed_out"]:

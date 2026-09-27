@@ -8,6 +8,100 @@ The heartbeat remains paused. Documentation maintenance does not resume work,
 spending or grants, and changes no native implementation or installed bundle.
 The dated September 15/18 records below are historical.
 
+## September 27 offline and air-gapped operation, first pass (source only, not released)
+
+**Offline mode** (Settings > Offline mode, or the policy's `offline.enabled`
+and `offline.allowed_hosts`): Lumi reaches only this computer and the hosts
+you allow, and everything else is refused at once with
+`Offline mode: <feature> needs <host>; allow it or turn offline mode off.`
+See [Offline and air-gapped operation](offline.md).
+
+- **One check** (`lumi/offline.py`, host rules in `lumi/offline_rules.py`).
+  `net.client_options`, which Lumi's HTTP clients are built with, now takes
+  the feature's name and adds a request hook that checks each request and
+  redirect before it connects. The OpenAI-compatible stream (connections,
+  EXO, SONN, OpenRouter, Kimi), HTTP MCP servers and the SONN account now
+  use it too.
+- **Locality from the name as written.** `localhost`, loopback and unspecified
+  addresses (IPv4, IPv6 and IPv4-mapped) and this computer's name are local;
+  `localhost.evil.com`, `127.0.0.1.nip.io`, `127.1`, a user name in the URL or
+  a backslash never pass as local. Allowed hosts take names, `*.domain`,
+  addresses and networks; `*` and `0.0.0.0/0` are refused.
+- **The policy wins** through `SettingsManager.get`. When it turns offline
+  mode on, only its own allowed hosts apply.
+- **Covered:** provider discovery (unreachable providers aren't probed and are
+  hidden from Models with the reason, in the menu and the picker), model
+  requests (a turn, an auxiliary request or a fallback to an unreachable
+  provider is refused before sending; Codex, Claude Code and extension
+  providers always, since their own processes can't be checked), Lumi Cloud
+  (check-ins, sign-in before the browser opens, sharing, the team library and
+  everything else through `CloudClient`), update checks and downloads
+  (WinSparkle isn't loaded, and turning offline mode on stops it at once), the
+  agent's browser tools (refused for other hosts, and Lumi's Chrome starts with
+  proxy switches that keep pages to reachable hosts), pull request and issue
+  tracker APIs and the push before a pull request, the OpenTelemetry export,
+  pack installs from Git (and the registry), dictation services and sign-in
+  token endpoints. The Team preview refuses new work while offline mode is on.
+- **A backstop:** once offline mode has been on, an audit hook refuses host
+  name lookups in the whole process for anything else, whichever library
+  makes them. The clients not built with the factory (Ollama's own API,
+  provider catalogs, the chat gateway, Engram) meet it, with a generic
+  message.
+
+**Updates from a file** (`lumi/update_file.py`). Settings > Updates > Install
+an update from a file, and `lumi updates verify <file>`, take the installer
+with the feed that lists it (a folder or a .zip). The file passes WinSparkle's
+check with the same built-in key: the installer's EdDSA signature over its
+bytes, the size in the feed, a newer version on the channel and release line
+in effect; updates off or an MSI, PKG, deb or rpm install refuse it. Installing
+waits for the running turn, records `update.install` with the SHA-256, starts
+a copy of exactly the verified bytes and closes Lumi, as a downloaded update
+does. macOS and Linux get instructions instead, since Lumi doesn't update
+itself there.
+
+**Offline license** (`lumi/license.py`, `lumi license status|verify|install`,
+Settings > Offline mode). A `lumi.license/v1` document signed with Ed25519
+over canonical JSON (organization, seats, expiry, `offline`). It verifies
+only against keys built into Lumi or set by an administrator (`LicenseKeys`,
+now in the ADMX template, the macOS profile, or `license-keys.json` beside the
+machine policy), never keys from user-writable places. It labels offline use
+and locks nothing. `scripts/sign_license.py` makes keys and licenses for
+Luminary's operations. No production key is built in yet.
+
+**Not yet:** programs the agent runs (shell, jobs, previews, checks), MCP
+servers started as commands, hooks and language servers aren't limited; use a
+firewall. The backstop sees name lookups, so an asynchronous connection
+straight to an IP address is checked only by Lumi's own clients. The macOS
+profile maker has no license-key option yet.
+
+**Validation.**
+- 152 new tests in `tests/test_offline.py`, `test_offline_features.py`,
+  `test_update_file.py` and `test_license.py`, with mock transports, fakes and
+  keys they generate; no test reaches another computer. Feeds for the update
+  tests are written by `packaging/update_appcast.py`, and the policy tests run
+  the standard-library MDM profile maker without httpx.
+- The full suite on Windows, isolated home, `PYTHONPATH` set to the checkout
+  for child processes: 5,715 passed, 7 skipped, 3 failed. The three
+  (`test_swarm_main_integration.py`'s two cases and
+  `test_swarm_process_workers.py::test_managed_reader_uses_owned_child_and_durable_primary_result`)
+  fail the same way on unmodified `main` here: their workers search with the
+  pinned ripgrep that CI fetches. Node UI tests: 128 passed; ruff clean.
+- Real Edge (Playwright) against the source app in a throwaway home, with an
+  Ollama stub and offline mode seeded on, 16 of 16 checks: the model menu and
+  the Models picker list the hidden gateway with its reason; a model's
+  `browser_navigate` to example.com is refused and the model receives the
+  reason; Settings > Offline mode shows the hosts, hidden providers, updates
+  and license; Space on the focused switch turns it off and on again, a host
+  typed into Allowed hosts is saved normalized and its provider offered, and
+  `*` is refused; a conversation on a provider that stops being reachable is
+  refused before anything is sent; Settings > Updates refuses a changed
+  installer, verifies the signed one and says a copy from source can't
+  install; at 375 px nothing scrolls sideways; no page errors and no request
+  beyond 127.0.0.1.
+- Not exercised: an air-gapped computer, a real Chrome started with the
+  offline switches, installing a real signed installer from a file, a frozen
+  build, macOS and Linux.
+
 ## September 27 Team: a team's results in its chat (source only, not released)
 
 **Use in chat.** The Team panel's **Use in chat** adds `@team:<run id>` to the

@@ -252,6 +252,43 @@ def zero_retention_resolver(settings) -> Callable[[str], bool]:
     return resolve
 
 
+def endpoints(connection: dict[str, Any]) -> list[str]:
+    """The addresses Lumi reaches for a connection: its endpoint and any sign-in endpoint."""
+    kind = connection.get("type")
+    base = str(connection.get("base_url") or "")
+    region = str(connection.get("region") or "")
+    if not base:
+        if kind == "anthropic":
+            base = "https://api.anthropic.com"
+        elif kind == "openai":
+            base = "https://api.openai.com/v1"
+        elif kind == "anthropic-bedrock":
+            base = f"https://bedrock-runtime.{region}.amazonaws.com"
+        elif kind == "anthropic-vertex":
+            base = "https://" + ("aiplatform.googleapis.com" if region == "global" else f"{region}-aiplatform.googleapis.com")
+    urls = [base] if base else []
+    if connection.get("auth") == "oauth" and connection.get("token_url"):
+        urls.append(str(connection["token_url"]))
+    if connection.get("auth") == "entra" and connection.get("client_id"):
+        urls.append("https://login.microsoftonline.com/")
+    return urls
+
+
+def offline_refusal(connection: dict[str, Any]) -> str:
+    """Why offline mode hides a connection (lumi/offline.py), or ``""``."""
+    from . import offline
+
+    if not offline.enabled():
+        return ""
+    if connection.get("type") == "extension":
+        return offline.extension_refusal(str(connection.get("name") or connection.get("id") or "This provider"))
+    for url in endpoints(connection):
+        reason = offline.refusal(url, str(connection.get("name") or "This connection"))
+        if reason:
+            return reason
+    return ""
+
+
 def capability_overrides(connection: dict[str, Any]) -> dict[str, Any]:
     overrides: dict[str, Any] = {}
     if connection.get("context_window"):
@@ -401,7 +438,8 @@ def discover_models(connection: dict[str, Any], api_key: str = "", *, timeout: f
     elif connection["auth"] == "header" and api_key:
         headers[connection["auth_header"]] = api_key
     try:
-        with httpx.Client(**net.client_options(timeout=timeout, transport=transport, verify=tls)) as client:
+        with httpx.Client(**net.client_options(timeout=timeout, transport=transport, verify=tls,
+                                               feature=connection["name"])) as client:
             response = client.get(f"{connection['base_url']}/models", headers=headers)
             response.raise_for_status()
             rows = response.json().get("data") or []

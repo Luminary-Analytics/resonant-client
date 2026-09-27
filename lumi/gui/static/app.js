@@ -4329,6 +4329,25 @@ class LumiApp {
                 this.updateStatus = event.data;
                 if (this.currentView === 'settings' && !this.refreshUpdateStatus()) this.renderSettingsView();
                 break;
+            case 'update_file':
+                this.updateFileResult = event.data;
+                this._updateFileBusy = false;
+                if (event.data?.path) this._updateFilePath = event.data.path;
+                if (this.currentView === 'settings' && !this.refreshUpdateFile()) this.renderSettingsView();
+                break;
+            case 'update_file_picked':
+                if (event.path) {
+                    this._updateFilePath = event.path;
+                    this.updateFileResult = null;
+                    if (this.currentView === 'settings') this.refreshUpdateFile();
+                } else if (event.message) {
+                    this.showStatusMessage(event.message);
+                }
+                break;
+            case 'offline_status':
+                this.offlineStatus = event.data;
+                if (this.currentView === 'settings' && !this.refreshOfflineStatus()) this.renderSettingsView();
+                break;
             case 'schedules':
                 this.schedules = event.data;
                 if (event.data?.saved) { this._scheduleDraft = null; this.scheduleError = ''; }
@@ -4544,6 +4563,8 @@ class LumiApp {
 
         // Store backends for later use
         this.backends = backends || {};
+        // Providers offline mode hides, and why (lumi/offline.py); the model menus say so.
+        this.offlineInfo = event.offline || null;
         this.currentBackendName = current_backend || '';
         this.currentModelName = current_model || '';
         this.handlesTools = event.handles_tools || false;
@@ -5246,6 +5267,20 @@ class LumiApp {
             return [key, {...info, models: [...new Set([...preferred, ...models.slice(0, 6)])]}];
         }));
         this._populateSelectWithGroupedModels(this.modelSelector, quickChoices, currentBackend, currentModel);
+        // Offline mode hides providers this computer may not reach; say which and why, not selectable.
+        const hidden = this.offlineInfo?.enabled ? (this.offlineInfo.hidden || []) : [];
+        if (hidden.length && this.modelSelector) {
+            const group = document.createElement('optgroup');
+            group.label = 'Hidden in offline mode';
+            for (const item of hidden) {
+                const option = document.createElement('option');
+                option.disabled = true;
+                option.value = '';
+                option.textContent = `${item.label} — ${item.reason}`;
+                group.appendChild(option);
+            }
+            this.modelSelector.appendChild(group);
+        }
         // With no runtime loaded, the builder still falls back to a "preferred"
         // model so the list has a sensible default highlighted. That is fine
         // when a runtime exists and actively wrong when one doesn't: the

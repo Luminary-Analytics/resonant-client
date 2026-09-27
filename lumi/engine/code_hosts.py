@@ -139,10 +139,13 @@ def _request(remote: Remote, method: str, url: str, *, json: Any = None, params:
 
     headers = {**_auth(remote), "Accept": "text/plain" if text else "application/json", "User-Agent": "lumi"}
     try:
-        with httpx.Client(**client_options(timeout=30.0, transport=_transport), follow_redirects=True) as client:
+        with httpx.Client(**client_options(timeout=30.0, transport=_transport, feature=NAMES[remote.kind]),
+                          follow_redirects=True) as client:
             response = client.request(method, url, headers=headers, json=json, params=params)
     except httpx.HTTPError as exc:
-        raise HostError(f"{NAMES[remote.kind]} didn't answer: {type(exc).__name__}") from exc
+        from ..offline import message_for
+
+        raise HostError(message_for(exc) or f"{NAMES[remote.kind]} didn't answer: {type(exc).__name__}") from exc
     if response.status_code >= 400:
         message = ""
         try:

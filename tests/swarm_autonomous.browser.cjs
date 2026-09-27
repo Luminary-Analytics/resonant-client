@@ -68,6 +68,8 @@ test('The orchestrator runs a team from the panel and reports back', {timeout: 9
         await page.keyboard.press('Control+A');
         await page.keyboard.type('2');
         await page.getByText('findings it uses are marked accepted by the orchestrator, not reviewed by you',{exact:false}).waitFor();
+        // Workers can run on another model than the orchestrator's (the session's).
+        await page.getByLabel('Worker model').selectOption({label:'ollama · fixture-worker'});
         await page.getByLabel('Total model requests').fill('20');
         await page.getByRole('button',{name:'Start orchestrated team'}).click();
         const report=page.locator('[data-swarm="orchestrator-report-text"]');
@@ -89,6 +91,7 @@ test('The orchestrator runs a team from the panel and reports back', {timeout: 9
         await page.getByText('No: the export writes commas only, so semicolons need no check.',{exact:true}).waitFor();
         const status=await page.locator('[data-swarm="orchestrator-status"]').innerText();
         assert.match(status,/The orchestrator finished the objective\./);
+        assert.equal(await page.locator('[data-swarm="worker-model-note"]').innerText(),'Workers use ollama · fixture-worker; the orchestrator uses this session’s model.');
         // The last orchestrator turn reads as its report, and decisions aren't attributed to the owner.
         await page.getByRole('heading',{name:'Orchestrator report'}).waitFor();
         await page.getByText('No more work proposed: this is the final report.',{exact:true}).waitFor();
@@ -110,6 +113,9 @@ test('The orchestrator runs a team from the panel and reports back', {timeout: 9
         assert.deepEqual(run.coordinator_proposals.map(row=>row.state),['accepted','accepted']);
         assert.ok(run.check_receipts.length===2&&run.check_receipts.every(row=>row.executor_id.startsWith('autonomy:')));
         assert.equal(evidence.followup_inputs.length,2);
+        assert.deepEqual(starts[0].worker_model,{provider:'ollama',model:'fixture-worker'});
+        assert.deepEqual([...new Set(run.attempts.filter(row=>row.kind==='worker').map(row=>JSON.parse(row.grant_json).model.model))],['fixture-worker']);
+        assert.deepEqual([...new Set(run.attempts.filter(row=>row.kind==='coordinator').map(row=>JSON.parse(row.grant_json).model.model))],['fixture-native']);
         // One answer turn, which proposed nothing: the two proposals above are the plan and the report.
         assert.deepEqual(run.attempts.filter(row=>row.worker_id.startsWith('orchestrator-answer-')).map(row=>row.state),['completed']);
         assert.equal(evidence.followup_inputs[1].untrusted_messages_to_orchestrator.length,1);

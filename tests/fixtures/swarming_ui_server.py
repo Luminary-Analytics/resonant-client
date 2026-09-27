@@ -191,7 +191,8 @@ def main() -> None:
     state.backend = StreamingBackend(name=spec.backend_type, model=spec.model)
     state.session = Session(backend=state.backend, project_instructions="Isolated browser fixture.")
     state.session.project_path = str(workspace)
-    state.available_backends = {"ollama": {"models": [spec.model]}}
+    # An orchestrated fixture also offers a second model for the team's workers.
+    state.available_backends = {"ollama": {"models": [spec.model] + (["fixture-worker"] if "--autonomous" in sys.argv[2:] else [])}}
     state.detect_backends = lambda *args, **kwargs: None
     state._swarm_desktop = SwarmRuntime(state.settings, backend_factory=factory, state_root=lambda _: root / "swarm-state")
     history_evidence = None

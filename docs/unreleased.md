@@ -8,6 +8,17 @@ The heartbeat remains paused. Documentation maintenance does not resume work,
 spending or grants, and changes no native implementation or installed bundle.
 The dated September 15/18 records below are historical.
 
+## September 27 Team: workers on their own model (source only, not released)
+
+**Worker model.** The orchestrator plans, answers and reports with the
+session's model, and a team's workers can now run on another model (any native
+provider or OpenAI-compatible connection).
+
+- The choice is set in the Team panel (`worker_model` on start), kept in the
+  team's setup and used again when the team is continued after recovery.
+- It is validated like `lumi run`'s backends (`headless.build_spec`), and its
+  key is read once per run.
+
 ## September 27 Team: start an orchestrated team from the chat (source only, not released)
 
 `/team <objective>` in the composer opens the session's Team panel with the

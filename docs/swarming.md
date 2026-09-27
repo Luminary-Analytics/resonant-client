@@ -198,6 +198,15 @@ Requesting a plan never accepts existing findings, cancels peers, or automatical
 replays interrupted work. The panel explains when the current coordinator,
 remaining allowance or missing execution host prevents another request.
 
+## Worker model
+
+The coordinator (or orchestrator) always uses the session's model. **Worker
+model** lets the team's workers use another native provider or
+OpenAI-compatible connection, such as a faster or local model, while a stronger
+one plans. The choice is kept with the team, including when the owner continues
+a recovered team. The workers' key is read once per run like the session's,
+and the running team shows which model its workers use.
+
 ## Team messages
 
 Workers running at the same time can share findings and ask each other

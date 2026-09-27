@@ -73,6 +73,8 @@ window.LumiSwarmView = class LumiSwarmView {
             <div class="swarm-fields"><label>Worker slots<select data-swarm="slots"><option value="1">1 worker</option><option value="2" selected>2 workers</option><option value="3">3 workers</option><option value="4">4 workers</option><option value="5">5 workers</option><option value="6">6 workers</option><option value="7">7 workers</option><option value="8">8 workers</option></select></label>
             <label>Total model requests<input data-swarm="allowance" type="number" min="1" max="1000" step="1" value="12" required></label></div>
             <p class="swarm-help">The request allowance includes each worker’s planning and compression calls. Uncertain calls keep their allowance.</p>
+            <label>Worker model<select data-swarm="worker-model"><option value="">Same as this session</option></select></label>
+            <p class="swarm-help">Workers use this model; the coordinator or orchestrator always uses this session’s. A faster or local model can do the work while a stronger one plans.</p>
             <label class="swarm-switch"><input type="checkbox" data-swarm="allow-writes"> Allow scoped file changes</label>
             <fieldset data-swarm="writer-setup" class="swarm-task" hidden disabled><legend>File changes and verification</legend>
             <p class="swarm-help">Start from a clean, committed Git checkout. Its base and branch are captured when the team starts. Writers use isolated worktrees. Your checkout changes only after verified changes are explicitly applied.</p>
@@ -90,7 +92,7 @@ window.LumiSwarmView = class LumiSwarmView {
             <div data-swarm="tasks" class="swarm-tasks"></div><button type="button" data-swarm="add-task" class="swarm-secondary">Add investigation</button>
             <button type="submit" data-swarm="start" class="swarm-primary">Start read-only team</button></form></section>
             <section data-swarm="run-section" hidden aria-labelledby="swarm-run-title"><div class="swarm-section-heading"><h3 id="swarm-run-title">Selected team</h3><span class="swarm-badge" data-swarm="run-state"></span></div>
-            <p data-swarm="run-objective"></p><p data-swarm="accounting" class="swarm-help"></p>
+            <p data-swarm="run-objective"></p><p data-swarm="worker-model-note" class="swarm-help" hidden></p><p data-swarm="accounting" class="swarm-help"></p>
             <div class="swarm-controls"><button type="button" data-swarm="pause">Pause new work</button><button type="button" data-swarm="resume">Resume</button>
             <button type="button" data-swarm="stop" class="swarm-stop">Stop team</button><button type="button" data-swarm="recover">Take over expired team</button>
             <button type="button" data-swarm="complete">Complete team</button>
@@ -215,6 +217,7 @@ window.LumiSwarmView = class LumiSwarmView {
             if (coordinator) {
                 setup.coordinator_requests = Number(nodes['coordinator-requests'].value);
                 setup.worker_requests = Number(nodes['worker-requests'].value);
+                if (nodes['worker-model'].value) setup.worker_model = JSON.parse(nodes['worker-model'].value);
                 if (nodes.autonomous.checked) {
                     setup.autonomy = {rounds: Number(nodes.rounds.value)};
                     if (nodes['allow-writes'].checked && nodes['auto-apply'].checked) setup.autonomy.apply = true;
@@ -230,6 +233,7 @@ window.LumiSwarmView = class LumiSwarmView {
                     criteria: row.querySelector('[data-task-criteria]').value.split(',').map(value => value.trim()).filter(Boolean)} : {}),
             }));
             if (tasks.some(task => !task.objective || !task.read_roots.length)) return;
+            if (nodes['worker-model'].value) setup.worker_model = JSON.parse(nodes['worker-model'].value);
             this.requestSwarm('start', {...setup, tasks});
         });
         for (const action of ['pause', 'resume', 'stop', 'recover', 'complete']) {
@@ -594,8 +598,13 @@ window.LumiSwarmView = class LumiSwarmView {
             : managed?.available ? 'Personal work stays local. Choose organization ownership explicitly for a new team.'
                 : 'Organization teams require an operator-provided managed configuration at application startup.';
         nodes.model.textContent = event.model ? `${event.model.label || event.model.provider} · ${event.model.model}` : 'No supported model selected';
+        this._swarmWorkerModels(event.model);
         const snapshot = event.run;
         nodes['run-section'].hidden = !incomingRun;
+        const workerModel = snapshot?.worker_model;
+        nodes['worker-model-note'].hidden = !(incomingRun && workerModel);
+        nodes['worker-model-note'].textContent = workerModel
+            ? `Workers use ${workerModel.label || workerModel.provider} · ${workerModel.model}; the ${this._swarmCoordinatorName().toLowerCase()} uses this session’s model.` : '';
         if (incomingRun) {
             nodes['run-state'].textContent = this._swarmStateLabel(incomingRun.state);
             nodes['run-objective'].textContent = incomingRun.objective;
@@ -1488,6 +1497,26 @@ window.LumiSwarmView = class LumiSwarmView {
     _swarmStateLabel(state) {
         return ({running: 'Working', leased: 'Starting', pending: 'Waiting', ready: 'Ready', pausing: 'Pausing', paused: 'Paused', stopping: 'Stopping', stopped: 'Stopped',
             submitted: 'Awaiting verification', accepted: 'Accepted', completed: 'Complete', cancelled: 'Stopped', failed: 'Needs review', uncertain: 'Needs reconciliation', reconciliation_required: 'Needs reconciliation', recovery_required: 'Recovery needed', unknown: 'Not confirmed'})[state] || 'Not confirmed';
+    }
+
+    /** Worker model choices: each Team-capable provider's models (native or a connection). */
+    _swarmWorkerModels(session) {
+        const select = this._swarmNodes['worker-model'];
+        const choices = [];
+        for (const [provider, info] of Object.entries(this.backends || {})) {
+            if (!/^(ollama|exo|kimi|openrouter|sonn|conn-[a-z0-9][a-z0-9-]*)$/.test(provider)) continue;
+            for (const model of info?.models || []) {
+                if (session && provider === session.provider && model === session.model) continue;
+                choices.push({provider, model, label: `${info.label || provider} · ${model}`});
+            }
+        }
+        const key = JSON.stringify(choices);
+        if (select.dataset.choices === key) return;
+        const kept = select.value;
+        select.dataset.choices = key;
+        select.replaceChildren(new Option('Same as this session', ''),
+            ...choices.map(choice => new Option(choice.label, JSON.stringify({provider: choice.provider, model: choice.model}))));
+        select.value = [...select.options].some(option => option.value === kept) ? kept : '';
     }
 
     _swarmCoordinatorName() {

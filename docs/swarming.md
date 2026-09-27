@@ -8,15 +8,16 @@ for the remaining roadmap work and the kinds of checks actually performed.
 
 ## Organization policy, excluded files and current limits
 
-The preview was built before Lumi's organization controls and follows only some
-of them so far (September 27, 2026 port onto the `lumi` package):
+The preview was built before Lumi's organization controls. It follows these of
+them so far:
 
 - **Organization policy.** Where a policy applies (a machine policy, a managed
-  profile or one from Lumi Cloud), the panel can view, pause, stop, revoke and
-  recover retained work, but it doesn't start or change team work: workers
-  don't yet follow the organization's model, mode, shell, approval or sharing
-  rules. An invalid or expired policy refuses the same actions. See
-  `policy_refusal` in `engine/swarming/service.py`.
+  profile or one from Lumi Cloud), a personal team runs under the policy's
+  model, mode, shell, approval and budget rules. See
+  [Under an organization policy](#under-an-organization-policy). Sharing
+  with another conversation and organization-managed teams are still
+  refused, apart from viewing, stopping, revoking and recovery. An invalid or
+  expired policy refuses all but those.
 - **Excluded files.** Every worker gets the project's exclusions when it
   starts: Settings' excluded paths, the project's `.lumiignore` and, when one
   applies, the organization's `files.exclude`. A writer anchors them at its
@@ -35,10 +36,85 @@ of them so far (September 27, 2026 port onto the `lumi` package):
   none. A run reads the connection once when it starts. Anthropic, OpenAI
   Responses, Azure, Bedrock and Vertex connections, OAuth or Entra sign-in and
   client certificates aren't available to workers yet.
-- **Usage and budgets.** Worker turns run through the same session path as a
-  chat, so their requests are recorded in usage and the audit log and checked
-  against spending limits before each turn. A writer's records carry its
-  worktree's path rather than the project's.
+- **Usage and budgets.** Each participant's model request is checked against
+  your spending limits and the organization's before it's sent, and recorded
+  once in usage and the audit log by the app, with purpose `team`, the
+  project and the conversation. See
+  [Under an organization policy](#under-an-organization-policy).
+
+## Under an organization policy
+
+A policy applies to a personal team as follows (`engine/swarming/organization.py`).
+Each rule is checked again whenever the team would start more work, so a policy
+or setting that changes mid-run applies to the team's next step. An
+organization can keep the preview off altogether by locking `swarming.enabled`
+to `false` in the policy's `settings`.
+
+**Models.** The conversation's model must pass the policy's model rules,
+including `require_zero_retention`. They're checked when the team starts,
+before each participant (worker, orchestrator turn, retry) starts and before
+each model request. If a policy that arrives mid-run refuses the model, a
+worker's next request is refused before it's sent and the worker stops, no new
+task is dispatched (the panel says how many tasks wait, and why), and an
+orchestrator running the team hands it back to you with the reason. A refused
+request was never sent, so its outcome is known.
+
+**Permission modes.** Team features map to `permissions.allowed_modes`:
+
+| Team | Needs |
+| --- | --- |
+| Read-only (no writable folders) | Any mode; every policy allows at least one |
+| With writers (edits in isolated worktrees, which you apply) | `auto-edit` or `bypass` |
+| With **Apply changes that pass every check** (changes your checkout and runs checks without asking) | `bypass` (Full-auto), as missions do |
+
+A team the policy's modes don't allow is refused when it starts, and a running
+one stops starting work if a later policy refuses it.
+
+**Checks.** Your declared checks are commands, so they pass the same
+guardrails as the agent's commands, with or without a policy: the commands Lumi
+never runs (`engine/guardrails.py`, each argument too) and the irreversibility
+floor. Under a policy, the organization's shell rules apply to each check as a
+`check_run` and as a `bash` command: a `deny` refuses it, and so does a `prompt`,
+since a team runs its checks without an approval prompt. A check matching the
+policy's `approvals` (second-person approval) is refused. While the shell
+sandbox is on (`security.shell_sandbox`, set in Settings or by the policy), a team
+with writers is refused: its checks don't run in the sandbox yet. These are
+checked when the team starts and again before each check runs.
+
+**Budgets and usage.** Each model request is checked against your budgets and
+the organization's (`budgets.py`) before its allowance is reserved:
+
+- a `block` stops it, and so does an `approve_usd` limit nobody has approved
+  this period: nobody can answer during a team run. Approving it in a chat
+  turn lets the team go on;
+- a `turn` budget counts the whole team run;
+- a refused request never started, so its outcome is known and nothing is
+  left to reconcile. The worker stops and the run keeps a `request_refused`
+  event.
+
+The app records each request once in the usage records: purpose `team`
+(`team_planning` or `team_compression` for auxiliary requests), your
+conversation, the project and agent `team:<run>:<worker>`. Participants
+in their own processes send their usage to the app, which records it.
+
+**Secret scan.** With **Scan for secrets** on (Settings, or locked by the
+policy's `privacy.secret_scan`), every worker removes known credential formats
+from what it sends to its model, whether it runs in the app or in its own
+process.
+
+**Audit log.** The team's start, stop and completion, each participant's start
+and end (kind, model, outcome), each integration step's outcome (combining,
+checks, applying), your decisions and the orchestrator's (recorded as `by`
+`owner` or `orchestrator`), refusals and each request's usage are recorded.
+Content (the objective, evidence, reasons) follows the audit log's capture level;
+at the default level only its size and digest are kept. See the
+[audit log](audit-log.md).
+
+Still refused under a policy: sharing with another conversation and
+organization-managed teams, apart from viewing, stopping, revoking and
+recovery. Workers also keep the limits listed above: they never read files the
+project or the policy excludes, never run hooks, and use only native providers
+or OpenAI-compatible connections.
 
 ## Start a team
 
@@ -280,6 +356,8 @@ check left are removed first) and runs without Lumi's model-provider keys in
 its environment, since it runs code the writers wrote. Checks verify writers'
 changes; read-only tasks, including those a coordinator proposes, are
 accepted by review.
+A check the command guardrails refuse (or, under a policy, the organization's
+rules) refuses the team; see [Under an organization policy](#under-an-organization-policy).
 
 For each manual writer, select **Implement file changes**, narrow its writable
 roots within the team's roots, and list its required check names. The total

@@ -1,12 +1,15 @@
 """Ask a running Lumi GUI a question over its own WebSocket, as the page does (CI smoke tests).
 
     python3 packaging/smoke_gui.py --port 8975 --token TOKEN update_status
+    python3 packaging/smoke_gui.py --port 8975 --token TOKEN check_updates --event status_msg --containing Checking
 
 Connects to ``/ws`` with the launch's access token (gui/local_access.py: the
 exact Host, the server's own Origin and the ``lumi.access.<token>``
-subprotocol), sends ``{"command": <command>}`` and prints the ``data`` of the
-first event of the same name as JSON. Standard library only, so it runs with
-any Python 3 on a build runner, next to the packaged app it checks.
+subprotocol), sends ``{"command": <command>}`` and prints, as JSON, the
+``data`` of the first event of the same name (or of ``--event``), or the
+whole event when it has no ``data``. An ``error`` event about updates ends it
+with exit status 1. Standard library only, so it runs with any Python 3 on a
+build runner, next to the packaged app it checks.
 """
 
 from __future__ import annotations
@@ -93,17 +96,27 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--port", type=int, required=True)
     parser.add_argument("--token", required=True, help="The access token the one-time launch code was redeemed for")
     parser.add_argument("--timeout", type=float, default=30.0)
-    parser.add_argument("command", help="A socket command that answers with an event of the same name")
+    parser.add_argument("--event", help="The event that answers (default: the command's name)")
+    parser.add_argument("--containing", default="", help="Only an answer whose JSON contains this text")
+    parser.add_argument("command", help="A socket command, such as update_status or check_updates")
     args = parser.parse_args(argv)
+    wanted = args.event or args.command
     ws = Socket(args.port, args.token, args.timeout)
     ws.send(json.dumps({"command": args.command}))
     deadline = time.monotonic() + args.timeout
     while time.monotonic() < deadline:
         message = json.loads(ws.receive())
-        if isinstance(message, dict) and message.get("event") == args.command:
-            print(json.dumps(message.get("data"), indent=2, sort_keys=True))
+        if not isinstance(message, dict):
+            continue
+        if message.get("event") == wanted and args.containing in json.dumps(message):
+            print(json.dumps(message.get("data", message), indent=2, sort_keys=True))
             return 0
-    print(f"No {args.command} event within {args.timeout:.0f} seconds", file=sys.stderr)
+        if message.get("event") == "error":
+            # Other errors can arrive first (provider discovery, say); only an update error answers.
+            print(json.dumps(message, sort_keys=True), file=sys.stderr)
+            if "update" in str(message.get("message", "")).lower():
+                return 1
+    print(f"No {wanted} event within {args.timeout:.0f} seconds", file=sys.stderr)
     return 1
 
 

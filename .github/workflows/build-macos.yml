@@ -9,8 +9,8 @@ name: macOS build
 #   - The GUI server in browser mode, with the HTTP, launch-code and WebSocket
 #     probes build-check.yml runs on Windows. Then, over that WebSocket, what
 #     the updater reports (Sparkle loaded, and the feed it read through Lumi's
-#     delegate), and the audit record of Sparkle's first scheduled check,
-#     which fetches that feed.
+#     delegate), the audit record of Sparkle's first scheduled check, which
+#     fetches that feed, and Check for updates as the button sends it.
 #   - Lumi.app opened as Finder opens it, with no arguments and no terminal:
 #     the GUI with its native window, and a startup log without errors.
 #
@@ -178,6 +178,14 @@ jobs:
           if [ -z "$checked" ]; then echo "Sparkle made no scheduled check"; cat gui.log; exit 1; fi
           echo "✓ Sparkle's scheduled check fetched the macOS feed"
 
+          # Check for updates, as the button does: the socket's worker thread
+          # hands Sparkle the check on the main thread, and Sparkle shows its window.
+          python3 packaging/smoke_gui.py --port 8975 --token "$token" check_updates --event status_msg --containing Checking
+          sleep 5
+          screencapture -x "$RUNNER_TEMP/lumi-check-for-updates.png" || true
+          kill -0 "$pid"
+          echo "✓ Check for updates handed Sparkle its check; Lumi is still running"
+
           if grep -E "Traceback|ERROR" gui.log; then echo "--- gui.log ---"; cat gui.log; exit 1; fi
           echo "✓ Startup log clean"
 
@@ -245,12 +253,12 @@ jobs:
           fi
           echo "✓ Still running in its native window; startup log clean"
 
-      - name: Keep the screenshot of the window
+      - name: Keep the screenshots
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: lumi-macos-window
-          path: ${{ runner.temp }}/lumi-opened-from-finder.png
+          name: lumi-macos-screenshots
+          path: ${{ runner.temp }}/lumi-*.png
           if-no-files-found: ignore
 
       - name: Check the computer-use permission checks

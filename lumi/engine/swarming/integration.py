@@ -26,7 +26,8 @@ from lumi.processes import background_process_kwargs, close_windows_job, popen_i
 
 from ..artifacts import project_state_dir
 from .argv_process import ArgvResult, ManagedArgvProcess, effect_support
-from .git_boundary import disabled_filter_options, git_bytes, has_custom_merge_driver, trusted_git_executable
+from .git_boundary import (TEAM_BRANCH_PREFIX, disabled_filter_options, git_bytes, git_error_line,
+                           has_custom_merge_driver, trusted_git_executable)
 from .integration_processes import IntegrationProcesses
 from .models import AdmissionClosed, AttemptContext, Conflict, RunAuthority, Scope, ScopeDenied, StaleAuthority, require_id
 from .policy import AssignmentGrant, normalize_scope
@@ -234,11 +235,9 @@ class SwarmIntegration:
             result = subprocess.CompletedProcess(command, observed.exit_code,
                 observed.stdout.decode("utf-8", "strict"), observed.stderr.decode("utf-8", "strict"))
             if check and result.returncode:
-                # Git's first error line says what went wrong (a live run's was
-                # "fatal: '$GIT_DIR' too big"); keep it short and single-line.
-                reason = next((line.strip() for line in result.stderr.splitlines() if line.strip()), "")[:200]
                 raise Conflict(f"Owned Git operation failed (exit {result.returncode}"
-                               f"{': ' + reason if reason else ''}); retained process evidence requires inspection")
+                               f"{': ' + git_error_line(result.stderr) if result.stderr.strip() else ''}); "
+                               "retained process evidence requires inspection")
             return result
         if not metadata_only and (not args or args[0] not in {"status", "diff"}):
             raise ScopeDenied("Mutating Git commands require captured durable process ownership")
@@ -527,7 +526,7 @@ class SwarmIntegration:
                 # this folder; on Windows a long name can push it past the path
                 # limit ("'$GIT_DIR' too big"), so keep the name short.
                 path = self.root / f"writer-{identity[:16]}"
-                manifest = {"branch": f"codex/swarm-writer-{identity}", "target_branch": target_branch,
+                manifest = {"branch": f"{TEAM_BRANCH_PREFIX}{identity}", "target_branch": target_branch,
                             "target_checkout": target_checkout, "grant": grant.to_dict()}
                 connection.execute("INSERT INTO writer_worktrees(id,run_id,attempt_id,epoch,repo_key,path,base_revision,state,manifest_json,process_protocol) "
                                    "VALUES(?,?,?,?,?,?,?,'creating',?,1)",

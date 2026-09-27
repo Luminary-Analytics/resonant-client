@@ -415,17 +415,16 @@ def get_system_instruction_layers(
     role_instructions: str | None = None,
 ) -> list[dict[str, str]]:
     """Return the exact assembled prompt as named, inspectable layers."""
+    # The hints follow the programs this computer actually has: a new Windows
+    # computer has no Python, Git or Node.js, and telling the model to use
+    # them only produced failing commands (lumi/toolchain.py).
+    from ..toolchain import prompt_hints
+
     if sys.platform == "win32":
         platform_name = f"Windows ({plat.release()})"
-        platform_hints = (
-            "Use 'python' not 'python3'. Use 'pip' not 'pip3'. Paths use backslashes. "
-            "Unix tools like `tail`, `head`, `sed`, `awk`, `grep`, `wc`, `find` are "
-            "NOT available — use `file_read` for inspection, the `grep` agent tool "
-            "for content search, and `glob` for path listing instead of shelling out."
-        )
     else:
         platform_name = f"Linux/macOS ({plat.system()})"
-        platform_hints = "Use 'python3'/'pip3'."
+    platform_hints = prompt_hints()
 
     runtime = "\n".join((
         f"Environment: {platform_name}",

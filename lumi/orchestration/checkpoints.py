@@ -10,11 +10,15 @@ import tempfile
 import time
 from pathlib import Path
 
+from lumi import git_support
 from lumi.processes import background_process_kwargs
 
 
 class CheckpointError(RuntimeError):
     pass
+
+
+_NEEDS_GIT = "Checkpoints of the project's files in Git need"
 
 
 class IterationCheckpointStore:
@@ -172,17 +176,22 @@ class IterationCheckpointStore:
         return safe[:80] or "mission"
 
     def _git(self, *args: str, env: dict | None = None, check: bool = True):
-        result = subprocess.run(
-            ["git", *args],
-            cwd=self.project_path,
-            env=env,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            check=False,
-            **background_process_kwargs(),
-        )
+        try:
+            result = subprocess.run(
+                ["git", *args],
+                cwd=self.project_path,
+                env=env,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                check=False,
+                **background_process_kwargs(),
+            )
+        except OSError:
+            # No Git on this computer: a CheckpointError with the reason, which
+            # callers already handle (a turn's checkpoint falls back to an archive).
+            result = git_support.missing_result(["git", *args], _NEEDS_GIT)
         if check and result.returncode != 0:
             raise CheckpointError(result.stderr.strip() or f"git {' '.join(args)} failed")
         return result

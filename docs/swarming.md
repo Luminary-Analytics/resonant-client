@@ -160,8 +160,15 @@ The panel captures the project, conversation and run it opened. Closing the
 panel does not stop its workers. Its view refreshes while open and reconnects to
 the same server-owned run after a socket interruption. Use **Refresh team** to
 inspect current state after a rejected or uncertain command; a lost response
-does not authorize replaying it. Ordinary chat, model changes and project/session
-navigation are gated while the client owns active team work.
+does not authorize replaying it. While a team runs in this window, project and
+session navigation wait for it. Ordinary chat, model changes, missions and
+agent restarts wait only in the conversation that owns an unfinished team,
+including one left unfinished when Lumi closed; the refusal names the team and
+says how to end it (**Stop team**; for an interrupted team, **Take over expired
+team**, the steps under **Review interrupted work**, then **Finish stopped team**).
+Other conversations and projects aren't affected (`SwarmRuntime.blocking`).
+Team storage Lumi can't read holds every conversation, since its owner is
+unknown.
 
 Choose one of two planning approaches:
 
@@ -395,6 +402,9 @@ is lost, inspect retained guidance before choosing whether to send it again.
 
 ## Allow and review file changes
 
+Writers need Git (Git for Windows on Windows): without it a team with
+writable folders is refused at once ("Writer teams need Git for Windows ...");
+read-only teams never run Git and work without it.
 Writer setup requires a clean, committed Git checkout at the repository root
 on a branch. A project opened at a repository subdirectory cannot start writers;
 the client does not widen its workspace. The team
@@ -418,9 +428,16 @@ roots within the team's roots, and list its required check names. The total
 allowance must cover the configured per-worker allowances. A coordinator may
 propose writers only when writable roots and trusted checks were configured.
 
-Writers work in isolated Git worktrees. Their submitted output does not change
-your working checkout. The **Review file changes** section shows the captured
-base, finalized writer revisions and changed paths.
+Writers work in isolated Git worktrees under Lumi's runtime folder, on branches
+named `lumi/team-<writer>` in your repository (`codex/swarm-writer-<writer>`
+before). Their submitted output does not change your working checkout. The
+**Review file changes** section shows the captured base, finalized writer
+revisions and changed paths. When the team ends, Lumi removes its writers'
+worktrees and branches (an applied change is already on your branch; a change
+nobody applied is dropped with the team), and a stopped or failed team's
+combined candidates too; a completed team keeps its candidate so its applied
+change stays inspectable. At startup Lumi does the same for teams that ended
+earlier, including the old branch names (`engine/swarming/cleanup.py`).
 
 1. Select compatible stopped writer results and choose **Prepare selected
    changes**. This creates a combined candidate for review.

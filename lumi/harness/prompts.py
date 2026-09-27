@@ -33,7 +33,7 @@ from typing import TYPE_CHECKING, Any, Optional
 
 from ..engine import AGENT_TOOLS
 from ..events import EngineEvent
-from ..processes import background_process_kwargs
+from ..processes import background_process_kwargs, decode_output
 from .service import HarnessService
 from .state import EvaluatorReport, HarnessWorkspace
 
@@ -1978,13 +1978,12 @@ class HarnessPrompts:
             completed = subprocess.run(
                 command,
                 cwd=target_path,
-                text=True,
                 capture_output=True,
                 timeout=20,
                 **background_process_kwargs(),
             )
             output = "\n".join(
-                part for part in (str(completed.stdout or "").strip(), str(completed.stderr or "").strip()) if part
+                part for part in (decode_output(completed.stdout).strip(), decode_output(completed.stderr).strip()) if part
             ).strip()
         except Exception as exc:
             completed = None
@@ -2151,7 +2150,6 @@ class HarnessPrompts:
                     command,
                     shell=True,
                     cwd=target_path,
-                    text=True,
                     capture_output=True,
                     timeout=25,
                     **background_process_kwargs(),
@@ -2160,7 +2158,9 @@ class HarnessPrompts:
                 validation_artifacts.append(self._truncate_text(f"Auto validation failed to start: {exc}", max_chars=220))
                 continue
 
-            output = "\n".join(part for part in (completed.stdout.strip(), completed.stderr.strip()) if part).strip()
+            output = "\n".join(
+                part for part in (decode_output(completed.stdout).strip(), decode_output(completed.stderr).strip()) if part
+            ).strip()
             output_lower = output.lower()
             unusable_failure = completed.returncode != 0 and any(
                 token in output_lower

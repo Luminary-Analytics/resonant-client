@@ -21,7 +21,9 @@ feed in use now.
 
 Settings > Updates also shows the installed version and the last check. A copy
 that runs from source, or outside Windows, doesn't update itself. The check
-button is off there. Running from source never loads WinSparkle, so development
+button is off there. An installed Windows copy whose `WinSparkle.dll` is missing
+says its update component is missing and to reinstall Lumi, there, in Help >
+Check for Updates and in `lumi updates` (`"updater": "missing: ..."`). Running from source never loads WinSparkle, so development
 runs and tests don't write the WinSparkle registry key or show its dialogs. To
 try the updater from source, set `LUMI_UPDATER_FROM_SOURCE=1`.
 

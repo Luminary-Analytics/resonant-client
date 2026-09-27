@@ -13,7 +13,8 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Iterable
 
-from lumi.processes import background_process_kwargs
+from lumi import git_support
+from lumi.processes import background_process_kwargs, decode_output
 
 from .artifacts import project_state_dir
 
@@ -54,6 +55,8 @@ class WorktreeManager:
 
     def create(self, agent_id: str, *, base_ref: str = "HEAD") -> WorktreeLease:
         if not self.available:
+            if not git_support.git_available():
+                raise WorktreeError(git_support.missing_message("Agent worktrees need"))
             raise WorktreeError("Worktree isolation requires a git repository")
         safe_id = re.sub(r"[^A-Za-z0-9._-]+", "-", agent_id).strip(".-") or "agent"
         digest = hashlib.sha256(f"{agent_id}:{time.time_ns()}".encode()).hexdigest()[:8]
@@ -129,7 +132,6 @@ class WorktreeManager:
                     command,
                     cwd=self.project_path,
                     shell=True,
-                    text=True,
                     capture_output=True,
                     check=False,
                     **background_process_kwargs(),
@@ -138,7 +140,7 @@ class WorktreeManager:
                     lease.status = "validation_failed"
                     raise WorktreeError(
                         f"Post-merge validation failed: {command}\n"
-                        f"{completed.stdout}\n{completed.stderr}".strip()
+                        f"{decode_output(completed.stdout)}\n{decode_output(completed.stderr)}".strip()
                     )
             lease.status = "integrated"
         return lease
@@ -159,7 +161,13 @@ class WorktreeManager:
         return self._git("diff", f"{lease.base_ref}...{target}", "--").stdout
 
     def _discover_git_dir(self) -> Path | None:
-        result = self._git("rev-parse", "--git-dir", check=False)
+        # Every session builds a manager, so this runs on computers without
+        # Git too: no Git means no repository to isolate, never a failed
+        # session (_git_at turns a program that can't start into a failure).
+        try:
+            result = self._git("rev-parse", "--git-dir", check=False)
+        except OSError:
+            return None
         if result.returncode != 0:
             return None
         value = Path(result.stdout.strip())
@@ -189,17 +197,22 @@ class WorktreeManager:
         check: bool = True,
         env: dict[str, str] | None = None,
     ):
-        result = subprocess.run(
-            ["git", *args],
-            cwd=cwd,
-            env=env,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            check=False,
-            **background_process_kwargs(),
-        )
+        try:
+            result = subprocess.run(
+                ["git", *args],
+                cwd=cwd,
+                env=env,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                check=False,
+                **background_process_kwargs(),
+            )
+        except OSError:
+            # Git isn't installed (FileNotFoundError) or can't start: a failed
+            # command with the reason, like any other Git failure.
+            result = git_support.missing_result(["git", *args], "Agent worktrees need")
         if check and result.returncode != 0:
             raise WorktreeError(result.stderr.strip() or f"git {' '.join(args)} failed")
         return result

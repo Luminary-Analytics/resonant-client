@@ -57,7 +57,7 @@ import subprocess
 from dataclasses import dataclass
 from typing import Callable, Optional
 
-from lumi.processes import background_process_kwargs
+from lumi.processes import background_process_kwargs, decode_output
 
 from ..gui.roadmap import AcceptanceCriterion
 from ..secrets_store import child_env
@@ -163,7 +163,7 @@ class BashRunner:
                     cwd=self.cwd,
                     env=child_env(),
                     capture_output=True,
-                    text=True,
+                    # Bytes, decoded below: cmd.exe writes the OEM code page.
                     timeout=self.timeout_seconds,
                     check=False,
                     **background_process_kwargs(),
@@ -178,14 +178,13 @@ class BashRunner:
                     cwd=self.cwd,
                     env=child_env(),
                     capture_output=True,
-                    text=True,
                     timeout=self.timeout_seconds,
                     check=False,
                     **background_process_kwargs(),
                 )
-            return proc.returncode, proc.stdout, proc.stderr
+            return proc.returncode, decode_output(proc.stdout), decode_output(proc.stderr)
         except subprocess.TimeoutExpired as exc:
-            return 124, exc.stdout or "", f"timeout after {self.timeout_seconds}s"
+            return 124, decode_output(exc.stdout), f"timeout after {self.timeout_seconds}s"
         except Exception as exc:
             return 127, "", f"subprocess error: {exc}"
 

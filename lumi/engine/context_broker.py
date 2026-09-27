@@ -202,16 +202,19 @@ class ContextBroker:
         if self.exclusions:
             # Only exclude pathspecs: git diffs everything else.
             args.extend(self.exclusions.git_pathspecs())
-        result = subprocess.run(
-            args,
-            cwd=self.project_path,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            check=False,
-            **background_process_kwargs(),
-        )
+        try:
+            result = subprocess.run(
+                args,
+                cwd=self.project_path,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                check=False,
+                **background_process_kwargs(),
+            )
+        except OSError:
+            return None  # Git isn't installed: there is no diff to attach.
         if result.returncode != 0:
             return None
         return self._item("diff", selector, result.stdout or "(no changes)", "git")

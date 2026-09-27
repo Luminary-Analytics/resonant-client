@@ -26,7 +26,7 @@ from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
-from ..paths import project_dir
+from .artifacts import project_state_dir
 
 logger = logging.getLogger(__name__)
 
@@ -149,7 +149,12 @@ class CodebaseIndex:
         self._lock = threading.Lock()
         self._indexing = False
         self._last_full_index: float = 0.0
-        self._index_file = project_dir(self.project_path) / "index.json"
+        # A cache Lumi rebuilds from the project's files, so it lives with the
+        # project's other runtime state in ~/.lumi/projects/<id>, not in the
+        # project (it used to be <project>/.lumi/index.json, which then showed
+        # up in the agent's searches and in `git status`). An old copy there is
+        # neither read nor needed; delete it whenever you like.
+        self._index_file = project_state_dir(self.project_path) / "index.json"
         self._repo_map_cache: dict[tuple, str] = {}
         self._repo_map_generation = 0
         # engine/exclusions.ExclusionRules, set by the app: excluded files are
@@ -282,7 +287,11 @@ class CodebaseIndex:
         finally:
             self._indexing = False
             stats["elapsed_ms"] = int((time.time() - start) * 1000)
-            stats["total_files"] = len(self._entries)
+            # The same totals get_stats() reports: the page shows this result
+            # as the index's status ("N files indexed (M lines)").
+            with self._lock:
+                stats["total_files"] = len(self._entries)
+                stats["total_lines"] = sum(entry.lines for entry in self._entries.values())
 
         logger.info(f"Indexed {stats['files_indexed']} files in {stats['elapsed_ms']}ms "
                      f"({stats['total_files']} total)")

@@ -123,8 +123,13 @@ def load_all() -> list[Comparison]:
 def _git(project: str, *args: str, timeout: float = 60) -> subprocess.CompletedProcess:
     from .processes import background_process_kwargs
 
-    return subprocess.run(["git", "-C", project, *args], capture_output=True, text=True, timeout=timeout,
-                          encoding="utf-8", errors="replace", **background_process_kwargs())
+    try:
+        return subprocess.run(["git", "-C", project, *args], capture_output=True, text=True, timeout=timeout,
+                              encoding="utf-8", errors="replace", **background_process_kwargs())
+    except OSError:
+        from .git_support import missing_result
+
+        return missing_result(["git", "-C", project, *args], "Model comparisons need")
 
 
 def clean(raw: dict[str, Any]) -> Comparison:

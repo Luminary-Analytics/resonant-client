@@ -20,7 +20,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Optional, Sequence
 
-from lumi.processes import background_process_kwargs
+from lumi.processes import background_process_kwargs, decode_output
 
 from .truncation import (
     GREP_MAX_LINE_LENGTH,
@@ -1688,10 +1688,10 @@ def execute_tool(
         elif name == "file_edit":
             return _exec_file_edit(arguments, start)
         elif name == "glob":
-            return _exec_glob(arguments, start, exclusions=exclusions)
+            return _exec_glob(arguments, start, exclusions=exclusions, project_path=project_path)
         elif name == "grep":
             return _exec_grep(arguments, start, cancel_event=cancel_event, exclusions=exclusions,
-                              owned_process_group=owned_process_group)
+                              owned_process_group=owned_process_group, project_path=project_path)
         elif name == "skill_view":
             if str(arguments.get('skill_id', '')).startswith('team:'):
                 from .. import team_library
@@ -1971,10 +1971,19 @@ def _run_subprocess_with_cancel(
         env=child_env(),
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
-        text=text,
+        # Always bytes: a text-mode pipe decodes with the locale's code page
+        # (cp1252 here), and cmd.exe writes the OEM one. One undecodable byte
+        # ("ü" is 0x81) killed the reader thread and lost all of the output.
+        # ``text=True`` callers get it decoded by lumi.processes.decode_output.
+        text=False,
         **process_group_args,
     )
     windows_job = _create_windows_kill_job(proc)
+
+    def _output(stdout, stderr):
+        if not text:
+            return stdout, stderr
+        return decode_output(stdout), decode_output(stderr)
 
     def _terminate_tree():
         if sys.platform == "win32" and windows_job:
@@ -2028,11 +2037,11 @@ def _run_subprocess_with_cancel(
 
     try:
         stdout, stderr = proc.communicate(timeout=timeout)
-        return proc.returncode, stdout, stderr, False
+        return (proc.returncode, *_output(stdout, stderr), False)
     except subprocess.TimeoutExpired:
         _terminate_tree()
         stdout, stderr = proc.communicate()
-        return proc.returncode, stdout, stderr, True
+        return (proc.returncode, *_output(stdout, stderr), True)
     finally:
         process_finished.set()
         if watcher:
@@ -2113,7 +2122,8 @@ def _exec_bash(args: dict, start: float, cancel_event: Optional[threading.Event]
                 elapsed=timeout,
                 metadata={"command": cmd, "timed_out": True},
             )
-        output = stdout
+        # Never None: output a command produced is decoded, not dropped.
+        output = stdout or ""
         if stderr:
             output += ("\n" if output else "") + stderr
         if returncode != 0:
@@ -2302,7 +2312,7 @@ def _exec_file_edit(args: dict, start: float) -> ToolResult:
     )
 
 
-def _exec_glob(args: dict, start: float, *, exclusions=None) -> ToolResult:
+def _exec_glob(args: dict, start: float, *, exclusions=None, project_path: str = "") -> ToolResult:
     pattern = args.get("pattern", "")
     base = args.get("path", ".")
     offset = max(0, int(args.get("offset", 0) or 0))
@@ -2340,13 +2350,14 @@ def _exec_glob(args: dict, start: float, *, exclusions=None) -> ToolResult:
             is_error=True,
             elapsed=time.time() - start,
         )
+    all_matches = [m for m in all_matches if not _in_lumi_state(str(m), base)]
     hidden = 0
     if exclusions:
         kept, hidden = exclusions.filter_paths(str(m) for m in all_matches)
         all_matches = [Path(p) for p in kept]
     total = len(all_matches)
     matches = all_matches[offset:offset + limit]
-    result = "\n".join(str(m) for m in matches)
+    result = "\n".join(_project_display_path(str(m), project_path) for m in matches)
     next_offset = offset + len(matches)
     if next_offset < total:
         result += (
@@ -2423,6 +2434,44 @@ def _ripgrep_executable(*, trusted_only: bool = False) -> Optional[str]:
 
 _GREP_LINE_PATH = re.compile(r"^((?:[A-Za-z]:)?[^:]*):\d+:")
 
+# Lumi's own folders inside a project: its state and settings, not code the
+# agent searches for. Only below the searched folder, so a project that itself
+# lives under ~/.lumi (the fallback workspace) is still searched.
+_LUMI_STATE_DIRS = frozenset({".lumi", ".resonant"})
+
+
+def _relative_to(path: str, root: str) -> str | None:
+    """``path`` relative to ``root`` when it is inside it (any case), else None."""
+    if not path or not root:
+        return None
+    try:
+        absolute, base = os.path.abspath(path), os.path.abspath(root)
+        if os.path.normcase(absolute) == os.path.normcase(base):
+            return "."
+        prefix = os.path.normcase(base).rstrip("\\/") + os.sep
+        if not os.path.normcase(absolute).startswith(prefix):
+            return None
+        # relpath keeps the result's own spelling; only the root is dropped.
+        return os.path.relpath(absolute, base)
+    except ValueError:  # another drive
+        return None
+
+
+def _in_lumi_state(path: str, root: str) -> bool:
+    relative = _relative_to(path, root)
+    return bool(relative) and any(part.lower() in _LUMI_STATE_DIRS for part in Path(relative).parts)
+
+
+def _project_display_path(path: str, project_path: str) -> str:
+    """A search result as the agent should see it: relative to the project, as the file is spelled.
+
+    The sandbox hands tools a case-folded absolute root ("c:\\users\\...").
+    Paths inside the project are shown relative to it, so what's left is
+    the files' own spelling; anything else stays absolute.
+    """
+    relative = _relative_to(path, project_path)
+    return path if relative in (None, ".") else relative
+
 
 def _build_grep_command(pattern: str, path: str, file_glob: str, *, trusted_only: bool = False) -> list[str]:
     """Argv for a recursive content search, best available tool first.
@@ -2454,6 +2503,10 @@ def _build_grep_command(pattern: str, path: str, file_glob: str, *, trusted_only
             # no node_modules noise); only the VCS internals are force-excluded.
             "--hidden",
             "--glob", "!.git/",
+            # Lumi's own folders (.lumi/, and .resonant/ from before the
+            # rebrand) hold its state and settings, not the project's code.
+            "--glob", "!.lumi/",
+            "--glob", "!.resonant/",
         ]
         if file_glob:
             cmd.extend(["--glob", file_glob])
@@ -2482,6 +2535,7 @@ def _exec_grep(
     *,
     exclusions=None,
     owned_process_group: bool = False,
+    project_path: str = "",
 ) -> ToolResult:
     pattern = args.get("pattern", "")
     path = args.get("path", ".")
@@ -2526,7 +2580,7 @@ def _exec_grep(
         except (UnicodeDecodeError, AttributeError):
             output = str(stdout).strip()
 
-    lines = output.split("\n") if output else []
+    lines = [line.rstrip("\r") for line in output.split("\n")] if output else []
     hidden = 0
     if exclusions and lines:
         # Every backend prints path:line:content; a Windows path starts
@@ -2540,6 +2594,18 @@ def _exec_grep(
             else:
                 kept_lines.append(line)
         lines = kept_lines
+    if lines:
+        # Paths relative to the project, as the files are spelled, and none
+        # from Lumi's own folders (the fallback searches don't skip them).
+        shown_lines = []
+        for line in lines:
+            match = _GREP_LINE_PATH.match(line)
+            if match and _in_lumi_state(match.group(1), path if os.path.isdir(path) else os.path.dirname(path)):
+                continue
+            if match and project_path:
+                line = _project_display_path(match.group(1), project_path) + line[match.end(1):]
+            shown_lines.append(line)
+        lines = shown_lines
     count = len(lines)
     # Cap each match line at 500 chars so a single minified-JS hit can't
     # dominate the result list. Then head-truncate the overall match set.

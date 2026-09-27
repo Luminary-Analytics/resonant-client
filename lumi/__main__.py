@@ -98,6 +98,11 @@ if getattr(sys, "frozen", False) and (
         # If we can't open the log file (read-only home, weird perms),
         # fall back to NUL — better silently-broken than crashing on stderr.
         _log_file = open(os.devnull, "w", encoding="utf-8")
+    # Every launch appends here (the app, a terminal UI, `lumi run`...):
+    # tag each line with this process's role and id (lumi/startup_log.py).
+    from lumi.startup_log import TaggedLog, process_role
+
+    _log_file = TaggedLog(_log_file, process_role(sys.argv))
     if sys.stdout is None:
         sys.stdout = _log_file
     if sys.stderr is None:

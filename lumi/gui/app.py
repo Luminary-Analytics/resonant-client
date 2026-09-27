@@ -58,7 +58,7 @@ from ..connections import (
 from ..sonn import SonnBackend
 from ..engine import Session
 from ..network_defaults import default_thinking_for_model, resolve_exo_url, resolve_ollama_url, resolve_sonn_url
-from .. import audit, budgets, net, pricing, secret_scan, usage
+from .. import audit, budgets, git_support, net, pricing, secret_scan, usage
 from . import ws_commands
 from .appearance import page_appearance
 from .chat_loop import ChatRunLoop
@@ -2561,6 +2561,8 @@ class AppState:
             # beside the message box (lumi/oversight.py). The page shows
             # it before anything is recorded.
             "oversight": _oversight_status(),
+            # Git is optional (lumi/git_support.py): the page says what needs it.
+            "git": git_support.status(),
         }
 
 
@@ -2773,9 +2775,9 @@ def _make_autonomous_event_forwarder(
 
 async def _process_chat_message(ws: WebSocket, msg: dict[str, Any]) -> None:
     """Run one serialized chat turn without blocking the WS receive loop."""
-    from .swarming import busy as swarm_busy
+    from .swarming import busy as swarm_busy, busy_refusal
     if swarm_busy(state):
-        await ws.send_json({"event": "error", "message": "Finish or stop the active team before starting another operation."})
+        await ws.send_json(busy_refusal(state))
         return
     # Organization oversight (lumi/oversight.py): nothing reaches a model, and
     # nothing is saved or titled, before the person confirms the notice. Every
@@ -2972,12 +2974,15 @@ async def websocket_endpoint(ws: WebSocket):
                         "message": state.runtime_unavailable_reason(),
                     })
                     continue
-                from .swarming import busy as swarm_busy
-                if runs.busy or swarm_busy(state):
+                from .swarming import busy as swarm_busy, busy_refusal
+                if runs.busy:
                     await ws.send_json({
                         "event": "error",
                         "message": "Finish or stop the active run before restarting an agent.",
                     })
+                    continue
+                if swarm_busy(state):
+                    await ws.send_json(busy_refusal(state, "restarting an agent"))
                     continue
                 try:
                     # Resolve the assignment before spawning anything, so an
@@ -3034,10 +3039,9 @@ async def websocket_endpoint(ws: WebSocket):
                 # session is flagged with mission_state, which gates the
                 # spec-extraction scan and drives the header badge.
                 # See docs/long-running-agents.md (Phase 1).
-                from .swarming import busy as swarm_busy
+                from .swarming import busy as swarm_busy, busy_refusal
                 if swarm_busy(state):
-                    await ws.send_json({"event": "error", "message":
-                                        "Finish or reconcile the current team before starting a mission."})
+                    await ws.send_json(busy_refusal(state, "starting a mission"))
                     continue
                 feature = (msg.get("feature") or "").strip()
                 if not feature:

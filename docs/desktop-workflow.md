@@ -320,6 +320,11 @@ search over files, symbols and imports. On a large monorepo:
   you don't work in to bring more of the rest in.
 - **Changes are cheap.** Only files whose size or modification time changed
   are read again, each read once and parsed once.
+- **Where it lives.** The index is Lumi's runtime state for the project,
+  `~/.lumi/projects/<id>/index.json`, never a file in the project (it used to
+  be `<project>/.lumi/index.json`; an old copy there is ignored and can be
+  deleted). The agent's `grep` and `glob` skip Lumi's `.lumi/` and
+  `.resonant/` folders and show paths relative to the project.
 - **What it costs.** Measured with `scripts/benchmark_index.py` on Windows,
   on September 25, 2026:
 

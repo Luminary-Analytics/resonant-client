@@ -174,6 +174,12 @@ class SwarmRuntime:
         self._recoveries: dict[str, tuple[CapturedSession, SwarmRecovery]] = {}
         self._recovery_observations: dict[str, dict[str, dict[str, Any]]] = {}
         self._active: set[str] = set()
+        # The conversation each active run belongs to, for blocking().
+        self._active_owners: dict[str, dict[str, str]] = {}
+        self._active_stores: dict[str, SwarmStore] = {}
+        # Each watched store's project folder, to clean up after its teams end.
+        self._workspaces: dict[str, str] = {}
+        self._cleanup_lock = threading.Lock()
         self._collaboration_runs: set[str] = set()
         self._collaboration_idle: set[str] = set()
         self._watched: dict[tuple[str, str, str, str], SwarmStore] = {}
@@ -186,6 +192,34 @@ class SwarmRuntime:
     def busy(self) -> bool:
         """Read the cached durable admission gate without blocking the UI loop."""
         return bool(self._active or self._storage_uncertain or self._discovery_errors)
+
+    def blocking(self, project_id: str, session_id: str) -> dict[str, str] | None:
+        """What keeps this conversation from starting new work, or None.
+
+        Only the conversation that owns an unfinished team: its chat turns,
+        model changes and missions wait while the team is active or needs
+        recovery. Other conversations and projects are independent. A live
+        team already keeps the app on its conversation (navigation_busy); an
+        orphaned team from before a restart can't run anything until its owner
+        takes it over from that conversation, and application to the checkout
+        re-checks the branch and a clean tree, so nothing it could still do
+        depends on what other conversations run. Storage this app can't read
+        (or couldn't discover at startup) is the exception: its owner is
+        unknown, so every conversation (or the project's) waits.
+        """
+        if self._storage_uncertain:
+            return {"reason": "storage"}
+        for run_id, owner in tuple(self._active_owners.items()):
+            if owner.get("project_id") == project_id and owner.get("session_id") == session_id:
+                # Running here: Stop works directly. Taken over: its interrupted
+                # work needs reviewing first. Otherwise it's from before a restart
+                # and needs taking over.
+                return {"reason": "team", "run_id": run_id, "owned": "yes" if run_id in self._runners else "",
+                        "recovering": "yes" if run_id in self._recoveries else "", **owner}
+        for key in tuple(self._discovery_errors):
+            if hashlib.sha256(key.encode()).hexdigest() == project_id:
+                return {"reason": "discovery"}
+        return None
 
     @property
     def navigation_busy(self) -> bool:
@@ -206,12 +240,25 @@ class SwarmRuntime:
         # Called off the UI loop under _lock. State is independent of whether a
         # browser panel is open or polling. Unknown storage never releases work.
         active: set[str] = set()
+        owners: dict[str, dict[str, str]] = {}
+        stores: dict[str, SwarmStore] = {}
         for (_, tenant, owner, project), store in tuple(self._watched.items()):
             with store._connection() as connection:
-                active.update(row[0] for row in connection.execute(
-                    "SELECT id FROM runs WHERE tenant_id=? AND owner_id=? AND project_id=? AND managed=1 "
-                    "AND state NOT IN ('completed','cancelled','failed')", (tenant, owner, project)))
+                for row in connection.execute(
+                        "SELECT id,project_id,session_id,objective,state FROM runs WHERE tenant_id=? AND owner_id=? "
+                        "AND project_id=? AND managed=1 AND state NOT IN ('completed','cancelled','failed')",
+                        (tenant, owner, project)):
+                    active.add(row[0])
+                    owners[row[0]] = {"project_id": row[1], "session_id": row[2], "objective": row[3],
+                                      "state": row[4], "workspace": self._workspaces.get(str(store.path), "")}
+                    stores[row[0]] = store
+        # A team that just ended leaves writer worktrees and branches in the
+        # user's repository; remove them off this thread (cleanup.py).
+        for run_id in set(self._active_stores) - active:
+            self._queue_cleanup(self._active_stores[run_id], (run_id,))
         self._active = active
+        self._active_owners = owners
+        self._active_stores = stores
         idle = set()
         for run_id in self._collaboration_runs & active:
             pair = self._runners.get(run_id)
@@ -247,7 +294,13 @@ class SwarmRuntime:
                     self._discovery_errors.add(key)
                     return
             self._discovery_errors.discard(key)
+            first = str(store.path) not in self._workspaces
+            self._workspaces[str(store.path)] = workspace
             self._watch(store, scope)
+            if first:
+                # Teams that ended while Lumi wasn't running (or before cleanup
+                # existed) may still have worktrees and branches in the repository.
+                self._queue_cleanup(store, None)
             if self._managed_desktop is not None:
                 try:
                     managed_scope = self._managed_desktop.scope(scope, workspace)
@@ -453,8 +506,27 @@ class SwarmRuntime:
         if key not in self._stores:
             self._stores[key] = SwarmStore(Path(self._state_root(capture.workspace)) / "swarm" / "state.sqlite")
         self._discovery_errors.discard(key)
+        self._workspaces.setdefault(str(self._stores[key].path), capture.workspace)
         self._watch(self._stores[key], capture.scope)
         return self._stores[key]
+
+    def _queue_cleanup(self, store: SwarmStore, run_ids: tuple[str, ...] | None) -> None:
+        """Remove ended teams' worktrees and writer branches in the background (cleanup.py)."""
+        workspace = self._workspaces.get(str(store.path))
+        if not workspace or self._closed:
+            return
+        root = Path(self._state_root(workspace)) / "swarm" / "worktrees"
+
+        def clean() -> None:
+            from .cleanup import clean_finished_teams
+
+            with self._cleanup_lock:
+                try:
+                    clean_finished_teams(store, workspace, run_ids=run_ids, root=root)
+                except Exception:
+                    logger.warning("Couldn't remove finished teams' worktrees in %s", workspace, exc_info=True)
+
+        threading.Thread(target=clean, daemon=True, name="swarm-cleanup").start()
 
     def chat_context(self, workspace: str, scope: Scope, run_id: str) -> dict[str, str]:
         """One of a conversation's retained teams, as that conversation's context (``@team:``).

@@ -121,6 +121,15 @@ def _find_dll() -> Path | None:
     return None
 
 
+def component_missing() -> bool:
+    """Whether this installed Windows copy lacks its updater (WinSparkle.dll).
+
+    That's a damaged installation, not a copy that runs from source: say
+    "reinstall", never "runs from source or outside Windows".
+    """
+    return sys.platform == "win32" and bool(getattr(sys, "frozen", False)) and _find_dll() is None
+
+
 def _load_dll() -> ctypes.CDLL | None:
     """Load WinSparkle.dll and configure ctypes signatures. Returns None on failure."""
     if sys.platform != "win32":
@@ -390,6 +399,7 @@ def status() -> dict:
     changed = effect(saved) != effect(active)
     # Offline mode applies now, not after a restart: it stops WinSparkle when it comes on.
     return {**active.as_dict(), "offline": saved.offline, "version": __version__, "available": _dll is not None,
+            "component_missing": component_missing(),
             "last_check": last_check, "pending": saved.as_dict() if changed else None,
             # Offline mode kept or stopped WinSparkle this run, and no longer does.
             "restart_to_check": ((_stopped_for_offline or bool(active.offline)) and not saved.offline

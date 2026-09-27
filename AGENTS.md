@@ -510,12 +510,18 @@ and commit the locks. A shipped package under GPL, AGPL or LGPL needs a
 `license_reviews` entry in `packaging/third-party-components.json`, or exclusion
 under `not_shipped`; the build fails otherwise.
 
-Use `scripts/build_clean.ps1` for Windows release builds. Never clean a running
+Use `scripts/build_clean.ps1` for Windows release builds, run with PowerShell 7
+(`pwsh`); RELEASING.md lists what else a local build needs. Never clean a running
 bundle; use a separate source copy for a candidate build while testing. The
 script's `-ValidateOnly` checks the running-target guard without cleanup. Verify the packaged
 executable, HTTP UI, WebSocket connection, startup logs, and changed packaged
 assets. Stop only fixture processes you started. See [RELEASING.md](RELEASING.md)
 for publishing and update-feed verification.
+
+Git, Python and Node.js are optional on a user's computer. Code that runs
+`git` treats a program that can't start like a failed command and never lets
+it end a session (`lumi/git_support.py`); output from commands is decoded with
+`processes.decode_output` (UTF-8, else the Windows OEM code page).
 
 ## Documentation and releases
 

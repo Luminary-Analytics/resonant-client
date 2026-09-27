@@ -13,9 +13,34 @@ from ...processes import background_process_kwargs, close_windows_job, popen_in_
 from .models import Conflict
 
 
+# Writer branches a team creates in the user's repository. Teams used the
+# legacy prefix until the rebrand; cleanup (cleanup.py) removes both.
+TEAM_BRANCH_PREFIX = "lumi/team-"
+LEGACY_TEAM_BRANCH_PREFIXES = ("codex/swarm-writer-",)
+
+
+def is_team_branch(name: str) -> bool:
+    return name.startswith((TEAM_BRANCH_PREFIX, *LEGACY_TEAM_BRANCH_PREFIXES))
+
+
+def git_error_line(stderr: str, limit: int = 200) -> str:
+    """The line of Git's output that says what failed, short and on one line.
+
+    Git often prints progress first ("Preparing worktree (new branch ...)")
+    and the reason after ("fatal: '$GIT_DIR' too big"), so prefer its
+    ``fatal:``/``error:`` line and fall back to the first line.
+    """
+    lines = [line.strip() for line in (stderr or "").splitlines() if line.strip()]
+    for line in lines:
+        if line.lower().startswith(("fatal:", "error:")):
+            return line[:limit]
+    return lines[0][:limit] if lines else ""
+
+
 def trusted_git_executable(project: Path, runtime_root: Path) -> str:
     """Pin an absolute host binary without cwd or repository PATH shadowing."""
     name = "git.exe" if os.name == "nt" else "git"
+    shadowed = False
     for entry in os.get_exec_path():
         folder = Path(entry)
         if not folder.is_absolute():
@@ -26,8 +51,15 @@ def trusted_git_executable(project: Path, runtime_root: Path) -> str:
             continue
         if (candidate.is_relative_to(project) or candidate.is_relative_to(runtime_root)
                 or not candidate.is_file() or not os.access(candidate, os.X_OK)):
+            shadowed = True
             continue
         return str(candidate)
+    if not shadowed:
+        # The usual case on a new computer: no Git at all. Read-only teams
+        # never get here; only writers work in Git worktrees.
+        from ...git_support import missing_message
+
+        raise Conflict(missing_message("Writer teams need") + " Read-only teams work without it.")
     raise Conflict("Supervised integration requires a host Git executable outside the project and runtime worktrees")
 
 

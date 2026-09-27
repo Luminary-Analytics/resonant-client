@@ -267,3 +267,44 @@ def background_process_kwargs(*, new_process_group: bool = False) -> dict[str, A
     startupinfo.dwFlags |= getattr(subprocess, "STARTF_USESHOWWINDOW", 0)
     startupinfo.wShowWindow = getattr(subprocess, "SW_HIDE", 0)
     return {"creationflags": flags, "startupinfo": startupinfo}
+
+
+def _oem_code_page() -> str:
+    """The Windows OEM code page (cp437, cp850, ...): what cmd.exe writes to a pipe."""
+    try:
+        import ctypes
+
+        page = int(ctypes.windll.kernel32.GetOEMCP())
+    except Exception:
+        page = 0
+    return f"cp{page}" if page else "cp437"
+
+
+def decode_output(data: bytes | str | None, *, oem_code_page: str | None = None) -> str:
+    """The text of a command's output, whatever produced it; never raises.
+
+    Programs that write UTF-8 (Git, Python in UTF-8 mode, Node) decode as
+    UTF-8. cmd.exe and its built-ins (echo, dir, cd, type) write the console's
+    OEM code page instead, so on Windows output that isn't valid UTF-8 is
+    decoded with it: the byte 0x81 is "ü" in cp437 and cp850, and cp1252,
+    Python's default here, can't decode it at all. Anything else unreadable
+    becomes U+FFFD rather than an error. Line endings become "\\n", as in a
+    text-mode pipe. ``oem_code_page`` is for tests.
+    """
+    if data is None:
+        return ""
+    if isinstance(data, str):
+        text = data
+    else:
+        try:
+            text = data.decode("utf-8")
+        except UnicodeDecodeError:
+            text = ""
+            if sys.platform == "win32" or oem_code_page:
+                try:
+                    text = data.decode(oem_code_page or _oem_code_page(), errors="replace")
+                except LookupError:
+                    text = ""
+            if not text:
+                text = data.decode("utf-8", errors="replace")
+    return text.replace("\r\n", "\n").replace("\r", "\n")

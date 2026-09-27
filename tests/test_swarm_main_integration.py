@@ -33,6 +33,8 @@ def acme():
 
 
 def test_new_team_work_is_refused_while_an_organization_policy_applies(acme):
+    # Outside a personal team (organization-managed teams, and callers that
+    # don't say): nothing new starts. Personal teams: test_swarm_organization_policy.py.
     for action in ("start", "request_plan", "resume", "retry_work", "run_check", "apply_candidate",
                    "collaboration_send", "managed_sharing_prepare", "configure"):
         assert "Acme's policy applies on this computer" in policy_refusal(action), action
@@ -55,16 +57,24 @@ def test_no_policy_refuses_nothing():
     assert policy_refusal("start") == ""
 
 
-def test_the_runtime_refuses_before_touching_team_state(tmp_path, acme):
+def test_the_runtime_refuses_before_touching_team_state(tmp_path):
+    # A policy that refuses the conversation's model refuses its team before
+    # any team state exists, and sharing stays refused under any policy.
+    lumi_policy.set_for_tests(parse({"schema": "lumi.policy/v1", "organization": "Acme",
+                                     "models": {"allowed": ["anthropic:*"]}}, source="test policy"))
     workspace = tmp_path / "project"
     workspace.mkdir()
     runtime = SwarmRuntime({}, backend_factory=lambda spec: pytest.fail("Nothing may start under policy"),
                            state_root=lambda _: tmp_path / "state")
     capture = CapturedSession(Scope.personal("owner", "project", "session"), str(workspace),
                               BackendSpec("ollama", "chosen"))
-    with pytest.raises(Conflict, match="Acme's policy applies"):
+    with pytest.raises(Conflict, match="Acme's policy doesn't allow chosen on ollama"):
         runtime.operate(capture, {"command": "swarm", "action": "start", "project": str(workspace),
                                   "session_id": "session", "request_id": uuid.uuid4().hex})
+    with pytest.raises(Conflict, match="Acme's policy applies on this computer"):
+        runtime.operate(capture, {"command": "swarm", "action": "collaboration_prepare", "project": str(workspace),
+                                  "session_id": "session", "request_id": uuid.uuid4().hex,
+                                  "objective": "Share findings", "request_limit": 4})
     assert not (tmp_path / "state").exists()
 
 
@@ -159,15 +169,20 @@ def test_the_child_contract_carries_bounded_rule_pairs(tmp_path):
     base = {"backend": BackendSpec("ollama", "chosen").to_dict(include_sensitive=True),
             "workspace": str(tmp_path), "conversation_key": "swarm:run:attempt", "prompt": "Inspect",
             "instructions": "", "role": "", "request_limit": 3, "tools": ["file_read"],
-            "write_tools": [], "exclusions": [[".env", "Settings"], ["*.pem", ".lumiignore"]], "connection": None}
+            "write_tools": [], "exclusions": [[".env", "Settings"], ["*.pem", ".lumiignore"]], "connection": None,
+            "secret_scan": True}
     assert _validate_initial(dict(base))["exclusions"] == [[".env", "Settings"], ["*.pem", ".lumiignore"]]
     for bad in ([".env"], [[".env"]], [[".env", ""]], [[".env", 3]], "*.pem", [["x" * 5000, "Settings"]]):
         with pytest.raises(ValueError, match="exclusions"):
             _validate_initial({**base, "exclusions": bad})
-    missing = dict(base)
-    del missing["exclusions"]
-    with pytest.raises(ValueError):
-        _validate_initial(missing)
+    for bad in ("true", 1, None):
+        with pytest.raises(ValueError, match="secret scan"):
+            _validate_initial({**base, "secret_scan": bad})
+    for field in ("exclusions", "secret_scan"):
+        missing = dict(base)
+        del missing[field]
+        with pytest.raises(ValueError):
+            _validate_initial(missing)
 
 
 def test_the_runtime_builds_rules_from_settings_and_the_ignore_file(tmp_path):

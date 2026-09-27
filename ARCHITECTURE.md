@@ -60,7 +60,11 @@ workspace; the deterministic supervisor admits work, while coordinator models
 only propose plans. Native child processes receive scoped contracts and explicit
 models through `BackendSpec`. Writers require isolated worktrees and an exact
 checked candidate before application and separate acceptance. Stop and restart
-retain uncertain requests/effects instead of replaying them.
+retain uncertain requests/effects instead of replaying them. Each run's
+`organization.TeamGovernance` applies an organization policy's model, mode and
+shell rules and the budgets before every participant and every model request
+(the execution guard asks it before reserving a request, in-process or for a
+child), and records the run's usage and audit trail.
 
 Managed teams additionally use the separate `services/governance/` PostgreSQL
 service, authenticated host channels and current policy leases. It enforces

@@ -1097,7 +1097,9 @@ class Session:
             if purpose == "primary":
                 return backend.stream(**kwargs)
             from .request_purpose import auxiliary_stream
-            return auxiliary_stream(backend, purpose, **kwargs)
+            # A guarded request's usage is recorded by its execution guard's
+            # owner (engine/swarming/organization.py), not a second time here.
+            return auxiliary_stream(backend, purpose, record=self._execution_boundary is None, **kwargs)
         if self._execution_boundary is None:
             return invoke()
         inputs = {key: value for key, value in kwargs.items() if key != "cancel_event"}
@@ -1996,6 +1998,12 @@ class Session:
         """Why a turn can't start under the budgets in effect (lumi/budgets.py), or ''."""
         from .. import budgets
 
+        if self._execution_boundary is not None:
+            # A guarded session's requests are checked by the host that admits
+            # them (engine/swarming/organization.py), with the app's approvals
+            # and settings. A worker in its own process has neither, so a
+            # second check here would stop a request the person approved.
+            return ""
         project = self.project_path or ""
         try:
             refusal = budgets.unpriced_refusal(project, provider, model)
@@ -2056,6 +2064,8 @@ class Session:
         """
         from .. import audit, budgets
 
+        if self._execution_boundary is not None:
+            return ""  # The host that admits the request checks it (see _budget_refusal).
         turn = getattr(self, "_turn_token", "")
         try:
             verdicts = budgets.evaluate(self.project_path or "", turn_spend=getattr(self, "_turn_spend", 0.0))
@@ -2133,6 +2143,11 @@ class Session:
             stats = event["stats"]
             if stats.get("_usage_id"):
                 return  # the same call, seen again
+            if self._execution_boundary is not None:
+                # A Team participant's requests are recorded by the host that
+                # admits them (engine/swarming/organization.py), with the team's
+                # purpose, project and conversation; here they would count twice.
+                return
             provider = str(getattr(self.backend, "name", "") or "")
             model = str(event.get("model") or getattr(self.backend, "model", "") or "")
             try:

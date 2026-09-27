@@ -44,10 +44,16 @@ class IntegrationWorkflow:
     the integration check runner observes and joins before recording cancellation.
     """
 
-    def __init__(self, supervisor: SwarmSupervisor, authority: RunAuthority, integration: SwarmIntegration):
+    def __init__(self, supervisor: SwarmSupervisor, authority: RunAuthority, integration: SwarmIntegration,
+                 *, observer: Any = None):
         if supervisor.store.path != integration.store.path:
             raise ScopeDenied("Integration workflow requires the same captured store")
+        if observer is not None and not callable(observer):
+            raise ValueError("An integration observer must be a trusted callable")
         self.supervisor, self.authority, self.integration = supervisor, authority, integration
+        # Told each operation's recorded outcome (kind, state, result): the audit
+        # log's integration steps (organization.TeamGovernance.integration_observed).
+        self._observer = observer
         self.store = supervisor.store
         with self.store._connection() as connection:
             run = self.store._authority(connection, authority)
@@ -340,6 +346,11 @@ class IntegrationWorkflow:
                               {"operation_id": record["id"], "state": state, "result": result, "error": error})
             if fresh:
                 self.supervisor._control_checkpoint(connection, self.authority.run_id)
+        if self._observer is not None:
+            try:
+                self._observer(record["kind"], state, dict(result))
+            except Exception:  # noqa: BLE001 - an observer never changes a recorded outcome
+                pass
 
     def _view(self, record):
         with self._threads_lock:

@@ -475,11 +475,23 @@ class TestEveryPath:
         from lumi.engine.swarming.service import policy_refusal
         from lumi.remote_tasks import RemoteTasks
 
+        from lumi.engine.swarming.organization import TeamGovernance
+
         org(EVERYTHING)
-        # Team: its start and every step of its orchestrator loop ask policy_refusal.
+        # Team: its start and every step of its orchestrator loop ask policy_refusal, a personal team's
+        # included; its reviews and bookkeeping reach no model and stay available.
         for action in ("start", "request_plan", "decide_proposal", "assign"):
             assert "oversight notice" in policy_refusal(action), action
+            assert "oversight notice" in policy_refusal(action, personal=True, team=lambda: ""), action
         assert policy_refusal("view") == "" and policy_refusal("stop") == ""
+        assert policy_refusal("complete", personal=True) == ""
+        # Each participant's start and model request asks the team's governance.
+        governance = TeamGovernance(None, run_id="run-1", project=str(tmp_path), models=[("ollama", "m")])
+        assert "oversight notice" in governance.dispatch_refusal()
+        _shown()
+        assert "oversight notice" not in governance.dispatch_refusal()
+        assert "oversight notice" not in policy_refusal("start", personal=True, team=lambda: "")
+        oversight.forget_notice("test")
         # Model comparisons.
         comparison = model_evals.Comparison(id="c1", name="x", project=str(tmp_path), tasks=[], models=[])
         monkeypatch.setattr(model_evals, "get", lambda comparison_id: comparison)

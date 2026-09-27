@@ -134,8 +134,9 @@ host enrollment and actual packaged/learned-benefit qualification remain open.
   notice for that policy on this computer (`oversight.admit`, asked by
   `Session.run` before each turn and each model request, and
   `oversight.refusal` at entry points outside a turn: the app's message
-  box, plans, missions, autonomous sessions, Team's `policy_refusal`, model
-  comparisons, evaluations, dictation). A new entry point runs through
+  box, plans, missions, autonomous sessions, Team's `policy_refusal` and
+  `TeamGovernance.refusal`, model comparisons, evaluations, dictation). A
+  new entry point runs through
   `Session.run` and refuses before it starts; `TestEveryPath` fails if code
   calls the turn loop another way. Confirmation (`oversight.acknowledge`)
   comes only from a person: the notice's own button (never a status push,
@@ -199,15 +200,32 @@ host enrollment and actual packaged/learned-benefit qualification remain open.
   builds a Session for the person must attach their hooks too.
 
 - The Team preview (`engine/swarming/`, `gui/swarming.py`, `services/governance/`,
-  docs/swarming.md) is off by default and predates the organization controls
-  above. `service.policy_refusal` allows only reading, stopping, revoking and
-  recovery while a policy applies; workers get the project's file exclusions
-  (`SwarmRuntime.exclusions_for`), in-process and through the child contract.
-  Guarded workers refuse hooks and use only native providers. Close those gaps
-  (model, mode, shell, approval and sharing rules; hooks; other connections)
-  before relaxing the refusal. A worker child keeps its host channel off
+  docs/swarming.md) is off by default. A personal team follows an organization
+  policy through `engine/swarming/organization.TeamGovernance`: a
+  `swarming.enabled` lock stops all its new work; each model it runs (the
+  orchestrator's, the workers') passes `model_allowed` at start and before
+  each participant, and each request is checked against its own attempt's
+  grant model; writers need `auto-edit` or `bypass`, and applying checked
+  changes needs `bypass`; the owner's checks pass the guardrails,
+  `check_floor` and the organization's shell rules (a `prompt` refuses), each
+  argument and each command from an argument on too, and a check needing a
+  second person, or a writer team while the shell sandbox is on, is refused.
+  The host's execution guard checks every request against the budgets before
+  reserving it (`RequestRefused` is a known outcome) and records its usage
+  (`team`) under the grant's model; a guarded session neither checks budgets
+  nor records usage itself. A worker process gets the app's secret-scan switch
+  and scans for its own credentials. Team events go to the audit log.
+  `service.policy_refusal` still refuses sharing and organization-managed teams
+  under a policy, apart from reading, stopping, revoking and recovery
+  (including `recover`). A new place that starts team participants must check
+  `dispatch_refusal` first and give the runner its governance. Workers get the
+  project's file exclusions (`SwarmRuntime.exclusions_for`), in-process and
+  through the child contract, refuse hooks and use only native providers or
+  OpenAI-compatible connections. A worker child keeps its host channel off
   standard input and output (`process_worker.stdio_pipes`), and code it runs
-  must not rely on an inherited stdin. CI runs `tests/test_swarm_*.py` in
+  must not rely on an inherited stdin. `@team:<run>` attaches only the
+  conversation's own personal team, read-only, as model-written context with
+  secrets removed (`swarming/chat_context.py`). CI runs `tests/test_swarm_*.py` in
   `team-tests.yml` (path-filtered, and on every push to main), not in
   `tests.yml`; a local `python -m pytest -q` still runs them.
 

@@ -58,7 +58,7 @@ def _initial(tmp_path, backend, connection):
     return {"backend": backend.to_dict(include_sensitive=True), "workspace": str(tmp_path),
             "conversation_key": "swarm:run:attempt", "prompt": "Inspect", "instructions": "", "role": "",
             "request_limit": 3, "tools": ["file_read"], "write_tools": [], "exclusions": [],
-            "connection": connection}
+            "connection": connection, "secret_scan": False}
 
 
 def test_the_child_contract_rebuilds_only_its_matching_connection(tmp_path):

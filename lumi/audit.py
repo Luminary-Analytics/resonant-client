@@ -15,8 +15,14 @@ the log alone; export to a collector for a copy off the machine.
 Event types: ``turn.start``, ``turn.end``, ``model.usage``, ``tool.call``,
 ``tool.result``, ``file.change``, ``approval``, ``privacy.redaction``,
 ``settings.change``, ``trust.decision``, ``budget.warning``, ``budget.approval``,
-``budget.block``, ``model.fallback``, ``oversight.notice_shown``,
-``oversight.discarded`` (lumi/oversight.py) and ``error``.
+``budget.block``, ``model.fallback`` and ``error``; for organization
+oversight (lumi/oversight.py) ``oversight.notice_shown``,
+``oversight.notice_forgotten``, ``oversight.unattended_run``,
+``oversight.acknowledgment_refused`` and ``oversight.discarded``; for the
+Team preview (engine/swarming/organization.py) ``team.start``, ``team.stop``,
+``team.complete``, ``team.participant.start``, ``team.participant.end``,
+``team.decision``, ``team.integration``, ``team.refusal`` and
+``team.request_refused``.
 
 **Capture levels** (``privacy.audit_capture``, lockable by policy):
 

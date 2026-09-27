@@ -31,8 +31,10 @@ now.
   each turn and again before each model request, so a policy that arrives
   mid-turn stops it), the app's socket, `/plan`, missions, autonomous
   sessions (start, resume and each iteration), Team (its runtime's commands
-  and every orchestrator step, through `service.policy_refusal`, ahead of
-  the Team preview's own policy rule), model comparisons, evaluations, a
+  and every orchestrator step, through `service.policy_refusal`, and each
+  participant's start and model request, through `TeamGovernance.refusal`;
+  a personal team's reviews and bookkeeping stay available), model
+  comparisons, evaluations, a
   schedule's Run now, dictation, AI Employee advice and tasks from chat. A
   test fails if any code calls the turn loop other than through
   `Session.run`.
@@ -283,6 +285,86 @@ Python 3.13 venv, `PYTHONNOUSERSITE=1`):
   unchanged.
 - Not run: a full local `pytest` (CI runs it), a packaged build, the
   terminal UI and a real Telegram or Slack chat.
+
+## September 27 Team: a team's results in its chat (source only, not released)
+
+**Use in chat.** The Team panel's **Use in chat** adds `@team:<run id>` to the
+conversation's message without sending it. The attachment
+(`engine/swarming/chat_context.py`) carries:
+
+- the objective and the orchestrator's final report;
+- the accepted results, each saying how it was accepted;
+- the applied revision.
+
+It says the content is model-written, removes secret patterns and saved keys,
+and stays for the conversation like a hand-off (`ContextBroker.STICKY`). Only
+the conversation's own personal teams can be attached, and reading one creates
+no team state.
+
+**What Lumi recorded, beside the report.** A live closing report said both
+workers had asked the orchestrator a question when only one had. The Team
+panel and the `@team:` attachment now show the team's recorded counts next to
+the report, and the orchestrator's follow-up and closing turns receive them as
+`team_record` to cite.
+
+**Plans with near-miss JSON.** A live Nemotron orchestrator ended its round-2
+plan without the last `}`, and its retry added a stray `}` after it. The team
+was handed back even though its work was done and applied. The plan parser now
+accepts those two shapes. Anything else still refuses the plan.
+
+## September 27 Team: under an organization policy (source only, not released)
+
+**Personal teams run where a policy applies.** Before, any organization policy
+refused all new team work. A personal team now follows the policy's rules
+(`engine/swarming/organization.py`); see
+[Under an organization policy](swarming.md#under-an-organization-policy).
+
+- **The preview lock.** A policy that locks `swarming.enabled` off stops every
+  team's new work, including a running or recovered one. Turning the preview
+  off yourself still only keeps new teams from starting.
+- **Models.** Each model the team runs (the orchestrator's, and the workers'
+  own if the owner chose one) passes the policy's model rules, zero retention
+  included, at start and before each participant starts; each model request
+  is checked against its own participant's model. A policy that arrives
+  mid-run stops the next request, holds new tasks with the reason, and hands
+  an orchestrated team back to its owner.
+- **Modes.** A read-only team runs under any policy. Writers need `auto-edit`
+  or `bypass`. An orchestrator that applies checked changes needs `bypass`.
+- **Checks** pass the command guardrails and the irreversibility floor, with or
+  without a policy. Under a policy they also pass the organization's shell
+  rules (`deny`, or a `prompt` nobody can answer, refuses them). Each argument,
+  and the command from each argument on, is checked too, so `sh -c` or
+  `cmd /c` can't carry a refused command past them. A check that needs a
+  second person's approval, or a team with writers while the shell sandbox is
+  on, is refused.
+- **Budgets.** Each Team model request is checked against the budgets before its
+  allowance is reserved. A `turn` budget counts the whole run, and a limit that
+  asks stops the team unless it was approved in a chat this period. A refused
+  request never starts, so its outcome is known (`RequestRefused`, a
+  `request_refused` run event). Requests already running aren't stopped, so a
+  team can go past a limit by what they cost. A worker's own session (in the
+  app or in its own process) no longer checks budgets a second time; in its own
+  process it didn't know the app's approvals and settings.
+- **Usage.** The app records each request once, in-process or from a worker
+  process, with purpose `team` (`team_compression` for compression), the
+  owner's project and conversation, agent `team:<run>:<worker>`, and its
+  participant's configured model (a router's alias is recorded as the alias).
+  Workers' own sessions no longer record it. Before, it was recorded as `turn`,
+  with a writer's worktree as the project.
+- **Audit.** New `team.start`, `team.stop`, `team.complete`,
+  `team.participant.start`/`.end`, `team.integration`, `team.decision`
+  (`by` owner or orchestrator), `team.refusal` and `team.request_refused`
+  records, content by capture level.
+- **Secret scan.** A worker in its own process now follows the app's
+  **Scan for secrets** setting, which a policy can lock on, and removes its own
+  model key and connection header values. Before, only workers running in the
+  app scanned their requests. It still doesn't know the app's other saved keys.
+- **Recovery.** Taking over an expired team stays available under any policy,
+  including for organization-managed teams; continuing it follows the rules.
+- Still refused under a policy: sharing with another conversation and
+  organization-managed teams, apart from viewing, stopping, revoking and
+  recovery. A policy that arrives while such a team runs now also stops its
+  new requests, and accepting shared work checks the rules and budgets first.
 
 ## September 27 Team: review fixes for the orchestrator loop (source only, not released)
 

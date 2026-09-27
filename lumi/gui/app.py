@@ -730,6 +730,7 @@ class AppState:
         from ..engine.artifacts import ArtifactStore
         from ..engine.checkpoint_timeline import SessionCheckpointStore
         from ..engine.context_broker import ContextBroker
+        from .swarming import chat_context as _swarm_chat_context
         from ..engine.flight_recorder import FlightRecorder
         from ..engine.model_roles import ModelRoleRouter
         from ..engine.worktrees import WorktreeManager
@@ -793,6 +794,9 @@ class AppState:
         )
         session.flight_recorder = flight_recorder
         session.context_broker = context_broker
+        # ``@team:<run>`` attaches one of this conversation's teams (gui/swarming.py).
+        context_broker.team_reader = lambda run_id, workspace=target_path: _swarm_chat_context(
+            self, workspace, getattr(self.project.current_session, "id", "") or "", run_id)
         session.model_role_router = role_router
         session.fallback_provider = lambda path=target_path: self._fallback_chain(path)
         # Director Mode was retired in favor of the standard agent loop. Clear

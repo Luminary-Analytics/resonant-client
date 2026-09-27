@@ -84,11 +84,13 @@ hasn't confirmed its notice on this computer, Lumi sends nothing to a model:
   specialists, Team workers), `/plan`, a mission's **Build this roadmap**,
   autonomous sessions (start, resume and each iteration), Team (the desktop
   runtime's commands and every step of its orchestrator loop, through
-  `service.policy_refusal`), model comparisons (at the start and before each
-  run), model evaluations, a scheduled task's **Run now** (the person's own
-  action, unlike the schedule itself), dictation, AI Employee advice, and
-  tasks from chat (the chat is told why). The server refuses a message even
-  if a page sends one.
+  `service.policy_refusal`, and each participant's start and model request,
+  through `TeamGovernance.refusal`; a personal team's reviews and
+  bookkeeping, which reach no model, stay available), model comparisons (at
+  the start and before each run), model evaluations, a scheduled task's
+  **Run now** (the person's own action, unlike the schedule itself),
+  dictation, AI Employee advice, and tasks from chat (the chat is told why).
+  The server refuses a message even if a page sends one.
 - `Session.run` asks before the turn and again before **each model
   request**, so a policy that arrives mid-turn with a notice the person
   hasn't confirmed stops the turn there. A refused turn never reaches the

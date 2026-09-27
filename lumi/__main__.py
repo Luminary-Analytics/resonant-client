@@ -82,17 +82,61 @@ def _managed_startup_arguments(arguments):
 # somewhere readable. Rotated only by hand for now (single file appends).
 #
 # Only fires when frozen + at least one stream is None — leaves dev runs
-# (`python -m lumi`) untouched so output still hits the terminal. On macOS an
-# app opened from Finder, the Dock or `open` gets streams open on /dev/null
-# instead of none, so those count too: without this a Mac tester's startup
-# errors would go nowhere.
+# (`python -m lumi`) untouched so output still hits the terminal. An app that
+# LaunchServices opened on macOS (Finder, the Dock, `open`, Sparkle's
+# relaunch) gets streams open on /dev/null instead of none, so for such a
+# launch, and only for one, those count too: without this a Mac tester's
+# startup errors would go nowhere. A command-line run whose output was sent
+# to /dev/null on purpose (`lumi run … > /dev/null` from a script) keeps it
+# there, so nothing it prints, a model's output included, lands on disk.
 
 
-def _goes_nowhere(stream) -> bool:
-    """A missing stream, or on macOS one open on /dev/null (what LaunchServices gives an app)."""
+def _bundle_identifier(executable: str) -> str:
+    """The CFBundleIdentifier of the app bundle ``executable`` runs from (Contents/MacOS/…), or ""."""
+    import plistlib
+
+    contents = os.path.dirname(os.path.dirname(os.path.abspath(executable)))
+    try:
+        with open(os.path.join(contents, "Info.plist"), "rb") as handle:
+            value = plistlib.load(handle).get("CFBundleIdentifier")
+    except Exception:
+        return ""
+    return value if isinstance(value, str) else ""
+
+
+def _launched_by_launchservices(argv=None, *, platform=None, frozen=None, terminal=None, parent=None,
+                                environ=None, bundle_id=None) -> bool:
+    """Lumi.app started by LaunchServices: Finder, the Dock, `open`, or Sparkle's relaunch.
+
+    Such a launch is a child of launchd, without a terminal, with
+    ``__CFBundleIdentifier`` set to this app's bundle identifier (old macOS
+    versions also pass a ``-psn_…`` argument). A run of the same executable
+    from a terminal, a script, cron or a launchd job is none of that, and
+    keeps the command line's behavior. The keyword arguments stand in for
+    this process's own facts in tests.
+    """
+    if (sys.platform if platform is None else platform) != "darwin":
+        return False
+    if not (getattr(sys, "frozen", False) if frozen is None else frozen):
+        return False
+    argv = sys.argv if argv is None else argv
+    if any(argument.startswith("-psn_") for argument in argv[1:]):
+        return True
+    if (os.getppid() if parent is None else parent) != 1:
+        return False
+    if os.isatty(0) if terminal is None else terminal:
+        return False
+    launched_as = (os.environ if environ is None else environ).get("__CFBundleIdentifier", "")
+    if not launched_as:
+        return False
+    return launched_as == (_bundle_identifier(sys.executable) if bundle_id is None else bundle_id)
+
+
+def _discarded(stream, launched_by_launchservices: bool) -> bool:
+    """A stream the startup log should replace: missing, or /dev/null in an app LaunchServices opened."""
     if stream is None:
         return True
-    if sys.platform != "darwin":
+    if not launched_by_launchservices:
         return False
     try:
         return os.path.samestat(os.fstat(stream.fileno()), os.stat(os.devnull))
@@ -100,8 +144,11 @@ def _goes_nowhere(stream) -> bool:
         return False
 
 
+_LAUNCHED_BY_LAUNCHSERVICES = _launched_by_launchservices()
+
 if getattr(sys, "frozen", False) and (
-    _goes_nowhere(sys.stdout) or _goes_nowhere(sys.stderr) or sys.stdin is None
+    _discarded(sys.stdout, _LAUNCHED_BY_LAUNCHSERVICES) or _discarded(sys.stderr, _LAUNCHED_BY_LAUNCHSERVICES)
+    or sys.stdin is None
 ):
     _log_dir = str(state_home() / "logs")
     try:
@@ -115,28 +162,28 @@ if getattr(sys, "frozen", False) and (
         # If we can't open the log file (read-only home, weird perms),
         # fall back to NUL — better silently-broken than crashing on stderr.
         _log_file = open(os.devnull, "w", encoding="utf-8")
-    if _goes_nowhere(sys.stdout):
+    if _discarded(sys.stdout, _LAUNCHED_BY_LAUNCHSERVICES):
         sys.stdout = _log_file
-    if _goes_nowhere(sys.stderr):
+    if _discarded(sys.stderr, _LAUNCHED_BY_LAUNCHSERVICES):
         sys.stderr = _log_file
     if sys.stdin is None:
         sys.stdin = open(os.devnull, "r", encoding="utf-8")
 
 
-def _opened_as_mac_app(argv=None, *, platform=None, frozen=None, terminal=None) -> bool:
+def _opened_as_mac_app(argv=None, **facts) -> bool:
     """Lumi.app opened from Finder, the Dock, `open` or Sparkle's relaunch: the GUI, not the terminal UI.
 
-    Those launches pass no arguments (old macOS versions add a ``-psn_…``
-    process serial number) and no terminal. The same executable run in
-    Terminal without arguments is the terminal UI, as ``lumi.exe`` is. The
-    keyword arguments stand in for this process's own facts in tests.
+    Such a launch passes no arguments of its own. The same executable run
+    from a terminal or a script without arguments is the terminal UI, as
+    ``lumi.exe`` is. ``facts`` stand in for this process's own in tests
+    (see ``_launched_by_launchservices``).
     """
-    if (sys.platform if platform is None else platform) != "darwin":
-        return False
-    if not (getattr(sys, "frozen", False) if frozen is None else frozen):
-        return False
-    arguments = [a for a in (sys.argv if argv is None else argv)[1:] if not a.startswith("-psn_")]
-    return not arguments and not (os.isatty(0) if terminal is None else terminal)
+    if argv is None and not facts:
+        launched, argv = _LAUNCHED_BY_LAUNCHSERVICES, sys.argv
+    else:
+        argv = sys.argv if argv is None else argv
+        launched = _launched_by_launchservices(argv, **facts)
+    return launched and not [argument for argument in argv[1:] if not argument.startswith("-psn_")]
 
 
 def main():

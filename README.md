@@ -151,8 +151,9 @@ machine through Intune, Configuration Manager or Group Policy; see
 
 A macOS build (`Lumi.app` in a DMG, Apple silicon, macOS 12 or later) is built
 in CI, and the release workflow publishes it beside the Windows installer from
-the next release on. It updates itself with Sparkle from the same signed feed
-format. Until it's notarized by Apple, macOS asks you to approve it once in
+the next release on. It updates itself with Sparkle from its own feeds, in
+the same format, and reads only a feed signed with the release key. Until
+it's notarized by Apple, macOS asks you to approve it once in
 System Settings › Privacy & Security › **Open Anyway**; see
 [Lumi on macOS](docs/macos.md).
 

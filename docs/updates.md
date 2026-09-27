@@ -81,14 +81,19 @@ the new disk image and drag Lumi to Applications, or install the new PKG.
 In offline mode Lumi doesn't check the update site unless it is an allowed
 host: WinSparkle and Sparkle don't start, and turning offline mode on stops
 them at once. WinSparkle is shut down; Sparkle has no way to be, so Lumi
-refuses each check and download it asks to start. Checks start again after a
-restart with offline mode off.
+refuses each check and download it asks to start. A download is checked as
+Sparkle starts it, not only when Sparkle found the update, so one started
+later from an update window left open is refused too, as is one from a host
+offline mode doesn't allow. Checks start again after a restart with offline
+mode off.
 
 The [audit log](audit-log.md) records what the updater does, on both platforms:
 
 - `update.check`: `found`, `none` or `error` (with Sparkle's error code on
   macOS; a failed download is an `error` with `stage: download`);
 - `update.deferred`: an update waited for a turn;
+- `update.refused` (macOS): offline mode stopped a download before it
+  started, with the reason;
 - `update.install`: the installer started;
 - `update.skipped`, `update.postponed` and `update.cancelled`: your choices in
   the update window (on macOS, Skip This Version, Remind Me Later, and a

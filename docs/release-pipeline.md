@@ -62,7 +62,8 @@ the release workflow's executable smoke test alone does not perform them.
 the installer before its EdDSA signature is computed, so the update feed signs
 the final bytes. It verifies each signature afterwards. It uses one of:
 
-- `WINDOWS_SIGN_PFX_BASE64` and `WINDOWS_SIGN_PFX_PASSWORD` repository secrets: a
+- `WINDOWS_SIGN_PFX_BASE64` and `WINDOWS_SIGN_PFX_PASSWORD` secrets (in the
+  [release environment](#the-release-environment)): a
   code-signing certificate exported as PFX, signed with signtool and an RFC 3161
   timestamp (`WINDOWS_SIGN_TIMESTAMP_URL` overrides the DigiCert default).
 - A `WINDOWS_SIGN_COMMAND` repository variable: a command with `{file}` for a
@@ -73,7 +74,10 @@ the final bytes. It verifies each signature afterwards. It uses one of:
   - DigiCert KeyLocker;
   - SSL.com eSigner.
 
-Without either, the release continues unsigned and the run shows a warning.
+Without either, the release continues unsigned and the run shows a warning,
+until the repository variable `WINDOWS_SIGNING_REQUIRED` is `true`: set it once
+a certificate exists, and a lost secret fails the release instead of shipping
+unsigned files.
 
 ## macOS
 
@@ -85,11 +89,84 @@ PKG. With the Apple secrets ([RELEASING.md](../RELEASING.md#macos-signing-and-no
 the app is signed with the Developer ID and the hardened runtime (Sparkle's
 helpers without Python's entitlements), and the DMG and PKG are notarized and
 stapled; otherwise the app is signed ad hoc and the run, the release notes and
-the download page say it isn't notarized. `publish-macos` waits for the
-Windows job, then EdDSA-signs the final DMG with `winsparkle-tool` and the same
-key, checks that signature against `lumi/updater.py`'s key, adds the files to
-the GitHub Release and publishes the DMG to Pages and the macOS feeds. See
-[Lumi on macOS](macos.md).
+the download page say it isn't notarized. With the repository variable
+`MACOS_SIGNING_REQUIRED` set to `true` (once the Developer ID exists), missing
+Apple secrets fail the build instead. `publish-macos` waits for the Windows
+job, then runs `packaging/publish_macos.ps1`: it EdDSA-signs the final DMG with
+`winsparkle-tool` and the same key, checks that signature against
+`lumi/updater.py`'s key, publishes the DMG to Pages and adds it to the macOS
+feeds, and signs each macOS feed it wrote the same way (Sparkle's signed feeds,
+below). The job then adds the files to the GitHub Release. `build-macos.yml`
+rehearses that script on every packaging change with a throwaway key on a
+scratch copy of `gh-pages`, pushing nothing. See [Lumi on macOS](macos.md).
+
+The macOS feeds are signed because Lumi.app sets `SURequireSignedFeed`: Sparkle
+reads a feed only when the signing block at its end (`packaging/feed_signature.py`,
+the format of Sparkle's own `sign_update`) verifies with the app's key, so no
+one who can change a feed, but not sign it, can point Macs at another download
+or change what a release says. A feed that fails is an update error (Sparkle's
+code 1000). After 20 days of failures Sparkle falls back to its safe mode for
+key rotation: it reads the feed but ignores its release notes and critical or
+informational items, and every download still needs its EdDSA signature (or
+the Developer ID, below). The Windows feeds stay as they are: WinSparkle
+doesn't read a feed signature, and installed copies poll `appcast.xml`
+unchanged.
+
+## The release environment
+
+Every job that can sign an update runs in the `release` environment: the
+Windows `release` job (the EdDSA key and the Authenticode secrets), `macos`
+(the Apple secrets) and `publish-macos` (the EdDSA key). Workflows that
+pull requests start (`build-check.yml`, `build-macos.yml`, `tests.yml`) get no
+signing secret: a pull request runs the workflow files from its own branch,
+so anything they are given could be read out. Their macOS builds are signed ad
+hoc, and the publishing rehearsal uses a key it makes and throws away.
+
+The Apple certificate needs the same care as the EdDSA key. Sparkle accepts an
+update signed with the same team's Developer ID when its EdDSA signature
+doesn't verify: `SUVerifyUpdateBeforeExtraction` allows that before
+extraction, and the check after extraction accepts the code signature alone.
+Either key can therefore ship an update to every Mac, and
+`SUVerifyUpdateBeforeExtraction` doesn't change that; keeping both where only
+tagged releases reach them does.
+
+The environment exists once a job names it, but it protects nothing until
+the owner configures it (Settings › Environments › `release`):
+
+1. **Deployment branches and tags:** *Selected branches and tags*, with one
+   tag rule, `v*`. Only runs for a version tag can then enter it.
+2. **Environment secrets:** move these from the repository secrets (add each
+   to the environment, then delete the repository copy): `EDDSA_PRIVATE_KEY`;
+   `MACOS_SIGN_IDENTITY`, `MACOS_SIGN_P12_BASE64`, `MACOS_SIGN_P12_PASSWORD`,
+   `MACOS_INSTALLER_IDENTITY`; `APPLE_API_KEY_BASE64`, `APPLE_API_KEY_ID`,
+   `APPLE_API_ISSUER_ID` or `APPLE_ID`, `APPLE_TEAM_ID`, `APPLE_APP_PASSWORD`;
+   `WINDOWS_SIGN_PFX_BASE64`, `WINDOWS_SIGN_PFX_PASSWORD`. The variables
+   (`WINDOWS_SIGN_COMMAND`, `MACOS_SIGNING_REQUIRED`,
+   `WINDOWS_SIGNING_REQUIRED`) can stay repository variables.
+3. Optionally, **required reviewers**, so a person approves each release run.
+
+All of this is free for a public repository. A private one needs GitHub Team
+or Enterprise for environments, their secrets and the tag rule, and
+Enterprise for required reviewers; make the repository private only on such a
+plan, or the release jobs lose the protection above. Keep the name `release`:
+the AWS release role trusts GitHub's OIDC subject
+`repo:Luminary-Analytics/resonant-client:environment:release`, so the same
+environment and tag rule gate it too.
+
+The workflow is hardened in the same spirit:
+
+- The workflow's token only reads; the two jobs that publish get
+  `contents: write`, and the macOS build doesn't. Checkouts that never push
+  keep no credentials (`persist-credentials: false`).
+- The EdDSA key is written to a file only while `winsparkle-tool` signs, and
+  deleted in a `finally` before any third-party action runs.
+- Third-party actions are pinned to a commit, with the version in a comment.
+- The two jobs that push `gh-pages` share the concurrency group
+  `release-gh-pages` (never cancelling a running one), and push with
+  `--force-with-lease` on the commit they checked out, so neither can
+  overwrite what the other published. GitHub keeps one waiting job per group:
+  a third arrival (two tags pushed together) cancels the waiting one, which
+  then needs a rerun; the lease still keeps anything from being overwritten.
 
 ## Signing and publication
 
@@ -169,8 +246,9 @@ ordinary CI. Keep mocked wire-contract tests distinct from live model evidence.
 | `packaging/update_appcast.py` | Stable, beta and release-line update feeds, for Windows and macOS |
 | `lumi/updater.py`, `lumi/update_channels.py` | WinSparkle client and verification key; update mode, channel, pin and platform |
 | `packaging/build_macos.sh`, `packaging/fetch_sparkle.sh` | macOS app, DMG and PKG; pinned Sparkle; Apple signing and notarization |
+| `packaging/publish_macos.ps1`, `packaging/feed_signature.py` | Signing the DMG and the macOS feeds, checked with the app's key, and laying them out on Pages |
 | `lumi/sparkle.py` | Sparkle 2 on macOS through PyObjC: the delegate and the main-thread hand-off |
-| `.github/workflows/build-macos.yml`, `packaging/smoke_gui.py` | macOS build and smoke test on every change, the updater included |
+| `.github/workflows/build-macos.yml`, `packaging/smoke_gui.py` | macOS build and smoke test on every change, the updater included; a publishing rehearsal with a throwaway key |
 
 Paths are relative to the repository root. See the
 [documentation index](README.md) for release records and current guides.

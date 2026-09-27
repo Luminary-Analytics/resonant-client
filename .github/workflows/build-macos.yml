@@ -18,9 +18,16 @@ name: macOS build
 # updates left to the MDM, and a policy from managed preferences, a broken one
 # included. Uploads the DMG and PKG so they can be tried.
 #
-# Signing and notarization run only when the repository has the secrets named
-# in docs/macos.md; without them the app is signed ad hoc and the build says
-# so. Nothing is published from here; release.yml publishes tagged builds.
+# A second job rehearses release.yml's publish-macos step on Windows
+# (packaging/publish_macos.ps1): a throwaway EdDSA key and a scratch copy of
+# the gh-pages branch, from which nothing is pushed.
+#
+# No signing secret reaches this workflow: pull requests run the workflow
+# file from their own branch, so anything given to them could be read out.
+# Builds here are signed ad hoc, and only release.yml, in the `release`
+# environment, signs and notarizes (docs/release-pipeline.md). A Developer ID
+# certificate is a second update key for Sparkle, so it is kept like the
+# EdDSA key. Nothing is published from here.
 
 on:
   pull_request:
@@ -29,6 +36,7 @@ on:
       - 'packaging/**'
       - 'pyproject.toml'
       - '.github/workflows/build-macos.yml'
+      - '.github/workflows/release.yml'
   push:
     branches:
       - main
@@ -36,7 +44,12 @@ on:
       - 'lumi/**'
       - 'packaging/**'
       - 'pyproject.toml'
+      - '.github/workflows/build-macos.yml'
+      - '.github/workflows/release.yml'
   workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   macos-build:
@@ -45,10 +58,12 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: '3.13'
           cache: 'pip'
@@ -56,18 +71,8 @@ jobs:
       - name: Install the pinned SBOM tools
         run: python3 -m pip install --require-hashes -r packaging/tools-requirements.txt
 
+      # Signed ad hoc: no Apple secrets here (see the top of this file).
       - name: Build Lumi.app, the DMG and the PKG
-        env:
-          MACOS_SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
-          MACOS_SIGN_P12_BASE64: ${{ secrets.MACOS_SIGN_P12_BASE64 }}
-          MACOS_SIGN_P12_PASSWORD: ${{ secrets.MACOS_SIGN_P12_PASSWORD }}
-          MACOS_INSTALLER_IDENTITY: ${{ secrets.MACOS_INSTALLER_IDENTITY }}
-          APPLE_API_KEY_BASE64: ${{ secrets.APPLE_API_KEY_BASE64 }}
-          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
-          APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
         run: bash packaging/build_macos.sh --sbom dist/lumi-macos-sbom.cdx.json
 
       - name: Check what Sparkle reads from the bundle
@@ -84,7 +89,7 @@ jobs:
           case "$bundle_version" in
             *-*) echo "CFBundleVersion $bundle_version has a dash, and Sparkle ignores what follows one"; exit 1;;
           esac
-          for key in SUEnableAutomaticChecks SUVerifyUpdateBeforeExtraction; do
+          for key in SUEnableAutomaticChecks SUVerifyUpdateBeforeExtraction SURequireSignedFeed; do
             test "$(plutil -extract "$key" raw "$plist")" = "true"
           done
           test "$(plutil -extract SUAllowsAutomaticUpdates raw "$plist")" = "false"
@@ -255,7 +260,7 @@ jobs:
 
       - name: Keep the screenshots
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: lumi-macos-screenshots
           path: ${{ runner.temp }}/lumi-*.png
@@ -305,7 +310,7 @@ jobs:
           echo "✓ A broken profile fails closed"
 
       - name: Upload the DMG, PKG and bundle manifest
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: lumi-macos
           path: |
@@ -313,3 +318,95 @@ jobs:
             dist/installer/*.pkg
             dist/bundle-manifest-macos.json
             dist/lumi-macos-sbom.cdx.json
+
+  publish-dry-run:
+    # release.yml's publish-macos step, rehearsed (packaging/publish_macos.ps1):
+    # a throwaway EdDSA key, synthetic disk images, and a scratch copy of the
+    # gh-pages branch. The disk image and every macOS feed must verify, and the
+    # Windows feeds mustn't change. Nothing is pushed: the checkouts keep no
+    # credentials and the token only reads.
+    runs-on: windows-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: A scratch copy of gh-pages
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: gh-pages
+          path: scratch-pages
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.13'
+
+      - name: Rehearse publish-macos with a throwaway key
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $tool = "packaging/winsparkle/WinSparkle-0.9.2/bin/winsparkle-tool.exe"
+          $work = Join-Path $env:RUNNER_TEMP "rehearsal"
+          $release = Join-Path $work "release"
+          New-Item -ItemType Directory -Force $release | Out-Null
+          $key = Join-Path $work "throwaway.key"
+          $generated = & $tool generate-key --file $key
+          $public = (($generated | Select-String "Public key: (.+)").Matches[0].Groups[1].Value).Trim()
+          $pages = "https://luminary-analytics.github.io/resonant-client"
+          $site = "scratch-pages"
+          try {
+              # As a release does it: the Windows job publishes first, then the macOS one.
+              foreach ($version in @("99.0.0", "99.1.0-beta.1")) {
+                  $exe = Join-Path $work "lumi-setup-$version.exe"
+                  [IO.File]::WriteAllBytes($exe, [byte[]](1..255))
+                  python packaging/publish_pages.py --site $site --installer $exe --version $version | Out-Host
+                  if ($LASTEXITCODE -ne 0) { throw "publish_pages.py (Windows) failed" }
+                  python packaging/update_appcast.py --version $version --installer $exe --signature "V0lOU0lH" `
+                      --notes "<p>Windows</p>" --site $site --download-base "$pages/downloads" | Out-Host
+                  if ($LASTEXITCODE -ne 0) { throw "update_appcast.py (Windows) failed" }
+                  $windows = @{}
+                  Get-ChildItem $site -Filter "appcast*.xml" | Where-Object { $_.Name -notlike "appcast-macos*" } |
+                      ForEach-Object { $windows[$_.Name] = (Get-FileHash $_.FullName).Hash }
+                  $image = New-Object byte[] 3000000
+                  (New-Object Random).NextBytes($image)
+                  [IO.File]::WriteAllBytes((Join-Path $release "lumi-$version.dmg"), $image)
+                  [IO.File]::WriteAllBytes((Join-Path $release "lumi-$version.pkg"), [byte[]](1..99))
+                  ./packaging/publish_macos.ps1 -Site $site -Release $release -Version $version -PagesUrl $pages `
+                      -PrivateKeyFile $key -PublicKey $public
+                  foreach ($name in $windows.Keys) {
+                      if ((Get-FileHash (Join-Path $site $name)).Hash -ne $windows[$name]) {
+                          throw "$name changed during the macOS publish"
+                      }
+                  }
+                  Write-Host "OK ${version}: disk image and macOS feeds signed and verified; the $($windows.Count) Windows feeds are unchanged"
+              }
+          } finally {
+              Remove-Item -Force -ErrorAction SilentlyContinue $key
+          }
+          $check = @'
+          import json, pathlib, sys
+          import xml.etree.ElementTree as ET
+          site = pathlib.Path(sys.argv[1])
+          sparkle = "{http://www.andymatuschak.org/xml-namespaces/sparkle}"
+          def items(name):
+              return ET.parse(site / name).getroot().find("channel").findall("item")
+          stable, beta = items("appcast-macos.xml"), items("appcast-macos-beta.xml")
+          enclosure = stable[0].find("enclosure")
+          assert enclosure.get("url").endswith("/downloads/v99.0.0/lumi-99.0.0.dmg"), enclosure.get("url")
+          assert enclosure.get(sparkle + "os") == "macos" and enclosure.get("length") == "3000000"
+          assert beta[0].findtext(sparkle + "shortVersionString") == "99.1.0-beta.1"
+          assert beta[0].findtext(sparkle + "version") == "99.1.0beta.1"
+          assert all(b"sparkle:os" not in path.read_bytes() for path in site.glob("appcast*.xml") if "macos" not in path.name)
+          assert json.loads((site / "downloads/v99.0.0/macos.json").read_text()) == {"notarized": False}
+          page = (site / "index.html").read_text(encoding="utf-8")
+          assert "Download Lumi 99.0.0 for macOS" in page and "Open Anyway" in page and "lumi-99.0.0.pkg" in page
+          print("OK What a Mac reads: signed feeds, the disk image's address, the page's macOS download")
+          '@
+          python -c $check $site
+          if ($LASTEXITCODE -ne 0) { throw "The rehearsed site isn't what a Mac should read" }
+          git -C $site status --short | Select-Object -First 20

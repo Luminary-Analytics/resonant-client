@@ -41,7 +41,8 @@ Windows installer. See [Lumi on macOS](macos.md) and [Updates](updates.md).
   does Lumi.app's `CFBundleVersion`.
 - **Opening Lumi.app from Finder** (or the Dock, or Sparkle's relaunch) opens
   the app. It used to pass no arguments to the terminal UI, which has no
-  terminal there and quit. Such launches also write the startup log.
+  terminal there and quit. Such launches also write the startup log. Only a
+  LaunchServices launch counts (see the review fixes below).
 - **Release workflow.** New jobs build the DMG and PKG on Apple silicon,
   signed and notarized when the Apple secrets exist (an App Store Connect API
   key or an Apple ID; `MACOS_INSTALLER_IDENTITY` is now passed too), and
@@ -57,6 +58,59 @@ Windows installer. See [Lumi on macOS](macos.md) and [Updates](updates.md).
   fetch the macOS feed, and opens the app as Finder does. `tests.yml` runs
   the updater tests on macOS, with the real Sparkle reading a feed
   `update_appcast.py` wrote.
+
+### Review fixes (September 27)
+
+- **Offline mode stops a download from an update window left open.** Sparkle
+  asks about an update once, when it finds it. The delegate now also checks
+  each download request as Sparkle starts it
+  (`updater:willDownloadUpdate:withRequest:`): after offline mode came on, or
+  to a host offline mode doesn't allow, the request gets an address Sparkle's
+  downloader refuses before connecting, and the audit log records
+  `update.refused` with the reason. Release notes from another host are
+  refused the same way.
+- **Signed macOS feeds.** Lumi.app sets `SURequireSignedFeed`, and
+  `packaging/publish_macos.ps1` signs every macOS feed it writes with the
+  release key (`packaging/feed_signature.py`: Sparkle's own block format),
+  checking each signature with the app's key. A feed changed after signing,
+  or signed with another key, or not at all, is an update error. The Windows
+  feeds don't change.
+- **Signing secrets only for tagged releases.** The jobs that sign run in the
+  `release` environment, which the owner restricts to `v*` tags and moves the
+  secrets into ([the release environment](release-pipeline.md#the-release-environment)).
+  `build-macos.yml`, which pull requests run, gets no Apple secret and signs
+  ad hoc: a Developer ID certificate can ship an update to every Mac by
+  itself, since Sparkle accepts it in place of the EdDSA signature.
+- **Hardened release workflow.** The EdDSA key file is deleted in a
+  `finally` as soon as it has signed, in both jobs; every third-party action
+  is pinned to a commit; the workflow token only reads, and only the two
+  publishing jobs get `contents: write`; checkouts that don't push keep no
+  credentials; the two jobs that push `gh-pages` share a concurrency group
+  and push with `--force-with-lease` on the commit they checked out.
+- **Signing can be required.** With the repository variable
+  `MACOS_SIGNING_REQUIRED` or `WINDOWS_SIGNING_REQUIRED` set to `true`,
+  missing Developer ID or Authenticode secrets fail the release instead of
+  shipping an unsigned build. `build_macos.sh` deletes the certificate file
+  as soon as it's imported, and its keychain and notary key when it ends.
+- **`fetch_sparkle.sh` never reuses what it hasn't verified.** It used to
+  keep a framework from an earlier run as it was; now it checks the kept
+  archive's SHA-256 on every run (downloading again when it doesn't match)
+  and always extracts afresh.
+- **Command-line runs keep the command line's behavior.** The Finder fix
+  now applies only to a LaunchServices launch (a child of launchd without a
+  terminal, whose `__CFBundleIdentifier` is Lumi's, or an old `-psn_`
+  argument). A script's `lumi run … > /dev/null` no longer writes its output
+  to the startup log, and `lumi` without arguments from a script is the
+  terminal UI, as before.
+- **Tests.** On macOS with the real Sparkle: a signed feed reads and a
+  tampered, other-key or unsigned one doesn't; nothing older than the running
+  version is offered; a refused download never reaches the server while an
+  allowed one does. `build-macos.yml` rehearses the macOS publishing on
+  Windows with a throwaway key on a scratch copy of `gh-pages`, pushing
+  nothing. Not covered: Sparkle's installer rejecting a disk image with a bad
+  signature. That check runs in Sparkle's installer, which it starts through
+  launchd to replace the app; CI instead verifies every signature it
+  publishes with the app's key.
 
 Not verified: an update installed on a real Mac (no macOS release is
 published yet), Gatekeeper's first launch of a downloaded build, the native

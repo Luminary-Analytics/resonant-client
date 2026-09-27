@@ -118,8 +118,11 @@ class TestComponents:
         script = (PACKAGING / "fetch_sparkle.sh").read_text(encoding="utf-8")
         assert re.search(r'^SPARKLE_SHA256="[0-9a-f]{64}"$', script, re.M)
         # Verified before extraction, and the build fails on a mismatch.
-        assert script.index("shasum -a 256") < script.index("tar -xJf")
-        assert "exit 1" in script[script.index("shasum -a 256"):script.index("tar -xJf")]
+        check = script.index('if [[ "$ACTUAL" != "$SPARKLE_SHA256" ]]')
+        assert script.index('ACTUAL="$(sha256 "$WORK/$ARCHIVE")"') < check < script.index("tar -xJf")
+        assert "exit 1" in script[check:script.index("tar -xJf")]
+        # Nothing from an earlier run is used unchecked (tests/test_sparkle.py runs it on macOS).
+        assert "exit 0" not in script
 
     def test_license_files_exist_or_are_fetched(self):
         fetched = {"packaging/ripgrep/LICENSE-MIT", "packaging/ripgrep/UNLICENSE", "packaging/sparkle/LICENSE"}
@@ -232,4 +235,22 @@ def test_signing_without_credentials_warns_and_continues(tmp_path):
     )
     assert result.returncode == 0, result.stderr
     assert "Not Authenticode-signed" in result.stdout
+    assert target.read_bytes() == b"MZ"
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Authenticode signing runs on Windows")
+def test_signing_required_without_credentials_fails_the_release(tmp_path):
+    # Once a certificate exists, WINDOWS_SIGNING_REQUIRED turns losing it into a failed release.
+    target = tmp_path / "lumi.exe"
+    target.write_bytes(b"MZ")
+    env = {key: value for key, value in os.environ.items()
+           if key not in {"WINDOWS_SIGN_PFX_BASE64", "WINDOWS_SIGN_PFX_PASSWORD", "WINDOWS_SIGN_COMMAND"}}
+    env["WINDOWS_SIGNING_REQUIRED"] = "true"
+    result = subprocess.run(
+        ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
+         str(PACKAGING / "sign_windows.ps1"), "-Files", str(target)],
+        capture_output=True, text=True, timeout=120, env=env,
+    )
+    assert result.returncode != 0
+    assert "WINDOWS_SIGNING_REQUIRED" in result.stdout + result.stderr
     assert target.read_bytes() == b"MZ"

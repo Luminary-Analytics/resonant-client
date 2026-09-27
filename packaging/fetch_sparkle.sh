@@ -8,6 +8,11 @@
 # checked against the SHA-256 below BEFORE anything is extracted. A mismatch
 # fails the build; nothing unverified reaches the app.
 #
+# The archive is kept beside the framework so a rebuild needn't download it
+# again, but it is checked again on every run, and the framework is always
+# extracted afresh from it: a framework left from an earlier run is never
+# used as it is.
+#
 # Leaves <destination>/Sparkle.framework and <destination>/LICENSE (Sparkle is
 # MIT with bundled BSD, zlib and MIT parts; packaging/third-party-components.json
 # ships the text in THIRD_PARTY_NOTICES.txt). The XPC services are removed:
@@ -27,22 +32,21 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 DEST="${1:-$ROOT/packaging/sparkle}"
 ARCHIVE="Sparkle-$SPARKLE_VERSION.tar.xz"
 URL="https://github.com/sparkle-project/Sparkle/releases/download/$SPARKLE_VERSION/$ARCHIVE"
+KEPT="$DEST/$ARCHIVE"
 
-installed_version() {
-  /usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" \
-    "$DEST/Sparkle.framework/Versions/B/Resources/Info.plist" 2>/dev/null || true
-}
-
-if [[ "$(installed_version)" == "$SPARKLE_VERSION" && -f "$DEST/LICENSE" \
-      && ! -e "$DEST/Sparkle.framework/Versions/B/XPCServices" ]]; then
-  echo "Sparkle $SPARKLE_VERSION already in $DEST"
-  exit 0
-fi
+sha256() { shasum -a 256 "$1" | cut -d' ' -f1; }
 
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
-curl -fsSL --retry 3 -o "$WORK/$ARCHIVE" "$URL"
-ACTUAL="$(shasum -a 256 "$WORK/$ARCHIVE" | cut -d' ' -f1)"
+mkdir -p "$DEST"
+if [[ -f "$KEPT" && "$(sha256 "$KEPT")" == "$SPARKLE_SHA256" ]]; then
+  cp "$KEPT" "$WORK/$ARCHIVE"
+  echo "Sparkle $SPARKLE_VERSION: the kept archive's SHA-256 matches"
+else
+  rm -f "$KEPT"
+  curl -fsSL --retry 3 -o "$WORK/$ARCHIVE" "$URL"
+fi
+ACTUAL="$(sha256 "$WORK/$ARCHIVE")"
 if [[ "$ACTUAL" != "$SPARKLE_SHA256" ]]; then
   echo "Sparkle $SPARKLE_VERSION: SHA-256 mismatch (expected $SPARKLE_SHA256, got $ACTUAL)" >&2
   exit 1
@@ -51,12 +55,14 @@ fi
 mkdir -p "$WORK/x"
 tar -xJf "$WORK/$ARCHIVE" -C "$WORK/x" ./Sparkle.framework ./LICENSE
 rm -rf "$WORK/x/Sparkle.framework/Versions/B/XPCServices" "$WORK/x/Sparkle.framework/XPCServices"
-rm -rf "$DEST/Sparkle.framework"
-mkdir -p "$DEST"
+rm -rf "$DEST/Sparkle.framework" "$DEST/LICENSE"
 # ditto keeps the framework's symlinks (Versions/Current and the top-level links).
 ditto "$WORK/x/Sparkle.framework" "$DEST/Sparkle.framework"
 cp "$WORK/x/LICENSE" "$DEST/LICENSE"
-if [[ "$(installed_version)" != "$SPARKLE_VERSION" ]]; then
+cp "$WORK/$ARCHIVE" "$KEPT"
+installed="$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" \
+  "$DEST/Sparkle.framework/Versions/B/Resources/Info.plist" 2>/dev/null || true)"
+if [[ "$installed" != "$SPARKLE_VERSION" ]]; then
   echo "Sparkle.framework in $DEST isn't version $SPARKLE_VERSION" >&2
   exit 1
 fi

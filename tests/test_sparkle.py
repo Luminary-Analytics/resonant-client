@@ -3,18 +3,24 @@
 Three layers:
 
 * ``SparkleUpdater`` and the updater's macOS paths with a fake bridge: the
-  feed, the mode, offline mode, the wait for a running turn, audit records
-  and the main-thread hand-off. Nothing here needs a Mac.
+  feed, the mode, offline mode (checks and each download), the wait for a
+  running turn, audit records and the main-thread hand-off; and how
+  ``__main__`` tells a LaunchServices launch from a command line. Nothing
+  here needs a Mac.
 * On macOS, the PyObjC delegate class: the Objective-C types it registers
   for Sparkle's BOOL results, NSInteger enums, NSError** and blocks.
 * With ``LUMI_TEST_SPARKLE_FRAMEWORK`` pointing at the pinned framework
   (CI fetches it with packaging/fetch_sparkle.sh), the real Sparkle: it reads
   the feed through the delegate, finds the macOS item in a feed that
   packaging/update_appcast.py wrote, skips a Windows one, stops asking after
-  offline mode, and orders Lumi's versions as the feeds expect.
+  offline mode, reads only a feed signed with the app's key
+  (packaging/feed_signature.py), offers nothing older than what runs, sends
+  no download request Lumi refused, and orders Lumi's versions as the feeds
+  expect.
 """
 from __future__ import annotations
 
+import base64
 import http.server
 import importlib.util
 import json
@@ -264,7 +270,7 @@ class TestInstallingAnUpdate:
         engine.choice(sparkle.CHOICE_DISMISS, "0.21.0")
         engine.choice(sparkle.CHOICE_INSTALL, "0.21.0")  # recorded when it installs
         engine.download_cancelled()
-        engine.download_failed("0.21.0", 2001)
+        engine.download_failed("0.21.0", sparkle.SPARKLE_ERROR_DOMAIN, sparkle.SU_DOWNLOAD_ERROR)
         engine.aborted(sparkle.SPARKLE_ERROR_DOMAIN, 2001)  # Sparkle's abort after that failure: once is enough
         engine.will_install("0.21.0")
         got = [(r["type"], r["data"].get("result"), r["data"].get("to_version")) for r in records()]
@@ -273,6 +279,8 @@ class TestInstallingAnUpdate:
             ("update.cancelled", None, None), ("update.skipped", None, "0.21.0"),
             ("update.postponed", None, "0.21.0"), ("update.cancelled", None, None),
             ("update.check", "error", "0.21.0"), ("update.install", None, "0.21.0")]
+        failed = records()[-2]["data"]
+        assert (failed["stage"], failed["code"], failed["domain"]) == ("download", 2001, sparkle.SPARKLE_ERROR_DOMAIN)
         assert all(r["data"]["feed"] == MAC_FEED for r in records())
 
     def test_in_browser_mode_lumi_closes_itself_for_the_installer(self, mac, records):
@@ -292,6 +300,83 @@ class TestInstallingAnUpdate:
         assert closed == [1]
 
 
+class TestWhatSparkleMayReach:
+    """Offline mode after Sparkle's own question: every download request is checked as Sparkle sends it."""
+
+    DMG = "https://luminary-analytics.github.io/resonant-client/downloads/v0.21.0/lumi-0.21.0.dmg"
+
+    def test_after_stop_a_download_is_refused_and_recorded_once(self, mac, records):
+        engine = start(UpdatePreferences())
+        assert engine.download_refusal(self.DMG, "0.21.0") == ""  # nothing refuses it yet
+        reason = "Offline mode: the update download needs luminary-analytics.github.io."
+        engine.stop(reason)
+        # An update window left open from before: Install Update starts a download.
+        assert engine.download_refusal(self.DMG, "0.21.0") == reason
+        # Sparkle's downloader then fails it at once, and aborts; neither is a failed check.
+        engine.download_failed("0.21.0", sparkle.SPARKLE_ERROR_DOMAIN, sparkle.SU_DOWNLOAD_ERROR)
+        engine.aborted(sparkle.SPARKLE_ERROR_DOMAIN, sparkle.SU_DOWNLOAD_ERROR)
+        [refused] = records()
+        assert refused["type"] == "update.refused"
+        assert {key: refused["data"][key] for key in ("stage", "to_version", "reason", "feed")} == {
+            "stage": "download", "to_version": "0.21.0", "reason": reason, "feed": MAC_FEED}
+        assert engine.release_notes_refusal("https://example.com/notes.html") == reason
+
+    def test_offline_mode_refuses_the_hosts_it_doesnt_allow(self, mac, records):
+        from lumi import offline
+
+        engine = start(UpdatePreferences())
+        offline.set_for_tests(enabled=True, allowed_hosts=("luminary-analytics.github.io",))
+        # Offline mode that allows the Pages site: the feed and its disk image are fine.
+        assert engine.may_check(sparkle.CHECK_BACKGROUND) == ""
+        assert engine.download_refusal(self.DMG, "0.21.0") == ""
+        # A feed that names another host for the download, or for its notes, isn't.
+        elsewhere = "https://objects.githubusercontent.com/lumi-0.21.0.dmg"
+        reason = engine.download_refusal(elsewhere, "0.21.0")
+        assert reason.startswith("Offline mode") and "objects.githubusercontent.com" in reason
+        assert "objects.githubusercontent.com" in engine.release_notes_refusal("https://objects.githubusercontent.com/n")
+        # This computer is always reachable.
+        assert engine.download_refusal("http://127.0.0.1:8000/lumi-0.21.0.dmg", "0.21.0") == ""
+        # Offline mode without the Pages site refuses the check itself, as it is now.
+        offline.set_for_tests(enabled=True, allowed_hosts=())
+        assert "luminary-analytics.github.io" in engine.may_check(sparkle.CHECK_USER)
+        assert [record["type"] for record in records()] == ["update.refused"]
+
+    def test_a_failed_download_that_wasnt_refused_is_an_error(self, mac, records):
+        engine = start(UpdatePreferences())
+        assert engine.download_refusal(self.DMG, "0.21.0") == ""
+        engine.download_failed("0.21.0", "NSURLErrorDomain", -1009)
+        [failed] = records()
+        assert failed["type"] == "update.check"
+        assert (failed["data"]["result"], failed["data"]["code"], failed["data"]["domain"]) == (
+            "error", -1009, "NSURLErrorDomain")
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="packaging/fetch_sparkle.sh runs on macOS")
+def test_fetching_sparkle_never_uses_what_it_cant_verify(tmp_path):
+    import re
+    import subprocess
+
+    script = ROOT / "packaging" / "fetch_sparkle.sh"
+    version = re.search(r'^SPARKLE_VERSION="(.+)"$', script.read_text(encoding="utf-8"), re.M).group(1)
+    dest = tmp_path / "sparkle"
+    (dest / "Sparkle.framework").mkdir(parents=True)  # left by an earlier build: never used as it is
+    kept = dest / f"Sparkle-{version}.tar.xz"
+    kept.write_bytes(b"an archive someone changed")
+    tools = tmp_path / "bin"
+    tools.mkdir()
+    curl = tools / "curl"  # stands in for the download, which gets something else too
+    curl.write_text('#!/bin/sh\nwhile [ $# -gt 0 ]; do\n  if [ "$1" = "-o" ]; then shift; printf "not sparkle" > "$1"; fi\n'
+                    '  shift\ndone\ntouch "$(dirname "$0")/downloaded"\n', encoding="utf-8")
+    curl.chmod(0o755)
+    result = subprocess.run(["bash", str(script), str(dest)], capture_output=True, text=True, timeout=60,
+                            env={**os.environ, "PATH": f"{tools}{os.pathsep}{os.environ['PATH']}"})
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "SHA-256 mismatch" in result.stderr
+    # The kept archive didn't match, so it was fetched again, and isn't kept.
+    assert (tools / "downloaded").exists() and not kept.exists()
+    assert list((dest / "Sparkle.framework").iterdir()) == []  # nothing was extracted
+
+
 def test_the_framework_is_found_inside_lumi_app(tmp_path):
     app = tmp_path / "Lumi.app" / "Contents"
     (app / "MacOS").mkdir(parents=True)
@@ -305,19 +390,80 @@ def test_the_framework_is_found_inside_lumi_app(tmp_path):
 
 
 class TestOpeningTheApp:
-    """A Finder launch of Lumi.app is the GUI; the same executable in Terminal is the terminal UI."""
+    """A LaunchServices launch of Lumi.app is the GUI; the same executable from a terminal or a script isn't.
 
-    def test_finder_dock_and_open_start_the_gui(self):
+    LaunchServices (Finder, the Dock, ``open``, Sparkle's relaunch) starts an
+    app as a child of launchd, without a terminal, with ``__CFBundleIdentifier``
+    set to the app's identifier. Anything else keeps the command line's
+    behavior: the terminal UI without arguments, and output where it was sent.
+    """
+
+    APP = ["/Applications/Lumi.app/Contents/MacOS/lumi"]
+    LUMI = "com.luminaryanalytics.lumi"
+    LAUNCHED = {"platform": "darwin", "frozen": True, "terminal": False, "parent": 1,
+                "environ": {"__CFBundleIdentifier": LUMI}, "bundle_id": LUMI}
+
+    def facts(self, **changed):
+        return {**self.LAUNCHED, **changed}
+
+    def test_finder_dock_open_and_sparkles_relaunch_start_the_gui(self):
         from lumi import __main__ as entry
 
-        app = ["/Applications/Lumi.app/Contents/MacOS/lumi"]
-        assert entry._opened_as_mac_app(app, platform="darwin", frozen=True, terminal=False)
-        assert entry._opened_as_mac_app(app + ["-psn_0_1234"], platform="darwin", frozen=True, terminal=False)
-        # In Terminal, with arguments, from source, or on Windows: as before.
-        assert not entry._opened_as_mac_app(app, platform="darwin", frozen=True, terminal=True)
-        assert not entry._opened_as_mac_app(app + ["gui", "--browser"], platform="darwin", frozen=True, terminal=False)
-        assert not entry._opened_as_mac_app(app, platform="darwin", frozen=False, terminal=False)
-        assert not entry._opened_as_mac_app(["lumi.exe"], platform="win32", frozen=True, terminal=False)
+        assert entry._launched_by_launchservices(self.APP, **self.LAUNCHED)
+        assert entry._opened_as_mac_app(self.APP, **self.LAUNCHED)
+        # Old macOS versions add a process serial number, and nothing else.
+        assert entry._opened_as_mac_app(self.APP + ["-psn_0_1234"], **self.facts(parent=4242, environ={}))
+
+    def test_a_terminal_a_script_or_a_job_keeps_the_command_line(self):
+        from lumi import __main__ as entry
+
+        others = {
+            "a terminal": self.facts(terminal=True),
+            # Lumi's own shell, or a script: another parent, even with Lumi's identifier inherited.
+            "a script": self.facts(parent=4242),
+            # cron, or a launchd job: launchd's child without a terminal, but no LaunchServices launch.
+            "a launchd job": self.facts(environ={}),
+            # Started by another app LaunchServices opened, which passed its own identifier on.
+            "another app": self.facts(environ={"__CFBundleIdentifier": "com.apple.Terminal"}),
+            "from source": self.facts(frozen=False),
+            "Windows": self.facts(platform="win32"),
+        }
+        for how, facts in others.items():
+            assert not entry._launched_by_launchservices(self.APP, **facts), how
+            assert not entry._opened_as_mac_app(self.APP, **facts), how
+
+    def test_arguments_mean_what_they_say_even_from_launchservices(self):
+        from lumi import __main__ as entry
+
+        assert entry._launched_by_launchservices(self.APP + ["gui", "--browser"], **self.LAUNCHED)
+        assert not entry._opened_as_mac_app(self.APP + ["gui", "--browser"], **self.LAUNCHED)
+
+    def test_the_bundle_identifier_comes_from_the_apps_info_plist(self, tmp_path):
+        import plistlib
+
+        from lumi import __main__ as entry
+
+        contents = tmp_path / "Lumi.app" / "Contents"
+        (contents / "MacOS").mkdir(parents=True)
+        executable = contents / "MacOS" / "lumi"
+        assert entry._bundle_identifier(str(executable)) == ""
+        (contents / "Info.plist").write_bytes(plistlib.dumps({"CFBundleIdentifier": self.LUMI}))
+        assert entry._bundle_identifier(str(executable)) == self.LUMI
+        (contents / "Info.plist").write_bytes(b"not a plist")
+        assert entry._bundle_identifier(str(executable)) == ""
+
+    def test_only_a_launchservices_launch_sends_devnull_output_to_the_startup_log(self, tmp_path):
+        from lumi import __main__ as entry
+
+        assert entry._discarded(None, False) and entry._discarded(None, True)  # no stream at all: always
+        with open(tmp_path / "out.txt", "w", encoding="utf-8") as regular:
+            assert not entry._discarded(regular, True) and not entry._discarded(regular, False)
+        if sys.platform == "win32":
+            return  # /dev/null is the macOS case; Windows gives a windowed app no streams at all
+        with open(os.devnull, "w", encoding="utf-8") as devnull:
+            assert entry._discarded(devnull, True)
+            # `lumi run … > /dev/null` from a script: what it prints stays discarded, off the disk.
+            assert not entry._discarded(devnull, False)
 
 
 # ── On a Mac: the PyObjC delegate ─────────────────────────────────────────────
@@ -353,6 +499,12 @@ def test_the_delegate_tells_objective_c_sparkles_types():
     assert args[1] == "q"
     ret, _ = types(b"feedURLStringForUpdater:")
     assert ret in {"@", b"@"}
+    ret, args = types(b"updater:willDownloadUpdate:withRequest:")
+    assert ret in {"v", b"v"} and args == ["@", "@", "@"]
+    ret, args = types(b"updater:shouldDownloadReleaseNotesForUpdate:")
+    assert ret in boolean and args == ["@", "@"]
+    ret, args = types(b"updater:failedToDownloadUpdate:error:")
+    assert ret in {"v", b"v"} and args == ["@", "@", "@"]
 
 
 @on_macos
@@ -369,6 +521,32 @@ def test_the_delegate_answers_through_objective_c():
     assert not delegate.respondsToSelector_(b"updater:willInstallUpdateOnQuit:immediateInstallationBlock:")
 
 
+@on_macos
+def test_a_refused_download_request_gets_an_address_sparkle_wont_load():
+    from Foundation import NSURL, NSMutableURLRequest
+
+    dmg = "https://luminary-analytics.github.io/resonant-client/downloads/v0.21.0/lumi-0.21.0.dmg"
+    asked = []
+    answer = [""]
+    owner = SimpleNamespace(download_refusal=lambda url, version: asked.append((url, version)) or answer[0])
+    delegate = sparkle._delegate_class().alloc().init()
+    delegate.owner = owner
+    item = SimpleNamespace(displayVersionString=lambda: "0.21.0")
+
+    def download(request):
+        delegate.updater_willDownloadUpdate_withRequest_(None, item, request)
+        return str(request.URL().absoluteString())
+
+    assert download(NSMutableURLRequest.requestWithURL_(NSURL.URLWithString_(dmg))) == dmg  # allowed: untouched
+    answer[0] = "Offline mode: the update download needs luminary-analytics.github.io."
+    assert download(NSMutableURLRequest.requestWithURL_(NSURL.URLWithString_(dmg))) == sparkle.REFUSED_DOWNLOAD_URL
+    assert asked == [(dmg, "0.21.0")] * 2
+    assert NSURL.URLWithString_(sparkle.REFUSED_DOWNLOAD_URL).scheme() not in ("http", "https")
+    # Unsure is refused too.
+    owner.download_refusal = lambda url, version: 1 / 0
+    assert download(NSMutableURLRequest.requestWithURL_(NSURL.URLWithString_(dmg))) == sparkle.REFUSED_DOWNLOAD_URL
+
+
 # ── On a Mac with the pinned framework: Sparkle itself ──────────────────────
 
 FRAMEWORK = os.environ.get("LUMI_TEST_SPARKLE_FRAMEWORK", "")
@@ -376,11 +554,19 @@ with_sparkle = pytest.mark.skipif(sys.platform != "darwin" or objc is None or no
                                   reason="set LUMI_TEST_SPARKLE_FRAMEWORK to a Sparkle.framework (macOS)")
 
 
-def _load_appcast():
-    spec = importlib.util.spec_from_file_location("lumi_update_appcast", ROOT / "packaging" / "update_appcast.py")
+def _load_packaging(name):
+    spec = importlib.util.spec_from_file_location(f"lumi_packaging_{name}", ROOT / "packaging" / f"{name}.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def _load_appcast():
+    return _load_packaging("update_appcast")
+
+
+def _load_feed_signature():
+    return _load_packaging("feed_signature")
 
 
 class _Feeds(http.server.SimpleHTTPRequestHandler):
@@ -395,86 +581,228 @@ class _Feeds(http.server.SimpleHTTPRequestHandler):
 
 
 @pytest.fixture
-def sparkle_host(tmp_path):
-    """An app bundle for Sparkle to look after (not this Python), and a feed server on this computer."""
-    appcast = _load_appcast()
+def feeds(tmp_path):
+    """A web server on this computer for the feeds and files a test puts in ``feeds.site``."""
     site = tmp_path / "site"
     site.mkdir()
-    dmg = tmp_path / "lumi-0.21.0.dmg"
-    dmg.write_bytes(b"disk image")
-    base = "http://127.0.0.1:{port}/downloads"
     _Feeds.requests = []
     handler = lambda *a, **k: _Feeds(*a, directory=str(site), **k)  # noqa: E731
     server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
-    port = server.server_address[1]
     threading.Thread(target=server.serve_forever, daemon=True).start()
-    appcast.publish_feeds(site, "0.21.0", dmg, "c2lnbmF0dXJl", "<p>Lumi 0.21.0</p>", base.format(port=port),
-                          platform="macos")
-    # A feed with a newer Windows-only item as well: Sparkle must skip it.
-    mixed = (site / "appcast-macos.xml").read_text(encoding="utf-8").replace("<item>", (
-        '<item><title>Version 0.22.0</title><sparkle:version>0.22.0</sparkle:version>'
-        f'<enclosure url="http://127.0.0.1:{port}/downloads/v0.22.0/lumi-setup-0.22.0.exe" sparkle:version="0.22.0" '
-        'sparkle:os="windows" length="1" type="application/octet-stream" sparkle:edSignature="c2ln" /></item><item>'), 1)
-    (site / "mixed.xml").write_text(mixed, encoding="utf-8")
-    bundle_id = f"com.luminaryanalytics.lumi.sparkle-test.{uuid.uuid4().hex[:12]}"
-    app = tmp_path / "LumiSparkleTest.app" / "Contents"
-    (app / "MacOS").mkdir(parents=True)
+    base = f"http://127.0.0.1:{server.server_address[1]}"
+
+    def publish(version):
+        """Add a macOS release to the site's feeds with update_appcast.py, as publish_macos.ps1 does (unsigned)."""
+        dmg = tmp_path / f"lumi-{version}.dmg"
+        dmg.write_bytes(b"disk image")
+        _load_appcast().publish_feeds(site, version, dmg, "c2lnbmF0dXJl", f"<p>Lumi {version}</p>",
+                                      f"{base}/downloads", platform="macos")
+
+    yield SimpleNamespace(site=site, base=base, url=lambda name: f"{base}/{name}", publish=publish)
+    server.shutdown()
+
+
+@pytest.fixture
+def host_app(tmp_path):
+    """Makes app bundles for Sparkle to look after (not this Python); forgets what Sparkle kept for them."""
     import plistlib
 
-    (app / "Info.plist").write_bytes(plistlib.dumps({
-        "CFBundleIdentifier": bundle_id, "CFBundleName": "LumiSparkleTest", "CFBundleExecutable": "test",
-        "CFBundlePackageType": "APPL", "CFBundleShortVersionString": "0.20.0", "CFBundleVersion": "0.20.0",
-        "SUPublicEDKey": updater.EDDSA_PUBLIC_KEY, "SUEnableAutomaticChecks": True,
-        "SUAllowsAutomaticUpdates": False}))
-    yield SimpleNamespace(app=str(app.parent), port=port, site=site, bundle_id=bundle_id,
-                          feed=f"http://127.0.0.1:{port}/appcast-macos.xml",
-                          mixed=f"http://127.0.0.1:{port}/mixed.xml")
-    server.shutdown()
-    from Foundation import NSUserDefaults
+    made = []
 
-    NSUserDefaults.standardUserDefaults().removePersistentDomainForName_(bundle_id)
+    def make(version="0.20.0", bundle_version=None, **info):
+        bundle_id = f"com.luminaryanalytics.lumi.sparkle-test.{uuid.uuid4().hex[:12]}"
+        contents = tmp_path / bundle_id / "LumiSparkleTest.app" / "Contents"
+        (contents / "MacOS").mkdir(parents=True)
+        (contents / "Info.plist").write_bytes(plistlib.dumps({
+            "CFBundleIdentifier": bundle_id, "CFBundleName": "LumiSparkleTest", "CFBundleExecutable": "test",
+            "CFBundlePackageType": "APPL", "CFBundleShortVersionString": version,
+            "CFBundleVersion": bundle_version or version, "SUPublicEDKey": updater.EDDSA_PUBLIC_KEY,
+            "SUEnableAutomaticChecks": True, "SUAllowsAutomaticUpdates": False, **info}))
+        made.append(bundle_id)
+        return str(contents.parent)
+
+    yield make
+    import shutil
+
+    from Foundation import NSCachesDirectory, NSFileManager, NSUserDefaults, NSUserDomainMask
+
+    defaults = NSUserDefaults.standardUserDefaults()
+    caches = NSFileManager.defaultManager().URLsForDirectory_inDomains_(NSCachesDirectory, NSUserDomainMask)
+    for bundle_id in made:
+        defaults.removePersistentDomainForName_(bundle_id)
+        # Where Sparkle notes when a feed first failed its signature check, for a bundle it doesn't run in.
+        defaults.removeObjectForKey_(f"SUInitialFailedFeedSigningValidationDate_{bundle_id}")
+        for folder in caches:  # a download's folder
+            shutil.rmtree(Path(str(folder.path())) / bundle_id, ignore_errors=True)
+
+
+class _Cycles:
+    """A SparkleUpdater for a test bundle: what it records, and one update cycle at a time."""
+
+    def __init__(self, host, feed):
+        self.events = []
+        self.finished = []
+        self.feed = feed
+        self.engine = sparkle.SparkleUpdater(
+            Path(FRAMEWORK), record=lambda kind, **data: self.events.append((kind, data)),
+            turn_running=lambda: False, close_app=lambda: None, host_bundle=host)
+        assert self.engine.start(SimpleNamespace(mode="manual", feed_url=feed))
+        # The delegate looks each answer up on its owner, so these stand in for Lumi's own.
+        self.engine.feed_url = lambda: self.feed
+        cycle_finished = self.engine.cycle_finished
+        self.engine.cycle_finished = lambda when: self.finished.append(when) or cycle_finished(when)
+
+    @property
+    def updater(self):
+        return self.engine._bridge._updater
+
+    def run(self, start=None):
+        """Start a cycle (by default the information check, which opens no window) and wait for its end."""
+        before, cycles = len(self.events), len(self.finished)
+        (start or (lambda updater: updater.checkForUpdateInformation()))(self.updater)
+        deadline = time.monotonic() + 30
+        while len(self.finished) == cycles and time.monotonic() < deadline:
+            self.engine._bridge.run_loop_once(0.2)
+        assert len(self.finished) > cycles, "Sparkle didn't finish the update cycle"
+        return self.events[before:]
+
+
+FOUND = ("update.check", {"result": "found", "to_version": "0.21.0"})
+NONE = ("update.check", {"result": "none"})
+SU_APPCAST_PARSE_ERROR = 1000  # what Sparkle reports for a feed whose signature doesn't verify
 
 
 @with_sparkle
-def test_sparkle_reads_the_feed_lumi_chooses_and_the_macos_item(sparkle_host):
-    events = []
-    prefs = SimpleNamespace(mode="manual", feed_url=sparkle_host.mixed)
-    engine = sparkle.SparkleUpdater(Path(FRAMEWORK), record=lambda kind, **data: events.append((kind, data)),
-                                    turn_running=lambda: False, close_app=lambda: None,
-                                    host_bundle=sparkle_host.app)
-    assert engine.start(prefs)
-    status = engine.status()
+def test_sparkle_reads_the_feed_lumi_chooses_and_the_macos_item(feeds, host_app):
+    feeds.publish("0.21.0")
+    # A feed with a newer Windows-only item as well: Sparkle must skip it.
+    mixed = (feeds.site / "appcast-macos.xml").read_text(encoding="utf-8").replace("<item>", (
+        '<item><title>Version 0.22.0</title><sparkle:version>0.22.0</sparkle:version>'
+        f'<enclosure url="{feeds.base}/downloads/v0.22.0/lumi-setup-0.22.0.exe" sparkle:version="0.22.0" '
+        'sparkle:os="windows" length="1" type="application/octet-stream" sparkle:edSignature="c2ln" /></item><item>'), 1)
+    (feeds.site / "mixed.xml").write_text(mixed, encoding="utf-8")
+    run = _Cycles(host_app(), feeds.url("mixed.xml"))
+    status = run.engine.status()
     assert status["version"] == "2.10.0"
-    assert status["feed"] == sparkle_host.mixed  # asked the delegate through Objective-C
+    assert status["feed"] == feeds.url("mixed.xml")  # asked the delegate through Objective-C
     assert status["automatic"] is False
 
     asked = []
-    may_check = engine.may_check
-    engine.may_check = lambda kind: asked.append(kind) or may_check(kind)  # the delegate looks it up on the owner
-    finished = []
-    cycle_finished = engine.cycle_finished
-    engine.cycle_finished = lambda when: finished.append(when) or cycle_finished(when)
-
-    def probe():
-        before, cycles = len(events), len(finished)
-        engine._bridge._updater.checkForUpdateInformation()
-        deadline = time.monotonic() + 30
-        while len(finished) == cycles and time.monotonic() < deadline:
-            engine._bridge.run_loop_once(0.2)
-        assert len(finished) > cycles, "Sparkle didn't finish the check"
-        return events[before:]
-
-    found = probe()
-    assert found == [("update.check", {"result": "found", "to_version": "0.21.0"})], found
+    may_check = run.engine.may_check
+    run.engine.may_check = lambda kind: asked.append(kind) or may_check(kind)
+    assert run.run() == [FOUND]
     assert asked == [sparkle.CHECK_INFORMATION]
     assert "/mixed.xml" in _Feeds.requests
 
     # Offline mode: Sparkle asks the delegate first, is refused, and makes no request.
-    engine.stop("Offline mode: the update check needs this computer.")
+    run.engine.stop("Offline mode: the update check needs this computer.")
     requests = len(_Feeds.requests)
-    assert probe() == []  # Lumi's own refusal isn't recorded as a failed check
+    assert run.run() == []  # Lumi's own refusal isn't recorded as a failed check
     assert asked == [sparkle.CHECK_INFORMATION] * 2
     assert len(_Feeds.requests) == requests
+
+
+def _signing_key():
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+    from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
+
+    key = Ed25519PrivateKey.generate()
+    return key, base64.b64encode(key.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw)).decode()
+
+
+def _sign(path, key):
+    """Sign a feed as publish_macos.ps1 does: over its bytes as written, in feed_signature.py's block."""
+    _load_feed_signature().attach(path, base64.b64encode(key.sign(path.read_bytes())).decode())
+
+
+@with_sparkle
+def test_sparkle_reads_only_a_feed_signed_with_the_apps_key(feeds, host_app):
+    """Lumi.app's SURequireSignedFeed, with a throwaway key in place of the release key."""
+    key, public = _signing_key()
+    other, _ = _signing_key()
+    feeds.publish("0.21.0")
+    feed = feeds.site / "appcast-macos.xml"
+    for name in ("unsigned.xml", "other-key.xml"):
+        (feeds.site / name).write_bytes(feed.read_bytes())
+    _sign(feeds.site / "other-key.xml", other)
+    _sign(feed, key)
+    signed = feed.read_bytes()
+    # Changed after signing, as by someone who could edit the feed: where the download comes from.
+    tampered = signed.replace(b"lumi-0.21.0.dmg", b"lumi-0.21.9.dmg", 1)
+    assert tampered != signed and len(tampered) == len(signed)
+    (feeds.site / "tampered.xml").write_bytes(tampered)
+
+    run = _Cycles(host_app(SUPublicEDKey=public, SURequireSignedFeed=True, SUVerifyUpdateBeforeExtraction=True),
+                  feeds.url("appcast-macos.xml"))
+    assert run.run() == [FOUND]
+    for name in ("tampered.xml", "other-key.xml", "unsigned.xml"):
+        run.feed = feeds.url(name)
+        assert run.run() == [("update.check", {"result": "error", "code": SU_APPCAST_PARSE_ERROR})], name
+    # And the signed feed still reads after those failures.
+    run.feed = feeds.url("appcast-macos.xml")
+    assert run.run() == [FOUND]
+
+
+@with_sparkle
+def test_sparkle_offers_nothing_older_than_what_runs(feeds, host_app):
+    feeds.publish("0.20.0")
+    feeds.publish("0.21.0")
+    feed = feeds.url("appcast-macos.xml")
+    for running in ("0.21.0", "0.21.1"):
+        assert _Cycles(host_app(running), feed).run() == [NONE], running
+    # The same feed updates what is older, the release's own beta included.
+    assert _Cycles(host_app("0.20.0"), feed).run() == [FOUND]
+    assert _Cycles(host_app("0.21.0-beta.1", bundle_version="0.21.0beta.1"), feed).run() == [FOUND]
+
+
+@with_sparkle
+def test_a_download_is_checked_as_sparkle_starts_it(feeds, host_app):
+    """Sparkle asks about an update once, when it finds it; the download is checked as it starts.
+
+    With automatic updates on (never in Lumi.app), Sparkle downloads what it
+    finds at once, without a window to answer: the same download, request and
+    delegate as Install Update in an update window left open.
+    """
+    from lumi import offline
+
+    feeds.publish("0.21.0")  # its disk image isn't on the server: a download that starts gets a 404
+    elsewhere = "http://updates.example.test/downloads"
+    remote = (feeds.site / "appcast-macos.xml").read_text(encoding="utf-8").replace(f"{feeds.base}/downloads", elsewhere)
+    assert elsewhere in remote
+    (feeds.site / "remote.xml").write_text(remote, encoding="utf-8")
+    dmg = "/downloads/v0.21.0/lumi-0.21.0.dmg"
+
+    def automatic(feed):
+        run = _Cycles(host_app(SUAllowsAutomaticUpdates=True, SUAutomaticallyUpdate=True), feed)
+        run.updater.setAutomaticallyDownloadsUpdates_(True)
+        assert run.updater.automaticallyDownloadsUpdates()
+        return run
+
+    def in_background(updater):
+        updater.checkForUpdatesInBackground()
+
+    # Nothing refuses it: Sparkle requests the disk image straight away.
+    run = automatic(feeds.url("appcast-macos.xml"))
+    assert run.run(in_background) == [FOUND, ("update.check", {
+        "result": "error", "stage": "download", "to_version": "0.21.0", "code": sparkle.SU_DOWNLOAD_ERROR,
+        "domain": sparkle.SPARKLE_ERROR_DOMAIN})]
+    assert dmg in _Feeds.requests
+
+    # Offline mode comes on after Sparkle's question: its download never reaches the server.
+    reason = "Offline mode: the update download needs 127.0.0.1."
+    may_proceed = run.engine.may_proceed
+    run.engine.may_proceed = lambda version: may_proceed(version) or run.engine.stop(reason) or ""
+    _Feeds.requests.clear()
+    assert run.run(in_background) == [FOUND, ("update.refused", {
+        "stage": "download", "to_version": "0.21.0", "reason": reason})]
+    assert "/appcast-macos.xml" in _Feeds.requests and dmg not in _Feeds.requests
+
+    # Offline mode reads a feed on this computer, but refuses a download from elsewhere.
+    offline.set_for_tests(enabled=True, allowed_hosts=())
+    run = automatic(feeds.url("remote.xml"))
+    [found, (kind, data)] = run.run(in_background)
+    assert found == FOUND and (kind, data["stage"], data["to_version"]) == ("update.refused", "download", "0.21.0")
+    assert data["reason"].startswith("Offline mode") and "updates.example.test" in data["reason"]
 
 
 @with_sparkle

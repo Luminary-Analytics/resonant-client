@@ -56,9 +56,13 @@ behaves as on Windows ([Updates](updates.md)):
   WinSparkle checks the Windows installer with. Lumi.app's `SUPublicEDKey` is
   that key (`updater.EDDSA_PUBLIC_KEY`), and Sparkle checks the signature
   before it even mounts the disk image. It installs nothing that fails.
-- **Its own feeds.** The Mac reads `appcast-macos.xml`,
+- **Its own feeds, signed.** The Mac reads `appcast-macos.xml`,
   `appcast-macos-beta.xml` and `appcast-macos-X.Y.xml`, which list disk
-  images. The Windows feeds keep their addresses and contents.
+  images. Each ends with a signature made with the same key
+  (`packaging/feed_signature.py`), and Lumi.app reads a feed only when it
+  verifies (`SURequireSignedFeed`), so what a feed lists and where it says
+  to download from are the release's own. A feed that fails is an update
+  error. The Windows feeds keep their addresses and contents.
 - **Installing.** When Sparkle finds a newer version it shows its window:
   **Install Update**, **Remind Me Later** or **Skip This Version**. It
   downloads and checks the update, then asks to close Lumi. **While an agent
@@ -68,11 +72,16 @@ behaves as on Windows ([Updates](updates.md)):
 - **The audit log** gets the same records as on Windows: `update.check`
   (`found`, `none` or `error`), `update.deferred`, `update.install`, and your
   choices as `update.skipped`, `update.postponed` (Remind Me Later) and
-  `update.cancelled`.
+  `update.cancelled`; and `update.refused` for a download offline mode
+  stopped.
 - **Offline mode** stops it as it stops WinSparkle: Sparkle isn't started
   unless the update site is an allowed host, and turning offline mode on
   refuses every check and download from then on. Update checks start again
-  after a restart.
+  after a restart. Sparkle asks about an update only when it finds one, and
+  an update window can stay open long after, so Lumi also checks each
+  download as Sparkle starts it: after offline mode came on, or to a host
+  offline mode doesn't allow, the download is refused before it connects
+  (Sparkle says the download failed, and the audit log says why).
 
 Only the app updates itself: `lumi` in Terminal (the terminal UI) and the
 chat gateway don't start Sparkle, and a copy running from source never loads
@@ -116,8 +125,8 @@ It does what `scripts/build_clean.ps1` does on Windows, and adds Sparkle:
 
 Without a Developer ID the build is signed ad hoc, which Apple silicon
 requires to run it at all, and says it isn't signed; macOS then needs the
-one-time approval above. With these set (as repository secrets in CI, or in
-the environment locally), the script signs `Lumi.app` with the hardened
+one-time approval above. With these set (as secrets of the `release`
+environment in CI, or in the environment locally), the script signs `Lumi.app` with the hardened
 runtime and `packaging/macos/entitlements.plist`, signs Sparkle's installer
 and progress app separately without those entitlements, then signs the DMG,
 notarizes it with `notarytool` and staples the ticket:
@@ -134,7 +143,14 @@ notarizes it with `notarytool` and staples the ticket:
 A Developer ID needs a paid Apple Developer Program membership.
 [RELEASING.md](../RELEASING.md#macos-signing-and-notarization) says how to get
 each of these. The update signature (EdDSA) is separate from Apple's: it's
-what Sparkle trusts, signed or not.
+what Sparkle trusts, signed or not. Sparkle also accepts an update signed
+with the same team's Developer ID in its place, so the certificate is kept
+like the EdDSA key: only release.yml's jobs in the `release` environment
+read it, and builds for pull requests (`build-macos.yml`) get no Apple secret
+and are always signed ad hoc
+([the release environment](release-pipeline.md#the-release-environment)).
+With `MACOS_SIGNING_REQUIRED` set to `true`, a release whose Apple secrets are
+missing fails instead of shipping an ad hoc build.
 
 ## Differences from Windows
 
@@ -157,10 +173,13 @@ what Sparkle trusts, signed or not.
 - **No on-screen indicator yet.** The "Lumi is using the computer" border and
   banner are Windows-only.
 - **Keys:** API keys go to the macOS Keychain.
-- **Opening the app:** Finder, the Dock and Sparkle's relaunch start Lumi with
-  no arguments and no terminal, which opens the app; `lumi` run in Terminal
-  without arguments is the terminal UI, as on Windows. Launched that way, Lumi
-  writes its startup messages to `~/.lumi/logs/lumi-startup.log`.
+- **Opening the app:** Finder, the Dock, `open` and Sparkle's relaunch start
+  Lumi through LaunchServices (a child of launchd, no terminal, and
+  `__CFBundleIdentifier` set to Lumi's identifier), which opens the app, and
+  Lumi writes its startup messages to `~/.lumi/logs/lumi-startup.log`.
+  Anything else keeps the command line's behavior: `lumi` without arguments
+  from Terminal or a script is the terminal UI, as on Windows, and output a
+  script sends to `/dev/null` stays there.
 
 ## What has been verified
 
@@ -170,8 +189,8 @@ the CI workflow:
 - builds the app, the DMG and the PKG, with Sparkle in the app, signed ad hoc;
 - checks what Sparkle reads before Lumi's code runs: the Info.plist's
   `SUPublicEDKey` and `SUFeedURL` are the key and macOS feed the binary
-  prints, the bundle version has no dash, and Sparkle's framework, signature
-  and license notice are there;
+  prints, the bundle version has no dash, signed feeds are required, and
+  Sparkle's framework, signature and license notice are there;
 - runs `lumi --version` and `lumi updates` (automatic, macOS feeds);
 - starts the GUI server in browser mode, loads the page, redeems the one-time
   launch code, and checks that the WebSocket refuses a connection without the
@@ -184,7 +203,11 @@ the CI workflow:
   exist, so the result is an error);
 - opens Lumi.app as Finder does, with no arguments: the app serves its page,
   keeps running with its window, and writes a startup log without errors;
-- installs the PKG and checks that copy leaves updates to device management.
+- installs the PKG and checks that copy leaves updates to device management;
+- on Windows, rehearses the release's macOS publishing
+  (`packaging/publish_macos.ps1`) with a throwaway key on a scratch copy of
+  the `gh-pages` branch: the disk image and every macOS feed are signed and
+  verify, the Windows feeds don't change, and nothing is pushed.
 
 `tests.yml` also runs the updater's tests on `macos-latest`
 (`tests/test_sparkle.py` and the feed, Pages and PKG tests), with the pinned
@@ -197,6 +220,15 @@ framework:
   delegate, finds the macOS item in a feed `update_appcast.py` wrote (and
   skips a newer Windows-only one), and after offline mode asks the delegate,
   is refused and makes no request;
+- with signed feeds required (and a throwaway key), it reads a feed signed as
+  the release signs it, and refuses one changed after signing, one signed
+  with another key and an unsigned one;
+- it offers nothing older than the version running, or the same;
+- a download Lumi refuses (offline mode came on after Sparkle found the
+  update, or the download's host isn't allowed) never reaches the server,
+  while an allowed one does;
+- `packaging/fetch_sparkle.sh` refuses an archive whose SHA-256 doesn't
+  match, a kept one included, and extracts nothing;
 - Sparkle's own version comparison orders Lumi's versions, betas included,
   as the feeds expect.
 
@@ -213,9 +245,12 @@ CI runs on a Mac, but not as a person does, and it has no Apple account:
   the runner, so macOS never quarantines it.
 - **A whole update.** Two published releases on the feed, a copy of the older
   one in Applications: Sparkle's window, the download, the EdDSA check before
-  mounting, closing Lumi (and waiting for a running turn), replacing
-  Lumi.app and opening the new one. Whether macOS asks for App Management
-  permission before an ad-hoc-signed app replaces itself also needs checking.
+  mounting (done by Sparkle's installer, which Sparkle starts through
+  launchd; CI checks every published signature with the app's key instead,
+  and a disk image with a bad signature is never tried), closing Lumi (and
+  waiting for a running turn), replacing Lumi.app and opening the new one.
+  Whether macOS asks for App Management permission before an ad-hoc-signed
+  app replaces itself also needs checking.
 - **The native window** beyond starting: menus, keyboard shortcuts, dragging,
   resizing, the folder and file pickers, and Sparkle's windows over it.
 - **Dictation:** the microphone prompt, and the webview's speech recognition

@@ -25,6 +25,13 @@
 #   APPLE_API_KEY_ID, APPLE_API_ISSUER_ID
 # or an Apple ID with an app-specific password:
 #   APPLE_ID, APPLE_TEAM_ID, APPLE_APP_PASSWORD
+#
+# MACOS_SIGNING_REQUIRED=true (a repository variable, set once the Developer ID
+# exists) makes missing signing or notarization credentials fail the build:
+# otherwise a lost secret would quietly ship an ad hoc build, which Sparkle
+# installs over a notarized one (its EdDSA signature is still valid), and
+# macOS then asks again for every privacy permission. The certificate file,
+# the notary key and the temporary keychain are deleted when the script ends.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -34,6 +41,21 @@ if [[ "${1:-}" == "--sbom" ]]; then SBOM="$2"; fi
 if [[ "$(uname)" != "Darwin" ]]; then
   echo "build_macos.sh builds on macOS only" >&2
   exit 2
+fi
+
+if [[ "${MACOS_SIGNING_REQUIRED:-}" == "true" ]]; then
+  missing=()
+  for name in MACOS_SIGN_IDENTITY MACOS_SIGN_P12_BASE64 MACOS_INSTALLER_IDENTITY; do
+    [[ -n "${!name:-}" ]] || missing+=("$name")
+  done
+  if [[ -z "${APPLE_API_KEY_BASE64:-}" || -z "${APPLE_API_KEY_ID:-}" || -z "${APPLE_API_ISSUER_ID:-}" ]] &&
+     [[ -z "${APPLE_ID:-}" || -z "${APPLE_TEAM_ID:-}" || -z "${APPLE_APP_PASSWORD:-}" ]]; then
+    missing+=("APPLE_API_KEY_BASE64/APPLE_API_KEY_ID/APPLE_API_ISSUER_ID or APPLE_ID/APPLE_TEAM_ID/APPLE_APP_PASSWORD")
+  fi
+  if [[ ${#missing[@]} -gt 0 ]]; then
+    echo "MACOS_SIGNING_REQUIRED is true, but these aren't set: ${missing[*]}; refusing to build an unsigned release" >&2
+    exit 1
+  fi
 fi
 
 cd "$ROOT"
@@ -48,6 +70,13 @@ bash packaging/fetch_sparkle.sh "$ROOT/packaging/sparkle"
 
 VENV="$(mktemp -d)/venv"
 WORK="$(dirname "$VENV")"
+KEYCHAIN=""
+cleanup() {
+  # Signing material never outlives the build, whatever ended it.
+  rm -f "$WORK/signing.p12" "$WORK/AuthKey.p8"
+  if [[ -n "$KEYCHAIN" ]]; then security delete-keychain "$KEYCHAIN" 2>/dev/null || true; fi
+}
+trap cleanup EXIT
 python3 -m venv "$VENV"
 PY="$VENV/bin/python"
 "$PY" -m pip install --disable-pip-version-check --no-cache-dir --upgrade pip
@@ -103,6 +132,7 @@ if [[ -n "${MACOS_SIGN_IDENTITY:-}" && -n "${MACOS_SIGN_P12_BASE64:-}" ]]; then
   security set-keychain-settings -lut 3600 "$KEYCHAIN"
   security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
   security import "$WORK/signing.p12" -k "$KEYCHAIN" -P "${MACOS_SIGN_P12_PASSWORD:-}" -T /usr/bin/codesign -T /usr/bin/productbuild
+  rm -f "$WORK/signing.p12"
   security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN" >/dev/null
   security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
   # Hardened runtime with the entitlements Python needs; every nested binary first.

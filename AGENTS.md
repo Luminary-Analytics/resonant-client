@@ -137,12 +137,18 @@ host enrollment and actual packaged/learned-benefit qualification remain open.
   `pin` (Settings or policy, read at startup); `appcast.xml` keeps its address
   because every earlier install polls it. macOS uses Sparkle (`sparkle.py`,
   PyObjC, main thread, app only) with the same EdDSA key and its own feeds
-  (`appcast-macos*.xml`); never put macOS items in the Windows feeds. Running
+  (`appcast-macos*.xml`); never put macOS items in the Windows feeds. The
+  macOS feeds are signed (`SURequireSignedFeed`, `packaging/feed_signature.py`):
+  whatever writes one signs it again (`packaging/publish_macos.ps1`). Sparkle's
+  delegate checks each download request as it starts (`download_refusal`),
+  not only the check. Running
   from source never loads WinSparkle or Sparkle, and an MSI, PKG, deb or rpm install (`lumi-install.json`) never
   updates itself. A macOS configuration profile that can't be used fails closed like
   any machine policy (`policy.managed_preferences_policy`).
   Never change `packaging/lumi.wxs`'s UpgradeCode. Publishing a release or
-  feed needs the user's go-ahead.
+  feed needs the user's go-ahead. Signing secrets (EdDSA, Apple, Authenticode)
+  go only to release.yml's jobs in the `release` environment, never to a
+  workflow pull requests run; a Developer ID certificate is an update key too.
 - Offline mode (`offline.py`, docs/offline.md): every outbound connection Lumi
   makes goes through the central check, and only this computer and
   `offline.allowed_hosts` are reachable. Build HTTP clients with

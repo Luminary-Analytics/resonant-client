@@ -414,7 +414,8 @@ if sys.platform == "darwin":
             # pin's feed; this is the stable one. Settings > Updates decides
             # whether to check, so Sparkle never asks, and nothing installs
             # without the person, after the running turn. The disk image's
-            # EdDSA signature is checked before it is mounted.
+            # EdDSA signature is checked before it is mounted, and the feeds
+            # are signed with the same key (packaging/feed_signature.py).
             "SUPublicEDKey": _eddsa_public_key,
             "SUFeedURL": _macos_feed,
             "SUEnableAutomaticChecks": True,
@@ -423,5 +424,6 @@ if sys.platform == "darwin":
             "SUAutomaticallyUpdate": False,
             "SUEnableSystemProfiling": False,
             "SUVerifyUpdateBeforeExtraction": True,
+            "SURequireSignedFeed": True,
         },
     )

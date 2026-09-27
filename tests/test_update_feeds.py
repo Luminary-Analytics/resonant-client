@@ -1,6 +1,7 @@
 """Update feeds on the Pages site: stable, beta and one per release line (packaging/update_appcast.py)."""
 from __future__ import annotations
 
+import base64
 import importlib.util
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -225,3 +226,89 @@ def test_the_app_and_its_feed_items_agree(tmp_path):
     assert '"SUPublicEDKey": _eddsa_public_key' in spec and '"SUFeedURL": _macos_feed' in spec
     with pytest.raises(ValueError, match="platform"):
         feeds.publish_feeds(tmp_path, "0.21.0", Path(__file__), "c2ln", "", BASE, platform="linux")
+
+
+# ── Signed macOS feeds (packaging/feed_signature.py; Sparkle's SURequireSignedFeed) ──
+
+
+def _feed_signature():
+    spec = importlib.util.spec_from_file_location("lumi_feed_signature", ROOT / "packaging" / "feed_signature.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _key():
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+    from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
+
+    key = Ed25519PrivateKey.generate()
+    return key, base64.b64encode(key.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw)).decode()
+
+
+def _signature(key, data: bytes) -> str:
+    return base64.b64encode(key.sign(data)).decode()
+
+
+def test_a_signed_macos_feed_carries_sparkles_block_and_still_reads(site, tmp_path):
+    feeds, signing = _load(), _feed_signature()
+    key, public = _key()
+    _mac_release(feeds, site, tmp_path, "0.21.0")
+    feed = site / "appcast-macos.xml"
+    unsigned = feed.read_bytes()
+    signature = _signature(key, unsigned)
+    signing.attach(feed, signature)
+    signed = feed.read_bytes()
+    # What Sparkle's sign_update appends, after the feed's own bytes, which are what was signed.
+    assert signed == unsigned + (f"<!-- sparkle-signatures:\nedSignature: {signature}\n"
+                                 f"length: {len(unsigned)}\n-->\n").encode()
+    assert signing.split(signed) == (unsigned, signature, len(unsigned))
+    assert signing.verify(feed, public)
+    # A comment after the feed's root: the client and the next release read it as before.
+    assert _mac_versions(feed) == ["0.21.0"]
+    with pytest.raises(ValueError, match="already"):
+        signing.attach(feed, signature)
+    # The next release writes its feeds afresh, unsigned, for publish_macos.ps1 to sign again.
+    _mac_release(feeds, site, tmp_path, "0.21.1")
+    assert signing.PREFIX not in feed.read_bytes()
+    assert _mac_versions(feed) == ["0.21.1", "0.21.0"]
+
+
+def test_a_feed_that_doesnt_match_its_signature_fails(site, tmp_path):
+    feeds, signing = _load(), _feed_signature()
+    key, public = _key()
+    other, other_public = _key()
+    _mac_release(feeds, site, tmp_path, "0.21.0")
+    feed = site / "appcast-macos.xml"
+    unsigned = feed.read_bytes()
+    assert not signing.verify(feed, public)  # no block at all
+    signing.attach(feed, _signature(key, unsigned))
+    signed = feed.read_bytes()
+    assert signing.verify(feed, public) and not signing.verify(feed, other_public)
+    # Another download address, of the same length: the signature no longer covers it.
+    feed.write_bytes(signed.replace(b"lumi-0.21.0.dmg", b"lumi-0.21.9.dmg", 1))
+    assert not signing.verify(feed, public)
+    # Content added before the block: the stated length is wrong.
+    feed.write_bytes(signed.replace(b"</rss>", b"</rss>\n", 1))
+    assert not signing.verify(feed, public)
+    with pytest.raises(ValueError, match="Ed25519"):
+        signing.attach(site / "appcast-macos-beta.xml", "bm90IGEgc2lnbmF0dXJl")
+
+
+def test_the_feed_signature_command_line(site, tmp_path, capsys):
+    feeds, signing = _load(), _feed_signature()
+    key, public = _key()
+    _mac_release(feeds, site, tmp_path, "0.21.0")
+    feed = site / "appcast-macos.xml"
+    unsigned = feed.read_bytes()
+    content = tmp_path / "content.xml"
+    assert signing.main(["split", str(feed), str(content)]) == 1  # nothing signed yet
+    assert signing.main(["verify", str(feed), public]) == 1
+    signature = _signature(key, unsigned)
+    assert signing.main(["attach", str(feed), signature]) == 0
+    capsys.readouterr()
+    # What publish_macos.ps1 checks with winsparkle-tool: the signed content and its signature.
+    assert signing.main(["split", str(feed), str(content)]) == 0
+    assert capsys.readouterr().out.strip() == signature and content.read_bytes() == unsigned
+    assert signing.main(["verify", str(feed), public]) == 0
+    assert signing.main(["attach", str(feed), signature]) == 1  # already signed

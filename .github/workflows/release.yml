@@ -32,6 +32,20 @@ name: Release
 #      (appcast-macos*.xml; the Windows feeds are left as they are). Sparkle in
 #      installed Macs picks it up within 24h.
 #   A failed macOS build doesn't hold the Windows release back; rerun its jobs.
+#
+# Hardening (docs/release-pipeline.md#the-release-environment):
+#   - Jobs that use the EdDSA key or the Apple or Windows signing secrets run
+#     in the `release` environment, which the owner restricts to v* tags.
+#   - Only the two publishing jobs get contents: write; the macOS build reads.
+#     Checkouts that never push keep no credentials.
+#   - The jobs that write gh-pages share one concurrency group and push with a
+#     lease on the commit they checked out, so two runs can't overwrite each
+#     other.
+#   - The EdDSA key file is deleted as soon as it has signed, before any
+#     third-party action runs. Actions are pinned by commit.
+#   - With the repository variables MACOS_SIGNING_REQUIRED or
+#     WINDOWS_SIGNING_REQUIRED set to true, missing signing secrets fail the
+#     release instead of shipping an unsigned build.
 
 on:
   push:
@@ -39,18 +53,25 @@ on:
       - 'v*.*.*'
 
 permissions:
-  contents: write   # needed for creating Releases and pushing gh-pages
+  contents: read
 
 jobs:
   release:
     runs-on: windows-latest
     timeout-minutes: 30
+    environment: release
+    permissions:
+      contents: write   # creates the Release and pushes gh-pages
+    concurrency:
+      group: release-gh-pages
+      cancel-in-progress: false
 
     steps:
       - name: Checkout main
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Extract version from tag
         id: version
@@ -72,7 +93,7 @@ jobs:
           echo "Version match: $PKG_VERSION"
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: '3.13'
           cache: 'pip'
@@ -133,6 +154,7 @@ jobs:
           WINDOWS_SIGN_PFX_BASE64: ${{ secrets.WINDOWS_SIGN_PFX_BASE64 }}
           WINDOWS_SIGN_PFX_PASSWORD: ${{ secrets.WINDOWS_SIGN_PFX_PASSWORD }}
           WINDOWS_SIGN_COMMAND: ${{ vars.WINDOWS_SIGN_COMMAND }}
+          WINDOWS_SIGNING_REQUIRED: ${{ vars.WINDOWS_SIGNING_REQUIRED }}
         run: ./packaging/sign_windows.ps1 -Files "dist/lumi/lumi.exe"
 
       # NOTE: windows-latest GitHub-hosted runners ship Inno Setup pre-installed
@@ -172,6 +194,7 @@ jobs:
           WINDOWS_SIGN_PFX_BASE64: ${{ secrets.WINDOWS_SIGN_PFX_BASE64 }}
           WINDOWS_SIGN_PFX_PASSWORD: ${{ secrets.WINDOWS_SIGN_PFX_PASSWORD }}
           WINDOWS_SIGN_COMMAND: ${{ vars.WINDOWS_SIGN_COMMAND }}
+          WINDOWS_SIGNING_REQUIRED: ${{ vars.WINDOWS_SIGNING_REQUIRED }}
         run: ./packaging/sign_windows.ps1 -Files "dist/installer/lumi-${{ steps.version.outputs.version }}.msi"
 
       # Before the EdDSA signature, so the update feed signs the final bytes.
@@ -181,6 +204,7 @@ jobs:
           WINDOWS_SIGN_PFX_BASE64: ${{ secrets.WINDOWS_SIGN_PFX_BASE64 }}
           WINDOWS_SIGN_PFX_PASSWORD: ${{ secrets.WINDOWS_SIGN_PFX_PASSWORD }}
           WINDOWS_SIGN_COMMAND: ${{ vars.WINDOWS_SIGN_COMMAND }}
+          WINDOWS_SIGNING_REQUIRED: ${{ vars.WINDOWS_SIGNING_REQUIRED }}
         run: ./packaging/sign_windows.ps1 -Files "dist/installer/lumi-setup-${{ steps.version.outputs.version }}.exe"
 
       - name: Sign installer with EdDSA
@@ -192,26 +216,29 @@ jobs:
           if (-not $env:EDDSA_PRIVATE_KEY) {
               throw "EDDSA_PRIVATE_KEY repo secret is not set. Generate with `winsparkle-tool generate-key` and add to repo secrets."
           }
-          # Materialize the private key to a temp file. Auto-cleaned when
-          # the runner is destroyed at end of job.
+          # The private key goes to a file only for as long as signing takes:
+          # later steps run third-party actions with write access, so it is
+          # deleted here, whatever happens.
           $keyPath = "$env:RUNNER_TEMP\eddsa_priv.key"
-          $env:EDDSA_PRIVATE_KEY | Out-File -Encoding ascii -NoNewline $keyPath
-
           $tool = "packaging/winsparkle/WinSparkle-0.9.2/bin/winsparkle-tool.exe"
           $installer = "dist/installer/lumi-setup-${{ steps.version.outputs.version }}.exe"
-
-          # winsparkle-tool sign prints just the base64 EdDSA signature to
-          # stdout. The installer is the trailing positional arg, NOT --file.
-          $signature = & $tool sign --private-key-file $keyPath $installer
-          if ($LASTEXITCODE -ne 0) {
-              throw "winsparkle-tool sign failed with exit code $LASTEXITCODE"
+          try {
+              $env:EDDSA_PRIVATE_KEY | Out-File -Encoding ascii -NoNewline $keyPath
+              # winsparkle-tool sign prints just the base64 EdDSA signature to
+              # stdout. The installer is the trailing positional arg, NOT --file.
+              $signature = & $tool sign --private-key-file $keyPath $installer
+              if ($LASTEXITCODE -ne 0) {
+                  throw "winsparkle-tool sign failed with exit code $LASTEXITCODE"
+              }
+          } finally {
+              Remove-Item -Force -ErrorAction SilentlyContinue $keyPath
           }
           $signature = "$signature".Trim()
           Write-Host "EdDSA signature: $($signature.Substring(0, [Math]::Min(20, $signature.Length)))..."
           echo "signature=$signature" >> $env:GITHUB_OUTPUT
 
       - name: Create GitHub Release with installer
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
           tag_name: ${{ github.ref_name }}
           name: Lumi ${{ steps.version.outputs.version }}
@@ -230,7 +257,7 @@ jobs:
       # too. Pre-release tags reach only the beta feed (appcast-beta.xml), so
       # installs on the stable channel never see them.
       - name: Checkout gh-pages branch
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           ref: gh-pages
           path: gh-pages-checkout
@@ -263,30 +290,39 @@ jobs:
 
       # Publish gh-pages as one fresh commit so removed installers do not
       # accumulate in branch history. appcast.xml keeps the version history.
+      # The lease refuses the push if gh-pages moved since the checkout above.
       - name: Push the Pages site
         shell: bash
         working-directory: gh-pages-checkout
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          base=$(git rev-parse HEAD)
           git add -A
           git diff --cached --quiet && exit 0  # nothing changed, e.g. retry of an existing release
           tree=$(git write-tree)
           commit=$(git commit-tree "$tree" -m "release: Lumi ${{ steps.version.outputs.version }} installer and appcast")
-          git push --force origin "$commit:refs/heads/gh-pages"
+          git push --force-with-lease="gh-pages:$base" origin "$commit:refs/heads/gh-pages"
 
   macos:
     # Lumi.app in a DMG (Sparkle updates it from the macOS feeds) and a PKG for
     # device management, built on Apple silicon by packaging/build_macos.sh.
+    # It only builds: read access, and the release environment for the Apple
+    # secrets.
     runs-on: macos-latest
     timeout-minutes: 60
+    environment: release
+    permissions:
+      contents: read
     outputs:
       version: ${{ steps.version.outputs.version }}
       notarized: ${{ steps.status.outputs.notarized }}
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
 
       - name: Extract version from tag
         id: version
@@ -306,7 +342,7 @@ jobs:
           fi
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: '3.13'
           cache: 'pip'
@@ -315,9 +351,11 @@ jobs:
         run: python3 -m pip install --require-hashes -r packaging/tools-requirements.txt
 
       # Signed with the Developer ID, notarized and stapled when these secrets
-      # exist (RELEASING.md, docs/macos.md); otherwise signed ad hoc.
+      # exist (RELEASING.md, docs/macos.md); otherwise signed ad hoc, unless
+      # the MACOS_SIGNING_REQUIRED variable is true, which fails the build.
       - name: Build Lumi.app, the DMG and the PKG
         env:
+          MACOS_SIGNING_REQUIRED: ${{ vars.MACOS_SIGNING_REQUIRED }}
           MACOS_SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
           MACOS_SIGN_P12_BASE64: ${{ secrets.MACOS_SIGN_P12_BASE64 }}
           MACOS_SIGN_P12_PASSWORD: ${{ secrets.MACOS_SIGN_P12_PASSWORD }}
@@ -341,6 +379,7 @@ jobs:
           grep -qx "lumi ${{ steps.version.outputs.version }}" version.txt
           "$app" --print-pubkey | tee pubkey.txt
           test "EDDSA_PUBLIC_KEY=$(plutil -extract SUPublicEDKey raw dist/Lumi.app/Contents/Info.plist)" = "$(sed -n 1p pubkey.txt)"
+          test "$(plutil -extract SURequireSignedFeed raw dist/Lumi.app/Contents/Info.plist)" = "true"
           test -x dist/Lumi.app/Contents/Frameworks/Sparkle.framework/Versions/B/Autoupdate
           "$app" updates | tee updates.json
           python3 -c 'import json; s = json.load(open("updates.json")); assert s["platform"] == "macos" and s["installed_by"] == "", s'
@@ -367,7 +406,7 @@ jobs:
           ls -l release
 
       - name: Keep them for the publishing job
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: lumi-macos-release
           path: release/
@@ -377,30 +416,46 @@ jobs:
   publish-macos:
     # After the Windows job, which creates the GitHub Release and pushes
     # gh-pages; this adds to both. On Windows, so winsparkle-tool signs the
-    # DMG exactly as it signs the installer, with the same key.
+    # DMG and the macOS feeds exactly as it signs the installer, with the same
+    # key (packaging/publish_macos.ps1, which build-macos.yml rehearses with a
+    # throwaway key on every packaging change).
     needs: [release, macos]
     runs-on: windows-latest
     timeout-minutes: 20
+    environment: release
+    permissions:
+      contents: write   # adds to the Release and pushes gh-pages
+    concurrency:
+      group: release-gh-pages
+      cancel-in-progress: false
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: '3.13'
 
       - name: Fetch the macOS release files
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: lumi-macos-release
           path: release
 
+      - name: Checkout gh-pages branch
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: gh-pages
+          path: gh-pages-checkout
+
       # After notarization and stapling (the macos job), so the signature
-      # covers the DMG's final bytes, as Sparkle downloads them.
-      - name: Sign the DMG with EdDSA
-        id: sign
+      # covers the DMG's final bytes, as Sparkle downloads them. The key file
+      # exists only while the script runs, before any third-party action.
+      - name: Sign the DMG and the macOS feeds, and lay them out on the Pages site
         shell: pwsh
         env:
           EDDSA_PRIVATE_KEY: ${{ secrets.EDDSA_PRIVATE_KEY }}
@@ -408,29 +463,27 @@ jobs:
           if (-not $env:EDDSA_PRIVATE_KEY) {
               throw "EDDSA_PRIVATE_KEY repo secret is not set."
           }
-          $keyPath = "$env:RUNNER_TEMP\eddsa_priv.key"
-          $env:EDDSA_PRIVATE_KEY | Out-File -Encoding ascii -NoNewline $keyPath
-          $tool = "packaging/winsparkle/WinSparkle-0.9.2/bin/winsparkle-tool.exe"
-          $dmg = "release/lumi-${{ needs.macos.outputs.version }}.dmg"
-          $signature = & $tool sign --private-key-file $keyPath $dmg
-          if ($LASTEXITCODE -ne 0) {
-              throw "winsparkle-tool sign failed with exit code $LASTEXITCODE"
-          }
-          $signature = "$signature".Trim()
-          # Check it with the key Lumi.app is built with (its SUPublicEDKey), as Sparkle will.
+          # The key Lumi.app is built with (its SUPublicEDKey): every signature must verify with it.
           $source = Get-Content -Raw "lumi/updater.py"
           if ($source -notmatch '(?m)^EDDSA_PUBLIC_KEY = "([^"]+)"') {
               throw "EDDSA_PUBLIC_KEY not found in lumi/updater.py"
           }
-          & $tool verify --public-key $Matches[1] --signature $signature $dmg
-          if ($LASTEXITCODE -ne 0) {
-              throw "The DMG's signature doesn't verify with the app's key: the EDDSA_PRIVATE_KEY secret doesn't match lumi/updater.py"
+          $publicKey = $Matches[1]
+          $owner = "${{ github.repository_owner }}".ToLowerInvariant()
+          $pages = "https://$owner.github.io/${{ github.event.repository.name }}"
+          $keyPath = Join-Path $env:RUNNER_TEMP "eddsa_priv.key"
+          try {
+              $env:EDDSA_PRIVATE_KEY | Out-File -Encoding ascii -NoNewline $keyPath
+              ./packaging/publish_macos.ps1 -Site "gh-pages-checkout" -Release "release" `
+                  -Version "${{ needs.macos.outputs.version }}" -PagesUrl $pages `
+                  -PrivateKeyFile $keyPath -PublicKey $publicKey `
+                  -Notarized:("${{ needs.macos.outputs.notarized }}" -eq "true")
+          } finally {
+              Remove-Item -Force -ErrorAction SilentlyContinue $keyPath
           }
-          Write-Host "EdDSA signature: $($signature.Substring(0, [Math]::Min(20, $signature.Length)))..."
-          echo "signature=$signature" >> $env:GITHUB_OUTPUT
 
       - name: Add the macOS files to the GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
           tag_name: ${{ github.ref_name }}
           files: |
@@ -441,7 +494,7 @@ jobs:
 
       - name: Say on the release that the macOS build isn't notarized
         if: ${{ needs.macos.outputs.notarized != 'true' }}
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
           tag_name: ${{ github.ref_name }}
           append_body: true
@@ -449,52 +502,17 @@ jobs:
 
             **macOS:** this build isn't notarized by Apple yet. The first time you open Lumi, macOS says it can't check it for malicious software; choose Done, then **System Settings › Privacy & Security › Open Anyway**, and confirm. Updates install without asking again. See docs/macos.md.
 
-      - name: Checkout gh-pages branch
-        uses: actions/checkout@v4
-        with:
-          ref: gh-pages
-          path: gh-pages-checkout
-
-      - name: Publish the DMG and its feeds to the Pages site
-        shell: pwsh
-        run: |
-          $owner = "${{ github.repository_owner }}".ToLowerInvariant()
-          $repo = "${{ github.event.repository.name }}"
-          $pages = "https://$owner.github.io/$repo"
-          $version = "${{ needs.macos.outputs.version }}"
-          $dmg = "release/lumi-$version.dmg"
-          $extras = @()
-          # Stable releases also host the PKG for Mac administrators, as they do the MSI.
-          if (-not $version.Contains("-")) { $extras = @("--extra", "release/lumi-$version.pkg") }
-          $notarized = @()
-          if ("${{ needs.macos.outputs.notarized }}" -eq "true") { $notarized = @("--notarized") }
-          python packaging/publish_pages.py `
-              --site "gh-pages-checkout" `
-              --installer $dmg `
-              --version $version `
-              --platform macos @extras @notarized
-          if ($LASTEXITCODE -ne 0) { throw "publish_pages.py failed" }
-
-          $notes = "<p>Lumi $version for macOS. See <a href=`"$pages/`">$pages/</a>.</p>"
-          python packaging/update_appcast.py `
-              --version $version `
-              --installer $dmg `
-              --signature "${{ steps.sign.outputs.signature }}" `
-              --notes $notes `
-              --site "gh-pages-checkout" `
-              --download-base "$pages/downloads" `
-              --platform macos
-          if ($LASTEXITCODE -ne 0) { throw "update_appcast.py failed" }
-
-      # One fresh commit again, on top of what the Windows job published.
+      # One fresh commit again, on top of what the Windows job published. The
+      # lease refuses the push if gh-pages moved since the checkout above.
       - name: Push the Pages site
         shell: bash
         working-directory: gh-pages-checkout
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          base=$(git rev-parse HEAD)
           git add -A
           git diff --cached --quiet && exit 0  # nothing changed, e.g. retry of an existing release
           tree=$(git write-tree)
           commit=$(git commit-tree "$tree" -m "release: Lumi ${{ needs.macos.outputs.version }} for macOS, disk image and appcast")
-          git push --force origin "$commit:refs/heads/gh-pages"
+          git push --force-with-lease="gh-pages:$base" origin "$commit:refs/heads/gh-pages"

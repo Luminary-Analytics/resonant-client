@@ -16,12 +16,19 @@ what Sparkle reads before anything runs:
   install passes the "is a turn running?" question below.
 * ``SUVerifyUpdateBeforeExtraction``: the disk image's EdDSA signature is
   checked before Sparkle mounts it.
+* ``SURequireSignedFeed``: the feeds are EdDSA-signed too
+  (packaging/feed_signature.py), so what a feed lists, and where it says to
+  download from, is trusted only when it verifies.
 
 The delegate (``_delegate_class``) answers Sparkle on the main thread:
 
 * which feed to read;
-* whether a check, or a download, may start: not after offline mode stopped
-  the updater (``stop``);
+* whether a check may start, and whether a download may: not after offline
+  mode stopped the updater (``stop``), and never to a host offline mode
+  refuses now. Sparkle asks about a download only once, when it finds the
+  update, so an update window left open could start one much later; the
+  download request itself is checked (``download_refusal``) and a refused
+  one is pointed at an address Sparkle's downloader won't load;
 * whether to install now: while an agent turn runs Sparkle waits, and Lumi
   lets it carry on once the turn ends (``postpone``), so an update never cuts
   a turn off;
@@ -57,8 +64,12 @@ SPARKLE_ERROR_DOMAIN = "SUSparkleErrorDomain"
 CHECK_USER, CHECK_BACKGROUND, CHECK_INFORMATION = 0, 1, 2
 CHOICE_SKIP, CHOICE_INSTALL, CHOICE_DISMISS = 0, 1, 2
 SU_NO_UPDATE = 1001
+SU_DOWNLOAD_ERROR = 2001
 SU_INSTALLATION_CANCELED = 4007
 SU_INSTALLATION_AUTHORIZE_LATER = 4008
+# Where a refused download is sent: Sparkle's downloader loads only http and
+# https addresses and fails any other at once, before any connection.
+REFUSED_DOWNLOAD_URL = "lumi-update-refused:offline"
 # How often an install that waits for a turn asks again.
 POSTPONE_POLL_SECONDS = 5.0
 # In browser mode nothing answers Sparkle's request to quit (that takes AppKit's
@@ -108,6 +119,7 @@ class SparkleUpdater:
         self._info: dict[str, Any] = {}
         self._pumping = False  # run_until turns the run loop (browser mode)
         self._download_failure_recorded = False  # Sparkle reports it twice: as itself, then as the abort
+        self._download_refused = False  # download_refusal recorded why the download that failed never started
         self._lock = threading.Lock()
         self.started = False
 
@@ -134,9 +146,12 @@ class SparkleUpdater:
     def stop(self, reason: str) -> None:
         """Offline mode came on: no check or download starts again in this run.
 
-        Sparkle has no call that stops it, so its delegate refuses instead:
-        every check (scheduled, asked for or resumed) and every download asks
-        it first. A restart after offline mode goes off starts checking again.
+        Sparkle has no call that stops it, so its delegate refuses instead.
+        Every check (scheduled, asked for or resuming a downloaded update)
+        asks ``may_check`` first, and every download's request passes
+        ``download_refusal`` before Sparkle loads it, including one started
+        from an update window that was already open. A restart after offline
+        mode goes off starts checking again.
         """
         self._refusal = reason or "Update checks are stopped."
         logger.info("Stopped checking for updates: %s", self._refusal)
@@ -178,13 +193,40 @@ class SparkleUpdater:
     def feed_url(self) -> str:
         return self._preferences.feed_url
 
+    def _offline_refusal(self, url: str, feature: str) -> str:
+        """Why offline mode, as it is now, refuses ``url``, or "" (the check the app applies to its own requests)."""
+        if not url:
+            return ""
+        from . import offline
+
+        return offline.refusal(url, feature)
+
     def may_check(self, kind: int) -> str:
         """Why Sparkle may not check now (``kind`` is an SPUUpdateCheck), or ""."""
-        return self._refusal
+        return self._refusal or self._offline_refusal(self.feed_url(), "the update check")
 
     def may_proceed(self, version: str) -> str:
-        """Why Sparkle may not go on to download ``version``, or "": offline mode came on after the check."""
+        """Why Sparkle may not go on with ``version`` it just found, or "": offline mode came on after the check."""
         return self._refusal
+
+    def download_refusal(self, url: str, version: str) -> str:
+        """Why Sparkle may not download ``url`` now, or "". A refusal is recorded (``update.refused``).
+
+        This is the check that counts for downloads: Sparkle asks
+        ``may_proceed`` only when it finds an update, and a person can press
+        Install Update in a window that stayed open long after. It refuses
+        after ``stop``, and whenever offline mode refuses the download's host
+        now, which the feed names.
+        """
+        reason = self._refusal or self._offline_refusal(url, "the update download")
+        if reason:
+            self._download_refused = True
+            self._record("update.refused", stage="download", to_version=version, reason=reason)
+        return reason
+
+    def release_notes_refusal(self, url: str) -> str:
+        """Why Sparkle may not fetch the release notes at ``url``, or "" (Lumi's feeds carry them inline)."""
+        return self._refusal or self._offline_refusal(url, "the update's release notes")
 
     def found(self, version: str) -> None:
         self._record("update.check", result="found", to_version=version)
@@ -206,10 +248,18 @@ class SparkleUpdater:
             return
         self._record("update.check", result="error", code=int(code))
 
-    def download_failed(self, version: str, code: int) -> None:
-        """The update's download failed; Sparkle then aborts with the same error, which isn't recorded again."""
-        self._record("update.check", result="error", stage="download", to_version=version, code=int(code))
+    def download_failed(self, version: str, domain: str, code: int) -> None:
+        """The update's download failed; Sparkle then aborts with the same error, which isn't recorded again.
+
+        A download ``download_refusal`` refused fails this way too, at once;
+        its ``update.refused`` record already says why.
+        """
         self._download_failure_recorded = True
+        if self._download_refused:
+            self._download_refused = False
+            return
+        self._record("update.check", result="error", stage="download", to_version=version, code=int(code),
+                     domain=domain)
 
     def download_cancelled(self) -> None:
         self._record("update.cancelled")
@@ -394,7 +444,7 @@ def _delegate_class() -> Any:
     if _DELEGATE_CLASS is not None:
         return _DELEGATE_CLASS
     import objc
-    from Foundation import NSError, NSLocalizedDescriptionKey, NSObject
+    from Foundation import NSURL, NSError, NSLocalizedDescriptionKey, NSObject
 
     try:
         _DELEGATE_CLASS = objc.lookUpClass("LumiSparkleUpdaterDelegate")
@@ -468,8 +518,31 @@ def _delegate_class() -> Any:
             call(self, "download_cancelled")
 
         @objc.typedSelector(b"v@:@@@")
+        def updater_willDownloadUpdate_withRequest_(self, updater, item, request):
+            # The request Sparkle downloads next (SPUCoreBasedUpdateDriver): a
+            # refused one gets an address its downloader won't load, so it
+            # fails before connecting. Unsure means refused.
+            try:
+                url = str(request.URL().absoluteString())
+            except Exception:
+                url = ""
+            reason = call(self, "download_refusal", url, _version(item),
+                          default="Lumi couldn't check the update's download address.")
+            if reason:
+                request.setURL_(NSURL.URLWithString_(REFUSED_DOWNLOAD_URL))
+
+        @objc.typedSelector(b"Z@:@@")
+        def updater_shouldDownloadReleaseNotesForUpdate_(self, updater, item):
+            try:
+                link = item.releaseNotesURL()
+                url = str(link.absoluteString()) if link is not None else ""
+            except Exception:
+                url = ""
+            return not call(self, "release_notes_refusal", url, default="unsure")
+
+        @objc.typedSelector(b"v@:@@@")
         def updater_failedToDownloadUpdate_error_(self, updater, item, error):
-            call(self, "download_failed", _version(item), _error_parts(error)[1])
+            call(self, "download_failed", _version(item), *_error_parts(error))
 
         @objc.typedSelector(b"v@:@@")
         def updater_willInstallUpdate_(self, updater, item):

@@ -171,8 +171,8 @@ def test_overlap_helper_handles_segments_empty_scopes_and_windows_case():
         admit(profile(read_roots=("Src",)), read_roots=("src",))
 
 
-@pytest.mark.parametrize("value", [0, 5, -1, True, 2.0, "2"])
-def test_worker_limit_is_a_visible_one_to_four_integer(value):
+@pytest.mark.parametrize("value", [0, 9, -1, True, 2.0, "2"])
+def test_worker_limit_is_a_visible_one_to_eight_integer(value):
     with pytest.raises(ValueError, match="worker slots"):
         profile(max_workers=value)
 

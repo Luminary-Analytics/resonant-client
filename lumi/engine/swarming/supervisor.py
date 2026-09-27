@@ -166,6 +166,7 @@ class SwarmSupervisor:
             "review_read_result": self._review_read_result,
             "accept_under_grant": self._accept_under_grant,
             "accept_writer": self._accept_writer,
+            "accept_writer_under_grant": self._accept_writer_under_grant,
             "pause": self._pause, "resume": self._resume, "stop": self._stop,
             "recover": self._recover,
             "reject": self._reject,
@@ -816,7 +817,13 @@ class SwarmSupervisor:
         self.store._admitting(run)
         self._decision_evidence(evidence)
         self._autonomy_grant(connection, run)
-        attempt = self._attempt(connection, run, attempt_id, attempt_epoch)
+        # As for an owner review, a result submitted before the team was
+        # recovered can be accepted from its own epoch; this grants its old
+        # worker nothing (the loop resumes on Continue, autopilot.py).
+        attempt = connection.execute("SELECT * FROM attempts WHERE run_id=? AND id=? AND epoch=?",
+                                     (run["id"], attempt_id, attempt_epoch)).fetchone()
+        if attempt is None:
+            raise ScopeDenied("Result is unavailable in this run and original epoch")
         if attempt["kind"] != "worker":
             raise Conflict("Coordinators do not represent accepted work")
         work = connection.execute("SELECT * FROM work_items WHERE id=?", (attempt["work_item_id"],)).fetchone()
@@ -958,6 +965,31 @@ class SwarmSupervisor:
         attempt_epoch: int, candidate_id: str, evidence: str,
     ) -> dict[str, Any]:
         """Commit a trusted acceptance decision separately from application."""
+        return self._record_writer_acceptance(connection, run, attempt_id=attempt_id, attempt_epoch=attempt_epoch,
+                                              candidate_id=candidate_id, evidence=evidence, decided_by=run["owner_id"])
+
+    def _accept_writer_under_grant(
+        self, connection: sqlite3.Connection, run: sqlite3.Row, *, attempt_id: str,
+        attempt_epoch: int, candidate_id: str, evidence: str,
+    ) -> dict[str, Any]:
+        """Accept an applied writer result under the owner's grant to apply checked changes.
+
+        The owner chose, when starting the team, to let its orchestrator apply
+        changes that pass every declared check. The binding is the one an
+        owner's acceptance needs (the exact applied candidate and its passing
+        check receipts); the decision is recorded as ``autonomy:<owner>``,
+        never as the owner's review.
+        """
+        if self._autonomy_grant(connection, run).get("apply") is not True:
+            raise ScopeDenied("The owner did not let this team's orchestrator apply changes")
+        return self._record_writer_acceptance(connection, run, attempt_id=attempt_id, attempt_epoch=attempt_epoch,
+                                              candidate_id=candidate_id, evidence=evidence,
+                                              decided_by=f"autonomy:{run['owner_id']}")
+
+    def _record_writer_acceptance(
+        self, connection: sqlite3.Connection, run: sqlite3.Row, *, attempt_id: str,
+        attempt_epoch: int, candidate_id: str, evidence: str, decided_by: str,
+    ) -> dict[str, Any]:
         self.store._admitting(run)
         self._decision_evidence(evidence)
         # Fresh owner review may accept exact already-applied historical
@@ -973,7 +1005,7 @@ class SwarmSupervisor:
         binding = self._writer_acceptance_binding(connection, run, attempt, candidate_id)
         connection.execute("INSERT INTO writer_acceptances(attempt_id,writer_id,candidate_id,application_id,work_revision,"
                            "writer_revision,candidate_revision,checks_json,evidence,owner_id,epoch) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
-                           (*binding.values(), evidence, run["owner_id"], run["epoch"]))
+                           (*binding.values(), evidence, decided_by, run["epoch"]))
         connection.execute("UPDATE work_items SET state='accepted' WHERE id=?", (attempt["work_item_id"],))
         self._readiness(connection, run["id"])
         return {"work_item_id": attempt["work_item_id"], "attempt_id": attempt_id,

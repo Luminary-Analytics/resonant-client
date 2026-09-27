@@ -55,27 +55,61 @@ test('The orchestrator runs a team from the panel and reports back', {timeout: 9
         await autonomy.focus();
         await page.keyboard.press('Space');
         assert.equal(await autonomy.isChecked(),true);
-        await page.getByLabel('Orchestrator rounds').fill('2');
+        // The chat's /team opens the same panel with the objective and the orchestrator filled in.
+        await page.getByRole('button',{name:'Close team panel'}).click();
+        await page.locator('#user-input').fill('/team Check how the CSV export handles delimiters');
+        await page.locator('#user-input').press('Enter');
+        await page.getByRole('dialog',{name:'Work together'}).waitFor();
+        assert.equal(await page.getByLabel('Team objective').inputValue(),'Check how the CSV export handles delimiters');
+        assert.equal(await page.getByLabel('Planning approach').inputValue(),'coordinator');
+        assert.equal(await page.getByLabel('Let the orchestrator run the team').isChecked(),true);
+        assert.equal(await page.evaluate(()=>document.activeElement?.dataset.swarm),'rounds');
+        assert.equal(await page.locator('#user-input').inputValue(),'');
+        await page.keyboard.press('Control+A');
+        await page.keyboard.type('2');
         await page.getByText('findings it uses are marked accepted by the orchestrator, not reviewed by you',{exact:false}).waitFor();
-        await page.getByLabel('Team objective').fill('Check how the CSV export handles delimiters');
+        // Workers can run on another model than the orchestrator's (the session's).
+        await page.getByLabel('Worker model').selectOption({label:'ollama · fixture-worker'});
         await page.getByLabel('Total model requests').fill('20');
+        // While the orchestrator runs the team, the panel asks the owner for none
+        // of the decisions it takes, and offers no follow-up planning of its own.
+        await page.evaluate(()=>{
+            window.__ownerPrompts=[]; window.__orchestratedInbox=false; window.__followupShown=false;
+            new MutationObserver(()=>{
+                const text=document.querySelector('[data-swarm="inbox"]')?.innerText||'';
+                if(/your review|awaiting independent verification|review before another attempt/.test(text))window.__ownerPrompts.push(text);
+                if(text.includes('making the team’s decisions under your grant'))window.__orchestratedInbox=true;
+                const form=document.querySelector('[data-swarm="followup-form"]');
+                if(form&&!form.hidden&&app._swarmState?.autonomy?.active)window.__followupShown=true;
+            }).observe(document.body,{subtree:true,childList:true,characterData:true,attributes:true});
+        });
         await page.getByRole('button',{name:'Start orchestrated team'}).click();
         const report=page.locator('[data-swarm="orchestrator-report-text"]');
         await report.waitFor({state:'visible',timeout:45000});
         const text=await report.innerText();
         assert.match(text,/^Final report: quoted CSV fields preserve commas\. The orchestrator read 2 findings and 1 worker question/);
         await page.waitForFunction(()=>app._swarmState?.run?.run?.state==='completed');
+        assert.deepEqual(await page.evaluate(()=>window.__ownerPrompts),[]);
+        assert.equal(await page.evaluate(()=>window.__orchestratedInbox),true);
+        assert.equal(await page.evaluate(()=>window.__followupShown),false);
+        // Orchestrator turns say what each was for.
+        const purposes=await page.evaluate(()=>[...document.querySelectorAll('.swarm-worker')].map(node=>node.textContent).join('\n'));
+        assert.ok(purposes.includes('Plan the team’s work, or write its report')&&purposes.includes('Answer workers’ questions'),purposes.slice(0,2000));
         assert.equal(starts.length,1);
         assert.deepEqual(starts[0].autonomy,{rounds:2});
         assert.equal(starts[0].plan_mode,'coordinator');
         // The team's own messages, readable in the panel.
+        // The worker waited for its answer, and the orchestrator answered in the same round.
         const summary=page.locator('[data-swarm="messages-summary"]');
-        assert.equal(await summary.innerText(),'Team messages (1)');
+        assert.equal(await summary.innerText(),'Team messages (2)');
         await summary.click();
         await page.getByText('Worker 1 → Orchestrator · Question',{exact:true}).waitFor();
         await page.getByText('Should the CSV export also be checked for semicolons?',{exact:true}).waitFor();
+        await page.getByText('Orchestrator → Worker 1 · Answer',{exact:true}).waitFor();
+        await page.getByText('No: the export writes commas only, so semicolons need no check.',{exact:true}).waitFor();
         const status=await page.locator('[data-swarm="orchestrator-status"]').innerText();
         assert.match(status,/The orchestrator finished the objective\./);
+        assert.equal(await page.locator('[data-swarm="worker-model-note"]').innerText(),'Workers use ollama · fixture-worker; the orchestrator uses this session’s model.');
         // The last orchestrator turn reads as its report, and decisions aren't attributed to the owner.
         await page.getByRole('heading',{name:'Orchestrator report'}).waitFor();
         await page.getByText('No more work proposed: this is the final report.',{exact:true}).waitFor();
@@ -97,6 +131,11 @@ test('The orchestrator runs a team from the panel and reports back', {timeout: 9
         assert.deepEqual(run.coordinator_proposals.map(row=>row.state),['accepted','accepted']);
         assert.ok(run.check_receipts.length===2&&run.check_receipts.every(row=>row.executor_id.startsWith('autonomy:')));
         assert.equal(evidence.followup_inputs.length,2);
+        assert.deepEqual(starts[0].worker_model,{provider:'ollama',model:'fixture-worker'});
+        assert.deepEqual([...new Set(run.attempts.filter(row=>row.kind==='worker').map(row=>JSON.parse(row.grant_json).model.model))],['fixture-worker']);
+        assert.deepEqual([...new Set(run.attempts.filter(row=>row.kind==='coordinator').map(row=>JSON.parse(row.grant_json).model.model))],['fixture-native']);
+        // One answer turn, which proposed nothing: the two proposals above are the plan and the report.
+        assert.deepEqual(run.attempts.filter(row=>row.worker_id.startsWith('orchestrator-answer-')).map(row=>row.state),['completed']);
         assert.equal(evidence.followup_inputs[1].untrusted_messages_to_orchestrator.length,1);
         assert.deepEqual(errors,[]);
         fs.writeFileSync(path.join(output,'evidence.json'),JSON.stringify(evidence,null,2));

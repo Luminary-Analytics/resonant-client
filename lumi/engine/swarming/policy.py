@@ -188,8 +188,8 @@ class PolicyProfile:
         _names(self.allowed_providers)
         if not all(team_provider(provider) for provider in self.allowed_providers):
             raise ValueError("Policy profiles support native provider protocols and connections only")
-        if type(self.max_workers) is not int or not 1 <= self.max_workers <= 4:
-            raise ValueError("Visible worker slots must be between 1 and 4")
+        if type(self.max_workers) is not int or not 1 <= self.max_workers <= 8:
+            raise ValueError("Visible worker slots must be between 1 and 8")
         object.__setattr__(self, "read_roots", normalize_scopes(self.read_roots))
         object.__setattr__(self, "write_roots", normalize_scopes(self.write_roots))
 

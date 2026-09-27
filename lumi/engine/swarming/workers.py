@@ -460,7 +460,15 @@ class SwarmWorkerRunner:
         return [[rule.pattern, rule.source] for rule in self._exclusions.rules]
 
     @staticmethod
-    def _role(worker: _Worker) -> str:
+    def _proposes(worker: _Worker) -> bool:
+        """A coordinator turn that plans; an orchestrator answer turn doesn't (coordinator.OrchestratorAnswers)."""
+        return worker.plans is not None and getattr(worker.plans, "proposes", True)
+
+    @classmethod
+    def _role(cls, worker: _Worker) -> str:
+        if worker.plans is not None and not cls._proposes(worker):
+            return ("Answer the workers' questions in your generated assignment with swarm_send, then reply with "
+                    "one line saying what you answered.")
         if worker.plans is not None:
             return "Prepare the bounded work proposal requested by your generated assignment. Return only its required JSON."
         team = (" Other workers may be running related tasks at the same time. swarm_status lists them; swarm_send "
@@ -687,7 +695,10 @@ class SwarmWorkerRunner:
             if resources_closed:
                 candidate_revision = "handoff:" + hashlib.sha256(last_text.encode()).hexdigest()
                 proposal_recorded = False
-                if worker.plans is not None and ended and not errors and not worker.cancel.is_set():
+                if worker.plans is not None and not self._proposes(worker) and ended and not errors:
+                    # Its answers already went out through swarm_send; nothing to retain.
+                    proposal_recorded = not worker.cancel.is_set()
+                elif worker.plans is not None and ended and not errors and not worker.cancel.is_set():
                     try:
                         with self._controls:
                             while worker.pause.is_set() and not worker.cancel.is_set():

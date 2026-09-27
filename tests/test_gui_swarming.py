@@ -213,7 +213,7 @@ def test_disable_preserves_controls_and_history_then_stop_releases_foreground(se
 
 
 @pytest.mark.parametrize("changes", [
-    {"request_limit": True}, {"max_workers": 5}, {"tasks": []}, {"request_limit": 1},
+    {"request_limit": True}, {"max_workers": 9}, {"tasks": []}, {"request_limit": 1},
     {"tasks": [{"objective": "inspect", "read_roots": ["../outside"]}]},
     {"tasks": [{"objective": "inspect", "tools": ["bash"]}]}, {"owner_id": "forged"},
 ])

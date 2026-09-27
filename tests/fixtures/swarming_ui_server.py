@@ -104,20 +104,44 @@ def main() -> None:
                 ]
             autonomous = "--autonomous" in sys.argv[2:]
             if autonomous and not self.stream_count and "Inspect CSV fixture concern 1" in json.dumps(history):
-                # The first worker asks the orchestrator a question on its way.
+                # The first worker asks the orchestrator a question and waits for its answer.
                 self._scripts = [
                     [tool_call("file_read", {"path": "fact.txt"}), done(model=self.model)],
                     [tool_call("swarm_send", {"recipient_attempt_id": "orchestrator", "kind": "question",
                                               "body": "Should the CSV export also be checked for semicolons?",
                                               "command_id": "fixture-question"}), done(model=self.model)],
+                    [tool_call("swarm_receive", {"wait_seconds": 30}), done(model=self.model)],
                     [text_delta("Scripted reader finding: quoted CSV fields preserve commas."), done(model=self.model)],
+                ]
+            if autonomous and not self.stream_count and "Captured answer data:" in json.dumps(history):
+                # The orchestrator's answer turn replies to each question's sender.
+                answer = next(row.get("content", "") for row in history if row.get("role") == "user"
+                              and "Captured answer data:" in str(row.get("content", "")))
+                data = json.loads(answer.split("Captured answer data:\n", 1)[1].split("\n</runtime_message>", 1)[0])
+                self._scripts = [
+                    [tool_call("swarm_send", {"recipient_attempt_id": question["from_attempt_id"], "kind": "answer",
+                                              "body": "No: the export writes commas only, so semicolons need no check.",
+                                              "command_id": f"fixture-answer-{question['sequence']}"})
+                     for question in data["untrusted_questions"]] + [done(model=self.model)],
+                    [text_delta("Answered the worker's question."), done(model=self.model)],
                 ]
             if autonomous and not self.stream_count and "Captured planning data:" in json.dumps(history):
                 planning = next(row.get("content", "") for row in history if row.get("role") == "user"
                                 and "Captured planning data:" in str(row.get("content", "")))
                 data = json.loads(planning.split("Captured planning data:\n", 1)[1].split("\n</runtime_message>", 1)[0])
                 followup_inputs.append(data)
-                if data["proposed_work_namespace"] is None:
+                if writer_fixture and data["proposed_work_namespace"] is None:
+                    # Two writers the orchestrator may apply once the owner's check passes.
+                    check = next(name for name in data["allowed_criteria"] if name != "owner_review")
+                    proposal = {"summary": "Two writers update the backend and frontend files.", "use_team": True,
+                        "work_items": [{"id": part, "objective": f"Update src/{part}.txt", "role": "implement",
+                            "dependencies": [], "read_roots": ["src"], "write_roots": [f"src/{part}.txt"],
+                            "criteria": [check]} for part in ("backend", "frontend")]}
+                elif writer_fixture:
+                    proposal = {"summary": "**Final report:** both files hold their verified values.\n\n"
+                                           "- `src/backend.txt`: verified\n- `src/frontend.txt`: verified",
+                                "use_team": False, "work_items": []}
+                elif data["proposed_work_namespace"] is None:
                     proposal = {"summary": "Two CSV investigations, then a report.", "use_team": True,
                         "work_items": [{"id": f"csv-{index}", "objective": f"Inspect CSV fixture concern {index}",
                             "role": "explore", "dependencies": [], "read_roots": ["."], "write_roots": [],
@@ -167,7 +191,8 @@ def main() -> None:
     state.backend = StreamingBackend(name=spec.backend_type, model=spec.model)
     state.session = Session(backend=state.backend, project_instructions="Isolated browser fixture.")
     state.session.project_path = str(workspace)
-    state.available_backends = {"ollama": {"models": [spec.model]}}
+    # An orchestrated fixture also offers a second model for the team's workers.
+    state.available_backends = {"ollama": {"models": [spec.model] + (["fixture-worker"] if "--autonomous" in sys.argv[2:] else [])}}
     state.detect_backends = lambda *args, **kwargs: None
     state._swarm_desktop = SwarmRuntime(state.settings, backend_factory=factory, state_root=lambda _: root / "swarm-state")
     history_evidence = None

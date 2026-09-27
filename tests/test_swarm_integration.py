@@ -385,6 +385,42 @@ def test_checks_that_mutate_the_candidate_cannot_verify_it(setup):
     assert receipt["state"] == "input_changed"
 
 
+def test_files_a_check_creates_do_not_change_the_checked_revision(setup):
+    # A live team's Python check wrote __pycache__ into its candidate, was
+    # refused as changed input, and would have kept a second check from running.
+    store, supervisor, authority, integration, project, base = setup
+    context, lease = writers(setup, ("a",))[0]
+    (Path(lease["path"]) / "a.txt").write_text("new-a\n")
+    manifest = finish(setup, context, lease)
+    creates = CheckSpec("report", (sys.executable, "-c",
+                                   "from pathlib import Path; Path('check-report.txt').write_text('ok')"), 10)
+    reads = CheckSpec("value", (sys.executable, "-c",
+                                "from pathlib import Path; assert Path('a.txt').read_text() == 'new-a\\n'"), 10)
+    result = integration.prepare_candidate(authority, writer_ids=(manifest["id"],), required_checks=(creates, reads))
+    assert integration.run_check(authority, result["id"], "report")["state"] == "passed"
+    assert integration.run_check(authority, result["id"], "value")["state"] == "passed"
+    state = store.snapshot(authority.scope, authority.run_id)
+    assert state["integration_candidates"][0]["state"] == "verified"
+
+
+def test_each_check_starts_from_the_candidate_without_provider_keys(setup, monkeypatch):
+    # Checks run code the writers wrote: what an earlier check left is gone
+    # before the next starts, and Lumi's provider keys aren't passed to them.
+    store, supervisor, authority, integration, project, base = setup
+    monkeypatch.setenv("OPENAI_API_KEY", "fixture-provider-key")
+    context, lease = writers(setup, ("a",))[0]
+    (Path(lease["path"]) / "a.txt").write_text("new-a\n")
+    manifest = finish(setup, context, lease)
+    leaves = CheckSpec("leaves", (sys.executable, "-c",
+                                  "from pathlib import Path; Path('left-behind.txt').write_text('stale')"), 10)
+    clean = CheckSpec("clean", (sys.executable, "-c",
+                                "import os; from pathlib import Path; assert not Path('left-behind.txt').exists(); "
+                                "assert not {name.upper() for name in os.environ} & {'OPENAI_API_KEY'}"), 10)
+    result = integration.prepare_candidate(authority, writer_ids=(manifest["id"],), required_checks=(leaves, clean))
+    assert integration.run_check(authority, result["id"], "leaves")["state"] == "passed"
+    assert integration.run_check(authority, result["id"], "clean")["state"] == "passed"
+
+
 def test_check_timeout_stops_owned_process_and_retains_failed_candidate(setup):
     store, supervisor, authority, integration, project, base = setup
     context, lease = writers(setup, ("a",))[0]

@@ -6,7 +6,7 @@ import time
 
 import pytest
 
-from lumi.engine.swarming import Scope
+from lumi.engine.swarming import AttemptContext, Scope
 from lumi.engine.swarming.autopilot import CLOSING_EVIDENCE, PLAN_EVIDENCE
 from lumi.engine.swarming.mailbox import SwarmMailbox
 from lumi.engine.swarming.models import ScopeDenied
@@ -83,6 +83,8 @@ def test_the_orchestrator_plans_runs_its_workers_and_reports_without_owner_steps
     assert {row["executor_id"] for row in run["check_receipts"]} == {"autonomy:fixture-owner"}
     assert all("not reviewed" in row["check_name"] for row in run["check_receipts"])
     assert all(row["state"] == "accepted" for row in run["work_items"])
+    report = service.operate(capture, {"request_id": "report", "action": "export_report", "run_id": run_id})["report"]
+    assert [row["kind"] for row in report["decisions"]] == ["autonomy_grant", "autonomy_grant"]
     # The orchestrator knew it was running the team, and its follow-up saw the findings.
     first, follow_up = backends[0].stream_calls[0]["user_msg"], backends[3].stream_calls[0]["user_msg"]
     assert "You are this team's orchestrator" in first and "If you can already answer the objective" in first
@@ -155,6 +157,24 @@ def test_workers_can_mail_the_orchestrator_between_its_turns(mailbox_setup):
     assert [row[0] for row in rows] == ["Should I also check the CLI?"]
 
 
+def test_the_orchestrator_does_not_mail_its_own_earlier_turns(mailbox_setup):
+    # A live closing turn mailed its report to an earlier orchestrator turn.
+    store, supervisor, authority, _ = mailbox_setup
+    model = {"provider": "ollama", "model": "fixture"}
+    first = mailbox_command(supervisor, authority, "start_coordinator", worker_id="orchestrator-1", requests=1,
+                            model=model, tools=["file_read"], read_roots=["."]).result
+    mailbox_command(supervisor, authority, "worker_started", attempt_id=first["attempt_id"], attempt_epoch=authority.epoch)
+    mailbox_command(supervisor, authority, "worker_stopped", attempt_id=first["attempt_id"],
+                    attempt_epoch=authority.epoch, outcome="completed", evidence="Turn ended")
+    second = mailbox_command(supervisor, authority, "start_coordinator", worker_id="orchestrator-2", requests=1,
+                             model=model, tools=["file_read"], read_roots=["."]).result
+    mailbox_command(supervisor, authority, "worker_started", attempt_id=second["attempt_id"], attempt_epoch=authority.epoch)
+    context = AttemptContext(authority.scope, authority.run_id, second["attempt_id"], "orchestrator-2", authority.epoch)
+    with pytest.raises(ScopeDenied, match="own turns"):
+        SwarmMailbox(store, context).send(recipient_attempt_id="orchestrator", kind="finding",
+                                          body="Final report", command_id="report")
+
+
 def test_a_worker_can_wait_for_an_answer_and_pause_ends_the_wait(mailbox_setup):
     store, _, _, (sender, receiver) = mailbox_setup
     stopping = threading.Event()
@@ -210,6 +230,10 @@ def test_two_unusable_orchestrator_turns_in_a_row_hand_the_team_back(team):
     coordinators = [row for row in service.operate(capture, {"request_id": "last", "run_id": run_id})["run"]["attempts"]
                     if row["kind"] == "coordinator"]
     assert len(coordinators) == 2 and len(backends) == 2
+    # The retry was told why its first plan was refused, and the first turn wasn't.
+    assert "Your previous plan was refused" not in backends[0].stream_calls[0]["user_msg"]
+    assert ("Your previous plan was refused: Coordinator output must be one strict JSON object"
+            in backends[1].stream_calls[0]["user_msg"])
     assert view["run"]["run"]["state"] == "running" and not view["run"]["coordinator_proposals"]
 
 

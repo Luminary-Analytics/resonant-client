@@ -72,7 +72,9 @@ guidance needs an explicit status notice and a current replacement.
 - [docs/index.md](index.md): the documentation site's home page
 - [docs/packs.md](packs.md)
 - [docs/lumi-cloud.md](lumi-cloud.md)
-- [Team preview](swarming.md): current source behavior, with packaged and provider qualification still pending.
+- [Team preview](swarming.md): current source behavior. Live NVIDIA NIM runs of
+  orchestrated teams are recorded in the [benchmarks](swarming-benchmarks.md).
+  Packaged qualification and a benefit claim are still pending.
 - [docs/organization-oversight.md](organization-oversight.md)
 - [docs/unreleased.md](unreleased.md)
 

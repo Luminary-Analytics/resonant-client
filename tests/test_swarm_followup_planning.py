@@ -11,7 +11,8 @@ from uuid import uuid4
 
 import pytest
 
-from lumi.engine.swarming.models import AllowanceExceeded, Conflict, IdempotencyConflict, RevisionConflict
+from lumi.engine.swarming.models import (AdmissionClosed, AllowanceExceeded, Conflict, IdempotencyConflict,
+                                         RevisionConflict)
 from lumi.engine.swarming.process_worker import ManagedWorkerProcess
 from lumi.gui import swarming
 from tests.streaming_stub import StreamingBackend, done, text_delta
@@ -301,3 +302,21 @@ raise SystemExit(main(backend_factory=lambda spec: Backend(name=spec.backend_typ
         assert len(view(f)["run"]["attempts"]) == 4
     finally:
         release.touch()
+
+
+def test_a_planning_turn_the_runner_refused_does_not_hold_the_team(team, monkeypatch):
+    # Its admission commits first. A refusal before the runner took the turn
+    # (the team paused in between, say) settles it as never invoked; unlike a
+    # lost launch acknowledgement (above), nothing can have run.
+    f = team
+    before = view(f)["coordinator_planning"]["remaining_requests"]
+    def refuse(*args, **kwargs):
+        raise AdmissionClosed("Run admission is closed: paused")
+    monkeypatch.setattr(f.runner, "start_coordinator", refuse)
+    with pytest.raises(AdmissionClosed):
+        f.service.operate(f.capture, command(f, "request_plan", coordinator_requests=2, read_roots=[]))
+    state = view(f)
+    turn = [row for row in state["run"]["attempts"] if row["kind"] == "coordinator"][-1]
+    assert (turn["state"], turn["process_state"]) == ("cancelled", "stopped")
+    assert state["coordinator_planning"]["available"] is True
+    assert state["coordinator_planning"]["remaining_requests"] == before

@@ -682,17 +682,28 @@ class TestSending:
         finally:
             oversight.set_uploader_for_tests(None)
 
-    def test_many_queued_records_are_added_and_sent_without_rereading_the_queue(self, org):
+    def test_many_queued_records_are_added_and_sent_without_rereading_the_queue(self, org, monkeypatch):
+        # A queue file re-read on every turn and rewritten on every batch made a long time offline
+        # quadratic: adding a record now reads nothing back, and a batch reads only itself.
         org(EVERYTHING)
-        started = time.perf_counter()
-        for n in range(400):
+        reads: list[int] = []
+        real = oversight.queued_records
+
+        def counted(limit=None):
+            records = real(limit)
+            reads.append(len(records))
+            return records
+
+        monkeypatch.setattr(oversight, "queued_records", counted)
+        for n in range(300):
             oversight.enqueue([{"type": "turn", "id": f"t{n}", "session": {"id": "s"}, "turn": n,
                                 "padding": "x" * 2000}])
+        assert reads == [] and oversight.queue_status()["pending"] == 300
         client = _Client()
         while oversight.upload_pending(client, max_batches=1) == "more":
             pass
-        assert sum(len(batch["events"]) for batch in client.sent) == 400 and _queue() == []
-        assert time.perf_counter() - started < 20
+        assert sum(len(batch["events"]) for batch in client.sent) == 300 and real() == []
+        assert max(reads) <= oversight.BATCH_RECORDS
 
 
 # ── The app's socket ────────────────────────────────────────────────────────

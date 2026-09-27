@@ -57,8 +57,10 @@ _MANAGED_RECOVERY_ACTIONS = {"managed_recovery_inspect", "managed_reconcile_requ
 
 
 # Team actions available while an organization policy applies: reading,
-# stopping, revoking and recovery bookkeeping. Every other action can start
-# model requests, processes, file changes or sharing (policy_refusal).
+# stopping, revoking and recovery bookkeeping, including taking over an
+# expired team (``recover`` fences its old owner and starts nothing; continuing
+# it is governed). Every other action can start model requests, processes,
+# file changes or sharing (policy_refusal).
 _POLICY_SAFE_ACTIONS = frozenset({
     "view", "events", "inspect", "inspect_candidate", "inspect_process", "history",
     "read_artifact", "export_report", "collaboration_inspect", "managed_sharing_inspect",
@@ -67,13 +69,13 @@ _POLICY_SAFE_ACTIONS = frozenset({
     "reconcile_application", "reconcile_effect", "reconcile_operation", "reconcile_process",
     "reconcile_request", "managed_reconcile_request", "managed_reconcile_action",
     "managed_reconcile_worker", "managed_reconcile_effect", "managed_retry_observations",
-    "managed_fence_absent",
+    "managed_fence_absent", "recover",
 })
 # A personal team's actions that start no participant, model request, check or
-# change: reviews, bookkeeping and taking over retained work. Under a policy
-# they stay available, like the safe actions, whatever the team runs.
+# change: reviews and bookkeeping. Under a policy they stay available, like
+# the safe actions, whatever the team runs.
 _POLICY_PERSONAL_ACTIONS = frozenset({
-    "configure", "review_read_result", "complete", "accept_writer", "recover", "steer_worker",
+    "configure", "review_read_result", "complete", "accept_writer", "steer_worker",
     # The orchestrator loop's own bookkeeping (autopilot.py).
     "accept_under_grant", "accept_writer_under_grant", "reject",
 })
@@ -315,7 +317,8 @@ class SwarmRuntime:
             self.team_model(spec)
         except Conflict as exc:
             return str(exc)
-        return organization.model_refusal(spec.backend_type, spec.model)
+        return (organization.preview_refusal(self.settings)
+                or organization.model_refusal(spec.backend_type, spec.model))
 
     @staticmethod
     def _personal(capture: CapturedSession) -> bool:
@@ -378,9 +381,13 @@ class SwarmRuntime:
             return ""  # A lost acknowledgement's retry starts nothing again.
         autonomy = message.get("autonomy") if isinstance(message.get("autonomy"), dict) else {}
         checks = message.get("checks") if isinstance(message.get("checks"), list) else []
+        chosen = message.get("worker_model")
+        workers = ({"provider": chosen["provider"].strip().lower(), "model": chosen["model"].strip()}
+                   if isinstance(chosen, dict) and all(isinstance(chosen.get(key), str) for key in ("provider", "model"))
+                   else None)
         setup = {"model": {"provider": capture.backend_spec.backend_type, "model": capture.backend_spec.model},
-                 "write_roots": message.get("write_roots") or [], "checks": checks,
-                 "autonomy": autonomy,
+                 "plan_mode": message.get("plan_mode", "manual"), "write_roots": message.get("write_roots") or [],
+                 "checks": checks, "autonomy": autonomy, **({"worker_model": workers} if workers else {}),
                  **({"execution_mode": "managed"} if message.get("execution_mode") == "managed" else {})}
         return self._governance(capture, run_id, setup).start_refusal()
 
@@ -917,6 +924,7 @@ class SwarmRuntime:
                                 {"run_id": run_id, **({"writer_base": writer_base} if writer_base else {})})
             governance.record("team.start", execution_mode="managed" if managed else "personal", plan_mode=plan_mode,
                               provider=capture.backend_spec.backend_type, model=capture.backend_spec.model,
+                              worker_provider=workers_spec.backend_type, worker_model=workers_spec.model,
                               objective=audit.content(objective), tasks=len(tasks), request_limit=requests,
                               max_workers=workers, write_roots=[audit.name(root) for root in write_roots],
                               checks=[audit.name(check["key"]) for check in checks],

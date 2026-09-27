@@ -100,21 +100,37 @@ def team(tmp_path):
     service.close()
 
 
-def start_readers(service, capture, *, tasks=1, request_limit=4):
-    return service.operate(capture, {"request_id": "readers", "action": "start", "objective": OBJECTIVE,
+def start_readers(service, capture, *, tasks=1, request_limit=4, request_id="readers", **extra):
+    return service.operate(capture, {"request_id": request_id, "action": "start", "objective": OBJECTIVE,
         "tasks": [{"objective": f"Read the notes ({index})", "read_roots": ["."]} for index in range(tasks)],
-        "request_limit": request_limit, "max_workers": tasks})["run"]["run"]["id"]
+        "request_limit": request_limit, "max_workers": tasks, **extra})["run"]["run"]["id"]
 
 
-def start_orchestrated(service, capture, *, rounds=2, autonomy=True):
+def start_orchestrated(service, capture, *, rounds=2, autonomy=True, **extra):
     return service.operate(capture, {"request_id": "orchestrated", "action": "start", "objective": OBJECTIVE,
         "plan_mode": "coordinator", "tasks": None, "request_limit": 20, "max_workers": 2,
         "coordinator_requests": 3, "worker_requests": 3,
-        **({"autonomy": {"rounds": rounds}} if autonomy else {})})["run"]["run"]["id"]
+        **({"autonomy": {"rounds": rounds}} if autonomy else {}), **extra})["run"]["run"]["id"]
 
 
 def view(service, capture, run_id):
     return service.operate(capture, {"request_id": f"view-{time.monotonic()}", "run_id": run_id})
+
+
+def act(service, capture, run_id, action, **payload):
+    """One owner action on the team, at its current revision."""
+    revision = view(service, capture, run_id)["run"]["run"]["revision"]
+    return service.operate(capture, {"action": action, "request_id": f"{action}-{time.monotonic()}",
+                                     "run_id": run_id, "expected_revision": revision, **payload})
+
+
+def handed_back(service, capture, run_id):
+    """The run once the orchestrator loop has handed it back, with its plan and turn settled."""
+    until(lambda: view(service, capture, run_id)["autonomy"]["phase"] == "needs_owner")
+    until(lambda: (lambda value: value["run"]["coordinator_proposals"] and all(
+        row["process_state"] == "stopped" for row in value["run"]["attempts"]))(view(service, capture, run_id)))
+    time.sleep(1.2)  # Several loop passes after the plan is ready: nothing new starts.
+    return view(service, capture, run_id)
 
 
 def settled_worker(service, capture, run_id):
@@ -144,16 +160,103 @@ def test_a_personal_team_runs_under_a_policy_and_sharing_stays_refused():
     # Organization-managed teams: unchanged, only reading, stopping and recovery.
     assert "Acme's policy applies on this computer" in policy_refusal("start", team=lambda: "")
     assert policy_refusal("stop") == policy_refusal("collaboration_revoke", personal=True) == ""
+    # Taking over an expired team starts nothing, so it stays available to
+    # every team, under an invalid policy too; continuing it is governed.
+    lumi_policy.set_for_tests(None, error="The organization policy at X is invalid: bad JSON")
+    assert policy_refusal("recover") == policy_refusal("recover", personal=True) == ""
+    assert "administrator" in policy_refusal("continue_recovered", personal=True, team=lambda: "")
 
 
 def test_an_organization_can_keep_the_preview_off(team):
     # A locked setting wins over the person's switch (SettingsManager.get).
     service, capture, outputs, backends = team
     install(settings={"swarming.enabled": False})
-    assert service.operate(capture, {"request_id": "look"})["enabled"] is False
-    with pytest.raises(Conflict, match="Enable the swarming preview"):
+    current = service.operate(capture, {"request_id": "look"})
+    assert current["enabled"] is False and current["available"] is False
+    assert "turns the Team preview off" in current["message"]
+    with pytest.raises(Conflict, match="turns the Team preview off"):
         start_readers(service, capture)
     assert not backends
+
+
+def test_a_policy_locking_the_preview_off_mid_run_stops_the_orchestrated_team(team, records):
+    # The lock arrives while the orchestrator writes its plan: the loop hands
+    # the team back and nothing more starts, from the loop or the owner.
+    service, capture, outputs, backends = team
+    _, log = records
+    outputs.append(PolicyArrives({"settings": {"swarming.enabled": False}},
+                                 events=[text_delta(plan_response()), done()]))
+    run_id = start_orchestrated(service, capture)
+    current = handed_back(service, capture, run_id)
+    assert "turns the Team preview off" in current["autonomy"]["detail"]
+    assert len(backends) == 1 and [row["state"] for row in current["run"]["coordinator_proposals"]] == ["pending"]
+    proposal = current["run"]["coordinator_proposals"][0]
+    with pytest.raises(Conflict, match="turns the Team preview off"):
+        act(service, capture, run_id, "decide_proposal", proposal_id=proposal["id"], sha256=proposal["sha256"],
+            accept=True, evidence="Owner accepted the plan")
+    with pytest.raises(Conflict, match="turns the Team preview off"):
+        act(service, capture, run_id, "request_plan", coordinator_requests=2, read_roots=["."])
+    # Rejecting the plan, reading and stopping stay available.
+    act(service, capture, run_id, "decide_proposal", proposal_id=proposal["id"], sha256=proposal["sha256"],
+        accept=False, evidence="Owner declined it")
+    assert act(service, capture, run_id, "stop")["run"]["run"]["state"] in {"stopping", "cancelled"}
+    assert len(backends) == 1
+    assert any(row["data"]["decision"] == "hand_back" for row in audit_records(log, "team.decision"))
+
+
+def test_the_preview_lock_refuses_the_owners_actions_that_start_work(team):
+    # The lock arrives while a reader works: its next request is refused, and
+    # the owner can't retry it or resume the team, only pause, look and stop.
+    service, capture, outputs, backends = team
+    outputs.append(PolicyArrives({"settings": {"swarming.enabled": False}}, scripts=[
+        [tool_call("file_read", {"path": "notes.txt"}), done()], [text_delta("Read the notes."), done()]]))
+    run_id = start_readers(service, capture)
+    run = settled_worker(service, capture, run_id)["run"]
+    assert [row["state"] for row in run["attempts"]] == ["failed"]
+    assert "turns the Team preview off" in run["workers"][0]["error"]
+    with pytest.raises(Conflict, match="turns the Team preview off"):
+        act(service, capture, run_id, "retry_work", work_item_id=run["work_items"][0]["id"], evidence="Retry it")
+    act(service, capture, run_id, "pause")
+    with pytest.raises(Conflict, match="turns the Team preview off"):
+        act(service, capture, run_id, "resume")
+    act(service, capture, run_id, "stop")
+    assert len(backends) == 1 and [row["kind"] for row in view(service, capture, run_id)["run"]["attempts"]] == ["worker"]
+
+
+@pytest.mark.parametrize("arriving", ["model", "lock", "invalid"])
+def test_taking_over_an_expired_team_stays_available_and_continuing_it_is_governed(team, arriving):
+    # Taking over fences the old owner and starts nothing, whatever the policy;
+    # continuing starts workers, so the rules in force decide.
+    service, capture, outputs, backends = team
+    now = [time.time()]
+    service._store(capture).clock = lambda: now[0]
+    outputs.append("The notes say hi.")
+    run_id = start_readers(service, capture)
+    settled_worker(service, capture, run_id)
+    old = service._runners[run_id][1]
+    old._maintenance_stop.set()
+    old._maintenance.join(timeout=1)
+    now[0] += 61  # The old owner's lease has expired.
+    reopened = SwarmRuntime(service.settings, backend_factory=lambda _: pytest.fail("Nothing may start"),
+                            state_root=service._state_root)
+    try:
+        reopened._store(capture).clock = lambda: now[0]
+        if arriving == "model":
+            install(models={"allowed": ["anthropic:*"]})
+            refusal = "doesn't allow chosen on ollama"
+        elif arriving == "lock":
+            install(settings={"swarming.enabled": False})
+            refusal = "turns the Team preview off"
+        else:
+            lumi_policy.set_for_tests(None, error="The organization policy at X is invalid: bad JSON")
+            refusal = "administrator"
+        owned = act(reopened, capture, run_id, "recover")["run"]
+        assert owned["recovery"]["owns_lease"] is True
+        with pytest.raises(Conflict, match=refusal):
+            act(reopened, capture, run_id, "continue_recovered", retry_work_items=[], worker_requests=4)
+        assert run_id not in reopened._runners
+    finally:
+        reopened.close()
 
 
 def test_sharing_is_refused_by_the_runtime_under_a_policy(team):
@@ -166,6 +269,44 @@ def test_sharing_is_refused_by_the_runtime_under_a_policy(team):
         service.operate(capture, {"action": "managed_sharing_prepare", "request_id": "managed-share",
                                   "objective": "Share findings", "request_limit": 4})
     assert not backends and not service.busy
+
+
+def test_a_policy_arriving_stops_a_sharing_teams_new_requests(team):
+    # A team prepared to receive shared work before the policy arrived: the
+    # policy now refuses its requests and its accepting more work.
+    from lumi.engine.swarming import AttemptContext
+
+    service, capture, outputs, backends = team
+    run_id = service.operate(capture, {"action": "collaboration_prepare", "request_id": "share",
+                                       "objective": "Share findings", "request_limit": 4})["run"]["run"]["id"]
+    governance = service.team_governance(run_id)
+    assert governance.kind == "sharing" and governance.dispatch_refusal() == ""
+    install()
+    worker = AttemptContext(capture.scope, run_id, "attempt", "collab_worker_fixture", 1)
+    assert "sharing with another conversation" in governance.request_refusal(worker, "primary", ("ollama", "chosen"))
+    assert "sharing with another conversation" in governance.dispatch_refusal()
+    with pytest.raises(Conflict, match="sharing with another conversation"):
+        act(service, capture, run_id, "collaboration_accept_work", message_id="message", read_roots=["."],
+            objective="Inspect", requests=2, evidence="Accepted")
+    assert not backends
+
+
+def test_accepting_shared_work_checks_the_budgets_before_its_claim(team, records):
+    # With no policy, accepting shared work starts a participant: the budgets
+    # (here the person's own daily limit) decide before anything is claimed.
+    from lumi import budgets
+
+    service, capture, outputs, backends = team
+    ledger, _ = records
+    run_id = service.operate(capture, {"action": "collaboration_prepare", "request_id": "share",
+                                       "objective": "Share findings", "request_limit": 4})["run"]["run"]["id"]
+    ledger.record(provider="anthropic", model="claude-haiku-4-5", purpose="turn", stats={"input_tokens": 2_000_000})
+    service.settings.set("cost_tracking", "daily_limit_usd", 1)
+    budgets.configure(service.settings)  # As the app does when Settings change.
+    with pytest.raises(Conflict, match="Continuing needs approval, which a team run can't ask for"):
+        act(service, capture, run_id, "collaboration_accept_work", message_id="message", read_roots=["."],
+            objective="Inspect", requests=2, evidence="Accepted")
+    assert view(service, capture, run_id)["run"]["work_items"] == [] and not backends
 
 
 # ── Models ─────────────────────────────────────────────────────────────────
@@ -250,6 +391,55 @@ def test_a_policy_arriving_mid_run_hands_the_orchestrated_team_back(team, record
     assert [row["kind"] for row in view(service, capture, run_id)["run"]["attempts"]] == ["coordinator"]
     hand_back, = [row for row in audit_records(log, "team.decision") if row["data"]["decision"] == "hand_back"]
     assert hand_back["data"]["by"] == "orchestrator" and "text" not in hand_back["data"]["reason"]
+
+
+WORKERS = {"provider": "ollama", "model": "small-worker"}
+
+
+def test_each_model_the_team_runs_passes_the_policy(team):
+    # The orchestrator runs the session's model and the workers their own:
+    # each must be allowed, and a team of manual tasks runs only its workers'.
+    service, capture, outputs, backends = team
+    install(models={"blocked": ["ollama:small-worker"]})
+    with pytest.raises(Conflict, match="doesn't allow small-worker on ollama"):
+        start_orchestrated(service, capture, worker_model=WORKERS)
+    install(models={"blocked": ["ollama:chosen"]})
+    with pytest.raises(Conflict, match="doesn't allow chosen on ollama"):
+        start_orchestrated(service, capture, worker_model=WORKERS)
+    assert not backends
+    outputs.append("The notes say hi.")
+    run_id = start_readers(service, capture, worker_model=WORKERS)
+    run = settled_worker(service, capture, run_id)["run"]
+    assert [row["state"] for row in run["attempts"]] == ["submitted"]
+    assert [backend.model for backend in backends] == ["small-worker"]
+
+
+def test_a_policy_refusing_the_workers_model_mid_run_stops_their_dispatch(team, records):
+    service, capture, outputs, backends = team
+    outputs.append(PolicyArrives({"models": {"blocked": ["ollama:small-worker"]}},
+                                 events=[text_delta(plan_response()), done()]))
+    run_id = start_orchestrated(service, capture, worker_model=WORKERS)
+    current = handed_back(service, capture, run_id)
+    assert "doesn't allow small-worker on ollama" in current["autonomy"]["detail"]
+    assert [backend.model for backend in backends] == ["chosen"]
+
+
+def test_each_request_is_priced_and_recorded_under_its_own_model(team, records):
+    # The orchestrator's and the workers' requests cost what their own models do.
+    service, capture, outputs, backends = team
+    ledger, log = records
+    install(pricing={"prices": {"ollama:chosen": {"input": 100000, "output": 100000},
+                                "ollama:small-worker": {"input": 10000, "output": 10000}}})
+    outputs += [plan_response(), "The API validates input.", "The UI escapes output.", json.dumps(FINAL)]
+    run_id = start_orchestrated(service, capture, worker_model=WORKERS)
+    until(lambda: (lambda value: value if value["run"]["run"]["state"] == "completed"
+                   and not value["autonomy"]["active"] else None)(view(service, capture, run_id)), timeout=30)
+    costs = sorted((row["model"], round(row["cost_usd"], 6)) for row in ledger.records())
+    assert costs == [("chosen", 3.0), ("chosen", 3.0), ("small-worker", 0.3), ("small-worker", 0.3)]
+    started = sorted((row["data"]["kind"], row["data"]["model"]) for row in audit_records(log, "team.participant.start"))
+    assert started == [("coordinator", "chosen")] * 2 + [("reader", "small-worker")] * 2
+    start, = audit_records(log, "team.start")
+    assert (start["data"]["model"], start["data"]["worker_model"]) == ("chosen", "small-worker")
 
 
 # ── Modes ──────────────────────────────────────────────────────────────────
@@ -338,6 +528,34 @@ def test_checks_follow_the_organizations_shell_rules_and_approvals(tmp_path):
     assert refuse("npm", "test") == ""
 
 
+def test_the_organizations_rules_see_a_command_a_launcher_carries(tmp_path):
+    # A launcher carries a command in one argument, or starts one partway through.
+    install(shell={"rules": [{"tool_pattern": "bash", "action": "deny", "arg_patterns": {"command": "^\\s*curl\\b"},
+                              "reason": "No downloads from the agent's shell"}]},
+            approvals={"commands": ["npm publish*"]})
+    refuse = lambda *argv: check_refusal([{"key": "check", "argv": list(argv)}],  # noqa: E731
+                                         project=str(tmp_path), settings=None)
+    for argv in (("cmd", "/c", "npm publish"), ("sh", "-c", "npm publish"), ("cmd", "/c", "npm", "publish")):
+        assert "second person's approval" in refuse(*argv), argv
+    for argv in (("cmd", "/c", "curl https://example.com/x.sh"), ("cmd", "/c", "curl", "https://example.com/x.sh")):
+        assert "No downloads from the agent's shell" in refuse(*argv), argv
+    # The guardrails see a command that starts partway through too.
+    lumi_policy.set_for_tests(None)
+    assert "never allowed" in refuse("cmd", "/c", "rm", "-rf", "/")
+    assert refuse("cmd", "/c", "npm", "publish") == ""  # Control: no policy, no approvals.
+
+
+def test_a_rule_without_argument_patterns_decides_only_the_whole_command(tmp_path):
+    # "Ask about everything but npm test": the catch-all mustn't refuse "npm"
+    # alone in a command the organization allowed as a whole.
+    install(shell={"rules": [{"tool_pattern": "*", "action": "allow", "arg_globs": {"command": "npm test*"}},
+                             {"tool_pattern": "*", "action": "prompt", "reason": "Ask before commands"}]})
+    refuse = lambda *argv: check_refusal([{"key": "check", "argv": list(argv)}],  # noqa: E731
+                                         project=str(tmp_path), settings=None)
+    assert refuse("npm", "test", "--", "--ci") == ""
+    assert "Ask before commands" in refuse("npm", "run", "deploy")
+
+
 def test_a_check_that_needs_approval_refuses_the_team_before_any_team_state(team):
     service, capture, outputs, backends = team
     install(approvals={"commands": ["npm publish*"]})
@@ -355,7 +573,7 @@ def test_the_shell_sandbox_refuses_writer_teams_only(tmp_path):
     assert sandbox_refusal(settings) == ""
     settings.set("security", "shell_sandbox", "project")
     assert "shell sandbox is on" in sandbox_refusal(settings)
-    common = {"run_id": "run", "project": str(tmp_path), "provider": "ollama", "model": "chosen"}
+    common = {"run_id": "run", "project": str(tmp_path), "models": [("ollama", "chosen")]}
     assert "shell sandbox is on" in TeamGovernance(settings, writers=True, **common).refusal()
     assert TeamGovernance(settings, writers=False, **common).refusal() == ""
 
@@ -372,6 +590,26 @@ def test_a_spent_budget_refuses_the_team_at_start(team, records):
         start_readers(service, capture)
     assert not backends and not service.busy
     assert audit_records(log, "budget.block") and audit_records(log, "team.refusal")
+
+
+def test_a_limit_that_asks_stops_a_team_unless_the_person_approved_it(team, records):
+    # Nobody can answer during a team run; an approval given in a chat this
+    # period counts, as it does for the next chat turn.
+    from lumi import budgets
+
+    service, capture, outputs, backends = team
+    ledger, log = records
+    ledger.record(provider="anthropic", model="claude-haiku-4-5", purpose="turn", stats={"input_tokens": 2_000_000})
+    install(budgets=[{"scope": "user", "period": "month", "approve_usd": 1}])
+    with pytest.raises(Conflict, match="past Acme's \\$1.00 limit. Continuing needs approval, which a team run"):
+        start_readers(service, capture)
+    approval, = audit_records(log, "budget.approval")
+    assert approval["data"]["decision"] == "unavailable" and not backends
+    for verdict in budgets.evaluate(capture.workspace):
+        budgets.approve(verdict, "a chat turn")
+    outputs.append("The notes say hi.")
+    run_id = start_readers(service, capture)
+    assert [row["state"] for row in settled_worker(service, capture, run_id)["run"]["attempts"]] == ["submitted"]
 
 
 def test_the_budget_is_checked_before_each_request_and_counts_the_whole_team_run(team, records):
@@ -436,7 +674,7 @@ raise SystemExit(main(backend_factory=lambda spec: StreamingBackend(name=spec.ba
     scripts=[[tool_call("file_read", {"path": "fact.txt"}), done()], [text_delta("Read the fact."), done()]])))
 ''')
     governance = TeamGovernance(None, run_id=authority.run_id, project=str(workspace), session="conversation-7",
-                                provider="ollama", model="chosen")
+                                models=[("ollama", "chosen")])
     runner = SwarmWorkerRunner(supervisor, authority, workspace, managed_readers=True, governance=governance,
         backend_factory=lambda _: pytest.fail("A managed reader builds its backend in its own process"),
         writer_process_factory=lambda: ManagedWorkerProcess(command=command),
@@ -452,6 +690,59 @@ raise SystemExit(main(backend_factory=lambda spec: StreamingBackend(name=spec.ba
         [row] = ledger.records()
         assert (row["purpose"], row["session"], row["agent"]) == ("team", "conversation-7", f"team:{authority.run_id}:first")
         assert audit_records(log, "team.request_refused")
+    finally:
+        runner.close()
+
+
+def test_a_worker_process_leaves_budgets_to_the_host(read_setup, tmp_path, monkeypatch):
+    # The worker's process used to run a chat turn's budget checks itself, with
+    # its own policy load and none of the app's approvals, so a limit the person
+    # approved in a chat still stopped it. The host's check is the only one.
+    from lumi import budgets
+    from lumi.engine.swarming.process_worker import ManagedWorkerProcess
+    from lumi.engine.swarming.processes import ProcessObservations
+    from lumi.engine.swarming.workers import SwarmWorkerRunner
+    from tests.test_swarm_process_workers import child_script
+
+    supervisor, authority, workspace = read_setup
+    state = tmp_path / "shared-state"  # The app's and the worker's process's state folder.
+    ledger = UsageLedger(state / "usage")
+    ledger.record(provider="anthropic", model="claude-haiku-4-5", purpose="turn", stats={"input_tokens": 2_000_000})
+    usage.set_for_tests(ledger)
+    host_log = AuditLog(tmp_path / "host-audit")
+    audit.set_for_tests(host_log)
+    document = {"schema": "lumi.policy/v1", "organization": "Acme",
+                "budgets": [{"scope": "user", "period": "month", "approve_usd": 1}]}
+    (tmp_path / "policy.json").write_text(json.dumps(document), encoding="utf-8")
+    monkeypatch.setenv("LUMI_POLICY_FILE", str(tmp_path / "policy.json"))  # What the worker's process reads.
+    monkeypatch.setenv("LUMI_STATE_HOME", str(state))
+    lumi_policy.set_for_tests(parse(document, source="test policy"))
+    governance = TeamGovernance(None, run_id=authority.run_id, project=str(workspace), session="conversation-7",
+                                models=[("ollama", "chosen")])
+    assert "Continuing needs approval" in governance.dispatch_refusal()
+    for verdict in budgets.evaluate(str(workspace)):
+        budgets.approve(verdict, "a chat turn")  # The person approved going past it this month.
+    assert governance.dispatch_refusal() == ""
+    context = assign_reader(read_setup)
+    command = child_script(tmp_path, '''
+from lumi.engine.swarming.worker_child import main
+from tests.streaming_stub import StreamingBackend, tool_call, text_delta, done
+raise SystemExit(main(backend_factory=lambda spec: StreamingBackend(name=spec.backend_type, model=spec.model,
+    scripts=[[tool_call("file_read", {"path": "fact.txt"}), done()], [text_delta("Read the fact."), done()]])))
+''')
+    runner = SwarmWorkerRunner(supervisor, authority, workspace, managed_readers=True, governance=governance,
+        backend_factory=lambda _: pytest.fail("A managed reader builds its backend in its own process"),
+        writer_process_factory=lambda: ManagedWorkerProcess(command=command),
+        process_observations=ProcessObservations(supervisor.store, host_id="fixture-host"))
+    try:
+        runner.start(context, BackendSpec("ollama", "chosen"))
+        until(lambda: not runner.inspect(context.attempt_id)["alive"], timeout=60)
+        worker = runner.inspect(context.attempt_id)
+        assert worker["state"] == "submitted" and worker["error"] == "", worker
+        # Nor did the worker's process write budget records of its own.
+        child_log = AuditLog(state / "audit")
+        assert not [row for row in audit_records(child_log) if row["type"].startswith("budget.")]
+        assert [row["purpose"] for row in ledger.records()] == ["turn", "team", "team"]
     finally:
         runner.close()
 
@@ -501,6 +792,20 @@ raise SystemExit(main(backend_factory=lambda spec: StreamingBackend(name=spec.ba
             assert "GitHub token" in redacted[0]["message"]
     finally:
         runner.close()
+
+
+def test_a_worker_process_scans_for_its_own_model_key_and_connection_headers():
+    # The worker's process knows its own credentials (not the app's other saved
+    # keys), and removes them from what it sends even with the pattern scan off.
+    from lumi import secret_scan
+    from lumi.engine.swarming.worker_child import _configure_scan
+
+    key, header = "fixture-worker-model-key-0123456789", "Bearer fixture-connection-token-abcdef"
+    _configure_scan({"backend": {"api_key": key}, "connection": {"headers": {"Authorization": header}},
+                     "secret_scan": False})
+    text, found = secret_scan.redact_text(f"key={key}; auth={header}; ghp_{'A1b2C3d4' * 5}")
+    assert key not in text and header not in text and found["saved API key"] == 2
+    assert "ghp_" in text  # The pattern scan is off.
 
 
 # ── Audit ──────────────────────────────────────────────────────────────────
@@ -578,10 +883,11 @@ def test_integration_steps_and_the_apply_grant_under_a_full_auto_policy(tmp_path
         service.close()
 
 
-def test_a_check_refused_by_a_policy_that_arrives_mid_run(tmp_path):
-    # Writers ran with no policy; then one arrives that needs a second person
-    # for the team's check. The owner can't run it any more.
+@pytest.fixture
+def prepared_writers(tmp_path):
+    """A writer team, with no policy, whose one writer's change is combined and ready for its check."""
     from tests.test_swarm_desktop_writers import operate, request, settled, view as writers_view
+
     project = tmp_path / "project"
     (project / "src").mkdir(parents=True)
     (project / "src" / "value.txt").write_text("original\n")
@@ -608,12 +914,42 @@ def test_a_check_refused_by_a_policy_that_arrives_mid_run(tmp_path):
         writer_id = writers_view(desktop, run_id)["writer_worktrees"][0]["id"]
         operate(desktop, run_id, "prepare_candidate", "prepare", writer_ids=[writer_id])
         candidate = settled(desktop, run_id)["integration_candidates"][0]
-        install(approvals={"commands": [f"{sys.executable}*"]})
-        with pytest.raises(Conflict, match="second person's approval"):
-            operate(desktop, run_id, "run_check", "verify", candidate_id=candidate["id"], check_key="value-check")
-        assert writers_view(desktop, run_id)["integration_checks"] == []
+        assert candidate["state"] == "ready"
+        yield desktop, run_id, candidate, operate, settled, writers_view
     finally:
         service.close()
+
+
+def test_a_check_refused_by_a_policy_that_arrives_mid_run(prepared_writers):
+    # Then a policy arrives that needs a second person for the team's check.
+    desktop, run_id, candidate, operate, _, writers_view = prepared_writers
+    install(approvals={"commands": [f"{sys.executable}*"]})
+    with pytest.raises(Conflict, match="second person's approval"):
+        operate(desktop, run_id, "run_check", "verify", candidate_id=candidate["id"], check_key="value-check")
+    assert writers_view(desktop, run_id)["integration_checks"] == []
+
+
+def test_the_shell_sandbox_and_a_policy_arriving_mid_run_stop_checks_and_applying(prepared_writers):
+    desktop, run_id, candidate, operate, settled, writers_view = prepared_writers
+    service, _, project, _ = desktop
+    base = git(project, "rev-parse", "HEAD")
+    # The person turns the shell sandbox on: the team's checks can't run in it yet.
+    service.settings.set("security", "shell_sandbox", "project")
+    with pytest.raises(Conflict, match="shell sandbox is on"):
+        operate(desktop, run_id, "run_check", "sandboxed", candidate_id=candidate["id"], check_key="value-check")
+    assert "shell sandbox is on" in service.team_dispatch_refusal(run_id)
+    assert writers_view(desktop, run_id)["integration_checks"] == []
+    service.settings.set("security", "shell_sandbox", "off")
+    operate(desktop, run_id, "run_check", "verify", candidate_id=candidate["id"], check_key="value-check")
+    assert settled(desktop, run_id)["integration_candidates"][0]["state"] == "verified"
+    # A policy whose modes don't allow writers arrives before the owner applies.
+    install(permissions={"allowed_modes": ["ask"]})
+    with pytest.raises(Conflict, match="neither Auto-edit nor Full-auto"):
+        operate(desktop, run_id, "apply_candidate", "apply", candidate_id=candidate["id"],
+                expected_base=candidate["base_revision"], target_revision=candidate["result_revision"],
+                evidence="Owner reviewed the checked change")
+    assert git(project, "rev-parse", "HEAD") == base
+    assert (project / "src" / "value.txt").read_text() == "original\n"
 
 
 def test_a_request_refusal_is_a_known_outcome_for_the_session(tmp_path):

@@ -42,11 +42,11 @@ day. `LUMI_STATE_HOME` moves the whole folder.
 | `update.deferred`, `update.install` | An update waits for a running agent turn, or its installer starts and Lumi closes | version, feed, `reason` |
 | `update.skipped`, `update.postponed`, `update.cancelled` | You skip an update, choose to be reminded later, or close the update window | version, feed |
 | `error` | A turn reports an error | code, message by capture level |
-| `team.start`, `team.stop`, `team.complete` | A [team](swarming.md#under-an-organization-policy) starts, you stop it, or it completes | run, provider, model, plan mode, writable folders and check names, rounds, whether it applies changes, objective by capture level; `by` (`owner` or `orchestrator`) |
+| `team.start`, `team.stop`, `team.complete` | A [team](swarming.md#under-an-organization-policy) starts, you stop it, or it completes | run, provider and model, the workers' provider and model, plan mode, writable folders and check names, rounds, whether it applies changes, objective by capture level; `by` (`owner` or `orchestrator`) |
 | `team.participant.start`, `team.participant.end` | A team worker or orchestrator turn starts or ends | run, attempt, kind (`reader`, `writer`, `coordinator`, `answer`), provider, model, `outcome`, error by capture level |
 | `team.decision` | You or the team's orchestrator decide on a plan, a result, a retry or writers' changes, or the orchestrator hands the team back | `decision`, `by`, the ids concerned, evidence and reason by capture level |
 | `team.integration` | A step on a team's writers' changes ends: combining them, a check or applying | step, outcome, result, candidate, check name, exit code, applied revision |
-| `team.refusal`, `team.request_refused` | The organization's rules or a budget refuse a team's start or a participant's model request | action or purpose, reason by capture level |
+| `team.refusal`, `team.request_refused` | The organization's rules or a budget refuse a team's start or a participant's model request | action, or purpose with the participant's provider and model; reason by capture level |
 
 Turns from the chat gateway name their chat as `gateway:<chat id>`, and the
 [terminal UI](terminal-ui.md) names each of its sessions `tui:<id>`. A

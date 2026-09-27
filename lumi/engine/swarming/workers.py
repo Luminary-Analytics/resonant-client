@@ -482,12 +482,13 @@ class SwarmWorkerRunner:
         """A participant's start or end in the audit log (organization.py); never decides its outcome."""
         if self.governance is None:
             return
+        model = (worker.grant.model.provider, worker.grant.model.model)
         try:
             if event == "start":
-                self.governance.participant_started(worker.context, kind=self._kind(worker))
+                self.governance.participant_started(worker.context, kind=self._kind(worker), model=model)
             else:
                 self.governance.participant_ended(
-                    worker.context, kind=self._kind(worker), error=worker.error,
+                    worker.context, kind=self._kind(worker), model=model, error=worker.error,
                     outcome=worker.phase if worker.termination_recorded else "reconciliation_required")
         except Exception:  # noqa: BLE001 - the audit log never stops a worker
             pass

@@ -39,25 +39,34 @@ them so far:
 - **Usage and budgets.** Each participant's model request is checked against
   your spending limits and the organization's before it's sent, and recorded
   once in usage and the audit log by the app, with purpose `team`, the
-  project and the conversation. See
+  project and the conversation. Requests already running aren't stopped, so a
+  team can go past a limit by what they cost. See
   [Under an organization policy](#under-an-organization-policy).
 
 ## Under an organization policy
 
 A policy applies to a personal team as follows (`engine/swarming/organization.py`).
 Each rule is checked again whenever the team would start more work, so a policy
-or setting that changes mid-run applies to the team's next step. An
-organization can keep the preview off altogether by locking `swarming.enabled`
-to `false` in the policy's `settings`.
+or setting that changes mid-run applies to the team's next step.
 
-**Models.** The conversation's model must pass the policy's model rules,
-including `require_zero_retention`. They're checked when the team starts,
-before each participant (worker, orchestrator turn, retry) starts and before
-each model request. If a policy that arrives mid-run refuses the model, a
-worker's next request is refused before it's sent and the worker stops, no new
-task is dispatched (the panel says how many tasks wait, and why), and an
-orchestrator running the team hands it back to you with the reason. A refused
-request was never sent, so its outcome is known.
+**Turning the preview off.** An organization can keep the preview off by
+locking `swarming.enabled` to `false` in the policy's `settings`. That stops
+every team's new work, including one already running or one you recover: no
+new participant, model request, check or application. Viewing, stopping and
+recovering it stay available. Turning the preview off yourself only keeps new
+teams from starting.
+
+**Models.** Each model the team runs must pass the policy's model rules,
+including `require_zero_retention`: the conversation's model, which the
+orchestrator plans, answers and reports with, and the workers' own model if
+you chose one (a team of your own tasks runs only its workers' model). They're
+checked when the team starts and before each participant (worker, orchestrator
+turn, retry) starts, and each model request is checked against its own
+participant's model. If a policy that arrives mid-run refuses one, a worker's
+next request is refused before it's sent and the worker stops, no new task is
+dispatched (the panel says how many tasks wait, and why), and an orchestrator
+running the team hands it back to you with the reason. A refused request was
+never sent, so its outcome is known.
 
 **Permission modes.** Team features map to `permissions.allowed_modes`:
 
@@ -72,11 +81,15 @@ one stops starting work if a later policy refuses it.
 
 **Checks.** Your declared checks are commands, so they pass the same
 guardrails as the agent's commands, with or without a policy: the commands Lumi
-never runs (`engine/guardrails.py`, each argument too) and the irreversibility
-floor. Under a policy, the organization's shell rules apply to each check as a
-`check_run` and as a `bash` command: a `deny` refuses it, and so does a `prompt`,
-since a team runs its checks without an approval prompt. A check matching the
-policy's `approvals` (second-person approval) is refused. While the shell
+never runs (`engine/guardrails.py`) and the irreversibility floor. Under a
+policy, the organization's shell rules apply to each check as a `check_run` and
+as a `bash` command: a `deny` refuses it, and so does a `prompt`, since a team
+runs its checks without an approval prompt. A check matching the policy's
+`approvals` (second-person approval) is refused. Because a launcher can carry a
+command (`sh -c "npm publish"`, `cmd /c curl …`), each argument, and the command
+from each argument on, is checked too: against the guardrails, the approvals
+and the rules about particular commands (those with argument patterns). A rule
+without argument patterns decides only the whole command. While the shell
 sandbox is on (`security.shell_sandbox`, set in Settings or by the policy), a team
 with writers is refused: its checks don't run in the sandbox yet. These are
 checked when the team starts and again before each check runs.
@@ -90,17 +103,25 @@ the organization's (`budgets.py`) before its allowance is reserved:
 - a `turn` budget counts the whole team run;
 - a refused request never started, so its outcome is known and nothing is
   left to reconcile. The worker stops and the run keeps a `request_refused`
-  event.
+  event;
+- requests already running aren't stopped. Up to eight workers and the
+  orchestrator can have one each in flight, so a team can go past a limit by
+  what those requests cost.
 
 The app records each request once in the usage records: purpose `team`
-(`team_planning` or `team_compression` for auxiliary requests), your
-conversation, the project and agent `team:<run>:<worker>`. Participants
+(`team_compression` for a compression request), your conversation, the
+project and agent `team:<run>:<worker>`. It prices and records each request
+under its participant's configured model, so a router's alias (such as
+`sonn-auto`) is recorded as the alias, not the model it routed to. Participants
 in their own processes send their usage to the app, which records it.
 
 **Secret scan.** With **Scan for secrets** on (Settings, or locked by the
 policy's `privacy.secret_scan`), every worker removes known credential formats
 from what it sends to its model, whether it runs in the app or in its own
-process.
+process. A worker in its own process also removes its own model key and its
+connection's header values, and the provider keys in its environment, but it
+doesn't know the app's other saved keys. The app refuses any tool result that
+carries a key the team's workers hold before it reaches a model.
 
 **Audit log.** The team's start, stop and completion, each participant's start
 and end (kind, model, outcome), each integration step's outcome (combining,
@@ -110,11 +131,18 @@ Content (the objective, evidence, reasons) follows the audit log's capture level
 at the default level only its size and digest are kept. See the
 [audit log](audit-log.md).
 
+**Recovery.** Taking over an expired team fences its old owner and starts
+nothing, so it stays available under any policy, even an invalid one, and for
+organization-managed teams. **Continue reviewed team** starts workers, so the
+rules above decide it.
+
 Still refused under a policy: sharing with another conversation and
 organization-managed teams, apart from viewing, stopping, revoking and
-recovery. Workers also keep the limits listed above: they never read files the
-project or the policy excludes, never run hooks, and use only native providers
-or OpenAI-compatible connections.
+recovery. A policy that arrives while such a team runs stops its new requests,
+and accepting more shared work checks the rules and budgets first. Workers
+also keep the limits listed above: they never read files the project or the
+policy excludes, never run hooks, and use only native providers or
+OpenAI-compatible connections.
 
 ## Start a team
 
@@ -394,6 +422,8 @@ state before deciding on repair, retry or recovery.
 observed checkpoint. **Resume** continues the retained run. **Stop team** asks
 the owned workers to stop and preserves observations, results and unknown effects.
 Disabling the preview prevents new teams; it does not cancel an existing one.
+An organization's policy that locks the preview off does stop existing teams'
+new work (see [Under an organization policy](#under-an-organization-policy)).
 
 To adjust parallel work, choose an **Active worker limit** and select **Apply
 worker limit**. This works while the team is running, pausing or paused. The

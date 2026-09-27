@@ -5,9 +5,13 @@ applied it refused all new team work (``service.policy_refusal``). A personal
 team now runs under a policy, following these rules; sharing with another
 conversation and organization-managed teams stay refused (``unsupported_refusal``).
 
-- **Models.** The team's model passes ``Policy.model_allowed`` (zero-retention
-  rules included) when the team starts, before each participant starts and
-  before each model request, so a policy that arrives mid-run stops new work.
+- **The preview itself.** A policy that locks ``swarming.enabled`` off stops
+  every team's new work, not only new teams (``preview_refusal``).
+- **Models.** Each model the team runs (the orchestrator's and, when the owner
+  chose one, the workers') passes ``Policy.model_allowed``, zero-retention
+  rules included, when the team starts and before each participant starts.
+  Each model request is checked again against its own attempt's model, so a
+  policy that arrives mid-run stops new work.
 - **Modes** (``permissions.allowed_modes``). A read-only team only reads and
   reports, which every mode allows. Writers change files in their worktrees
   without asking, as Auto-edit does, so a team with writers needs ``auto-edit``
@@ -22,9 +26,11 @@ conversation and organization-managed teams stay refused (``unsupported_refusal`
   writers is refused: its checks can't run in the sandbox yet.
 - **Budgets and usage.** Each model request is checked against the budgets
   (``budgets.py``) before its allowance is reserved, counting the whole team run
-  as one turn, and recorded in the usage records (``usage.py``) with purpose
-  ``team`` (``team_planning`` or ``team_compression`` for auxiliary requests),
-  the owner's project and conversation, and agent ``team:<run>:<worker>``.
+  as one turn. Requests already running aren't stopped, so a team can go past a
+  limit by what they cost. Each observed request is recorded in the usage
+  records (``usage.py``) under its attempt's configured model, with purpose
+  ``team`` (``team_compression`` for a compression request), the owner's
+  project and conversation, and agent ``team:<run>:<worker>``.
 - **Audit.** The team's start, stop and completion, each participant's start
   and end, integration steps, decisions and refusals go to the audit log
   (``audit.py``): metadata, with content only through ``audit.content`` and
@@ -77,15 +83,33 @@ def unsupported_refusal() -> str:
             "or change that team work here.")
 
 
+def preview_refusal(settings: Any) -> str:
+    """Why an organization that locks the Team preview off stops this team's work, or ''.
+
+    ``SettingsManager.get`` applies a policy's lock, so the switch reads as the
+    organization set it. The person's own switch only keeps new teams from
+    starting (service._start); turning it off doesn't stop a team already running.
+    """
+    from ...policy import current
+
+    policy = current()
+    if policy is None or not policy.locked("swarming", "enabled"):
+        return ""
+    if _Settings(settings).get("swarming", "enabled", policy.value("swarming", "enabled")) is True:
+        return ""
+    return (f"{policy.organization}'s policy turns the Team preview off on this computer, so the team can't "
+            "start more work. You can still view, stop and recover it.")
+
+
 def model_refusal(provider: str, model: str) -> str:
-    """Why the organization's policy refuses the team's model (zero-retention rules included), or ''."""
+    """Why the organization's policy refuses one of the team's models (zero-retention rules included), or ''."""
     from ...policy import current
 
     policy = current()
     if policy is None or policy.model_allowed(str(provider or ""), str(model or "")):
         return ""
     return (f"{policy.organization}'s policy doesn't allow {model or 'this model'} on {provider or 'this provider'}, "
-            "so the team can't use it. Choose another model for this conversation.")
+            "so the team can't use it. Choose another model.")
 
 
 def mode_refusal(*, writers: bool, applies: bool) -> str:
@@ -107,16 +131,36 @@ def mode_refusal(*, writers: bool, applies: bool) -> str:
     return ""
 
 
+def _command_parts(argv: list[str]) -> list[str]:
+    """Each argument, and the command from each argument on, apart from the whole command.
+
+    A launcher carries a command in one argument (``sh -c "npm publish"``,
+    ``cmd /c "curl …"``) or starts one partway through (``cmd /c npm publish``),
+    so the rules look at each of these as well as the whole command.
+    """
+    whole = " ".join(argv)
+    parts = []
+    for index, word in enumerate(argv):
+        parts.append(word)
+        if index:
+            parts.append(" ".join(argv[index:]))
+    return [part for part in dict.fromkeys(parts) if part.strip() and part != whole]
+
+
 def check_refusal(checks: Iterable[dict], *, project: str, settings: Any) -> str:
     """Why one of the owner's declared checks can't run as a command, or ''.
 
     A check runs a program with arguments. It passes what the agent's
-    commands pass: the guardrails (each word too, as ``sh -c`` carries a whole
-    command), the irreversibility floor, and the review gate's and the
-    organization's shell rules, as a ``check_run`` and as a ``bash`` command.
-    A rule that asks a person refuses it, since the team runs its checks
-    without an approval prompt, and so does a command a second person must
-    approve (``approvals``): the team can't wait for one yet.
+    commands pass, and more: the guardrails, the irreversibility floor, and
+    the review gate's and the organization's shell rules, as a ``check_run``
+    and as a ``bash`` command. Each argument, and the command from each
+    argument on, is checked on its own too (``_command_parts``): the
+    guardrails, the approvals, and the rules about particular commands, those
+    with argument patterns. A rule without them already decided the whole
+    command, so it can't refuse one argument that the organization allowed as
+    part of the whole. A rule that asks a person refuses the check, since the
+    team runs its checks without an approval prompt, and so does a command a
+    second person must approve (``approvals``): the team can't wait for one yet.
     """
     from ...orchestration.autonomy import check_floor
     from ...policy import current
@@ -129,29 +173,33 @@ def check_refusal(checks: Iterable[dict], *, project: str, settings: Any) -> str
     policy = current()
     organization = policy.organization if policy else "Your organization"
     rules = with_organization_rules(ExecutionPolicy(guardrails.policy_rules() + review_gate.policy_rules()))
+    specific = ExecutionPolicy([rule for rule in rules.rules if rule.arg_patterns or rule.arg_globs])
     view = _Settings(settings)
     for check in checks:
         if not isinstance(check.get("argv"), (list, tuple)):
             continue  # Not a command; the team's setup refuses it (service._writer_configuration).
         argv = [str(word) for word in check["argv"]]
         command = " ".join(argv)
+        parts = _command_parts(argv)
         name = f"The check {check.get('key')}" if check.get("key") else "A check"
-        reason = guardrails.blocked_argv(argv)
+        reason = next(filter(None, (guardrails.blocked(text) for text in (command, *parts))), "")
         if reason:
             return f"{name} can't run: {guardrails.refusal(reason)}"
         violation = check_floor(tool_name="check_run", args={"command": command}, project_path=project,
                                 settings=view)
         if violation is not None:
             return f"{name} can't run: {violation.reason.rstrip('.')}."
-        for tool in ("check_run", "bash"):
-            rule = rules.first_match(tool, {"command": command})
-            if rule is not None and rule.action == PolicyAction.DENY.value:
-                return f"{name} can't run: {(rule.reason or f'{organization} refuses it').rstrip('.')}."
-            if rule is not None and rule.action == PolicyAction.PROMPT.value:
-                why = f" ({rule.reason.rstrip('.')})" if rule.reason else ""
-                return (f"{name} can't run: {organization}'s shell rules ask a person before it runs{why}, and a "
-                        "team runs its checks without an approval prompt.")
-        pattern = second_approval.needed("check_run", {"command": command})
+        for text, layer in ((command, rules), *((part, specific) for part in parts)):
+            for tool in ("check_run", "bash"):
+                rule = layer.first_match(tool, {"command": text})
+                if rule is not None and rule.action == PolicyAction.DENY.value:
+                    return f"{name} can't run: {(rule.reason or f'{organization} refuses it').rstrip('.')}."
+                if rule is not None and rule.action == PolicyAction.PROMPT.value:
+                    why = f" ({rule.reason.rstrip('.')})" if rule.reason else ""
+                    return (f"{name} can't run: {organization}'s shell rules ask a person before it runs{why}, "
+                            "and a team runs its checks without an approval prompt.")
+        pattern = next(filter(None, (second_approval.needed("check_run", {"command": text})
+                                     for text in (command, *parts))), "")
         if pattern:
             return (f"{name} needs a second person's approval under {organization}'s policy ({pattern}), which a "
                     "team can't wait for yet. Leave it out of the team's checks.")
@@ -178,22 +226,30 @@ def _cost(row: dict) -> float:
 class TeamGovernance:
     """One team run's organization rules, spend and audit trail, on the host that runs it.
 
-    The runtime makes one per run (service.py) from the team's captured model
-    and configuration, and its runner hands it to each participant's
-    execution guard (execution.py). ``kind`` is ``PERSONAL``, ``SHARING`` or
-    ``MANAGED``; a policy refuses the last two.
+    The runtime makes one per run (service.py) from the team's captured
+    configuration, and its runner hands it to each participant's execution
+    guard (execution.py). ``models`` are the (provider, model) pairs the team
+    runs: a coordinator team's orchestrator and its workers' model. ``kind`` is
+    ``PERSONAL``, ``SHARING`` or ``MANAGED``; a policy refuses the last two.
     """
 
-    def __init__(self, settings: Any, *, run_id: str, project: str, session: str = "", provider: str,
-                 model: str, kind: str = PERSONAL, writers: bool = False, applies: bool = False,
-                 checks: Iterable[dict] = ()) -> None:
+    def __init__(self, settings: Any, *, run_id: str, project: str, session: str = "",
+                 models: Iterable[tuple[str, str]], kind: str = PERSONAL, writers: bool = False,
+                 applies: bool = False, checks: Iterable[dict] = ()) -> None:
         if kind not in {PERSONAL, SHARING, MANAGED}:
             raise ValueError("Unknown team execution kind")
+        pairs: list[tuple[str, str]] = []
+        for provider, model in models:
+            pair = (str(provider or ""), str(model or ""))
+            if pair not in pairs:
+                pairs.append(pair)
+        if not pairs:
+            raise ValueError("A team runs at least one model")
         self.settings = settings
         self.run_id = str(run_id or "")
         self.project = str(project)
         self.session = str(session or "")
-        self.provider, self.model = str(provider or ""), str(model or "")
+        self.models = tuple(pairs)
         self.kind = kind
         self.writers, self.applies = writers is True, applies is True
         self.checks = tuple(copy.deepcopy(dict(check)) for check in checks if isinstance(check, dict))
@@ -201,14 +257,21 @@ class TeamGovernance:
     @classmethod
     def from_setup(cls, settings: Any, setup: dict, *, run_id: str, project: str, session: str,
                    personal: bool) -> TeamGovernance:
-        """The rules for a retained team, from its captured desktop setup."""
-        model = setup.get("model") if isinstance(setup.get("model"), dict) else {}
+        """The rules for a team, from its captured desktop setup."""
+        chosen = setup.get("model") if isinstance(setup.get("model"), dict) else {}
+        orchestrator = (chosen.get("provider", ""), chosen.get("model", ""))
+        chosen = setup.get("worker_model") if isinstance(setup.get("worker_model"), dict) else None
+        workers = (chosen.get("provider", ""), chosen.get("model", "")) if chosen else orchestrator
+        # A coordinator team's orchestrator plans, answers and reports on the
+        # session's model; workers run the owner's worker model, if any. A team
+        # of manual tasks (or a shared one) runs only its workers.
+        models = [orchestrator, workers] if setup.get("plan_mode") == "coordinator" else [workers]
         autonomy = setup.get("autonomy") if isinstance(setup.get("autonomy"), dict) else {}
         kind = (MANAGED if not personal or setup.get("execution_mode") == "managed"
                 else SHARING if str(setup.get("mode", "")).endswith("_collaboration") else PERSONAL)
-        return cls(settings, run_id=run_id, project=project, session=session, provider=model.get("provider", ""),
-                   model=model.get("model", ""), kind=kind, writers=bool(setup.get("write_roots")),
-                   applies=autonomy.get("apply") is True, checks=setup.get("checks") or ())
+        return cls(settings, run_id=run_id, project=project, session=session, models=models, kind=kind,
+                   writers=bool(setup.get("write_roots")), applies=autonomy.get("apply") is True,
+                   checks=setup.get("checks") or ())
 
     # ── Rules ────────────────────────────────────────────────────────────
 
@@ -227,8 +290,14 @@ class TeamGovernance:
             reason = unsupported_refusal()
             if reason:
                 return reason
-        return (model_refusal(self.provider, self.model)
-                or mode_refusal(writers=self.writers, applies=self.applies)
+        reason = preview_refusal(self.settings)
+        if reason:
+            return reason
+        for provider, model in self.models:
+            reason = model_refusal(provider, model)
+            if reason:
+                return reason
+        return (mode_refusal(writers=self.writers, applies=self.applies)
                 or check_refusal(self.checks, project=self.project, settings=self.settings)
                 or (sandbox_refusal(self.settings) if self.writers else ""))
 
@@ -245,17 +314,19 @@ class TeamGovernance:
             self.record("team.refusal", action="start", reason=audit.content(reason))
         return reason
 
-    def request_refusal(self, context: Any, purpose: str) -> str:
+    def request_refusal(self, context: Any, purpose: str, model: tuple[str, str]) -> str:
         """Before a participant's model request is reserved: why it can't start (audited), or ''.
 
+        ``model`` is the (provider, model) of the participant's own assignment.
         The execution guard then raises ``RequestRefused``: a known outcome,
         since nothing is reserved or sent.
         """
         from ... import audit
 
-        reason = self.refusal() or self._budget(record=True, context=context)
+        reason = self.refusal() or model_refusal(*model) or self._budget(record=True, context=context, model=model)
         if reason:
-            self._audit("team.request_refused", context, purpose=str(purpose), reason=audit.content(reason))
+            self._audit("team.request_refused", context, purpose=str(purpose), provider=model[0], model=model[1],
+                        reason=audit.content(reason))
         return reason
 
     def spent(self, rows: Iterable[dict]) -> float:
@@ -263,20 +334,22 @@ class TeamGovernance:
         prefix = f"team:{self.run_id}:"
         return sum(_cost(row) for row in rows if str(row.get("agent", "")).startswith(prefix))
 
-    def _budget(self, *, record: bool, context: Any = None) -> str:
+    def _budget(self, *, record: bool, context: Any = None, model: tuple[str, str] | None = None) -> str:
         """Why the budgets stop this team's next model request, or ''.
 
         A ``turn`` budget counts the whole team run, and its approvals and
         warnings are kept per run. Nobody can answer a budget's question
         during a team run, so a limit that asks stops it, as in any run that
         can't ask; an approval the person gave in a chat this period counts.
+        ``block_unpriced`` looks at ``model``, or every model the team runs.
         """
         from ... import budgets, usage
 
         try:
-            reason = budgets.unpriced_refusal(self.project, self.provider, self.model)
-            if reason:
-                return reason
+            for provider, name in ((model,) if model else self.models):
+                reason = budgets.unpriced_refusal(self.project, provider, name)
+                if reason:
+                    return reason
             rules = [rule for rule in budgets.rules() if rule.applies_to(self.project)]
             if not rules:
                 return ""
@@ -311,28 +384,30 @@ class TeamGovernance:
         """The usage and audit records' agent for one participant."""
         return f"team:{self.run_id}:{context.worker_id}"
 
-    def record_request(self, context: Any, purpose: str, *, stats: Any, elapsed: float) -> None:
+    def record_request(self, context: Any, purpose: str, *, model: tuple[str, str], stats: Any,
+                       elapsed: float) -> None:
         """Record one observed request's usage (usage.py) and its ``model.usage`` audit entry.
 
         The execution guard calls this for every participant, in-process or
-        in its own process; their sessions record nothing themselves.
+        in its own process; their sessions record nothing themselves. The
+        request is priced and recorded under ``model``, its attempt's
+        configured (provider, model): a router's alias is recorded as the alias.
         """
         from ... import usage
 
         if not isinstance(stats, dict):
             return  # No usage was observed; an unknown amount is never recorded as zero.
+        provider, name = model
         label = PURPOSE if purpose == "primary" else f"{PURPOSE}_{purpose}"
         elapsed = round(max(0.0, float(elapsed or 0.0)), 3)
-        record = usage.record(provider=self.provider, model=self.model, stats=stats, purpose=label,
-                              session=self.session, project=self.project, agent=self.agent(context),
-                              elapsed=elapsed)
+        record = usage.record(provider=provider, model=name, stats=stats, purpose=label, session=self.session,
+                              project=self.project, agent=self.agent(context), elapsed=elapsed)
         if record is not None:
             fields = {key: record[key] for key in ("input_tokens", "cached_tokens", "cache_write_tokens",
                                                    "output_tokens", "cost_usd", "price_source")}
         else:
             fields = usage.token_counts(stats)
-        self._audit("model.usage", context, provider=self.provider, model=self.model, purpose=label,
-                    elapsed=elapsed, **fields)
+        self._audit("model.usage", context, provider=provider, model=name, purpose=label, elapsed=elapsed, **fields)
 
     # ── Audit ────────────────────────────────────────────────────────────
 
@@ -348,14 +423,15 @@ class TeamGovernance:
         """One team-level audit record: team.start, .stop, .complete, .decision, .integration or .refusal."""
         self._audit(event, None, **data)
 
-    def participant_started(self, context: Any, *, kind: str) -> None:
-        self._audit("team.participant.start", context, kind=kind, provider=self.provider, model=self.model)
+    def participant_started(self, context: Any, *, kind: str, model: tuple[str, str]) -> None:
+        self._audit("team.participant.start", context, kind=kind, provider=model[0], model=model[1])
 
-    def participant_ended(self, context: Any, *, kind: str, outcome: str, error: str = "") -> None:
+    def participant_ended(self, context: Any, *, kind: str, model: tuple[str, str], outcome: str,
+                          error: str = "") -> None:
         from ... import audit
 
         extra = {"error": audit.content(error)} if error else {}
-        self._audit("team.participant.end", context, kind=kind, provider=self.provider, model=self.model,
+        self._audit("team.participant.end", context, kind=kind, provider=model[0], model=model[1],
                     outcome=str(outcome), **extra)
 
     def decision(self, decision: str, *, by: str, evidence: Any = None, **data: Any) -> None:

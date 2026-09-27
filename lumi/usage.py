@@ -12,8 +12,8 @@ Records are JSON lines in ``~/.lumi/usage/YYYY-MM.jsonl`` (UTC months)::
 
 ``purpose`` says why the call was made: ``turn`` (the agent loop),
 ``subagent`` (a delegated worker), ``title``, ``compression``, or ``team``
-(``team_planning``, ``team_compression``) for a Team participant, whose
-``agent`` is ``team:<run>:<worker>`` (engine/swarming/organization.py).
+(``team_compression`` for its compression requests) for a Team participant,
+whose ``agent`` is ``team:<run>:<worker>`` (engine/swarming/organization.py).
 ``input_tokens`` counts every prompt token, cached ones included. ``cost_usd``
 is ``None`` for unpriced models (lumi/pricing.py), never a guessed $0.
 

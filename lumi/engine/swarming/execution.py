@@ -242,9 +242,10 @@ class SwarmExecutionGuard:
                             raise Conflict("Unresolved execution prevents another request")
                 self._admission(preflight)
                 if self._governance is not None:
-                    # The organization's rules and the budgets, before any
-                    # allowance is reserved: a refusal leaves nothing uncertain.
-                    reason = self._governance.request_refusal(self.context, purpose)
+                    # The organization's rules and the budgets, for this
+                    # attempt's own model, before any allowance is reserved:
+                    # a refusal leaves nothing uncertain.
+                    reason = self._governance.request_refusal(self.context, purpose, self._model())
                     if reason:
                         self._request_refused(purpose, reason)
                         raise RequestRefused(reason)
@@ -295,6 +296,10 @@ class SwarmExecutionGuard:
                     self._managed.abandon_request(self.context, request_id)
                 raise
 
+    def _model(self) -> tuple[str, str]:
+        """This attempt's assigned (provider, model): an orchestrator's, or its workers' own."""
+        return self.grant.model.provider, self.grant.model.model
+
     def _request_refused(self, purpose: str, reason: str) -> None:
         """Keep a refused request visible in the run's history; it has no request record."""
         try:
@@ -342,7 +347,7 @@ class SwarmExecutionGuard:
                     try:
                         # Once per request, whatever settles next: the provider
                         # has answered, so its usage is real.
-                        self._governance.record_request(self.context, purpose, stats=usage,
+                        self._governance.record_request(self.context, purpose, model=self._model(), stats=usage,
                             elapsed=time.monotonic() - started if started is not None else 0.0)
                     except Exception:  # noqa: BLE001 - usage records never decide a request's outcome
                         pass

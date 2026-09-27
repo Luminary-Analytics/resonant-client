@@ -1928,6 +1928,12 @@ class Session:
         """Why a turn can't start under the budgets in effect (lumi/budgets.py), or ''."""
         from .. import budgets
 
+        if self._execution_boundary is not None:
+            # A guarded session's requests are checked by the host that admits
+            # them (engine/swarming/organization.py), with the app's approvals
+            # and settings. A worker in its own process has neither, so a
+            # second check here would stop a request the person approved.
+            return ""
         project = self.project_path or ""
         try:
             refusal = budgets.unpriced_refusal(project, provider, model)
@@ -1988,6 +1994,8 @@ class Session:
         """
         from .. import audit, budgets
 
+        if self._execution_boundary is not None:
+            return ""  # The host that admits the request checks it (see _budget_refusal).
         turn = getattr(self, "_turn_token", "")
         try:
             verdicts = budgets.evaluate(self.project_path or "", turn_spend=getattr(self, "_turn_spend", 0.0))

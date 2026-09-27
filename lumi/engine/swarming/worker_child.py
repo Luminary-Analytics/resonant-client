@@ -140,17 +140,33 @@ class _RemoteGuard:
 
 
 class _ScanSwitch:
-    """The app's secret-scan switch as settings for ``secret_scan.configure``.
+    """The app's secret-scan switch and this worker's own credentials, as settings for ``secret_scan.configure``.
 
-    Saved key values stay in the app; the scan here also knows the provider
-    keys in this process's environment (secret_scan.secret_values).
+    The app's other saved keys stay in the app (its guard refuses any tool
+    observation carrying a key the team's workers hold, workers.py). The scan
+    here knows this worker's model key, its connection's header values and the
+    provider keys in this process's environment (secret_scan.secret_values).
     """
 
-    def __init__(self, enabled: bool) -> None:
+    def __init__(self, enabled: bool, known: list[str]) -> None:
         self.enabled = enabled
+        self.known = {f"team-worker-{index}": value for index, value in enumerate(known)}
 
     def get(self, section: str, key: str | None = None, default: Any = None) -> Any:
-        return self.enabled if (section, key) == ("privacy", "secret_scan") else default
+        if (section, key) == ("privacy", "secret_scan"):
+            return self.enabled
+        if section == "api_keys":
+            return dict(self.known) if key is None else self.known.get(key, default)
+        return default
+
+
+def _configure_scan(initial: dict[str, Any]) -> None:
+    """Scan this process's own requests as the app scans its own (Settings > Privacy, which a policy can lock)."""
+    known = [initial["backend"].get("api_key")]
+    connection = initial["connection"] or {}
+    known += list((connection.get("headers") or {}).values())
+    secret_scan.configure(_ScanSwitch(initial["secret_scan"],
+                                      [value for value in known if isinstance(value, str) and value]))
 
 
 def _validate_initial(value: Any) -> dict[str, Any]:
@@ -217,9 +233,8 @@ def main(*, backend_factory=None) -> int:
         if first is None or set(first) != {"version", "kind", "payload"} or first["kind"] != "init":
             raise ValueError("Worker initialization was not received")
         initial = _validate_initial(first["payload"])
-        # This process sends its own requests, so it scans them itself, as the
-        # app does (Settings > Privacy, which an organization policy can lock).
-        secret_scan.configure(_ScanSwitch(initial["secret_scan"]))
+        # This process sends its own requests, so it scans them itself.
+        _configure_scan(initial)
         threading.Thread(target=channel.receive, daemon=True, name="swarm-host-control").start()
         spec = BackendSpec.from_dict(initial["backend"])
         if backend_factory:

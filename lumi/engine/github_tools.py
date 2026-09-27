@@ -74,28 +74,73 @@ _REMOTE = re.compile(r"^(?:https?://(?:[^@/]+@)?([^/:]+)(?::\d+)?/|git@([^:]+):|
                      r"([^/]+)/(.+?)(?:\.git)?/?$")
 
 
-def remote_host(url: str) -> str:
-    """The host a Git remote URL reaches (https, ssh or scp-like), or "" for a local path."""
-    text = str(url or "").strip()
-    if not text or text.startswith(("/", ".", "file:")) or re.match(r"^[A-Za-z]:[\\/]", text):
+_UNREADABLE_SHARE = "a network path Lumi can't read"
+
+
+def _share_host(path: str) -> str:
+    """The computer a network path names (``\\\\host\\share``, ``//host/share``), or "" for this one's."""
+    text = path.replace("\\", "/")
+    if not text.startswith("//"):
         return ""
-    match = re.match(r"^[A-Za-z][A-Za-z0-9+.-]*://(?:[^@/]*@)?(\[[^\]/]+\]|[^/:?#]+)", text)
-    if match is None:
-        match = re.match(r"^(?:[^@/:]+@)?(\[[^\]/]+\]|[^:/]+):", text)  # user@host:owner/repo
-    # Anything else is a path on this computer, as Git reads it.
+    parts = text.lstrip("/").split("/")
+    if parts[0] in ("?", "."):  # \\?\C:\repo is this computer's; \\?\UNC\host\share isn't
+        if len(parts) > 1 and re.fullmatch(r"[A-Za-z]:", parts[1]):
+            return ""
+        return parts[2].lower() if len(parts) > 2 and parts[1].upper() == "UNC" and parts[2] else _UNREADABLE_SHARE
+    return parts[0].lower() or _UNREADABLE_SHARE
+
+
+def remote_host(url: str) -> str:
+    """The computer a Git remote reaches, or "" for this one, read as Git reads the address.
+
+    An address (``scheme://``) names its host, and ``file://`` this computer
+    unless it names a host or a network share (``file:////host/share``). A
+    path is this computer's unless it is a network share (``\\\\host\\share``,
+    ``//host/share``). Anything else with a colon before any slash is Git's
+    ``host:path`` (ssh). A host with %-escapes is kept as written: it isn't a
+    plain host name, so offline mode refuses it whatever Git decodes it to.
+    """
+    text = str(url or "").strip()
+    if not text:
+        return ""
+    scheme = re.match(r"([A-Za-z][A-Za-z0-9+.-]*)://", text)
+    if scheme:
+        rest = text[scheme.end():]
+        if scheme.group(1).lower() == "file":
+            host = re.split(r"[/\\?#]", rest, maxsplit=1)[0].lower()
+            if host:
+                return "" if host == "localhost" or re.fullmatch(r"[a-z]:", host) else host
+            return _share_host(rest)  # file:///srv/repo, or file:////host/share
+        match = re.match(r"(?:[^@/]*@)?(\[[^\]/]+\]|[^/:?#]+)", rest)
+        return match.group(1).strip("[]").lower() if match else ""
+    if re.match(r"[A-Za-z]:", text):
+        return ""  # C:\repos\app, C:/repos/app: Git's drive letters
+    colon, slash = text.find(":"), re.search(r"[/\\]", text)
+    if colon < 0 or (slash is not None and slash.start() < colon):
+        return _share_host(text)  # a path, on this computer unless it's a network share
+    match = re.match(r"(?:[^@/:]+@)?(\[[^\]/]+\]|[^:/]+):", text)  # user@host:owner/repo
     return match.group(1).strip("[]").lower() if match else ""
 
 
 def _check_push(cwd: str, remote: str) -> None:
-    """Refuse a push offline mode doesn't allow before Git connects (lumi/offline.py)."""
+    """Refuse a push offline mode doesn't allow before Git connects (lumi/offline.py).
+
+    A remote can have several push addresses, and Git pushes to each of them;
+    ``get-url --push --all`` lists them after Git's own rewriting
+    (``url.<base>.pushInsteadOf``/``insteadOf``).
+    """
     from .. import offline
 
     if not offline.enabled():
         return
-    url = _git(cwd, "remote", "get-url", "--push", remote)
-    host = remote_host(url)
-    if host and not offline.host_allowed(host):
-        raise GitHubError(offline.message("pushing to Git", host))
+    try:
+        urls = _git(cwd, "remote", "get-url", "--push", "--all", remote).splitlines()
+    except GitHubError:
+        urls = [remote]  # not a remote's name: an address given directly
+    for url in urls or [remote]:
+        host = remote_host(url)
+        if host and not offline.host_allowed(host):
+            raise GitHubError(offline.message("pushing to Git", host))
 
 
 def _git(cwd: str, *args: str) -> str:

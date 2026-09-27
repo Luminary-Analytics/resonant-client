@@ -11,6 +11,7 @@ import importlib.util
 import json
 import os
 import stat
+import sys
 from pathlib import Path
 
 import pytest
@@ -38,22 +39,29 @@ def _signed(key: Ed25519PrivateKey, key_id: str = "luminary-test", **changes) ->
 
 
 @pytest.fixture
-def machine(tmp_path, monkeypatch):
-    """A machine folder standing in for %ProgramData%\\Lumi (writable only by administrators there)."""
+def managed_keys(monkeypatch):
+    """The administrator's ``LicenseKeys``: the policy registry value (Windows) or the profile's (macOS)."""
+    texts: list[str] = []
+    monkeypatch.setattr(lumi_license, "_managed_key_texts", lambda: list(texts))
+    return texts
+
+
+@pytest.fixture
+def machine(tmp_path, monkeypatch, managed_keys):
+    """A machine folder standing in for C:\\ProgramData\\Lumi or /etc/lumi."""
     folder = tmp_path / "machine"
     folder.mkdir()
     monkeypatch.setattr(policy, "machine_policy_file", lambda: folder / "policy.json")
-    monkeypatch.setattr(lumi_license, "_managed_key_texts", lambda: [])
     monkeypatch.delenv("LUMI_LICENSE_FILE", raising=False)
     lumi_license.reset_for_tests()
     return folder
 
 
 @pytest.fixture
-def key(machine):
-    """Luminary's signing key, trusted through license-keys.json beside the machine policy."""
+def key(machine, managed_keys):
+    """Luminary's signing key, trusted through the administrator's LicenseKeys."""
     signing = Ed25519PrivateKey.generate()
-    (machine / "license-keys.json").write_text(json.dumps({"luminary-test": _public(signing)}), encoding="utf-8")
+    managed_keys.append(json.dumps({"luminary-test": _public(signing)}))
     return signing
 
 
@@ -71,14 +79,27 @@ class TestVerification:
         assert lumi_license.describe(info) == ("Licensed to Acme, 50 seats, valid until 2099-01-01T00:00:00Z. "
                                                "Offline use is licensed.")
 
-    def test_built_in_keys_are_trusted_and_win(self, machine, monkeypatch):
+    def test_built_in_keys_are_trusted_and_win(self, machine, managed_keys, monkeypatch):
         luminary = Ed25519PrivateKey.generate()
         monkeypatch.setattr(lumi_license, "BUILTIN_KEYS", {"luminary-test": _public(luminary)})
         # An administrator's key under the same id doesn't replace Luminary's.
-        (machine / "license-keys.json").write_text(json.dumps(
-            {"luminary-test": _public(Ed25519PrivateKey.generate())}), encoding="utf-8")
+        managed_keys.append(json.dumps({"luminary-test": _public(Ed25519PrivateKey.generate())}))
         _write(machine / "license.json", _signed(luminary))
         assert lumi_license.status()["valid"]
+
+    @pytest.mark.parametrize("trusted", [True, False], ids=["macOS and Linux", "Windows"])
+    def test_the_key_file_counts_only_where_only_administrators_write(self, machine, monkeypatch, trusted):
+        signing = Ed25519PrivateKey.generate()
+        (machine / "license-keys.json").write_text(json.dumps({"luminary-test": _public(signing)}), encoding="utf-8")
+        monkeypatch.setattr(lumi_license, "_key_file_trusted", lambda: trusted)
+        _write(machine / "license.json", _signed(signing))
+        info = lumi_license.status()
+        assert info["valid"] is trusted
+        assert trusted or "doesn't trust" in info["error"]
+
+    def test_windows_reads_keys_only_from_the_registry(self):
+        # Any user may create C:\ProgramData\Lumi where no administrator did.
+        assert lumi_license._key_file_trusted() is (sys.platform != "win32")
 
     def test_tampered_or_untrusted_licenses_are_refused(self, machine, key):
         document = _signed(key)
@@ -183,7 +204,7 @@ def _script():
 
 
 class TestSigningScript:
-    def test_keygen_sign_and_lumi_verifies(self, machine, tmp_path, capsys):
+    def test_keygen_sign_and_lumi_verifies(self, machine, managed_keys, tmp_path, capsys):
         script = _script()
         private = tmp_path / "luminary-license.pem"
         assert script.main(["keygen", "--out", str(private), "--key-id", "luminary-2026"]) == 0
@@ -196,7 +217,7 @@ class TestSigningScript:
         assert script.main(["sign", "--key", str(private), "--key-id", "luminary-2026", "--organization", "Acme",
                             "--seats", "25", "--expires", "2099-06-30", "--offline", "--out", str(out)]) == 0
         capsys.readouterr()
-        (machine / "license-keys.json").write_text(json.dumps(entry), encoding="utf-8")
+        managed_keys.append(json.dumps(entry))
         granted = lumi_license.parse(json.loads(out.read_text(encoding="utf-8")),
                                      trusted_keys=lumi_license.trusted_keys())
         assert (granted.organization, granted.seats, granted.offline) == ("Acme", 25, True)

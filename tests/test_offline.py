@@ -237,6 +237,36 @@ class TestSettingsAndPolicy:
         assert offline.current().allowed_hosts == ("10.0.0.131",)
         assert offline.current().managed_by == "Acme"
 
+    @pytest.mark.parametrize("settings", [
+        {"offline.enabled": True, "offline.allowed_hosts": ["llm.corp.example", "*.com"]},
+        {"offline.enabled": "true"},
+    ], ids=["a host pattern Lumi refuses", "enabled as text"])
+    def test_a_policy_lumi_cant_use_keeps_offline_mode_on(self, tmp_path, monkeypatch, settings):
+        from lumi import policy
+
+        path = tmp_path / "policy.json"
+        path.write_text(json.dumps({"schema": policy.SCHEMA, "organization": "Acme", "settings": settings}),
+                        encoding="utf-8")
+        monkeypatch.setattr(policy, "_registry_policy", lambda: None)
+        monkeypatch.setattr(policy, "_macos_managed_policy", lambda: None)
+        monkeypatch.setattr(policy, "machine_keys", lambda: {})
+        monkeypatch.setattr(policy, "machine_policy_file", lambda: path)
+        state = policy.load(force=True)
+        assert state.policy is None and "is invalid" in state.error
+        # The person's settings say off; the organization meant on. A mistake in its policy mustn't turn it off.
+        config = offline.configure(_Settings({"offline": {"enabled": False, "allowed_hosts": ["api.openai.com"]}}))
+        assert config.enabled and config.allowed_hosts == () and config.policy_error == state.error
+        assert config.managed_by == "your organization" and "offline mode stays on" in config.problems[0]
+        assert offline.host_allowed("127.0.0.1") and not offline.host_allowed("llm.corp.example")
+        assert offline.refusal("https://api.openai.com/v1", "OpenAI") == (
+            "Offline mode: OpenAI needs api.openai.com. Your organization's policy can't be used, so offline mode "
+            "stays on until your administrator fixes it.")
+        # Startup code that reads settings.json itself (the updater) sees the same.
+        stored = tmp_path / "settings.json"
+        stored.write_text(json.dumps({"offline": {"enabled": False}}), encoding="utf-8")
+        assert offline.read(stored).enabled is True
+        assert offline.read(stored, policy.PolicyState(error="The policy file couldn't be read.")).enabled is True
+
     def test_read_without_settings_manager(self, tmp_path):
         from lumi import policy
 
@@ -317,13 +347,50 @@ class TestBackstop:
 
     def test_local_and_allowed_lookups_proceed(self):
         _on("llm.corp.invalid")
-        assert socket.getaddrinfo("127.0.0.1", 80)
-        assert socket.getaddrinfo("localhost", 80)
-        # An allowed name is looked up as usual (it doesn't exist here; the
-        # resolver's own error shows the check let it through).
-        with pytest.raises(socket.gaierror) as caught:
-            socket.getaddrinfo("llm.corp.invalid", 80)
-        assert not isinstance(caught.value, offline.BlockedLookup)
+        assert socket.getaddrinfo("127.0.0.1", 80)  # an address: nothing is looked up
+        # Names go to the hook directly, so no lookup leaves this computer.
+        for host in ("localhost", "llm.corp.invalid", "LLM.corp.invalid.", b"llm.corp.invalid", socket.gethostname()):
+            assert offline._audit("socket.getaddrinfo", (host, 80, 0, 0, 0)) is None
+
+    def test_every_kind_of_lookup_is_checked(self):
+        _on("llm.corp.example", "10.20.0.0/16")
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            refused = [("socket.gethostbyname", ("blocked.example",)),  # gethostbyname_ex raises it too
+                       ("socket.gethostbyaddr", ("blocked.example",)),
+                       ("socket.gethostbyaddr", ("192.0.2.1",)),  # a reverse lookup asks the DNS server
+                       ("socket.getnameinfo", (("192.0.2.1", 80),)),
+                       ("socket.sendto", (sock, ("blocked.example", 53))),
+                       ("socket.sendmsg", (sock, ("blocked.example", 53)))]
+            allowed = [("socket.gethostbyname", ("llm.corp.example",)),
+                       ("socket.gethostbyaddr", ("127.0.0.1",)),
+                       ("socket.gethostbyaddr", (socket.gethostname(),)),  # socket.getfqdn()
+                       ("socket.getnameinfo", (("10.20.1.2", 80),)),
+                       ("socket.sendto", (sock, ("10.9.9.9", 53))),  # an address: the clients' check
+                       ("socket.sendmsg", (sock, None)),
+                       ("socket.getaddrinfo", (None, 80, 0, 0, 0)),
+                       ("socket.bind", (sock, ("blocked.example", 0)))]
+            for event, args in refused:
+                with pytest.raises(offline.BlockedLookup, match="Offline mode: a network connection needs "):
+                    offline._audit(event, args)
+            for event, args in allowed:
+                assert offline._audit(event, args) is None, event
+        # The hook is installed: a real call is refused before anything is looked up.
+        with pytest.raises(offline.BlockedLookup, match="needs blocked.invalid"):
+            socket.gethostbyname("blocked.invalid")
+
+    @pytest.mark.parametrize("host", [
+        "evil.com\x00.corp.example", b"evil.com\x00.corp.example", "evil.com\n.corp.example",
+        "evil.com%2f.corp.example", "evil.com/.corp.example", "evil.com@x.corp.example", "evil com.corp.example",
+    ])
+    def test_names_no_resolver_should_see_are_refused(self, host):
+        # Each ends in an allowed domain, but a resolver, or a program that
+        # decodes it, could reach evil.com: only plain host names match.
+        _on("*.corp.example")
+        assert not offline.host_allowed(host)
+        with pytest.raises(offline.BlockedLookup) as caught:
+            offline._audit("socket.getaddrinfo", (host, 443, 0, 0, 0))
+        assert not any(ord(ch) < 0x20 for ch in str(caught.value))
+        assert offline.host_allowed("x.corp.example")
 
     def test_raw_httpx_calls_fail_fast_with_the_message(self):
         _on()
@@ -345,6 +412,8 @@ class TestBackstop:
     def test_nothing_is_checked_while_off(self):
         _on()
         offline.reset_for_tests()
-        with pytest.raises(socket.gaierror) as caught:
-            socket.getaddrinfo("blocked.invalid", 443)
-        assert not isinstance(caught.value, offline.BlockedLookup)
+        # The hook stays installed and lets everything through (called directly: no lookup leaves).
+        for event, args in (("socket.getaddrinfo", ("blocked.invalid", 443, 0, 0, 0)),
+                            ("socket.gethostbyname", ("blocked.invalid",)),
+                            ("socket.getnameinfo", (("192.0.2.1", 80),))):
+            assert offline._audit(event, args) is None

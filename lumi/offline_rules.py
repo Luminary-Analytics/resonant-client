@@ -65,6 +65,17 @@ def _this_computer() -> frozenset[str]:
     return _own_names
 
 
+def is_host_name(name: str) -> bool:
+    """Whether ``name`` (normalized) is a plain DNS name: dot-separated labels of letters, digits, - and _.
+
+    Anything else (``%``, ``/``, ``@``, a control character) is refused rather
+    than matched: a resolver or a program that decodes it could reach a host
+    other than the one the rules saw.
+    """
+    bare = name[:-1] if name.endswith(".") else name
+    return 0 < len(bare) <= 253 and all(_LABEL.fullmatch(label) for label in bare.split("."))
+
+
 def is_local_host(host: Any) -> bool:
     """Whether ``host`` is this computer, decided from the name as written."""
     name = normalize_host(host)

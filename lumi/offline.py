@@ -15,7 +15,8 @@ connection Lumi makes is checked before it starts. Only these are reachable:
 
 Whether a host is this computer is decided from the name as written, never by
 looking it up: ``localhost.example.com`` or ``127.0.0.1.nip.io`` is somewhere
-else, whatever it resolves to.
+else, whatever it resolves to. A name that isn't a plain host name (``%``,
+``/``, ``@``, control characters) is never reachable.
 
 Where the check runs (see docs/offline.md):
 
@@ -24,32 +25,40 @@ Where the check runs (see docs/offline.md):
   it connects. The caller names its feature for the message. A new outbound
   client must use it.
 * where an address leaves Lumi's process: Git for capability packs
-  (engine/pack_install.py), Lumi's browser (engine/browser.py starts Chrome so
-  it can reach only these hosts), the update feed WinSparkle reads
-  (update_channels.py) and the sign-in page Lumi Cloud opens (cloud.py);
+  (engine/pack_install.py) and pull requests (engine/github_tools.py), Lumi's
+  browser (engine/browser.py starts Chrome so it can reach only these hosts),
+  the update feed WinSparkle reads (update_channels.py), the sign-in page
+  Lumi Cloud opens (cloud.py) and Azure's own sign-in (auth_tokens.py);
 * model requests: a turn refuses a provider it can't reach, including Codex,
   Claude Code and extension providers, whose own processes Lumi can't check
   (``backend_refusal``, Session and request_purpose), the model picker hides
   them (``provider_refusal``) and the agent's browser tools refuse other hosts
-  (``tool_refusal``);
-* a backstop for the whole process (``sys.addaudithook``): once offline mode
-  has been on, a host name lookup in Lumi's process for anything else fails at
-  once, whichever library makes it. It covers the clients not built with
-  ``client_options`` (Ollama's own API, provider catalogs, the chat gateway),
-  with a generic message.
+  and other computers' files (``tool_refusal``);
+* a backstop for Lumi's Python process (``sys.addaudithook``): once offline
+  mode has been on, a host name lookup through Python's socket module
+  (``getaddrinfo``, ``gethostbyname``, ``gethostbyaddr``, ``getnameinfo``) for
+  anything else fails at once, and so does a connection or datagram to a host
+  given by name. It covers the clients not built with ``client_options``
+  (Ollama's own API, provider catalogs, the chat gateway), with a generic
+  message. It can't see native code that resolves names itself or other
+  programs Lumi starts; those are checked where they start.
 
 A blocked call fails at once with ``Offline mode: <feature> needs <host>;
 allow it or turn offline mode off.``, never after a timeout.
 
 Settings are read through ``SettingsManager.get``, so an organization's
 policy wins. When the policy turns offline mode on, only the hosts the policy
-allows are reachable: a person's own ``allowed_hosts`` don't apply.
+allows are reachable: a person's own ``allowed_hosts`` don't apply. A policy
+that exists but can't be used (``policy.load`` reports an error) keeps offline
+mode on with no allowed hosts until it's fixed: a mistake in it must never
+read as "offline mode off".
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import re
 import socket
 import sys
 import threading
@@ -69,6 +78,7 @@ from .offline_rules import (  # noqa: F401 - the rules are part of this module's
     _matches,
     _Rule,
     _this_computer,
+    is_host_name,
     is_local_host,
     normalize_host,
     parse_allowed_hosts,
@@ -85,6 +95,12 @@ CLI_PROVIDERS = {"codex": ("Codex", "chatgpt.com"), "claude-code": ("Claude Code
 # The address that Lumi's browser sends everything it may not reach to: a
 # closed port on this computer, so a page's requests fail at once.
 _BLACKHOLE_PROXY = "http://127.0.0.1:9"
+# Chrome on Windows opens file:// addresses that name another computer as
+# network shares (tool_refusal); elsewhere a file: path is on this computer.
+_WINDOWS = sys.platform == "win32"
+_DRIVE = re.compile(r"[A-Za-z][:|](?:[/?#]|$)")
+# What a refusal says while the organization's policy can't be used (_fail_closed).
+_POLICY_ERROR_NOTE = "Your organization's policy can't be used, so offline mode stays on until your administrator fixes it."
 
 
 class OfflineBlocked(httpx.ConnectError):
@@ -117,10 +133,12 @@ class OfflineConfig:
     managed_by: str = ""  # the organization whose policy sets offline.*
     locked: tuple[str, ...] = ()  # which of enabled / allowed_hosts the policy sets
     problems: tuple[str, ...] = field(default=())  # saved entries that were ignored, and why
+    # Why the organization's policy can't be used; offline mode is then on with no allowed hosts.
+    policy_error: str = ""
 
     def as_dict(self) -> dict[str, Any]:
         return {"enabled": self.enabled, "allowed_hosts": list(self.allowed_hosts), "managed_by": self.managed_by,
-                "locked": list(self.locked), "problems": list(self.problems)}
+                "locked": list(self.locked), "problems": list(self.problems), "policy_error": self.policy_error}
 
 
 @dataclass(frozen=True)
@@ -132,9 +150,38 @@ class _State:
 _lock = threading.Lock()
 _state = _State(OfflineConfig(), ())
 _backstop_installed = False
+_listeners: list[Callable[[OfflineConfig], None]] = []
 
 
 # ── Hosts ──────────────────────────────────────────────────────────────────
+
+
+def _text(host: Any) -> str:
+    if isinstance(host, (bytes, bytearray)):
+        return bytes(host).decode("latin-1")
+    return str(host if host is not None else "")
+
+
+def _readable(host: Any) -> bool:
+    """False for a host with a control character, space or DEL, which no resolver should see."""
+    return not any(ord(ch) < 0x21 or ord(ch) == 0x7F for ch in _text(host))
+
+
+def _reachable(host: Any, rules: tuple[_Rule, ...]) -> bool:
+    """Whether ``host`` is this computer or matches ``rules``; a name that isn't plain never is."""
+    if not _readable(host):
+        return False
+    name = normalize_host(_text(host))
+    if is_local_host(name):
+        return True
+    if _address(name) is None and not is_host_name(name):
+        return False
+    return _matches(name, rules)
+
+
+def _shown(host: Any) -> str:
+    """A host as a message shows it."""
+    return normalize_host(_text(host)) if _readable(host) else "a host name Lumi can't read"
 
 
 def host_allowed(host: Any, config: OfflineConfig | None = None) -> bool:
@@ -144,8 +191,7 @@ def host_allowed(host: Any, config: OfflineConfig | None = None) -> bool:
         state = _State(config, _compile(config.allowed_hosts))
     if not state.config.enabled:
         return True
-    name = normalize_host(host)
-    return is_local_host(name) or _matches(name, state.rules)
+    return _reachable(host, state.rules)
 
 
 # ── Configuration ──────────────────────────────────────────────────────────
@@ -174,23 +220,40 @@ def _resolve(enabled: Any, hosts: Any, locked: dict[str, Any], organization: str
                          problems=tuple(problems))
 
 
-def _policy() -> Any:
-    from .policy import current
+def _policy_state() -> Any:
+    from . import policy
 
     try:
-        return current()
-    except Exception:  # policy.load never raises; be as careful here
-        return None
+        return policy.load()
+    except Exception as exc:  # policy.load never raises; be as careful here, and fail closed
+        return policy.PolicyState(error=f"The organization policy couldn't be loaded: {exc}")
+
+
+def _fail_closed(error: str) -> OfflineConfig:
+    """Offline mode while the organization's policy exists but can't be used.
+
+    Whether that policy turns offline mode on can't be known, so it is on,
+    reaching only this computer, until the policy is fixed; a person's
+    settings don't turn it off.
+    """
+    return OfflineConfig(enabled=True, allowed_hosts=(), managed_by="your organization",
+                         locked=("allowed_hosts", "enabled"),
+                         problems=(f"{error} Until it's fixed, offline mode stays on and Lumi reaches only this "
+                                   "computer.",),
+                         policy_error=error)
 
 
 def from_settings(settings: Any) -> OfflineConfig:
     """Offline mode from a SettingsManager (policy locks win) or any ``get``-alike."""
+    state = _policy_state()
+    if getattr(state, "error", ""):
+        return _fail_closed(state.error)
     if settings is None:
         return OfflineConfig()
     get = settings.get
     locked_values = getattr(settings, "locked_values", None)
     locked = dict(locked_values(SECTION)) if callable(locked_values) else {}
-    policy = _policy()
+    policy = getattr(state, "policy", None)
     organization = policy.organization if (policy is not None and locked) else ""
     return _resolve(get(SECTION, "enabled", False), get(SECTION, "allowed_hosts", []) or [], locked, organization)
 
@@ -201,7 +264,6 @@ def read(settings_path: Path | None = None, policy_state: Any = None) -> Offline
     For startup code that runs before the app builds its settings (the
     updater), like update_channels.read.
     """
-    from . import policy as policy_module
     from .paths import state_home
 
     path = settings_path or state_home() / "settings.json"
@@ -210,7 +272,9 @@ def read(settings_path: Path | None = None, policy_state: Any = None) -> Offline
         stored = section if isinstance(section, dict) else {}
     except (OSError, ValueError, AttributeError):
         stored = {}
-    state = policy_state if policy_state is not None else policy_module.load()
+    state = policy_state if policy_state is not None else _policy_state()
+    if getattr(state, "error", ""):
+        return _fail_closed(state.error)
     policy = getattr(state, "policy", None)
     locked = {name.split(".", 1)[1]: value for name, value in (policy.settings if policy else {}).items()
               if name.startswith(SECTION + ".")}
@@ -231,11 +295,29 @@ def _set(config: OfflineConfig) -> None:
     with _lock:
         previous = _state.config
         _state = _State(config, _compile(config.allowed_hosts))
+        listeners = list(_listeners)
     if config.enabled:
         _install_backstop()
     if config.enabled != previous.enabled:
         logger.info("Offline mode is %s%s", "on" if config.enabled else "off",
                     f" (managed by {config.managed_by})" if config.managed_by else "")
+    if (config.enabled, config.allowed_hosts) != (previous.enabled, previous.allowed_hosts):
+        for listener in listeners:
+            try:
+                listener(config)
+            except Exception:
+                logger.exception("Applying the new offline mode rules failed")
+
+
+def add_listener(listener: Callable[[OfflineConfig], None]) -> None:
+    """Call ``listener(config)`` when what is reachable changes.
+
+    For what was set up under the old rules and would keep connecting:
+    engine/browser.py closes the Chrome it started with other rules at once.
+    """
+    with _lock:
+        if listener not in _listeners:
+            _listeners.append(listener)
 
 
 def current() -> OfflineConfig:
@@ -266,17 +348,22 @@ def reset_for_tests() -> None:
 def message(feature: str, host: str, config: OfflineConfig | None = None) -> str:
     """``Offline mode: <feature> needs <host>; allow it or turn offline mode off.``"""
     config = config or current()
+    if config.policy_error:
+        return f"Offline mode: {feature} needs {host or 'another computer'}. {_POLICY_ERROR_NOTE}"
     text = f"Offline mode: {feature} needs {host or 'another computer'}; allow it or turn offline mode off."
     if config.managed_by:
         text += f" {config.managed_by}'s policy manages offline mode, so ask your administrator."
     return text
 
 
-def _unchecked(what: str) -> str:
-    """The refusal for a provider whose connections Lumi can't see (``what`` says why)."""
-    text = f"Offline mode: {what}, which offline mode can't check; choose a local model or turn offline mode off."
-    if current().managed_by:
-        text += f" {current().managed_by}'s policy manages offline mode."
+def unchecked(what: str, instead: str = "choose a local model") -> str:
+    """The refusal for something whose connections Lumi can't see: ``what`` says why, ``instead`` what to do."""
+    config = current()
+    if config.policy_error:
+        return f"Offline mode: {what}, which offline mode can't check; {instead.rstrip(',')}. {_POLICY_ERROR_NOTE}"
+    text = f"Offline mode: {what}, which offline mode can't check; {instead} or turn offline mode off."
+    if config.managed_by:
+        text += f" {config.managed_by}'s policy manages offline mode."
     return text
 
 
@@ -331,7 +418,7 @@ def check_url(url: str, feature: str) -> None:
 def check_host(host: str, feature: str) -> None:
     """Raise OfflineBlocked unless offline mode lets ``feature`` reach ``host``."""
     if not host_allowed(host):
-        raise OfflineBlocked(feature, normalize_host(host))
+        raise OfflineBlocked(feature, _shown(host))
 
 
 def message_for(exc: BaseException | None) -> str:
@@ -356,7 +443,7 @@ def request_hook(feature: str) -> Callable[[httpx.Request], None]:
         except (AttributeError, UnicodeDecodeError):
             host = request.url.host
         if not host_allowed(host):
-            raise OfflineBlocked(feature, normalize_host(host), request=request)
+            raise OfflineBlocked(feature, _shown(host), request=request)
 
     return check
 
@@ -370,7 +457,7 @@ def provider_refusal(provider: str, url: str = "", *, label: str = "") -> str:
         return ""
     if provider in CLI_PROVIDERS:
         name, host = CLI_PROVIDERS[provider]
-        return _unchecked(f"{label or name} needs {host} and runs as its own program")
+        return unchecked(f"{label or name} needs {host} and runs as its own program")
     if not url:
         return ""
     return refusal(url, label or provider)
@@ -380,7 +467,7 @@ def extension_refusal(label: str) -> str:
     """Why offline mode refuses a provider a capability pack runs (``""`` while it is off)."""
     if not enabled():
         return ""
-    return _unchecked(f"{label} runs as a process from a capability pack and makes its own connections")
+    return unchecked(f"{label} runs as a process from a capability pack and makes its own connections")
 
 
 def backend_refusal(backend: Any) -> str:
@@ -398,6 +485,12 @@ def backend_refusal(backend: Any) -> str:
     connection = getattr(backend, "connection", None)
     if isinstance(connection, dict) and connection.get("type") == "extension":
         return extension_refusal(label or str(connection.get("name") or name))
+    if isinstance(connection, dict) and connection.get("type"):
+        from .connections import offline_refusal
+
+        reason = offline_refusal(connection)  # its endpoint and where it signs in
+        if reason:
+            return reason
     url = str(getattr(backend, "base_url", "") or getattr(backend, "url", "") or "")
     if not url:
         return ""  # a provider without an endpoint (tests' fakes); its client still checks
@@ -412,24 +505,76 @@ def browser_url(url: str) -> str:
     return text
 
 
+def file_url_host(url: str) -> str:
+    """The other computer a ``file:`` address names, or ``""`` for a file on this one; ValueError if unclear.
+
+    Chrome on Windows opens ``file://host/share``, ``file:////host/share`` and
+    ``file:/host/share`` as network shares, through Windows' own connections,
+    which Lumi's browser rules don't cover. This computer's files are
+    ``file:///path``, ``file://localhost/path`` and a drive (``file:///C:/``);
+    outside Windows a path with no host (``file:/etc/hosts``) is too.
+    """
+    text = str(url or "")
+    if not _readable(text.replace(" ", "")) or re.search(r"%(?:2f|5c)", text, re.IGNORECASE):
+        raise ValueError("an address Lumi can't read")  # tabs and line breaks vanish; %2F decodes to a slash
+    rest = text.split(":", 1)[1].replace("\\", "/") if ":" in text else ""
+    if re.match(r"//localhost(?=[/?#]|$)", rest, re.IGNORECASE):
+        rest = "//" + rest[len("//localhost"):]  # file://localhost/path is file:///path
+    slashes = len(rest) - len(rest.lstrip("/"))
+    after = rest[slashes:]
+    first = re.split(r"[/?#]", after, maxsplit=1)[0]
+    if slashes <= 3 and _DRIVE.match(after):
+        return ""  # file:C:/x, file:/C:/x, file://C:/x, file:///C:/x
+    if slashes == 3 or (slashes == 2 and not first) or (slashes < 2 and not _WINDOWS):
+        return ""
+    return urllib.parse.unquote(first) or "another computer"
+
+
+def file_refusal(url: str, feature: str = "opening a file", config: OfflineConfig | None = None) -> str:
+    """Why offline mode refuses a ``file:`` address (one on another computer), or ``""``."""
+    config = config or current()
+    if not config.enabled:
+        return ""
+    try:
+        host = file_url_host(url)
+    except ValueError as exc:
+        return message(feature, str(exc), config)
+    if not host or host_allowed(host, config):
+        return ""
+    return message(f"{feature} from another computer", _shown(host), config)
+
+
 def tool_refusal(tool_name: str, arguments: Any) -> str:
     """Why offline mode refuses one of the agent's tool calls, or ``""``.
 
     The browser tools that open an address are checked here, so the model
     learns why; Lumi's browser itself can reach only allowed hosts
-    (``chrome_arguments``). Tools whose requests go through Lumi's HTTP clients
-    (pull requests, issue trackers, MCP servers) are refused by those clients,
-    with the same message.
+    (``chrome_arguments``), and a ``file:`` address only files on this
+    computer or an allowed host (``file_refusal``). ``open_application`` may
+    not open an address, which the default browser or another program would
+    reach unchecked. Tools whose requests go through Lumi's HTTP clients (pull
+    requests, issue trackers, MCP servers) are refused by those clients, with
+    the same message.
     """
-    if not enabled() or tool_name not in {"browser_navigate", "browser_tabs"}:
+    if not enabled():
         return ""
     args = arguments if isinstance(arguments, dict) else {}
+    if tool_name == "open_application":
+        name = str(args.get("name") or "").strip()
+        if not (re.match(r"[A-Za-z][A-Za-z0-9+.-]+:", name) or name.replace("\\", "/").startswith("//")):
+            return ""
+        return unchecked("open_application would open that address in another program",
+                         "use the browser tools, which reach only allowed hosts,")
+    if tool_name not in {"browser_navigate", "browser_tabs"}:
+        return ""
     url = str(args.get("url") or "").strip()
     if not url or (tool_name == "browser_tabs" and str(args.get("action") or "").lower() != "new"):
         return ""
     target = browser_url(url)
-    if target.lower().startswith(("about:", "file:")):
+    if target.lower().startswith("about:"):
         return ""
+    if target.lower().startswith("file:"):
+        return file_refusal(target)
     return refusal(target, "browsing")
 
 
@@ -437,13 +582,15 @@ def chrome_arguments() -> list[str]:
     """Chrome command-line switches that keep Lumi's browser to reachable hosts (empty when off).
 
     Everything not on the bypass list goes to a closed port on this computer,
-    so it fails at once; loopback addresses always connect directly. WebRTC
-    may not use UDP around the proxy.
+    so it fails at once. ``<-loopback>`` removes Chrome's own bypass for
+    loopback and link-local addresses (169.254.0.0/16, fe80::/10), so only
+    this computer and the allowed hosts connect directly. WebRTC may not use
+    UDP around the proxy.
     """
     state = _state
     if not state.config.enabled:
         return []
-    bypass = ["localhost", "127.0.0.1", "[::1]", *sorted(_this_computer())]
+    bypass = ["<-loopback>", "localhost", "127.0.0.0/8", "[::1]", *sorted(_this_computer())]
     for entry in state.config.allowed_hosts:
         address = _address(entry) if "/" not in entry else None
         bypass.append(f"[{entry}]" if address is not None and address.version == 6 else entry)
@@ -455,7 +602,7 @@ def chrome_arguments() -> list[str]:
 
 
 def _install_backstop() -> None:
-    """Check host name lookups in this whole process from now on (it can't be removed).
+    """Check host name lookups through Python's socket module from now on (the hook can't be removed).
 
     Installed the first time offline mode is on; while it is off again the
     hook returns at once.
@@ -468,34 +615,47 @@ def _install_backstop() -> None:
     sys.addaudithook(_audit)
 
 
+# Lookups, whose first argument is the name or address looked up
+# (gethostbyname_ex raises "socket.gethostbyname" too), and the calls whose
+# second argument is the address a socket connects or sends to.
+_LOOKUPS = frozenset({"socket.getaddrinfo", "socket.gethostbyname", "socket.gethostbyaddr"})
+_SENDS = frozenset({"socket.connect", "socket.sendto", "socket.sendmsg"})
+
+
 def _audit(event: str, args: tuple) -> None:
-    """``sys.addaudithook`` hook: refuse a lookup of, or a connection to, a host by name.
+    """``sys.addaudithook`` hook: refuse a lookup of, or a connection to, a host offline mode doesn't allow.
 
     ``socket.getaddrinfo`` is what HTTP clients (httpx, urllib, asyncio) call
-    before connecting, so it fails before anything is sent. A ``connect`` given
-    a name resolves it inside Python before the event, so there only the
-    connection is refused. Connections straight to an IP address, with no
-    lookup, are checked by Lumi's own clients (``request_hook``), not here.
+    before connecting, so it fails before anything is sent; so do
+    ``gethostbyname`` and the reverse lookups ``gethostbyaddr`` and
+    ``getnameinfo`` (its event doesn't say whether it will look the address
+    up, so an address offline mode doesn't allow is refused either way). A
+    ``connect`` or ``sendto`` given a name resolves it inside Python before the
+    event, so there only the connection is refused. Connections straight to
+    an IP address, with no lookup, are checked by Lumi's own clients
+    (``request_hook``), not here: an allowed name's address isn't in the rules.
     """
-    if event == "socket.getaddrinfo":
-        state = _state
-        if not state.config.enabled or not args or args[0] is None:
-            return
-        host = normalize_host(args[0])
-    elif event == "socket.connect":
-        state = _state
-        if not state.config.enabled or len(args) < 2:
-            return
-        address = args[1]
-        if not (isinstance(address, tuple) and address and isinstance(address[0], (str, bytes))):
-            return
-        host = normalize_host(address[0])
-        if _address(host) is not None:
+    if not event.startswith("socket."):
+        return
+    state = _state
+    if not state.config.enabled:
+        return
+    if event in _LOOKUPS:
+        host = args[0] if args else None
+    elif event == "socket.getnameinfo":
+        address = args[0] if args else None
+        host = address[0] if isinstance(address, tuple) and address else None
+    elif event in _SENDS:
+        address = args[1] if len(args) > 1 else None
+        host = address[0] if isinstance(address, tuple) and address else None
+        if not isinstance(host, (str, bytes, bytearray)) or _address(normalize_host(_text(host))) is not None:
             return
     else:
         return
-    if not host or is_local_host(host) or _matches(host, state.rules):
+    if not isinstance(host, (str, bytes, bytearray)) or not host:
+        return  # no host (a local lookup), or a type Python itself refuses
+    if _reachable(host, state.rules):
         return
-    error = BlockedLookup(message("a network connection", host, state.config))
-    error.host = host
+    error = BlockedLookup(message("a network connection", _shown(host), state.config))
+    error.host = _shown(host)
     raise error

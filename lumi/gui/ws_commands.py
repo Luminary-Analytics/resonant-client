@@ -3775,7 +3775,7 @@ async def _cmd_update_file_dialog(ctx: CommandContext) -> None:
 
             result = window.create_file_dialog(
                 webview.OPEN_DIALOG, allow_multiple=False,
-                file_types=("Lumi update (*.exe;*.msi;*.zip)", "All files (*.*)"))
+                file_types=("Lumi update (*.exe;*.zip)", "All files (*.*)"))
             return str(result[0]) if result else ""
         except Exception:
             logger.warning("The update file picker failed", exc_info=True)

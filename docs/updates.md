@@ -49,11 +49,11 @@ A computer without the internet, or one in [offline mode](offline.md), takes
 updates from a file: the installer and the update feed that lists it,
 downloaded elsewhere. **Settings > Updates > Install an update from a file**
 checks the installer's EdDSA signature against the same built-in key, its
-size, and that it is newer and on your channel or release line, then hands it
-to the same install flow: never during an agent turn, an `update.install`
-record, and Lumi closes for the installer. `lumi updates verify <file>` runs
-the check from the command line. See
-[Updates from a file](offline.md#updates-from-a-file).
+size, and that the version inside the signed installer (the feed isn't
+signed) is newer and on your channel or release line, then hands it to the
+same install flow: never during an agent turn, an `update.install` record,
+and Lumi closes for the installer. `lumi updates verify <file>` runs the check
+from the command line. See [Updates from a file](offline.md#updates-from-a-file).
 
 In offline mode Lumi doesn't check the update site unless it is an allowed
 host: WinSparkle doesn't start, and turning offline mode on stops it at once.

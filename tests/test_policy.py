@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import json
 import plistlib
+import sys
 import time
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -251,6 +252,29 @@ class TestSources:
         state = lumi_policy.load(force=True)
         assert state.policy is None and "shell.rules rule 1: arg_patterns" in state.error
         assert "administrator" in lumi_policy.blocked_reason()
+
+    @pytest.mark.skipif(sys.platform != "win32", reason="Windows' ProgramData folder")
+    def test_the_machine_folder_comes_from_windows_not_the_environment(self, tmp_path, monkeypatch):
+        # A person can start Lumi with ProgramData pointing at a folder of their own.
+        monkeypatch.setenv("ProgramData", str(tmp_path))
+        monkeypatch.setenv("ALLUSERSPROFILE", str(tmp_path))
+        monkeypatch.setenv("SystemDrive", "Q:")
+        monkeypatch.setattr(lumi_policy, "_windows_folders", {})
+        folder = lumi_policy.machine_policy_file().parent.parent
+        assert folder != tmp_path and folder.name.lower() == "programdata" and folder.drive.upper() != "Q:"
+        assert lumi_policy.expand_machine_variables(r"%ProgramData%\Lumi\policy.json") == str(
+            folder / "Lumi" / "policy.json")
+
+    def test_only_machine_folders_expand_in_a_policy_file_path(self, monkeypatch):
+        monkeypatch.setattr(lumi_policy, "_known_folder", lambda guid, fallback: fallback)
+        monkeypatch.setenv("ProgramData", r"D:\mine")
+        monkeypatch.setenv("USERPROFILE", r"D:\me")
+        expand = lumi_policy.expand_machine_variables
+        assert expand(r"%ProgramData%\Lumi\policy.json") == r"C:\ProgramData\Lumi\policy.json"
+        assert expand(r"%SYSTEMROOT%\a;%systemdrive%\b;%ProgramFiles%\c") == r"C:\Windows\a;C:\b;C:\Program Files\c"
+        # A folder that depends on the person's environment stays as written, so it isn't found.
+        assert expand(r"%USERPROFILE%\policy.json") == r"%USERPROFILE%\policy.json"
+        assert expand(r"\\server\share\lumi-policy.json") == r"\\server\share\lumi-policy.json"
 
     def test_signed_machine_policy_uses_machine_keys(self, tmp_path, monkeypatch):
         private, public = _keypair()

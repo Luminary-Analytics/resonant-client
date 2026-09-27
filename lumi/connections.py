@@ -269,8 +269,13 @@ def endpoints(connection: dict[str, Any]) -> list[str]:
     urls = [base] if base else []
     if connection.get("auth") == "oauth" and connection.get("token_url"):
         urls.append(str(connection["token_url"]))
-    if connection.get("auth") == "entra" and connection.get("client_id"):
-        urls.append("https://login.microsoftonline.com/")
+    if connection.get("auth") == "entra":
+        # With a client id Lumi signs in there itself; without one Azure's own
+        # sign-in (azure-identity or the Azure CLI) does, which offline mode
+        # allows only when the sign-in host is allowed (auth_tokens.entra_token).
+        from .auth_tokens import entra_authority
+
+        urls.append(entra_authority(bool(connection.get("client_id"))))
     return urls
 
 

@@ -19,15 +19,21 @@ Verification is the online updater's (WinSparkle's), with the same key:
   so a file is refused too.
 
 The feed itself isn't signed (the online updater trusts the update site for
-it), so the signature on the installer is what makes it genuine.
+it), so the signature on the installer is what makes it genuine, and the
+version checked is the one inside the signed installer (its Windows version
+resource, which packaging/installer.iss sets to the release), never only the
+feed's: an old signed installer listed as a new version is refused. The feed
+is parsed without a document type, so it can't declare entities.
 
 Installing (``install``) hands the verified installer to the same flow
 WinSparkle uses: never while an agent turn runs, an ``update.install``
 record in the audit log, the installer started (Windows asks for
 administrator rights, as for a downloaded update), and Lumi closed so the
 installer can replace its files. It runs a copy of exactly the bytes that
-were verified. Only an installed copy of Lumi on Windows updates itself this
-way; elsewhere ``instructions`` says what to do instead.
+were verified, saved under a name Lumi makes (``lumi-setup-<version>.exe``)
+in a new private folder, whatever the bundle called it. Only an installed
+copy of Lumi on Windows updates itself this way; elsewhere ``instructions``
+says what to do instead.
 """
 
 from __future__ import annotations
@@ -36,9 +42,11 @@ import base64
 import hashlib
 import os
 import re
+import struct
 import sys
 import tempfile
 import xml.etree.ElementTree as ET
+import xml.parsers.expat
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -51,7 +59,8 @@ SPARKLE_NS = "http://www.andymatuschak.org/xml-namespaces/sparkle"
 MAX_FEED_BYTES = 4 * 1024 * 1024
 MAX_INSTALLER_BYTES = 1024 * 1024 * 1024
 _FEED_NAME = re.compile(r"appcast(-[A-Za-z0-9.]+)?\.xml", re.IGNORECASE)
-_INSTALLER_SUFFIXES = (".exe", ".msi")
+# The feeds list only the setup program (packaging/update_appcast.py).
+_INSTALLER_SUFFIXES = (".exe",)
 _RELEASE = re.compile(r"(\d+)\.(\d+)\.(\d+)(?:[.-]?(dev|alpha|a|beta|b|rc)\.?(\d+))?", re.IGNORECASE)
 _PRE_RANK = {"dev": 0, "alpha": 1, "a": 1, "beta": 2, "b": 2, "rc": 3}
 
@@ -148,14 +157,42 @@ def _bundle_from(installer: Path, folder: Path) -> tuple[str, bytes, list[tuple[
             [(p.name, _read_limited(p, MAX_FEED_BYTES, "update feed")) for p in feeds])
 
 
+def _refuse_document_type(*_args: Any) -> None:
+    raise UpdateFileError("The update feed declares a document type or entities, which update feeds don't.")
+
+
+def _parse_feed(feed: bytes) -> ET.Element:
+    """A feed's XML, refusing a document type as the parser meets it.
+
+    The parser reads the feed in whatever encoding it declares (UTF-16
+    included), so a document type can't hide from the check, and without one
+    there are no entities to expand.
+    """
+    builder = ET.TreeBuilder()
+    parser = xml.parsers.expat.ParserCreate(namespace_separator="}")
+    parser.SetParamEntityParsing(xml.parsers.expat.XML_PARAM_ENTITY_PARSING_NEVER)
+    parser.StartDoctypeDeclHandler = _refuse_document_type
+    parser.EntityDeclHandler = _refuse_document_type
+    parser.ExternalEntityRefHandler = _refuse_document_type
+    parser.buffer_text = True
+
+    def name(raw: str) -> str:  # expat's "uri}local" is ElementTree's "{uri}local"
+        return "{" + raw if "}" in raw else raw
+
+    parser.StartElementHandler = lambda tag, attributes: builder.start(
+        name(tag), {name(key): value for key, value in attributes.items()})
+    parser.EndElementHandler = lambda tag: builder.end(name(tag))
+    parser.CharacterDataHandler = builder.data
+    try:
+        parser.Parse(feed, True)
+        return builder.close()
+    except (xml.parsers.expat.ExpatError, AssertionError) as exc:  # TreeBuilder asserts on an empty document
+        raise UpdateFileError(f"The update feed isn't valid XML: {exc}") from None
+
+
 def _items(feed: bytes) -> list[dict[str, str]]:
     """The releases a feed lists: version, installer file name, size and signature."""
-    if b"<!DOCTYPE" in feed[:4096].upper() or b"<!ENTITY" in feed.upper():
-        raise UpdateFileError("The update feed declares a DTD or entities, which update feeds don't.")
-    try:
-        root = ET.fromstring(feed)
-    except ET.ParseError as exc:
-        raise UpdateFileError(f"The update feed isn't valid XML: {exc}") from exc
+    root = _parse_feed(feed)
     releases = []
     for item in root.iter("item"):
         enclosure = item.find("enclosure")
@@ -183,6 +220,128 @@ def _verify_signature(data: bytes, signature_b64: str, public_key_b64: str) -> b
         return True
     except (InvalidSignature, ValueError):
         return False
+
+
+# ── The version inside a signed installer ──────────────────────────────────
+#
+# The feed's version is only a claim: the feed isn't signed. The version the
+# signature vouches for is the one in the installer's Windows version
+# resource (ProductVersion, which packaging/installer.iss sets to the
+# release), read here without Windows so every platform checks it the same.
+
+_RT_VERSION = 16
+
+
+def _unpack(layout: str, data: bytes, offset: int) -> tuple:
+    if offset < 0 or offset + struct.calcsize(layout) > len(data):
+        raise ValueError("it ends early")
+    return struct.unpack_from(layout, data, offset)
+
+
+def _align4(offset: int) -> int:
+    return (offset + 3) & ~3
+
+
+def pe_resources(data: bytes, type_id: int) -> list[bytes]:
+    """The resources of one type (``16``: version information) in a Windows program; ValueError if unreadable."""
+    if data[:2] != b"MZ":
+        raise ValueError("it isn't a Windows program")
+    (header,) = _unpack("<I", data, 0x3C)
+    if data[header:header + 4] != b"PE\0\0":
+        raise ValueError("it isn't a Windows program")
+    _machine, section_count, _stamp, _symbols, _symbol_count, optional_size, _flags = _unpack(
+        "<HHIIIHH", data, header + 4)
+    optional = header + 24
+    (magic,) = _unpack("<H", data, optional)
+    directories = {0x10B: optional + 96, 0x20B: optional + 112}.get(magic)
+    if directories is None:
+        raise ValueError("it isn't a Windows program")
+    (directory_count,) = _unpack("<I", data, directories - 4)
+    resource_rva = _unpack("<I", data, directories + 2 * 8)[0] if directory_count > 2 else 0
+    if not resource_rva:
+        return []
+    sections = [_unpack("<IIII", data, optional + optional_size + 40 * index + 8)
+                for index in range(min(section_count, 96))]
+
+    def file_offset(rva: int, size: int) -> int:
+        for _virtual_size, virtual_address, raw_size, raw_pointer in sections:
+            delta = rva - virtual_address
+            if 0 <= delta and delta + size <= raw_size:
+                return raw_pointer + delta
+        raise ValueError("its resources are out of place")
+
+    base = file_offset(resource_rva, 16)
+
+    def entries(directory: int) -> list[tuple[int, int]]:
+        named, numbered = _unpack("<HH", data, base + directory + 12)
+        return [_unpack("<II", data, base + directory + 16 + 8 * index) for index in range(min(named + numbered, 4096))]
+
+    found = []
+    # Three levels: type, then name, then language; a leaf gives the data's address and size.
+    for kind, names in entries(0):
+        if kind != type_id or not names & 0x80000000:
+            continue
+        for _name, languages in entries(names & 0x7FFFFFFF):
+            if not languages & 0x80000000:
+                continue
+            for _language, leaf in entries(languages & 0x7FFFFFFF):
+                if leaf & 0x80000000:
+                    continue
+                rva, size, _code_page, _reserved = _unpack("<IIII", data, base + leaf)
+                start = file_offset(rva, size)
+                found.append(data[start:start + size])
+    return found
+
+
+def _blocks(resource: bytes, start: int, end: int) -> list[tuple[str, int, int, int]]:
+    """(key, value offset, children offset, end) of each VS_VERSIONINFO block between ``start`` and ``end``."""
+    blocks = []
+    position = start
+    while position + 6 <= end:
+        length, value_length, value_type = _unpack("<HHH", resource, position)
+        if length == 0:
+            break  # padding
+        if length < 6 or position + length > end:
+            raise ValueError("its version information is malformed")
+        block_end = position + length
+        key_end = position + 6
+        while key_end + 2 <= block_end and resource[key_end:key_end + 2] != b"\0\0":
+            key_end += 2
+        key = resource[position + 6:key_end].decode("utf-16-le", "replace")
+        value = _align4(key_end + 2)
+        # A text value's length counts characters, a binary one's bytes; children follow the value.
+        children = _align4(value + (value_length * 2 if value_type == 1 else value_length))
+        blocks.append((key, value, children, block_end))
+        position = _align4(block_end)
+    return blocks
+
+
+def version_strings(resource: bytes, wanted: str) -> list[str]:
+    """The values of one string, such as ``ProductVersion``, in a version resource (every language)."""
+    values = []
+    for root, _value, children, end in _blocks(resource, 0, len(resource)):
+        if root != "VS_VERSION_INFO":
+            continue
+        for section, _value, tables, section_end in _blocks(resource, children, end):
+            if section != "StringFileInfo":
+                continue
+            for _table, _value, strings, table_end in _blocks(resource, tables, section_end):
+                for key, value, _children, string_end in _blocks(resource, strings, table_end):
+                    if key == wanted:
+                        values.append(resource[value:string_end].decode("utf-16-le", "replace").split("\0", 1)[0])
+    return values
+
+
+def installer_version(data: bytes) -> str:
+    """The release a Lumi installer installs (its ProductVersion); ValueError when it doesn't say."""
+    found = {text.strip() for resource in pe_resources(data, _RT_VERSION)
+             for text in version_strings(resource, "ProductVersion") if text.strip()}
+    if len(found) != 1:
+        raise ValueError("it doesn't say which version it installs" if not found
+                         else "it names more than one version")
+    version = found.pop()
+    version_key(version)  # ValueError for anything but a release version
+    return version
 
 
 # ── Verifying ───────────────────────────────────────────────────────────────
@@ -225,12 +384,25 @@ def verify(path: str | os.PathLike, *, preferences: Any = None, current_version:
     feed_name, item = match
     if item["length"] and item["length"] != str(len(data)):
         raise UpdateFileError(f"{name} is {len(data)} bytes, but its feed says {item['length']}.")
-    version = item["version"]
+    # The signature vouches for the installer's bytes, not for the feed: the
+    # version that counts is the one inside the installer.
+    try:
+        version = installer_version(data)
+    except ValueError as exc:
+        raise UpdateFileError(f"Lumi can't tell which version {name} installs ({exc}), so it can't check it. "
+                              "Nothing was installed.") from None
+    try:
+        listed_as = version_key(item["version"])
+    except ValueError:
+        listed_as = None
+    if listed_as != version_key(version):
+        raise UpdateFileError(f"The update feed lists {name} as Lumi {item['version'] or '(no version)'}, but the "
+                              f"signed installer is Lumi {version}. Use the feed downloaded with this installer.")
     try:
         newer = version_key(version) > version_key(current_version)
     except ValueError:
-        raise UpdateFileError(f"The update feed gives {name} the version {version!r}, which isn't a release "
-                              "version.") from None
+        raise UpdateFileError(f"This copy's version ({current_version}) isn't a release version, so Lumi can't "
+                              "tell whether the update is newer.") from None
     if not newer:
         raise UpdateFileError(f"{name} is Lumi {version}, which isn't newer than this copy ({current_version}).")
     pin = getattr(prefs, "pin", "")
@@ -302,7 +474,17 @@ def install(update: VerifiedUpdate, *, busy: Callable[[], bool] | None = None,
         target_folder.mkdir(parents=True, exist_ok=True)
     else:
         target_folder = Path(tempfile.mkdtemp(prefix="lumi-update-"))  # private to this user
-    target = target_folder / update.installer_name
+    # A name Lumi makes, never the bundle's: a .zip entry such as "C:setup.exe"
+    # or "..\setup.exe" would put the copy somewhere else.
+    try:
+        plain = version_key(update.version) and re.fullmatch(r"[0-9A-Za-z][0-9A-Za-z.-]{0,63}", update.version)
+    except ValueError:
+        plain = None
+    if not plain:
+        raise UpdateFileError(f"{update.version!r} isn't a release version; nothing was installed.")
+    target = target_folder / f"lumi-setup-{update.version}.exe"
+    if target.parent != target_folder:
+        raise UpdateFileError("Lumi couldn't prepare the installer; nothing was installed.")
     with open(target, "xb") as handle:
         handle.write(update.data)
     if hashlib.sha256(target.read_bytes()).hexdigest() != update.sha256:

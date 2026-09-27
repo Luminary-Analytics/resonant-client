@@ -83,12 +83,13 @@ def source_allowed(url: str, allowed: tuple[str, ...] | None) -> bool:
 
 def _git(args: list[str], *, cwd: Path | None = None, local: bool = False, remote: str = "") -> str:
     """Run Git; ``remote`` is the repository a network command reaches, checked against offline mode."""
-    if remote and not local:
-        from .. import offline
+    from .. import offline
 
+    feature = "installing a capability pack from Git"
+    if remote and not local:
         # Git connects from its own process, so the address is checked here,
         # before it starts (lumi/offline.py).
-        reason = offline.refusal(remote, "installing a capability pack from Git")
+        reason = offline.refusal(remote, feature)
         if reason:
             raise PackInstallError(reason)
     git = shutil.which("git")
@@ -100,6 +101,19 @@ def _git(args: list[str], *, cwd: Path | None = None, local: bool = False, remot
         config += ["-c", "protocol.allow=never", "-c", "protocol.https.allow=always"]
     env = {**os.environ, "GIT_TERMINAL_PROMPT": "0", "GIT_ASKPASS": "", "SSH_ASKPASS": "",
            "GIT_CONFIG_NOSYSTEM": "1", "GCM_INTERACTIVE": "never"}
+    if remote and not local and offline.enabled():
+        # Git may rewrite the address (url.<base>.insteadOf in the person's
+        # Git settings) and follows redirects: check the address it will use,
+        # and don't let it follow a redirect to another host.
+        config += ["-c", "http.followRedirects=false"]
+        try:
+            rewritten = subprocess.run([git, *config, "ls-remote", "--get-url", "--", remote], cwd=cwd, env=env,
+                                       capture_output=True, text=True, timeout=_GIT_TIMEOUT).stdout.strip()
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise PackInstallError(f"Git couldn't run: {exc}") from exc
+        reason = offline.refusal(rewritten or remote, feature)
+        if reason:
+            raise PackInstallError(reason)
     try:
         completed = subprocess.run([git, *config, *args], cwd=cwd, env=env, capture_output=True,
                                    text=True, timeout=_GIT_TIMEOUT)

@@ -10,7 +10,9 @@ Create a signing key once (writes the private key, prints the public entry)::
 
 Put the printed ``{"<key id>": "<public key>"}`` entry in ``BUILTIN_KEYS`` in
 lumi/license.py for a release, or give it to an organization's administrator
-for ``license-keys.json`` beside their machine policy file (or ``LicenseKeys``).
+for ``LicenseKeys`` (Group Policy or Intune on Windows, the configuration
+profile on macOS) or ``license-keys.json`` beside the machine policy file
+(macOS and Linux).
 
 Sign a license::
 

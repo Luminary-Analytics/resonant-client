@@ -37,6 +37,19 @@ class SignInError(RuntimeError):
     """A token couldn't be obtained; the message says what to check."""
 
 
+ENTRA_AUTHORITY = "https://login.microsoftonline.com/"
+
+
+def entra_authority(with_client_id: bool = True) -> str:
+    """Where Entra ID sign-in goes: Microsoft's, or ``AZURE_AUTHORITY_HOST`` for Azure's own sign-in."""
+    import os
+
+    host = "" if with_client_id else os.environ.get("AZURE_AUTHORITY_HOST", "").strip()
+    if not host:
+        return ENTRA_AUTHORITY
+    return host if "://" in host else f"https://{host}/"
+
+
 def _cached(key: tuple) -> str:
     with _lock:
         token, expires = _cache.get(key, ("", 0.0))
@@ -111,6 +124,13 @@ def entra_token(tenant: str, *, client_id: str = "", client_secret: str = "", sc
     cached = _cached(key)
     if cached:
         return cached
+    # azure-identity and the Azure CLI connect by themselves (the CLI from its
+    # own process), so offline mode checks where they sign in before either runs.
+    from .offline import refusal
+
+    reason = refusal(entra_authority(False), "signing in to Microsoft Entra ID")
+    if reason:
+        raise SignInError(reason)
     last = ""
     try:
         from azure.identity import DefaultAzureCredential  # type: ignore[import-not-found]

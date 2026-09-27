@@ -301,6 +301,18 @@ class BrowserManager:
                     "connects. Close the Chrome window Lumi opened earlier and try again.")
         return ""
 
+    def apply_network_rules(self) -> None:
+        """Offline mode changed: close the Chrome this manager started with other rules now.
+
+        Its open pages could keep connecting until the next browser tool
+        otherwise; that tool starts Chrome again with the current rules.
+        """
+        from .. import offline
+
+        with self._lock:
+            if self._launched_by_us and tuple(offline.chrome_arguments()) != self._network_rules:
+                self.close()
+
     def _http(self, path: str, method: str = "GET") -> Any:
         import httpx
 
@@ -701,6 +713,23 @@ def shutdown_browser() -> None:
             _manager = None
 
 
+def _offline_changed(_config: Any) -> None:
+    """Offline mode changed (lumi/offline.py): close a Chrome started under other rules, off the caller's thread."""
+    with _manager_lock:
+        manager = _manager
+    if manager is not None:
+        threading.Thread(target=manager.apply_network_rules, name="lumi-browser-offline", daemon=True).start()
+
+
+def _listen_for_offline_mode() -> None:
+    from .. import offline
+
+    offline.add_listener(_offline_changed)
+
+
+_listen_for_offline_mode()
+
+
 # ── helpers shared by the tool implementations ───────────────────────
 
 def _js_string(value: str) -> str:
@@ -797,11 +826,22 @@ def _normalize_url(url: str) -> str:
     return url
 
 
+def _offline_refusal(tool_name: str, args: dict, start: float) -> Optional[ToolResult]:
+    """Offline mode's refusal of an address, also for callers that skip the session's check (lumi/offline.py)."""
+    from .. import offline
+
+    reason = offline.tool_refusal(tool_name, args)
+    return ToolResult(f"Error: {reason}", is_error=True, elapsed=time.time() - start) if reason else None
+
+
 def exec_browser_navigate(args: dict, start: float) -> ToolResult:
     """Navigate to a URL, starting Chrome if it is not already running."""
     url = args.get("url", "")
     if not url:
         return ToolResult("Error: 'url' is required", is_error=True, elapsed=time.time() - start)
+    refused = _offline_refusal("browser_navigate", args, start)
+    if refused:
+        return refused
     url = _normalize_url(url)
 
     failure = _ensure(start)
@@ -1254,6 +1294,9 @@ def exec_browser_back(args: dict, start: float) -> ToolResult:
 def exec_browser_tabs(args: dict, start: float) -> ToolResult:
     """List, switch to, open, or close tabs."""
     action = (args.get("action") or "list").lower()
+    refused = _offline_refusal("browser_tabs", args, start)
+    if refused:
+        return refused
 
     failure = _ensure(start)
     if failure:

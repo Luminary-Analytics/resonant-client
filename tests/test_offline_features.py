@@ -11,6 +11,7 @@ import base64
 import json
 import shutil
 import subprocess
+import sys
 import time
 from types import SimpleNamespace
 
@@ -347,6 +348,56 @@ class TestTools:
             session._prepare_workspace_tool_args("browser_navigate", {"url": url})
         session._prepare_workspace_tool_args("browser_tabs", {"action": "list"})
 
+    @pytest.mark.parametrize("url, host", [
+        ("file://evil.example/share/page.html", "evil.example"),
+        ("file:////evil.example/share/page.html", "evil.example"),
+        ("file://///evil.example/share/page.html", "evil.example"),
+        ("file://localhost//evil.example/share/page.html", "evil.example"),
+        ("file://%65vil.example/share/page.html", "evil.example"),
+        ("file://EVIL.example/C$/page.html", "evil.example"),
+    ])
+    def test_files_on_other_computers_are_refused(self, url, host):
+        # Chrome on Windows opens these as network shares, through Windows' own connections.
+        _on("docs.corp.example")
+        for tool, args in (("browser_navigate", {"url": url}), ("browser_tabs", {"action": "new", "url": url})):
+            assert offline.tool_refusal(tool, args) == (
+                f"Offline mode: opening a file from another computer needs {host}" + MESSAGE)
+
+    def test_this_computers_files_and_allowed_shares_open(self, monkeypatch):
+        _on("files.corp.example")
+        for url in ("file:///C:/Users/me/report.html", "file:///home/me/report.html", "file://localhost/C:/x.html",
+                    "file://LOCALHOST/srv/x.html", "file://C:/x.html", "file://127.0.0.1/c$/x.html",
+                    "file://files.corp.example/share/x.html", "file:///C:/My%20Files/x.html"):
+            assert offline.tool_refusal("browser_navigate", {"url": url}) == "", url
+        for url in ("file:///%2F%2Fevil.example/share", "file:///x\t/evil"):
+            assert offline.tool_refusal("browser_navigate", {"url": url}) == (
+                "Offline mode: opening a file needs an address Lumi can't read" + MESSAGE)
+        # Outside Windows a path with no host is this computer's; on Windows Chrome reads it as a share.
+        monkeypatch.setattr(offline, "_WINDOWS", True)
+        assert offline.file_url_host("file:/evil.example/share") == "evil.example"
+        monkeypatch.setattr(offline, "_WINDOWS", False)
+        assert offline.file_url_host("file:/etc/hosts") == ""
+
+    def test_the_browser_tools_check_addresses_themselves(self, monkeypatch):
+        from lumi.engine import browser
+
+        monkeypatch.setattr(browser, "_ensure", lambda start: pytest.fail("Chrome must not start"))
+        _on()
+        for execute, args in ((browser.exec_browser_navigate, {"url": "file://evil.example/share/x.html"}),
+                              (browser.exec_browser_tabs, {"action": "new", "url": "https://evil.example/"})):
+            result = execute(args, time.time())
+            assert result.is_error and result.output.startswith("Error: Offline mode: ")
+
+    def test_open_application_may_not_open_an_address(self):
+        _on()
+        for name in ("https://evil.example/", "microsoft-edge:https://evil.example/", "\\\\evil.example\\share",
+                     "//evil.example/share", "mailto:someone@evil.example"):
+            assert offline.tool_refusal("open_application", {"name": name}) == (
+                "Offline mode: open_application would open that address in another program, which offline mode "
+                "can't check; use the browser tools, which reach only allowed hosts, or turn offline mode off."), name
+        for name in ("notepad", "C:\\Program Files\\App\\app.exe", "code"):
+            assert offline.tool_refusal("open_application", {"name": name}) == "", name
+
     def test_a_refused_call_reaches_the_model_as_a_refusal(self, tmp_path):
         from lumi.backends import EVENT_DONE, EVENT_TOOL_CALL
         from lumi.engine.session import Session
@@ -404,7 +455,9 @@ class TestTools:
         args = launched[0]
         assert "--proxy-server=http://127.0.0.1:9" in args
         bypass = next(arg for arg in args if arg.startswith("--proxy-bypass-list=")).split("=", 1)[1].split(";")
-        for entry in ("localhost", "127.0.0.1", "[::1]", "docs.corp.example", "10.20.0.0/16", "[fd00::5]"):
+        # <-loopback> removes Chrome's own direct route to link-local addresses (169.254.0.0/16, fe80::/10).
+        assert bypass[0] == "<-loopback>"
+        for entry in ("localhost", "127.0.0.0/8", "[::1]", "docs.corp.example", "10.20.0.0/16", "[fd00::5]"):
             assert entry in bypass
         assert "--force-webrtc-ip-handling-policy=disable_non_proxied_udp" in args
 
@@ -413,6 +466,27 @@ class TestTools:
         offline.reset_for_tests()
         assert manager.ensure_started() == "attached"
         assert len(launched) == 2 and not any(arg.startswith("--proxy-server") for arg in launched[1])
+
+    def test_turning_it_on_closes_lumis_unlimited_chrome_at_once(self, tmp_path, monkeypatch):
+        import threading
+
+        from lumi.engine import browser
+
+        closed = threading.Event()
+
+        class FakeChrome:
+            def terminate(self):
+                closed.set()
+
+            def wait(self, timeout=None):
+                return 0
+
+        manager = browser.BrowserManager()
+        manager._proc, manager._launched_by_us, manager._network_rules = FakeChrome(), True, ()
+        monkeypatch.setattr(browser, "_manager", manager)
+        # Its pages would keep connecting until the next browser tool; offline mode closes it instead.
+        _on("docs.corp.example")
+        assert closed.wait(5)
 
     def test_a_browser_lumi_didnt_start_isnt_used_offline(self, monkeypatch):
         from lumi.engine import browser
@@ -436,16 +510,40 @@ class TestTools:
             github_tools._git(str(tmp_path), "push", "--set-upstream", "origin", "feature")
         assert str(caught.value) == "Offline mode: pushing to Git needs github.com" + MESSAGE
 
+    def test_every_push_address_is_checked(self, tmp_path):
+        from lumi.engine import github_tools
+
+        if not shutil.which("git"):
+            pytest.skip("git isn't installed")
+        subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+        # Git pushes to each of a remote's push addresses, not only the first.
+        for command in (["remote", "add", "origin", "https://git.corp.example/acme/app.git"],
+                        ["remote", "set-url", "--add", "--push", "origin", "https://git.corp.example/acme/app.git"],
+                        ["remote", "set-url", "--add", "--push", "origin", "\\\\evil.example\\share\\app.git"]):
+            subprocess.run(["git", "-C", str(tmp_path), *command], check=True)
+        _on("git.corp.example")
+        with pytest.raises(github_tools.GitHubError) as caught:
+            github_tools._git(str(tmp_path), "push", "--set-upstream", "origin", "feature")
+        assert str(caught.value) == "Offline mode: pushing to Git needs evil.example" + MESSAGE
+
     @pytest.mark.parametrize("url, host", [
         ("https://github.com/acme/app.git", "github.com"), ("git@github.com:acme/app.git", "github.com"),
         ("ssh://git@git.corp.example:2222/acme/app.git", "git.corp.example"),
         ("https://user@dev.azure.com/org/p/_git/r", "dev.azure.com"), ("C:\\repos\\app", ""),
-        ("/srv/git/app.git", ""), ("../app", ""), ("file:///srv/app.git", ""),
+        ("/srv/git/app.git", ""), ("../app", ""), ("file:///srv/app.git", ""), ("file://localhost/srv/app.git", ""),
+        # Network shares are other computers.
+        ("\\\\fileserver\\git\\app.git", "fileserver"), ("//fileserver/git/app.git", "fileserver"),
+        ("file://fileserver/git/app.git", "fileserver"), ("file:////fileserver/git/app.git", "fileserver"),
+        ("\\\\?\\UNC\\fileserver\\git\\app.git", "fileserver"), ("\\\\?\\C:\\repos\\app", ""),
+        # %-escapes stay as written, so the host isn't a plain name and offline mode refuses it.
+        ("https://%67ithub.com/acme/app.git", "%67ithub.com"),
     ])
     def test_remote_hosts(self, url, host):
         from lumi.engine.github_tools import remote_host
 
         assert remote_host(url) == host
+        _on("github.com", "fileserver.corp.example")
+        assert not host or offline.host_allowed(host) is (host == "github.com")
 
     def test_pull_request_and_issue_apis_fail_fast_with_the_message(self, monkeypatch):
         from lumi.engine import github_tools, issue_trackers
@@ -531,13 +629,41 @@ class TestTelemetryAndExtensions:
 
         def fake_run(args, **kwargs):
             ran.append(args)
+            if "--get-url" in args:  # the address after Git's own rewriting: unchanged here
+                return SimpleNamespace(returncode=0, stdout="https://git.corp.example/acme/pack\n", stderr="")
             return SimpleNamespace(returncode=0, stdout=f"{'b' * 40}\trefs/tags/v1.0\n", stderr="")
 
         monkeypatch.setattr(pack_install.shutil, "which", lambda name: "git")
         monkeypatch.setattr(pack_install.subprocess, "run", fake_run)
         _on("git.corp.example")
         assert pack_install.resolve("https://git.corp.example/acme/pack", "v1.0") == "b" * 40
-        assert ran
+        # Git doesn't follow a redirect to a host offline mode didn't check.
+        assert len(ran) == 2 and all("http.followRedirects=false" in args for args in ran)
+
+    def test_git_is_checked_at_the_address_it_rewrites_to(self, tmp_path, monkeypatch):
+        from lumi.engine import pack_install
+
+        if not shutil.which("git"):
+            pytest.skip("git isn't installed")
+        # The person's Git settings send git.corp.example's addresses somewhere else.
+        config = tmp_path / "gitconfig"
+        config.write_text('[url "https://evil.example/"]\n\tinsteadOf = https://git.corp.example/\n', encoding="utf-8")
+        monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(config))
+        real_run = subprocess.run
+        ran = []
+
+        def only_rewriting(args, **kwargs):
+            ran.append(args)
+            if "--get-url" not in args:  # reading the rewritten address never connects; anything else would
+                pytest.fail("Git must not connect")
+            return real_run(args, **kwargs)
+
+        monkeypatch.setattr(pack_install.subprocess, "run", only_rewriting)
+        _on("git.corp.example")
+        with pytest.raises(pack_install.PackInstallError) as caught:
+            pack_install.resolve("https://git.corp.example/acme/pack", "v1.0")
+        assert str(caught.value) == "Offline mode: installing a capability pack from Git needs evil.example" + MESSAGE
+        assert len(ran) == 1
 
 
 def _refuse_all_but_network(pack_install):
@@ -550,6 +676,57 @@ def _refuse_all_but_network(pack_install):
         return ""
 
     return fake
+
+
+# ── Dictation and sign-in ───────────────────────────────────────────────────
+
+
+class TestDictationAndSignIn:
+    def test_the_browsers_recognizer_is_off_and_the_service_must_be_reachable(self, tmp_path):
+        from lumi import voice
+        from lumi.gui.settings import SettingsManager
+
+        settings = SettingsManager(tmp_path / "settings.json")
+        settings.set("api_keys", "openai", "sk-test")
+        settings.update_section("voice", {"engine": "auto", "service": "openai"})
+        assert voice.status(settings)["browser"] is True and voice.status(settings)["service_ready"] is True
+        _on()
+        state = voice.status(settings)
+        # The webview sends the audio to its maker's service, which Lumi can't see or limit.
+        assert state["browser"] is False and state["browser_reason"] == (
+            "Offline mode: this window's speech recognition sends your voice to its maker's service, which offline "
+            "mode can't check; choose a transcription service on this computer or an allowed host in Settings > "
+            "Voice or turn offline mode off.")
+        assert state["service_ready"] is False
+        assert state["reason"] == "Offline mode: dictation with OpenAI needs api.openai.com" + MESSAGE
+        recorder = _Recorder()
+        with pytest.raises(voice.VoiceError, match="needs api.openai.com"):
+            voice.transcribe(settings, b"audio", "audio/webm", transport=httpx.MockTransport(recorder))
+        assert recorder.requests == []
+        _on("api.openai.com")
+        assert voice.status(settings)["service_ready"] is True and voice.status(settings)["browser"] is False
+
+    def test_entra_sign_in_without_a_client_id_is_checked_before_azure_signs_in(self, monkeypatch):
+        from lumi import auth_tokens, connections
+
+        # azure-identity and the Azure CLI connect by themselves; neither may start.
+        monkeypatch.setattr(auth_tokens.shutil, "which", lambda name: pytest.fail("the Azure CLI must not run"))
+        monkeypatch.setattr(auth_tokens.subprocess, "run", lambda *a, **k: pytest.fail("nothing may run"))
+        monkeypatch.setitem(sys.modules, "azure.identity", None)  # an import of it fails at once
+        monkeypatch.delenv("AZURE_AUTHORITY_HOST", raising=False)
+        _on("llm.corp.example")
+        with pytest.raises(auth_tokens.SignInError) as caught:
+            auth_tokens.entra_token("contoso.onmicrosoft.com")
+        assert str(caught.value) == (
+            "Offline mode: signing in to Microsoft Entra ID needs login.microsoftonline.com" + MESSAGE)
+        # The model picker hides such a connection with the same reason, whatever its endpoint.
+        connection = {"type": "azure-openai", "name": "Azure", "base_url": "https://llm.corp.example/openai",
+                      "auth": "entra"}
+        assert connections.offline_refusal(connection) == "Offline mode: Azure needs login.microsoftonline.com" + MESSAGE
+        monkeypatch.setenv("AZURE_AUTHORITY_HOST", "login.microsoftonline.us")
+        assert connections.offline_refusal(connection) == "Offline mode: Azure needs login.microsoftonline.us" + MESSAGE
+        _on("llm.corp.example", "login.microsoftonline.us")
+        assert connections.offline_refusal(connection) == ""
 
 
 # ── Settings over the socket ────────────────────────────────────────────────

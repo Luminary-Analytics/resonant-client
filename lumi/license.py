@@ -13,14 +13,17 @@ verifies only against keys this computer's administrator controls or that are
 built into Lumi, never against keys from a user-writable place:
 
 * ``BUILTIN_KEYS`` below (Luminary's license-signing keys);
-* the ``LicenseKeys`` value of the policy registry key (Windows), the
-  ``LicenseKeys`` key of the configuration profile (macOS), or
-  ``license-keys.json`` beside the machine policy file: ``{"<key id>": "<base64
-  Ed25519 public key>"}``.
+* the ``LicenseKeys`` value of the policy registry key (Windows: Group Policy
+  or Intune), the ``LicenseKeys`` key of the configuration profile (macOS), or
+  ``license-keys.json`` beside the machine policy file on macOS and Linux
+  (``/Library/Application Support/Lumi``, ``/etc/lumi``, which only
+  administrators can write): ``{"<key id>": "<base64 Ed25519 public key>"}``.
+  On Windows that file isn't read: any user may create folders under
+  ProgramData, so a file there isn't necessarily an administrator's.
 
 The license file itself can live anywhere, since its signature is what
 counts. Lumi reads the first of: ``license.json`` beside the machine policy
-file (``%ProgramData%\\Lumi``, ``/Library/Application Support/Lumi``,
+file (``C:\\ProgramData\\Lumi``, ``/Library/Application Support/Lumi``,
 ``/etc/lumi``); ``LUMI_LICENSE_FILE`` when there is none; the copy
 ``lumi license install`` keeps in Lumi's own folder (``~/.lumi/license.json``).
 
@@ -177,13 +180,24 @@ def _managed_key_texts() -> list[str]:
     return texts
 
 
+def _key_file_trusted() -> bool:
+    """Whether license-keys.json beside the machine policy can only be an administrator's.
+
+    Not on Windows: ProgramData lets every user create folders, so where no
+    administrator made ``C:\\ProgramData\\Lumi`` anyone can. Keys there come
+    from ``LicenseKeys`` in the policy registry key instead, which only an
+    administrator (Group Policy, Intune) can set.
+    """
+    return sys.platform != "win32"
+
+
 def machine_keys() -> dict[str, str]:
-    """License-signing keys an administrator set: ``LicenseKeys`` or license-keys.json."""
+    """License-signing keys an administrator set: ``LicenseKeys``, or license-keys.json off Windows."""
     from . import policy
 
     texts = _managed_key_texts()
     keys_file = _machine_folder() / KEYS_FILE
-    if keys_file.is_file():
+    if _key_file_trusted() and keys_file.is_file():
         try:
             texts.append(keys_file.read_text(encoding=policy.ADMIN_TEXT))
         except OSError:

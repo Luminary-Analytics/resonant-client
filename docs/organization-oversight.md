@@ -5,8 +5,10 @@ turn's activity, optionally the messages, and security flags. Its Lumi Cloud
 shows them to the organization's security staff. This page covers the
 desktop app's side. Code: `lumi/oversight.py` (the notice and its
 confirmation, admitting turns, recording, sending), `lumi/security_flags.py`
-(detection) and `secret_scan.redact_for_sharing` (what is removed before
-anything leaves). Lumi Cloud's side is in its own repository.
+(detection), `secret_scan.redact_for_sharing` (what is removed before
+anything leaves) and `dlp.shareable` (the organization's
+[DLP rules](dlp.md) on what is shared). Lumi Cloud's side is in its own
+repository.
 
 Status: first pass, source only, not released.
 
@@ -101,6 +103,10 @@ hasn't confirmed its notice on this computer, Lumi sends nothing to a model:
   the policy comes from elsewhere) blocks nothing and can't be confirmed.
 - If the check itself fails while a policy asks for oversight, the turn is
   refused rather than admitted.
+- The notice comes before [data loss prevention](dlp.md): a turn or request
+  refused for the notice never reaches the DLP checks, so neither the rules
+  nor a DLP service see its text, and nothing about it is recorded as a DLP
+  finding.
 
 A policy that collects more, another enrollment, or another organization
 needs the notice confirmed again, and leaving the organization or signing
@@ -159,10 +165,13 @@ notice text that was shown:
   (`{"record": ..., "signature": ...}`, signed in as the device) before any
   turn records, retried with the same backoff. A record the key couldn't
   sign when it was made is signed by the sender first.
-- Lumi Cloud answers `201 {"id": ...}`, or refuses: `409 notice_mismatch`
-  (the fingerprint isn't one the organization's policy produced), `422
-  invalid_signature`. A refusal (also a 400 or 403) is shown in Settings and
-  never sent again; it doesn't block the person. A record made under another
+- Lumi Cloud answers `201 {"id": ..., "policy_version": ...}` (the version
+  whose notice the fingerprint matched, or `null`: a confirmation of a notice
+  it didn't publish, such as a machine policy's, is kept and shown as
+  matching none), or refuses: `409 notice_mismatch` (the record names another
+  organization or computer, or the organization never published a notice),
+  `422 invalid_signature`. A refusal (also a 400 or 403) is shown in Settings
+  and never sent again; it doesn't block the person. A record made under another
   enrollment isn't sent to this one. Processes claim a record before sending
   it, so two never send one twice.
 
@@ -271,6 +280,24 @@ token options (`--password`, `--token`, `mysql -p…`, `curl -u user:…`,
 and long random-looking tokens. Hashes, commit ids, UUIDs and paths stay.
 The record counts what was removed, never the values.
 
+**The organization's [DLP rules](dlp.md) apply to everything shared, after
+secrets are removed and before anything is cut** (`dlp.shareable`), as they
+apply to model requests: the person's message as a prompt (a message Lumi
+wrote meets every rule), Lumi's reply and tool arguments as the model's
+output, and titles and flag excerpts under every rule. A `redact` match
+reads `[REDACTED:<rule>]`; text a `block` rule matches never reached a model
+and isn't shared either: a message or argument reads `[withheld by data loss
+prevention]`, a title is left out and an excerpt is empty. With a DLP
+service, its remembered verdicts apply too: values it redacted are replaced,
+and text it blocked isn't shared, nor text holding it or part of it. A
+service needn't say which text it blocked, so a turn in which a DLP service
+refused a request shares no text at all: its activity and flags go, its
+messages read `[withheld by data loss prevention]`, and its arguments and
+excerpts are left out. A `dlp` section Lumi can't use, which refuses every
+request, withholds all text too. Nothing is asked of the service for
+oversight: text it hasn't judged, such as Lumi's last reply, meets the rules
+alone.
+
 Never shared, at any level: file contents (a `file_write`'s content is
 never an argument that's sent), tool output such as command output and web
 pages, images, and the names of excluded files or the patterns that exclude
@@ -303,9 +330,13 @@ Slack destinations, so a hook's reason, a policy rule's words and an
 exclusion pattern stay on the computer.
 
 What a person or program wrote goes only in the excerpt: one line, at most
-200 characters, secrets removed from the whole text before the excerpt is
-cut from it (so a key cut at the excerpt's edge can't leave half of itself
-behind), hidden characters shown as `<U+…>`. The excerpt goes only when the
+200 characters, secrets removed and the organization's DLP rules applied to
+the whole text before the excerpt is cut from it (so a key or a card number
+cut at the excerpt's edge can't leave half of itself behind), hidden
+characters shown as `<U+…>`. Text DLP withholds gives the flag no excerpt;
+excerpts are checked against a DLP service's verdicts again when the turn's
+records are made, since it judges tool output only when the next request
+carries it. The excerpt goes only when the
 organization also receives messages, and never for excluded files or paths
 outside the project. The person sees their own flags, with excerpts, in
 Settings.
@@ -370,16 +401,18 @@ What Lumi Cloud implements against (lumi-cloud's oversight ingest):
   `ensure_ascii=False`) of `{"device": <device id>, "organization_id":
   <organization id>, "oversight": <the policy's oversight section exactly as
   published>}` (`oversight.notice_fingerprint`). Lumi Cloud computes it for
-  the device from each policy version it published to tell a notice it
-  produced. A machine policy's section that Lumi Cloud didn't publish
-  can't match, so its confirmations are refused (`409`) and shown as such.
+  the device from each policy version it published to tell which notice was
+  confirmed. A machine policy's section that Lumi Cloud didn't publish
+  matches no version: Lumi Cloud keeps its confirmation all the same and
+  shows that it matched none.
 - **Acknowledgments**: `POST /api/v1/oversight/acknowledgments`, device
   authenticated like `POST /api/v1/oversight/events`; body `{"record":
   <the record above>, "signature": "<base64url Ed25519 over the canonical
   JSON of record>"}`. Lumi Cloud verifies it with the device's registered
   public key, checks that `organization` and `device_id` match the
-  authenticated device, and stores it immutably. Answers: `201 {"id": ...}`;
-  `409 notice_mismatch`; `422 invalid_signature`.
+  authenticated device, and stores it immutably. Answers: `201 {"id": ...,
+  "policy_version": <matched version or null>}`; `409 notice_mismatch`;
+  `422 invalid_signature`.
 - **Events** carry `trigger` and `unattended` (and `os_user`) as above; Lumi
   Cloud shows and filters by `trigger` and `unattended`.
 - **Policy**: `oversight.unattended`, `record` (the default) or `block`, a
@@ -396,7 +429,13 @@ What Lumi Cloud implements against (lumi-cloud's oversight ingest):
   record: the parent sees the worker's tool calls only.
 - Codex and Claude Code run their own tool loops: their turns are admitted
   and recorded, but their tools' refusals aren't seen by Lumi.
-- `os_user` on records isn't part of the written contract with Lumi Cloud
-  yet (Lumi Cloud ignores fields it doesn't know).
+- The app and a `lumi run` (or scheduled task) running at the same time can
+  both send a record the run queued: Lumi Cloud keeps it once, by its id,
+  but Settings' count of sent records counts it twice.
+- A DLP service's verdicts are matched to shared text by content: a text it
+  blocked is recognized when it is the shared text, holds it or is part of
+  it (spacing aside; a piece shorter than 8 characters only when whole).
+  Text the service hasn't judged meets the rules alone, and the flags listed
+  in Settings keep excerpts as they were made.
 - Credentials with no name, no known format and no randomness (a short
   password typed as a bare argument) can't be told from ordinary text.

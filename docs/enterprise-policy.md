@@ -78,8 +78,10 @@ optional.
 | `budgets` | Spending rules per user, project or turn: an alert, a question before continuing, and a stop (`warn_usd`, `approve_usd`, `block_usd`), plus `block_unpriced`. See [budgets](usage-and-costs.md#budgets). |
 | `pricing.prices` | Negotiated prices in USD per million tokens by `provider:model` pattern (`input`, `output`, optional `cached_input` and `cache_write`). They win over users' prices and Lumi's list; see [usage records and prices](usage-and-costs.md). |
 | `oversight` | Share work with the organization's Lumi Cloud: `version` (1), `activity` (each turn's metadata), `messages` (`off`, `redacted` or `full`, with the session's title; secrets always removed), `security_flags`, `retention_days` (1 to 3650), `notice` (the organization's words), `project_paths` and `unattended` (`record`, the default, or `block`: what a scheduled task or a `lumi run` with no interactive terminal does while nobody confirmed the notice as that computer user; `record` runs it, prints the notice with its output and records it as that user and computer, `block` refuses it). Off unless set. People see a notice naming the organization and what it receives, and nothing is sent to a model until they confirm it (a signed record goes to Lumi Cloud). A key or version Lumi doesn't know turns oversight off, with the reason in Settings, and the rest of the policy still applies. See [organization oversight](organization-oversight.md). |
+| `dlp` | Data loss prevention rules checked on everything sent to a model provider: `version` (`1`), built-in `detectors` (`credit_card`, `us_ssn`, `iban`, `secrets`, `email`), keyword and pattern `rules`, each `flag`, `redact` or `block` with an optional `scope`, and an optional external `service`. See [data loss prevention](dlp.md). |
 
-Patterns use `*` and `?` wildcards.
+Patterns use `*` and `?` wildcards (the `dlp` section's `pattern` rules are
+regular expressions).
 
 
 ## Commands a second person approves
@@ -150,9 +152,17 @@ such as the UTF-16 that Windows PowerShell 5.1's `Out-File` writes by
 default. UTF-8 with or without a byte order mark is fine, and a section that
 is missing or `null` counts as empty.
 
+A mistake in the `dlp` section is contained to it: an unknown key, an
+unsupported `version` or a pattern Lumi won't run leaves the rest of the
+policy in force, and model requests are refused, with the reason in the app
+and in Settings, until the section is fixed. Without its rules Lumi can't know
+what may leave the computer (see [data loss prevention](dlp.md#configuring-it)).
+
 A downloaded Lumi Cloud policy that can't be used doesn't block requests. The
 machine policy stays in force, or no policy for an organization someone
-joined in the app, and Settings shows why.
+joined in the app, and Settings shows why. A downloaded policy that verifies
+but has a `dlp` section Lumi can't use is in force, so it refuses requests
+like a machine policy would.
 
 ## Group Policy and Intune
 

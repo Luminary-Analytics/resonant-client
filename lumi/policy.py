@@ -44,7 +44,9 @@ What a policy can do (every section is optional)::
       "approvals": {"commands": ["git push --force*", "terraform apply*"], "wait_minutes": 30},
       "oversight": {"activity": true, "messages": "redacted", "security_flags": true,
                     "retention_days": 90, "notice": "Questions: security@acme.example",
-                    "unattended": "record"}
+                    "unattended": "record"},
+      "dlp": {"version": 1, "detectors": {"credit_card": "block", "secrets": "redact"},
+              "rules": [{"name": "falcon", "keywords": ["Project Falcon"], "action": "block"}]}
     }
 
 ``approvals`` lists commands (``fnmatch`` patterns over the whole command)
@@ -65,7 +67,14 @@ default) runs it, prints the notice with its output and records it;
 may have. A key or a version this Lumi doesn't know turns oversight off,
 with the reason in Settings, and leaves the rest of the policy in force:
 Lumi never collects less or more than it can describe, and a newer Lumi
-Cloud never blocks model requests on an older Lumi.
+Cloud never blocks model requests on an older Lumi. What it shares has passed
+the ``dlp`` rules too (``dlp.shareable``): text they redact is shared redacted,
+text they block isn't shared.
+
+``dlp`` holds data loss prevention rules for content sent to model providers
+(lumi/dlp.py, docs/dlp.md). A ``dlp`` section that can't be used doesn't make
+the policy vanish: the rest still applies, and model requests are refused
+(``blocked_reason``) until it's fixed.
 
 Locked settings override the user's value and can't be changed in Settings,
 which shows who manages them. Lists match ``fnmatch`` patterns.
@@ -262,6 +271,10 @@ class Policy:
     approval_wait_minutes: int = 30
     # What Lumi shares with the organization's Lumi Cloud (lumi/oversight.py); nothing unless set.
     oversight: Oversight = field(default_factory=Oversight)
+    # Data loss prevention rules (lumi/dlp.py: a DlpPolicy), or why the dlp
+    # section can't be used, which refuses model requests (blocked_reason).
+    dlp: Any = None
+    dlp_error: str = ""
     raw: dict = field(default_factory=dict)
 
     # ── Queries ────────────────────────────────────────────────────────────
@@ -344,6 +357,9 @@ class Policy:
             "zero_retention_providers": list(self.zero_retention_providers),
             "approval_commands": list(self.approval_commands),
             "oversight": self.oversight.summary(),
+            # Rule names and actions only: keywords and patterns can name what they protect.
+            "dlp": self.dlp.summary() if self.dlp is not None else None,
+            "dlp_error": self.dlp_error,
         }
 
 
@@ -460,6 +476,26 @@ def _section(document: dict, name: str) -> dict:
     if not isinstance(value, dict):
         raise PolicyError(f"{name} must be an object.")
     return value
+
+
+def _dlp_section(document: dict) -> tuple[Any, str]:
+    """The dlp section's rules, or why they can't be used.
+
+    A mistake here is contained: the rest of the policy still applies, and
+    blocked_reason refuses model requests until the section is fixed, so an
+    organization's DLP rules never silently stop applying.
+    """
+    value = document.get("dlp")
+    if value is None:
+        return None, ""
+    from .dlp import DlpError, parse_section
+
+    try:
+        return parse_section(value), ""
+    except DlpError as exc:
+        return None, str(exc)
+    except Exception as exc:  # anything else that stops the rules from being built
+        return None, f"The dlp section couldn't be read ({type(exc).__name__})."
 
 
 def _grace_days(value: Any) -> int:
@@ -588,6 +624,7 @@ def parse(data: Any, *, source: str, trusted_keys: dict[str, str] | None = None,
     if isinstance(wait_minutes, bool) or not isinstance(wait_minutes, int) or not 1 <= wait_minutes <= 240:
         raise PolicyError("approvals.wait_minutes must be a whole number from 1 to 240.")
     oversight = _oversight(document.get("oversight"))
+    dlp, dlp_error = _dlp_section(document)
 
     return Policy(
         organization=str(document.get("organization") or "your organization"),
@@ -626,6 +663,8 @@ def parse(data: Any, *, source: str, trusted_keys: dict[str, str] | None = None,
         approval_commands=approval_commands,
         approval_wait_minutes=wait_minutes,
         oversight=oversight,
+        dlp=dlp,
+        dlp_error=dlp_error,
         raw=document,
     )
 
@@ -957,6 +996,12 @@ def blocked_reason() -> str:
         return (
             f"{policy.organization}'s policy expired on {policy.expires_at} and its offline grace "
             "period has ended. Connect so Lumi can fetch a current policy, or ask your administrator."
+        )
+    if policy and policy.dlp_error:
+        # Fail closed: without its rules, nothing may leave for a model provider.
+        return (
+            f"{policy.organization}'s data loss prevention rules can't be applied: {policy.dlp_error} "
+            "Lumi won't send model requests until your administrator fixes the policy's dlp section."
         )
     return ""
 

@@ -106,6 +106,9 @@ _CHAT_PHRASES = frozenset({"i've read this", "ive read this", "i have read this"
 MESSAGE_LIMITS = {"redacted": 2_000, "full": 20_000}
 ARGUMENT_LIMITS = {"redacted": 300, "full": 2_000}
 TITLE_LIMIT = 200
+# In a record, in place of a message or tool argument the organization's DLP
+# rules withhold (dlp.shareable).
+WITHHELD = "[withheld by data loss prevention]"
 MAX_TOOLS = 100
 MAX_FLAGS_PER_TURN = 20
 MAX_RECORDS = 5_000
@@ -780,6 +783,13 @@ def _redact(text: str) -> tuple[str, Counter]:
     return redact_for_sharing(text)
 
 
+def _shareable(text: str, kind: str = "mixed") -> str | None:
+    """``text`` as the organization's DLP lets it leave (redactions applied); None to withhold it."""
+    from . import dlp
+
+    return dlp.shareable(text, kind)
+
+
 def _without_query(url: str) -> str:
     """A web address without its query string and fragment (messages at ``redacted``)."""
     base, question, _query = url.partition("?")
@@ -794,16 +804,21 @@ def _code_block(match: re.Match[str]) -> str:
     return f"[code block, {len(lines)} line{'s' if len(lines) != 1 else ''}]"
 
 
-def _message(text: Any, level: str) -> tuple[dict | None, Counter]:
-    """A message at ``level``, secrets removed; its secret kinds counted.
+def _message(text: Any, level: str, kind: str = "mixed") -> tuple[dict | None, Counter]:
+    """A message at ``level``, secrets removed and DLP applied; its secret kinds counted.
 
-    Secrets go before anything is cut: a secret cut in half at the limit
-    would match neither its pattern nor its saved value.
+    Secrets go, then the DLP rules for ``kind`` apply, before anything is
+    cut: a secret or a match cut in half at the limit would no longer be
+    recognized. A message DLP withholds reads ``WITHHELD``.
     """
     value = str(text or "")
     if not value.strip():
         return None, Counter()
     value, found = _redact(value)
+    shared = _shareable(value, kind)
+    if shared is None:
+        return {"text": WITHHELD, "chars": len(str(text)), "truncated": False}, found
+    value = shared
     if level == "redacted":
         value = _CODE_BLOCK.sub(_code_block, value)
         value = _EMAIL.sub("[email]", value)
@@ -845,6 +860,8 @@ class TurnTracker:
         self.flags: dict[tuple, Any] = {}
         self.model_redactions: Counter = Counter()
         self.files_changed = 0
+        # DLP refused a request of this turn (dlp.Blocked, Session._run_turn).
+        self.dlp_blocked = False
         self.usage_ids: set[str] = set()
         self.usage = {"requests": 0, "input_tokens": 0, "output_tokens": 0, "cost_usd": None}
 
@@ -865,6 +882,8 @@ class TurnTracker:
                 self.model_redactions.update({str(k): int(v) for k, v in (event.get("kinds") or {}).items()})
             elif kind == "status" and isinstance(event.get("stats"), dict):
                 self._usage(event["stats"])
+            elif kind == "error" and event.get("code") == "dlp_blocked":
+                self.dlp_blocked = True
         except Exception:
             logger.debug("Oversight couldn't read an event", exc_info=True)
 
@@ -949,17 +968,24 @@ class TurnTracker:
         level = self.settings.messages
         limit = ARGUMENT_LIMITS[level]
         summary: dict[str, str] = {}
+        # The model wrote them: DLP checks them as it does its output in requests.
         for key in _PATH_ARGUMENTS:
             if isinstance(arguments.get(key), str) and arguments[key]:
-                summary[key] = self._path(arguments[key])
+                shown = _shareable(self._path(arguments[key]), "model_output")
+                summary[key] = WITHHELD if shown is None else shown
         for key in _TEXT_ARGUMENTS:
             value = arguments.get(key)
             if isinstance(value, list):
                 value = " ".join(str(word) for word in value)
             if isinstance(value, str) and value:
-                # The whole value loses its secrets before anything is cut from it.
+                # The whole value loses its secrets, and meets DLP, before anything is cut from it.
                 text, kinds = _redact(value)
                 found.update(kinds)
+                shown = _shareable(text, "model_output")
+                if shown is None:
+                    summary[key] = WITHHELD
+                    continue
+                text = shown
                 if level == "redacted" and key == "url":
                     text = _without_query(text)
                 summary[key] = text if len(text) <= limit else text[:limit] + "…"
@@ -972,9 +998,10 @@ class TurnTracker:
         name = (project if self.settings.project_paths else os.path.basename(project.rstrip("\\/"))) if project else ""
         session = {"id": self.session_id, "project": name, "surface": _surface(self.session_id)}
         # A title is conversation content (an automatic one is the first
-        # message's gist): it goes only when messages do, at their level.
-        if self.settings.messages != "off" and self.title:
-            title = clip(self.title, TITLE_LIMIT)
+        # message's gist): it goes only when messages do, at their level, and
+        # not when DLP withholds it (clip checks it).
+        title = clip(self.title, TITLE_LIMIT) if self.settings.messages != "off" and self.title else ""
+        if title:
             session["title"] = _EMAIL.sub("[email]", title) if self.settings.messages == "redacted" else title
         return session
 
@@ -989,12 +1016,27 @@ class TurnTracker:
         except Exception:
             logger.exception("Oversight couldn't record a turn")
 
+    def _service_blocked(self) -> bool:
+        """Whether a request of this turn was refused under a DLP service, which needn't say what it
+        blocked: then none of the turn's text is shared (the rules alone are rechecked exactly)."""
+        if not self.dlp_blocked:
+            return False
+        from . import dlp
+
+        try:
+            rules = dlp.active()
+        except Exception:
+            return True
+        return rules is None or rules.service is not None
+
     def _finish(self, outcome: str) -> None:
         from . import security_flags
 
         settings = self.settings
         turn = _next_turn(self.session_id)
         session = self._session()
+        # No text from a turn a DLP service refused (the activity still goes).
+        textless = self._service_blocked()
         shared_redactions: Counter = Counter()
         record: dict[str, Any] | None = None
         if settings.activity:
@@ -1003,7 +1045,7 @@ class TurnTracker:
                 item = {"name": entry["name"][:80], "status": entry["status"]}
                 if entry["worker"]:
                     item["worker"] = True
-                if settings.messages != "off":
+                if settings.messages != "off" and not textless:
                     arguments = self._arguments(entry["arguments"], shared_redactions)
                     if arguments:
                         item["arguments"] = arguments
@@ -1019,8 +1061,14 @@ class TurnTracker:
                 record["origin"] = "generated"
 
             if settings.messages != "off":
-                user, user_found = _message(self.prompt, settings.messages)
-                reply, reply_found = _message(self.reply, settings.messages)
+                # As DLP reads them in requests: what the person typed (a message
+                # Lumi wrote meets every rule) and the model's reply.
+                user, user_found = _message(self.prompt, settings.messages,
+                                            "mixed" if self.origin == "generated" else "prompt")
+                reply, reply_found = _message(self.reply, settings.messages, "model_output")
+                if textless:
+                    user = {"text": WITHHELD, "chars": user["chars"], "truncated": False} if user else None
+                    reply = {"text": WITHHELD, "chars": reply["chars"], "truncated": False} if reply else None
                 shared_redactions.update(user_found)
                 shared_redactions.update(reply_found)
                 record["messages"] = {"level": settings.messages, "user": user, "assistant": reply}
@@ -1043,10 +1091,16 @@ class TurnTracker:
             entry = {"type": "flag", **flag.to_dict(), "session": session, "turn": turn, **self._who()}
             # Only a label leaves this computer as a flag's rule (security_flags.RULES).
             entry["rule"] = security_flags.label(entry["kind"], entry["rule"])
+            # The excerpt met DLP whole when the flag was made; checked again for
+            # what a DLP service decided since (it judges tool output when the
+            # next request carries it).
+            excerpt = "" if textless else (_shareable(entry.get("excerpt") or "") or "")
             if settings.messages == "off":
                 entry.pop("excerpt", None)
             elif settings.messages == "redacted":
-                entry["excerpt"] = _EMAIL.sub("[email]", entry.get("excerpt") or "")
+                entry["excerpt"] = _EMAIL.sub("[email]", excerpt)
+            else:
+                entry["excerpt"] = excerpt
             records.append(entry)
         if flags:
             _save_flags([{**flag.to_dict(), "session": session, "turn": turn} for flag in flags])

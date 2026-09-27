@@ -539,6 +539,7 @@ class LumiSettingsView {
             // Oversight this Lumi can't honor is off, and the rest of the policy applies.
             ['Organization oversight', policy.oversight?.error ? `Off: ${esc(policy.oversight.error)}`
                 : policy.oversight?.enabled ? 'On; see Organization oversight below' : 'Off'],
+            ['Data loss prevention', this._renderDlpRules(policy, esc)],
         ];
         return rows.map(([label, value]) => `<div class="settings-row"><div class="settings-row-copy"><span class="settings-row-label">${label}</span></div><div class="settings-row-value settings-policy-value">${value}</div></div>`).join('');
     }
@@ -727,6 +728,28 @@ class LumiSettingsView {
             <h4 class="settings-subheading">Your security flags</h4>
             <p class="editor-help">What Lumi flagged in your turns, as ${esc(s.organization)} sees it${s.settings?.messages === 'off' ? ' (without the excerpts shown here)' : ''}.</p>
             ${flagList}`;
+    }
+
+    /**
+     * The organization's DLP rules (lumi/dlp.py), read-only: names, actions
+     * and what they check. Keywords and patterns aren't sent to the page, and
+     * nothing here turns a rule off.
+     */
+    _renderDlpRules(policy, esc) {
+        if (policy.dlp_error) {
+            return `<span class="editor-error" role="alert">${esc(policy.dlp_error)} Lumi won’t send model requests until it’s fixed.</span>`;
+        }
+        const dlp = policy.dlp;
+        if (!dlp || (!(dlp.rules || []).length && !dlp.service)) return 'None';
+        const actions = {flag: 'recorded', redact: 'redacted before sending', block: 'blocks the request'};
+        const rules = (dlp.rules || []).map(rule => {
+            const scope = (rule.scope || []).length ? ` · ${esc(rule.scope.join(', ').replace(/_/g, ' '))}` : '';
+            return `<li><code>${esc(rule.name)}</code> ${esc(actions[rule.action] || rule.action)}${scope}</li>`;
+        }).join('');
+        const service = dlp.service
+            ? `<div class="settings-row-hint">Also checked by <code>${esc(dlp.service)}</code>${dlp.service_on_error === 'allow' ? '; if it can’t answer, requests go out with only the rules above' : '; if it can’t answer, nothing is sent'}.</div>`
+            : '';
+        return `${rules ? `<ul class="settings-policy-list">${rules}</ul>` : ''}${service}<div class="settings-row-hint">Applied to everything sent to a model provider. Managed by ${esc(policy.organization)}.</div>`;
     }
 
     _renderModelComparisons() {

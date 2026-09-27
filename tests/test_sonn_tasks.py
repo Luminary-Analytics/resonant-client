@@ -159,6 +159,27 @@ def test_advice_survives_restart_and_compression_and_links_once(task, monkeypatc
         and json.loads(r.content).get('metadata', {}).get('sonn_task_mode') == mode]) == 1
 
 
+def test_advice_questions_pass_the_organizations_dlp_rules(task):
+    from lumi import policy as lumi_policy
+
+    backend, _path, requests, _ = task
+    card = '4111 1111 1111 1111'
+
+    def install(action):
+        lumi_policy.set_for_tests(lumi_policy.parse({'schema': 'lumi.policy/v1', 'organization': 'Acme',
+            'dlp': {'version': 1, 'detectors': {'credit_card': action}}}, source='test policy'))
+
+    install('block')
+    with pytest.raises(SonnTaskError, match='credit_card in your message'):
+        backend.consult_employee(f'Should I refund {card}?')
+    assert not any(r.url.path.endswith('/chat/completions') for r in requests)
+    install('redact')
+    backend.consult_employee(f'Should I refund {card}?')
+    sent = [json.loads(r.content) for r in requests if r.url.path.endswith('/chat/completions')][-1]
+    assert card not in json.dumps(sent)
+    assert sent['messages'][0]['content'] == 'Should I refund [REDACTED:credit_card]?'
+
+
 def test_node_claim_identity_survives_host_restart_without_new_root(task):
     backend, path, requests, _ = task
     backend.task_controller.claim_node('specialist_node')

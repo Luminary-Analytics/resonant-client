@@ -68,6 +68,7 @@ guide belongs in that navigation; historical records stay out of it.
 - [Architecture and module ownership](../ARCHITECTURE.md)
 - [Organization policy for administrators](enterprise-policy.md)
 - [Organization oversight: activity, messages and security flags](organization-oversight.md)
+- [Data loss prevention: the organization's rules for what's sent to model providers](dlp.md)
 - [Shell sandbox and command guardrails](shell-sandbox.md)
 - [Audit log and OpenTelemetry export](audit-log.md)
 - [Usage records and prices](usage-and-costs.md)

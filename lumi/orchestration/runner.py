@@ -645,12 +645,17 @@ class LocalSpecialistRunner:
         if not callable(generator) or not text:
             return None
         try:
-            result = generator(
+            from ..dlp import check_text, send
+
+            # Like every model request, it passes the organization's DLP rules;
+            # a block raises and there is no repair.
+            prompt = check_text(
                 "Convert the following completed specialist response into the requested "
                 "JSON structure without adding facts:\n\n" + text[-12_000:],
-                schema,
-                max_tokens=2048,
+                purpose="structured_repair", provider=str(getattr(backend, "name", "") or ""),
+                model=str(getattr(backend, "model", "") or ""),
             )
+            result = send(generator, prompt, schema, max_tokens=2048)
         except Exception:
             logger.warning("Structured specialist-output repair failed", exc_info=True)
             return None

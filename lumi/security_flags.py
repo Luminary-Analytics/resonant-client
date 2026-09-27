@@ -33,9 +33,10 @@ Lumi Cloud stores it in the clear, shows it to everyone who sees oversight
 and sends it to SIEM, webhook, email and Slack destinations. A hook's reason,
 a policy rule's words and an exclusion pattern (which can be a file's name)
 never go in it. What a person or a program wrote goes only in the excerpt:
-short, secrets removed, shared only when the organization also receives
-messages (``oversight.messages`` not ``off``), and never for excluded files
-or paths outside the project.
+short, secrets removed and the organization's DLP rules applied (lumi/dlp.py
+``shareable``, on the whole text before a window is cut), shared only when
+the organization also receives messages (``oversight.messages`` not
+``off``), and never for excluded files or paths outside the project.
 """
 
 from __future__ import annotations
@@ -171,10 +172,14 @@ class Flag:
 
 
 def clip(text: Any, limit: int = EXCERPT_LIMIT) -> str:
-    """One line, secrets removed (secret_scan.redact_for_sharing), invisible characters shown, at most ``limit``."""
+    """One line, secrets removed (secret_scan.redact_for_sharing), then the organization's DLP rules
+    applied (dlp.shareable: every rule; '' when they withhold it), invisible characters shown, at most
+    ``limit``."""
+    from . import dlp
     from .secret_scan import redact_for_sharing
 
     value, _ = redact_for_sharing(str(text or ""))
+    value = dlp.shareable(value) or ""
     value = _INVISIBLE.sub(lambda match: f"<U+{ord(match.group(0)):04X}>", value)
     value = " ".join(value.split())
     return value if len(value) <= limit else value[: limit - 1] + "…"
@@ -418,9 +423,14 @@ def injection_indicators(text: Any) -> list[tuple[str, str]]:
     raw = _signs(value)
     if not raw:
         return []
+    from . import dlp
     from .secret_scan import redact_for_sharing
 
     redacted, _ = redact_for_sharing(value)
+    # The organization's DLP rules for tool results apply to all of it too,
+    # before a window is cut; text they withhold gives no excerpt at all.
+    shared = dlp.shareable(redacted, "tool_result")
+    redacted = shared if shared is not None else ""
     spans = _signs(redacted)
     found = []
     for label, _find in _FINDERS:

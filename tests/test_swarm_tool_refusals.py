@@ -58,7 +58,7 @@ def _check(supervisor, authority, runner, context):
     results = [event for event in events if event.get("event") == "tool.result"]
     assert results[0]["call_id"] == "glob:0" and results[0]["is_error"]
     assert results[0]["output"].startswith("Refused before running:")
-    assert "assignment roots" in results[0]["output"]
+    assert "assignment roots" in results[0]["output"] and "You may read: fact.txt." in results[0]["output"]
     assert results[1]["call_id"] == "file_read:1" and "Actual isolated fact" in results[1]["output"]
     text = json.dumps(events)
     assert "Read the assigned fact." in text and "Outside the assignment" not in text

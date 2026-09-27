@@ -180,7 +180,8 @@ class ExecutionBoundary:
                     # refusing the request (rate limit, bad request, auth):
                     # nothing was generated, so the outcome is known.
                     refused = (event_type == "error" and not produced
-                               and type(status) is int and 400 <= status <= 499)
+                               and ((type(status) is int and 400 <= status <= 499)
+                                    or data.get("before_output") is True))
                     raise ExecutionGuardError(str(data.get("message") or "Provider failed or cancelled"))
                 if event_type == "done":
                     saw_done = True
@@ -207,7 +208,8 @@ class ExecutionBoundary:
                     error += f"; provider status {status}"
                 if refused:
                     self._persist("end_request", request_id, outcome="completed", usage=usage,
-                                  error=f"Provider refused the request before generating; provider status {status}")
+                                  error="Provider refused the request before generating"
+                                        + (f"; provider status {status}" if type(status) is int and status else ""))
                     end_attempted = True
             raise
         finally:

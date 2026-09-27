@@ -47,6 +47,10 @@ class _ArtifactReader:
         return self._guard.artifacts.read_text_page(self._guard.context, artifact_id, offset, limit)
 
 
+
+class TeamToolRefused(ToolScopeRefused, ScopeDenied):
+    """A call outside the assignment: a refusal the boundary survives, and still a ScopeDenied."""
+
 class SwarmExecutionGuard:
     """Bind native request and result observations to one captured assignment.
 
@@ -438,7 +442,11 @@ class SwarmExecutionGuard:
                     # nothing was admitted, so refuse this call and keep the
                     # worker running. It hears why and can narrow the call.
                     self._refused(request_id, name, str(exc))
-                    raise ToolScopeRefused(str(exc)) from None
+                    # Name the granted paths: live models kept guessing otherwise.
+                    scope = f"You may read: {', '.join(self.grant.read_roots) or 'no paths'}"
+                    if self.grant.write_roots:
+                        scope += f"; you may write: {', '.join(self.grant.write_roots)}"
+                    raise TeamToolRefused(f"{exc}. {scope}.") from None
             except (AdmissionClosed, ToolScopeRefused):
                 raise  # Nothing was admitted; resume can repeat this preflight.
             except BaseException:

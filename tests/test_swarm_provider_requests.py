@@ -143,3 +143,59 @@ def test_a_supervised_request_waits_out_a_rate_limit_and_generates_once(monkeypa
     assert any("Answer" in json.dumps(data) for _, data in events)
     ends = [record for record in guard.records if record["kind"] == "request.end"]
     assert len(ends) == 1 and ends[0]["outcome"] == "completed" and ends[0]["error"] == ""
+
+
+def _sse(*events):
+    return httpx.Response(200, text="".join("data: " + json.dumps(event) + "\n\n" for event in events)
+                          + "data: [DONE]\n\n", headers={"content-type": "text/event-stream"})
+
+
+OVERLOADED = {"error": {"message": "Service temporarily overloaded"}}
+ANSWER = ({"id": "ok", "choices": [{"delta": {"content": "Answer"}}]},
+          {"id": "ok", "choices": [{"delta": {}, "finish_reason": "stop"}]},
+          {"id": "ok", "choices": [], "usage": {"prompt_tokens": 5, "completion_tokens": 1}})
+
+
+def _guarded(responses, monkeypatch):
+    calls = []
+    def respond(request):
+        calls.append(request)
+        return responses[min(len(calls), len(responses)) - 1]
+    backend = _provider("connection", httpx.MockTransport(respond))
+    waits = []
+    monkeypatch.setattr("lumi.backends._wait_with_cancel", lambda delay, _: waits.append(delay) or False)
+    guard = RecordingGuard()
+    stream = ExecutionBoundary(guard).stream(backend, purpose="primary", inputs={"user_msg": "Inspect"},
+                                             invoke=lambda: backend.stream("Inspect", [], "Generated fixture", []))
+    return calls, waits, guard, stream
+
+
+def test_an_overload_before_any_output_is_waited_out_then_settled_as_known(monkeypatch):
+    # NVIDIA NIM answered 200 and then "Service temporarily overloaded" under a
+    # four-worker team: nothing was generated, so it is waited out and, if it
+    # persists, settled as a known failure rather than an uncertain request.
+    calls, waits, guard, stream = _guarded([_sse(OVERLOADED)], monkeypatch)
+    with pytest.raises(ExecutionGuardError):
+        list(stream)
+    assert len(calls) == 4 and waits == [5.0, 10.0, 20.0]
+    ends = [record for record in guard.records if record["kind"] == "request.end"]
+    assert len(ends) == 1 and ends[0]["outcome"] == "completed"
+    assert ends[0]["error"] == "Provider refused the request before generating"
+
+
+def test_an_overload_then_an_answer_is_one_generation(monkeypatch):
+    calls, waits, guard, stream = _guarded([_sse(OVERLOADED), _sse(*ANSWER)], monkeypatch)
+    events = list(stream)
+    assert len(calls) == 2 and waits == [5.0]
+    assert any("Answer" in json.dumps(data) for _, data in events)
+    ends = [record for record in guard.records if record["kind"] == "request.end"]
+    assert ends[0]["outcome"] == "completed" and ends[0]["error"] == ""
+
+
+def test_an_overload_after_output_is_neither_resent_nor_known(monkeypatch):
+    calls, waits, guard, stream = _guarded([_sse(ANSWER[0], OVERLOADED)], monkeypatch)
+    with pytest.raises(ExecutionGuardError):
+        list(stream)
+    assert len(calls) == 1 and waits == []
+    ends = [record for record in guard.records if record["kind"] == "request.end"]
+    assert ends[0]["outcome"] == "uncertain"

@@ -2405,6 +2405,13 @@ class KimiBackend:
         """Return whether an in-stream provider error is safe to replay."""
         return False
 
+    @staticmethod
+    def _is_transient_overload(message: str) -> bool:
+        """An in-stream error saying the service is busy (NVIDIA NIM: "Service temporarily overloaded")."""
+        normalized = str(message or "").casefold()
+        return any(marker in normalized for marker in (
+            "overload", "temporarily unavailable", "too many requests", "rate limit", "try again later"))
+
     def _http_retry_delay(self, response: httpx.Response, attempt: int) -> float | None:
         """Delay for an already classified HTTP rejection; None stops retrying."""
         return 1.5 * (2 ** attempt)
@@ -2609,11 +2616,15 @@ class KimiBackend:
                                     if isinstance(error, dict)
                                     else str(error)
                                 )
-                                if (
-                                    self._is_retryable_stream_error(message)
-                                    and attempt < attempts - 1 and not supervised
+                                # Before any model output, a supervised request
+                                # may wait out a busy service: nothing was
+                                # generated, so resending is still one generation.
+                                before_output = not (content_parts or reasoning_parts or tool_calls)
+                                if attempt < attempts - 1 and (
+                                    (self._is_retryable_stream_error(message) and not supervised)
+                                    or (supervised and before_output and self._is_transient_overload(message))
                                 ):
-                                    delay = 1.5 * (2 ** attempt)
+                                    delay = min(30.0, 5.0 * (2 ** attempt)) if supervised else 1.5 * (2 ** attempt)
                                     yield (EVENT_BACKEND_STATUS, {
                                         "kind": self.RETRY_EVENT_KIND,
                                         "status_code": 0,
@@ -2657,6 +2668,9 @@ class KimiBackend:
                                         self._is_retryable_stream_error(message)
                                         and (content_parts or reasoning_parts)
                                     ),
+                                    # The guarded ledger settles this as known:
+                                    # the provider failed before any output.
+                                    "before_output": before_output,
                                 })
                                 return
                             if isinstance(event.get("usage"), dict):

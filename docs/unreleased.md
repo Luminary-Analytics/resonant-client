@@ -42,8 +42,11 @@ The dated September 15/18 records below are historical.
   instead of ending the worker (`ToolScopeRefused`).
 - An orchestrator may answer directly with no workers, and prose around one
   fenced JSON plan is read.
-- A supervised request waits out a 429.
+- A supervised request waits out a 429, and an overload reported before any
+  output.
 - A reply of only template tokens and punctuation is asked again.
+- A Team participant is told when it reaches its last request.
+- A refusal names the worker's paths.
 - The guarded ledger keeps a provider's status code.
 - The benchmark keeps each case's worker events.
 - Worker processes start before `lumi/__main__.py` moves `~/.resonant`, so a
@@ -63,6 +66,8 @@ The dated September 15/18 records below are historical.
   - Kimi K3's orchestrator answered a small investigation directly.
   - Nemotron 3 Super ran a five-worker review through two rounds to its final
     report, in 303 seconds.
+  - Started from the Team panel in the source app, the same review completed
+    in about 8 minutes: 12 workers, 70 requests, none uncertain.
   - Finding quality depends on the model, and no benefit over a single agent is
     claimed.
 

@@ -289,3 +289,17 @@ processes and 2 rounds:
   - The findings were uneven: it found cache.py's unit bug but reported no
     defect in urls.py (it missed `doseq`), and ledger.py's findings were
     generic. The workers exchanged no messages; the modules are independent.
+- **The same review in the app, with Nemotron 3 Super.** The source app
+  ran in a throwaway home with an NVIDIA NIM connection. The team was
+  started from the Team panel with real clicks and typing: 2 rounds, 4
+  worker slots, 12 requests per worker. It completed in about 8 minutes.
+  - The orchestrator planned 6 tasks. After they were accepted it planned 6
+    more from the findings, then its closing turn wrote the report that the
+    panel's Orchestrator section shows.
+  - 12 workers ran, and each was accepted under the grant (`autonomy:<owner>`).
+  - 70 model requests, all settled, none uncertain.
+  - The round-2 work caught urls.py's list handling.
+  - An earlier in-app attempt, before the overload wait and the last-request
+    notice, had 3 of 4 workers end uncertain on "Service temporarily
+    overloaded". Another attempt had 2 workers use all 8 requests without
+    submitting.

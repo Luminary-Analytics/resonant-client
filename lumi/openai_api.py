@@ -18,7 +18,7 @@ from typing import Any, Iterator, Tuple
 
 import httpx
 
-from . import net
+from . import dlp, net
 from .backends import (
     EVENT_BACKEND_STATUS,
     EVENT_DONE,
@@ -139,6 +139,7 @@ def response_tools(tools: list) -> list[dict]:
     return converted
 
 
+@dlp.guard_backend
 class OpenAIResponsesBackend(KimiBackend):
     """OpenAI models through the Responses API (OpenAI or Azure OpenAI)."""
 

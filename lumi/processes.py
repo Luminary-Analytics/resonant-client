@@ -2,9 +2,15 @@
 
 from __future__ import annotations
 
+import json
+import os
+from pathlib import Path
 import subprocess
 import sys
+import tempfile
+import threading
 from typing import Any
+import uuid
 
 
 def windows_kill_job(process, *, kill_on_close: bool = True, name=None):
@@ -48,28 +54,35 @@ def windows_kill_job(process, *, kill_on_close: bool = True, name=None):
     return (api, handle)
 
 
-def popen_in_kill_job(args, *, kill_on_close: bool = True, name=None, **popen_kwargs):
+def popen_in_kill_job(args, *, name=None, **popen_kwargs):
     """Start a process that runs none of its code outside its job: ``(process, job)``.
 
     Assigning the job after ``Popen`` returns races a short-lived child. Once
     the child has exited, AssignProcessToJobObject fails with "Access is
     denied", and on a loaded host, where other threads hold the GIL between
     ``Popen`` and the assignment, a quick ``git`` read often exits first. So on
-    Windows the process starts suspended, joins the job, then resumes; anything
-    it starts is inside the job from the first instruction. Elsewhere there is
-    no job (``None``); callers own POSIX trees through their process group.
+    Windows the process starts suspended, joins a kill-on-close job, then
+    resumes; anything it starts is inside the job from the first instruction.
+    Elsewhere there is no job (``None``); callers own POSIX trees through
+    their process group.
+
+    If this host dies after creating the child and before its job is assigned,
+    the child stays suspended outside any job. A record of each child between
+    creation and resumption lets the next Lumi process end such a leftover
+    (``reap_orphaned_launches``).
     """
     if sys.platform != "win32":
         return subprocess.Popen(args, **popen_kwargs), None
+    reap_orphaned_launches()
     popen_kwargs["creationflags"] = popen_kwargs.get("creationflags", 0) | 0x4  # CREATE_SUSPENDED
     process = subprocess.Popen(args, **popen_kwargs)
+    record = _record_launch(process)
     job = None
     try:
-        job = windows_kill_job(process, kill_on_close=kill_on_close, name=name)
+        job = windows_kill_job(process, name=name)
         _resume_suspended(process)
     except BaseException:
-        # Suspended, so it has run nothing; a job without kill-on-close would
-        # not stop it on close, so terminate it directly.
+        # Suspended, so it has run nothing: end it before closing the job.
         process.kill()
         process.wait(timeout=5)
         close_windows_job(job)
@@ -77,7 +90,136 @@ def popen_in_kill_job(args, *, kill_on_close: bool = True, name=None, **popen_kw
             if stream is not None:
                 stream.close()
         raise
+    finally:
+        # Once assigned, kill-on-close ends the child with this host, so the
+        # record is only needed until then; it is removed after resuming.
+        _forget_launch(record)
     return process, job
+
+
+# Children created suspended whose job assignment isn't confirmed yet, one
+# small file each: {"host": [pid, creation], "child": [pid, creation]}.
+_LAUNCH_RECORDS = Path(tempfile.gettempdir()) / "lumi-owned-launches"
+_reap_lock = threading.Lock()
+_reaped = False
+
+
+def _process_created(handle) -> int:
+    """A process's creation time (FILETIME ticks), which a reused pid never shares."""
+    import ctypes
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.GetProcessTimes.argtypes = [ctypes.c_void_p] + [ctypes.POINTER(ctypes.c_ulonglong)] * 4
+    kernel32.GetProcessTimes.restype = ctypes.c_int
+    times = [ctypes.c_ulonglong() for _ in range(4)]
+    if not kernel32.GetProcessTimes(ctypes.c_void_p(handle), *(ctypes.byref(value) for value in times)):
+        raise ctypes.WinError(ctypes.get_last_error())
+    return times[0].value
+
+
+def _record_launch(process) -> Path | None:
+    """Record a suspended child before its job is assigned; best effort."""
+    try:
+        import ctypes
+        kernel32 = ctypes.WinDLL("kernel32")
+        kernel32.GetCurrentProcess.restype = ctypes.c_void_p
+        value = {"host": [os.getpid(), _process_created(kernel32.GetCurrentProcess())],
+                 "child": [process.pid, _process_created(int(process._handle))]}
+        _LAUNCH_RECORDS.mkdir(parents=True, exist_ok=True)
+        path = _LAUNCH_RECORDS / f"{os.getpid()}-{process.pid}-{uuid.uuid4().hex[:8]}.json"
+        temporary = path.with_suffix(".tmp")
+        temporary.write_text(json.dumps(value), encoding="utf-8")
+        os.replace(temporary, path)  # a reader never sees a partial record
+        return path
+    except (OSError, ValueError):
+        return None
+
+
+def _forget_launch(path: Path | None) -> None:
+    if path is not None:
+        try:
+            path.unlink()
+        except OSError:
+            pass
+
+
+def _open_exact(pid: int, created: int, access: int):
+    """Open the process with this pid only if it is the one created then; else None.
+
+    Returns ``False`` when the pid can't be inspected (another user's process),
+    so a caller can tell "gone" from "unknown".
+    """
+    import ctypes
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.OpenProcess.argtypes = [ctypes.c_uint32, ctypes.c_int, ctypes.c_uint32]
+    kernel32.OpenProcess.restype = ctypes.c_void_p
+    kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+    handle = kernel32.OpenProcess(access | 0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+    if not handle:
+        return None if ctypes.get_last_error() == 87 else False  # ERROR_INVALID_PARAMETER: no such pid
+    try:
+        if _process_created(handle) == created:
+            return handle
+    except OSError:
+        pass
+    kernel32.CloseHandle(handle)
+    return None
+
+
+def reap_orphaned_launches(*, force: bool = False) -> int:
+    """End children a dead Lumi host left suspended outside their job.
+
+    A host that died between creating a child and assigning its job leaves the
+    child suspended forever, holding its working folder. Each record names the
+    host and child by pid and creation time; a record whose host is gone and
+    whose child still runs is such a leftover. A live host's records are left
+    alone, since it is between those steps now. Runs once per process unless
+    ``force`` (recovery asks again). Returns how many children it ended.
+    """
+    global _reaped
+    if sys.platform != "win32":
+        return 0
+    with _reap_lock:
+        if _reaped and not force:
+            return 0
+        _reaped = True
+    try:
+        paths = sorted(_LAUNCH_RECORDS.glob("*.json"))
+    except OSError:
+        return 0
+    import ctypes
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.WaitForSingleObject.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
+    kernel32.WaitForSingleObject.restype = ctypes.c_uint32
+    kernel32.TerminateProcess.argtypes = [ctypes.c_void_p, ctypes.c_uint]
+    kernel32.TerminateProcess.restype = ctypes.c_int
+    kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+    ended = 0
+    for path in paths:
+        try:
+            record = json.loads(path.read_text(encoding="utf-8"))
+            (host_pid, host_created), (child_pid, child_created) = record["host"], record["child"]
+        except (OSError, ValueError, KeyError, TypeError):
+            continue
+        host = _open_exact(host_pid, host_created, 0x100000)  # SYNCHRONIZE
+        if host is False:
+            continue  # can't tell whether its host lives: leave it
+        if host is not None:
+            alive = kernel32.WaitForSingleObject(host, 0) == 0x102  # WAIT_TIMEOUT: still running
+            kernel32.CloseHandle(host)
+            if alive:
+                continue
+        child = _open_exact(child_pid, child_created, 0x100000 | 0x1)  # SYNCHRONIZE | PROCESS_TERMINATE
+        if child is False:
+            continue
+        if child is not None:
+            try:
+                if kernel32.WaitForSingleObject(child, 0) == 0x102 and kernel32.TerminateProcess(child, 1):
+                    kernel32.WaitForSingleObject(child, 5000)
+                    ended += 1
+            finally:
+                kernel32.CloseHandle(child)
+        _forget_launch(path)
+    return ended
 
 
 def _resume_suspended(process) -> None:

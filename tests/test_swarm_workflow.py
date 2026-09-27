@@ -13,7 +13,8 @@ import pytest
 from lumi.engine.swarming.integration_processes import IntegrationProcesses
 from lumi.engine.swarming.models import Conflict, IdempotencyConflict, RevisionConflict, StaleAuthority
 from lumi.engine.swarming.workflow import DispatchClosed, IntegrationWorkflow
-from tests.test_swarm_integration import command, finish, git, setup as integration_setup, writers  # noqa: F401
+from tests.test_swarm_integration import (command, finish, git, repository_held,  # noqa: F401
+                                          setup as integration_setup, writers)
 
 
 def wait_for(predicate, *, timeout=60, describe=None):
@@ -137,8 +138,10 @@ def test_admission_returns_promptly_exact_racing_retries_launch_once_and_apply_e
 def test_stop_waits_for_running_named_check_and_workflow_observation(setup):
     fixture, workflow, payload = setup
     store, supervisor, authority, _, _, _ = fixture
-    payload["checks"][0]["argv"] = [sys.executable, "-c", "import time; print('started', flush=True); time.sleep(30)"]
-    payload["checks"][0]["timeout_seconds"] = 60
+    # Outlives every wait here: only the Stop can end it in time (a check that
+    # finished on its own would then meet the closed admission too).
+    payload["checks"][0]["argv"] = [sys.executable, "-c", "import time; print('started', flush=True); time.sleep(600)"]
+    payload["checks"][0]["timeout_seconds"] = 900
     candidate_id = prepared(workflow, payload)
     operation = submit(workflow, "run_check", {"candidate_id": candidate_id, "check_key": "combined"}, key="check")
     def running_check():
@@ -155,6 +158,18 @@ def test_stop_waits_for_running_named_check_and_workflow_observation(setup):
     observation = IntegrationProcesses(store).inspect_effect(authority.scope, authority.run_id, "check", check["id"])
     assert all(row["observation"] == "stopped" for row in observation["processes"])
     assert snapshot["integration_checks"][0]["state"] == "cancelled"
+
+
+def test_an_operation_waiting_for_the_repository_says_so(setup):
+    fixture, workflow, payload = setup
+    integration = fixture[3]
+    with repository_held(integration):
+        operation = submit(workflow, "prepare_candidate", payload, key="prepare")
+        row = wait_for(lambda: (row if row["waiting"] else None) if (row := workflow.inspect(operation["id"])) else None,
+                       describe=lambda: progress(workflow, operation))
+        assert row["state"] == "running" and row["active"]
+    assert settled(workflow, operation)["state"] == "completed"
+    assert not workflow.inspect(operation["id"])["waiting"]
 
 
 def test_close_revokes_queued_launch_and_does_not_claim_thread_termination(setup, monkeypatch):
@@ -376,8 +391,8 @@ def test_fenced_operation_with_terminal_effect_receipt_reconciles_without_reexec
 def test_check_after_takeover_uses_cleanup_evidence_and_never_owner_prose_as_pass(setup, legacy):
     fixture, workflow, payload = setup
     store, supervisor, authority, integration, _, _ = fixture
-    payload["checks"][0]["argv"] = [sys.executable, "-c", "import time; time.sleep(30)"]
-    payload["checks"][0]["timeout_seconds"] = 60
+    payload["checks"][0]["argv"] = [sys.executable, "-c", "import time; time.sleep(600)"]  # only the takeover ends it
+    payload["checks"][0]["timeout_seconds"] = 900
     candidate_id = prepared(workflow, payload)
     operation = submit(workflow, "run_check", {"candidate_id": candidate_id, "check_key": "combined"}, key="check")
     wait_for(lambda: any(row["job_id"] for row in store.snapshot(authority.scope, authority.run_id)["integration_checks"]))

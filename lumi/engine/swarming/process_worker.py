@@ -206,13 +206,16 @@ class ManagedWorkerProcess:
                     return
                 self.process.stdin.write(value)
                 self.process.stdin.flush()
-        except BaseException as exc:
+        except (OSError, ValueError) as exc:
             if self._terminating:
                 # The host is ending this tree, so the child's input may already
                 # be gone; Windows reports that write as EINVAL (bpo-19612), not
-                # BrokenPipeError. An undelivered frame is then expected, and the
-                # run loop observes the end itself, from EOF and the exit status.
+                # BrokenPipeError, and writing to a pipe cleanup has closed
+                # raises ValueError. An undelivered frame is then expected, and
+                # the run loop observes the end itself, from EOF and exit status.
                 return
+            self._receive(("fault", f"writing: {type(exc).__name__}"))
+        except BaseException as exc:
             self._receive(("fault", f"writing: {type(exc).__name__}"))
 
     def _send(self, **value) -> None:
@@ -446,7 +449,7 @@ class ManagedWorkerProcess:
                         continue
                     try:
                         stream.close()
-                    except OSError:
+                    except (OSError, ValueError):
                         # Closing the input flushes frames the child can no
                         # longer read: after it exits, Windows fails that write
                         # with EINVAL (errno 22), elsewhere BrokenPipeError. The

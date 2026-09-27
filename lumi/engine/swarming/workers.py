@@ -760,7 +760,10 @@ class SwarmWorkerRunner:
                             worker.phase = "finalizing"
                         # Execution is quiescent before trusted Git finalization.
                         # This is not a model tool and never holds _controls.
-                        finalized = self.integration.finalize_writer(self.authority, worker.context, worker.writer_id)
+                        # Owner cancellation still ends this while it waits for
+                        # the repository, and before it commits anything.
+                        finalized = self.integration.finalize_writer(self.authority, worker.context, worker.writer_id,
+                                                                     cancelled=worker.cancel.is_set)
                         candidate_revision = finalized["result_revision"]
                     except BaseException as exc:
                         errors.append(str(exc) or type(exc).__name__)
@@ -951,6 +954,9 @@ class SwarmWorkerRunner:
                 phase = "stopping"
             elif alive and worker.pause.is_set() and phase != "paused":
                 phase = "pausing"
+            elif (alive and phase == "finalizing" and self.integration is not None
+                  and self.integration.waiting_for_repository(worker.thread)):
+                phase = "waiting_for_repository"
             return {"attempt_id": attempt_id, "worker_id": worker.context.worker_id,
                     "epoch": worker.context.epoch, "state": phase, "alive": alive,
                     "pause_requested": worker.pause_requested, "cancel_requested": worker.cancel_requested,

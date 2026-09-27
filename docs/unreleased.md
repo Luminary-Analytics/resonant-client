@@ -230,6 +230,19 @@ Python 3.13 venv, `PYTHONNOUSERSITE=1`):
   model request. `lumi run` there had standard input from NUL, which
   Windows' `isatty` calls a terminal: it counted as unattended only once a
   console handle was required (64dc235).
+- Whom confirmations count for, end to end with Lumi Cloud at d6f5564 (fresh
+  database) and this branch's app from its source (fa45f19, then its Settings
+  wording): a personal laptop (joined in the app) and a managed computer
+  (enrolled by the bootstrap machine policy the portal gives with an
+  enrollment token, through `LUMI_POLICY_FILE`). The laptop's confirmations
+  counted for its member (`attribution: person`, versions 1 and 2). The
+  managed computer's first, with nobody signed in, counted for the computer
+  (`none`), and Settings said so; after the person signed in there and
+  version 2 was published, its confirmation went with `Lumi-Account-Token`
+  and counted for them (`signed_in`, "signed in on this managed computer"),
+  Settings saying so before and after. Lumi Cloud then showed the member and
+  both computers as acknowledged. The real home, Credential Manager and
+  `C:\ProgramData` were unchanged.
 - Not run: a packaged build, a deployed Lumi Cloud, a real Telegram or Slack
   chat, a real terminal (the typed yes was driven through the code's own
   prompts), screen readers.

@@ -729,7 +729,9 @@ class LumiSettingsView {
             const why = upload.error && upload.state !== 'sent' ? ` ${esc(upload.error)}` : '';
             // Whom it counts for: this person, or this computer when nobody was signed in to Lumi Cloud.
             const counts = ack.counts_for ? ` ${esc(ack.counts_for)}` : '';
-            confirmed = row('Your confirmation', `You confirmed ${which}${surfaces[ack.surface] || ''} on ${esc(when(ack.at))}. ${cloud}${why}${counts}`, 'status', 'org-oversight-confirmation')
+            // A newer notice waits: whom confirming it would count for.
+            const next = s.required && s.confirms_as && !ack.current ? ` When you confirm the notice in force, ${esc(s.confirms_as.replace(/^It counts/, 'it will count'))}` : '';
+            confirmed = row('Your confirmation', `You confirmed ${which}${surfaces[ack.surface] || ''} on ${esc(when(ack.at))}. ${cloud}${why}${counts}${next}`, 'status', 'org-oversight-confirmation')
                 + (ack.notice ? row('The notice you confirmed', `${esc(ack.notice)} (notice ${esc(ack.fingerprint)})`) : '');
         } else if (s.required && s.confirms_as) {
             confirmed = row('Your confirmation', `You haven’t confirmed the notice yet. ${esc(s.confirms_as.replace(/^It counts/, 'It will count'))}`, 'status', 'org-oversight-confirmation');

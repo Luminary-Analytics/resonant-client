@@ -252,7 +252,12 @@ class TeamAutopilot:
             return self._hand_back("The orchestrator could not produce a usable plan twice. Plan the next step yourself.")
         if latest["id"] in self._retried:
             return True  # Its retry is being prepared.
-        if self._request_plan(capture, runner, snapshot, note="The orchestrator is trying its turn again."):
+        try:
+            reason = runner.inspect(latest["id"])["error"] or ""
+        except Exception:  # noqa: BLE001 - the retry doesn't need a reason
+            reason = ""
+        if self._request_plan(capture, runner, snapshot, note="The orchestrator is trying its turn again.",
+                              retry_reason=reason):
             # The next turn is this one's retry.
             self._retried.add(latest["id"])
         return True
@@ -426,7 +431,7 @@ class TeamAutopilot:
         self._request_plan(capture, runner, snapshot, note="The orchestrator is writing its final report.")
         return True
 
-    def _request_plan(self, capture, runner, snapshot, *, note: str) -> bool:
+    def _request_plan(self, capture, runner, snapshot, *, note: str, retry_reason: str = "") -> bool:
         """Start the next orchestrator turn; False (and the owner told why) when it can't run."""
         planning = self.runtime._planning_view(runner.store, self.run_id, snapshot)
         if not planning["available"]:
@@ -439,6 +444,6 @@ class TeamAutopilot:
                    "request_id": f"autopilot_{self.run_id}_{self._requests}",
                    "expected_revision": snapshot["run"]["revision"],
                    "coordinator_requests": planning["default_requests"], "read_roots": planning["read_roots"]}
-        self.runtime._request_plan(capture, message, closing=self.closing)
+        self.runtime._request_plan(capture, message, closing=self.closing, retry_reason=retry_reason)
         self._set("planning", note)
         return True

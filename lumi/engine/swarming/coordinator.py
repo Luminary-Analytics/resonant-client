@@ -34,7 +34,7 @@ class CoordinatorPlans:
 
     def __init__(self, supervisor: SwarmSupervisor, authority: RunAuthority, *, allowed_criteria: frozenset[str],
                  follow_up: bool = False, autonomous: bool = False, closing: bool = False,
-                 applies_changes: bool = False):
+                 applies_changes: bool = False, retry_reason: str = ""):
         if type(allowed_criteria) is not frozenset or not allowed_criteria:
             raise ValueError("Coordinator planning requires explicit trusted acceptance criteria")
         for criterion in allowed_criteria:
@@ -46,6 +46,8 @@ class CoordinatorPlans:
             raise ValueError("Only a follow-up turn can close a team")
         if applies_changes and not autonomous:
             raise ValueError("Only an orchestrator the owner let run the team applies changes")
+        if type(retry_reason) is not str:
+            raise TypeError("A retry reason comes from the trusted host")
         # The owner granted autonomy when starting the team (autopilot.py): the
         # orchestrator plans each round and its fitting plans run without a
         # separate approval. Only the prompt differs; validation does not. A
@@ -56,6 +58,9 @@ class CoordinatorPlans:
         self.supervisor, self.store, self.authority = supervisor, supervisor.store, authority
         self.allowed_criteria = allowed_criteria
         self.follow_up = follow_up
+        # Why the host refused the previous turn's plan (a runtime message, never
+        # model text), so the retry can fix it; one line, bounded.
+        self.retry_reason = " ".join(retry_reason.split())[:300]
         self._input_graphs: dict[str, str] = {}
         self._prompts: dict[str, str] = {}
 
@@ -116,7 +121,9 @@ class CoordinatorPlans:
             "Use only declared scopes and acceptance criteria. Reads may investigate; only implement roles write. "
             "The policy read_roots bound proposed worker tasks; coordinator_read_roots bound your own file access. "
             "An empty coordinator_read_roots means findings-only planning: do not call file read/search tools. "
-            "Use owner_review only for read-only findings. Do not claim checks, acceptance or completion. "
+            "Every work item needs criteria: an implement item lists the allowed_criteria checks that verify it "
+            "(never owner_review), and a read-only item uses [\"owner_review\"]. "
+            "Do not claim checks, acceptance or completion. "
             "When parallel work adds no value, set use_team=false and return one work item. "
             "Return only one JSON object with exactly summary (text), use_team (boolean), work_items (array). "
             "Every work-item field is required: id (1-80 ASCII letters/digits/._-, starting with a letter/digit), "
@@ -144,6 +151,8 @@ class CoordinatorPlans:
                "If the findings already meet the objective, return work_items [] and write the final answer "
                "for the owner in summary: what was found, with evidence, and what remains uncertain.\n\n"
                if self.follow_up else "")
+            + (f"Your previous plan was refused: {self.retry_reason}. Fix that and return the JSON again.\n\n"
+               if self.retry_reason else "")
             + "Captured planning data:\n" + _json(input_data)
         )
         previous_prompt = self._prompts.setdefault(context.attempt_id, prompt)

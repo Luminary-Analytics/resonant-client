@@ -476,7 +476,7 @@ class SwarmRuntime:
                 "default_requests": min(setup.get("coordinator_requests", 3), remaining) if remaining else 1,
                 "read_roots": roots, "worker_requests": setup.get("worker_requests")}
 
-    def _request_plan(self, capture, message, *, closing=False):
+    def _request_plan(self, capture, message, *, closing=False, retry_reason=""):
         """Admit one explicit fresh planner, then launch outside the UI/control lock.
 
         ``closing`` comes only from the orchestrator loop (autopilot.py): its
@@ -529,7 +529,7 @@ class SwarmRuntime:
             context = AttemptContext(capture.scope, run_id, receipt.result["attempt_id"],
                                      receipt.result["worker_id"], runner.authority.epoch)
             plans = CoordinatorPlans(runner.supervisor, runner.authority, follow_up=True,
-                autonomous=bool(setup.get("autonomy")), closing=closing is True,
+                autonomous=bool(setup.get("autonomy")), closing=closing is True, retry_reason=retry_reason,
                 applies_changes=(setup.get("autonomy") or {}).get("apply") is True,
                 allowed_criteria=frozenset({"owner_review"} | {check["key"] for check in setup.get("checks", [])}))
             spec = copy.deepcopy(pair[0].backend_spec)

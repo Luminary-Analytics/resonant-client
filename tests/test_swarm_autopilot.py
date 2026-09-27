@@ -212,6 +212,10 @@ def test_two_unusable_orchestrator_turns_in_a_row_hand_the_team_back(team):
     coordinators = [row for row in service.operate(capture, {"request_id": "last", "run_id": run_id})["run"]["attempts"]
                     if row["kind"] == "coordinator"]
     assert len(coordinators) == 2 and len(backends) == 2
+    # The retry was told why its first plan was refused, and the first turn wasn't.
+    assert "Your previous plan was refused" not in backends[0].stream_calls[0]["user_msg"]
+    assert ("Your previous plan was refused: Coordinator output must be one strict JSON object"
+            in backends[1].stream_calls[0]["user_msg"])
     assert view["run"]["run"]["state"] == "running" and not view["run"]["coordinator_proposals"]
 
 

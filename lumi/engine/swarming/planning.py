@@ -32,6 +32,9 @@ _FENCE = re.compile(r"```(?:json)?\r?\n(.*)\r?\n```\Z", re.DOTALL)
 # One fenced JSON block inside prose ("I found both defects... ```json {...} ```").
 _EMBEDDED_FENCE = re.compile(r"```(?:json)?[ \t]*\r?\n(.*?)\r?\n[ \t]*```", re.DOTALL)
 _FILE_READERS = FILE_TOOL_NAMES - {"artifact_read"}
+# One closing tag or special token at the end of a reply: chat-template residue
+# a live model appended after its JSON (a "}" followed by "</function>" and "</tool_call>").
+_TEMPLATE_TAIL = re.compile(r"(?:</[A-Za-z_][\w:.-]{0,40}>|<\|[^|<>\s]{1,40}\|>)\Z")
 
 
 class PlanRejected(ValueError):
@@ -192,6 +195,11 @@ def parse_plan(
     except UnicodeError as exc:
         raise PlanRejected("A coordinator proposal must be valid UTF-8 text") from exc
     source = text.strip()
+    for _ in range(8):  # Residue only: any other text after the JSON still refuses the plan.
+        tail = _TEMPLATE_TAIL.search(source)
+        if tail is None:
+            break
+        source = source[:tail.start()].rstrip()
     if source.startswith("```"):
         fence = _FENCE.fullmatch(source)
         if fence is None:

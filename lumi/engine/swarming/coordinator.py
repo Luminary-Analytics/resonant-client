@@ -33,20 +33,26 @@ class CoordinatorPlans:
     """
 
     def __init__(self, supervisor: SwarmSupervisor, authority: RunAuthority, *, allowed_criteria: frozenset[str],
-                 follow_up: bool = False, autonomous: bool = False, closing: bool = False):
+                 follow_up: bool = False, autonomous: bool = False, closing: bool = False,
+                 applies_changes: bool = False):
         if type(allowed_criteria) is not frozenset or not allowed_criteria:
             raise ValueError("Coordinator planning requires explicit trusted acceptance criteria")
         for criterion in allowed_criteria:
             require_id(criterion)
-        if type(follow_up) is not bool or type(autonomous) is not bool or type(closing) is not bool:
+        if (type(follow_up) is not bool or type(autonomous) is not bool or type(closing) is not bool
+                or type(applies_changes) is not bool):
             raise TypeError("Follow-up planning must be selected by the trusted host")
         if closing and not follow_up:
             raise ValueError("Only a follow-up turn can close a team")
+        if applies_changes and not autonomous:
+            raise ValueError("Only an orchestrator the owner let run the team applies changes")
         # The owner granted autonomy when starting the team (autopilot.py): the
         # orchestrator plans each round and its fitting plans run without a
         # separate approval. Only the prompt differs; validation does not. A
         # closing turn writes the final report and may not start more work.
-        self.autonomous, self.closing = autonomous, closing
+        # With applies_changes, writers' changes that pass every declared
+        # check are applied to the project, and later writers build on them.
+        self.autonomous, self.closing, self.applies_changes = autonomous, closing, applies_changes
         self.supervisor, self.store, self.authority = supervisor, supervisor.store, authority
         self.allowed_criteria = allowed_criteria
         self.follow_up = follow_up
@@ -125,6 +131,11 @@ class CoordinatorPlans:
                "findings and from workers' messages to you. If you can already answer the objective from what "
                "you read, return work_items [] and put the answer, with its evidence, in summary. "
                if self.autonomous else "")
+            + ("Implement items' changes are combined, run through the declared checks named in their criteria, "
+               "and applied to the project when every check passes; a writer whose change fails a check is sent "
+               "back once with the check's output. An accepted implement item's change is applied, and later "
+               "writers start from it. Give each writer its own files where you can, so changes combine cleanly. "
+               if self.applies_changes else "")
             + ("This is your closing turn: the team's rounds are used up. Return work_items [] and write the final "
                "answer for the owner in summary: what was found, with evidence, and what remains uncertain.\n\n"
                if self.closing else

@@ -83,6 +83,8 @@ def test_the_orchestrator_plans_runs_its_workers_and_reports_without_owner_steps
     assert {row["executor_id"] for row in run["check_receipts"]} == {"autonomy:fixture-owner"}
     assert all("not reviewed" in row["check_name"] for row in run["check_receipts"])
     assert all(row["state"] == "accepted" for row in run["work_items"])
+    report = service.operate(capture, {"request_id": "report", "action": "export_report", "run_id": run_id})["report"]
+    assert [row["kind"] for row in report["decisions"]] == ["autonomy_grant", "autonomy_grant"]
     # The orchestrator knew it was running the team, and its follow-up saw the findings.
     first, follow_up = backends[0].stream_calls[0]["user_msg"], backends[3].stream_calls[0]["user_msg"]
     assert "You are this team's orchestrator" in first and "If you can already answer the objective" in first

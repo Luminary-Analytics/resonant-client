@@ -97,12 +97,17 @@ def export_report(store: SwarmStore, scope: Scope, run_id: str) -> dict:
             "tool_observations": len(snapshot["action_receipts"]), "usage": usage_summary},
         "attempts": attempts, "requests": requests,
         "submissions": [_pick(row, "attempt_id", "candidate_revision", "work_revision") for row in snapshot["submissions"]],
+        # A result the orchestrator accepted under the owner's autonomy grant is
+        # neither the owner's review nor a check that ran (autopilot.py).
         "decisions": [{**_pick(row, "id", "attempt_id", "criterion_id", "candidate_revision", "check_name", "exit_code"),
-                       "kind": "owner_review" if (row["criterion_id"] == "owner_review"
-                                                  and row["check_name"] == "Explicit owner review") else "trusted_check"}
+                       "kind": "autonomy_grant" if row["executor_id"].startswith("autonomy:")
+                       else "owner_review" if (row["criterion_id"] == "owner_review"
+                                               and row["check_name"] == "Explicit owner review") else "trusted_check"}
                       for row in snapshot["check_receipts"]],
-        "writer_acceptances": [_pick(row, "attempt_id", "writer_id", "candidate_id", "application_id", "work_revision",
-                                     "writer_revision", "candidate_revision", "epoch") for row in snapshot["writer_acceptances"]],
+        "writer_acceptances": [{**_pick(row, "attempt_id", "writer_id", "candidate_id", "application_id", "work_revision",
+                                        "writer_revision", "candidate_revision", "epoch"),
+                                "decision": "autonomy_grant" if row["owner_id"].startswith("autonomy:") else "owner"}
+                               for row in snapshot["writer_acceptances"]],
         "candidates": [_pick(row, "id", "epoch", "state", "base_revision", "result_revision") for row in snapshot["integration_candidates"]],
         "checks": [_pick(row, "id", "candidate_id", "check_key", "candidate_revision", "state", "exit_code")
                    for row in snapshot["integration_checks"]],

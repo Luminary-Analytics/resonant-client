@@ -2702,11 +2702,16 @@ class Session:
             model_stream = None
             try:
                 model_requests += 1
+                # A Team participant's last request offers no tools: a call there
+                # could never be followed up (live workers spent it on one more
+                # read and submitted nothing), so the model has to answer.
+                final_request = (self._execution_boundary is not None and self.max_model_requests is not None
+                                 and model_requests >= self.max_model_requests)
                 model_stream = self._model_stream(
                     user_msg=current_msg,
                     conversation_history=self.conversation_history,
                     instructions=instructions,
-                    tools=[] if is_planning else self.provider_tools,
+                    tools=[] if is_planning or final_request else self.provider_tools,
                     max_tokens=self.max_tokens,
                     cancel_event=self._cancel_event,
                 )
@@ -3971,7 +3976,7 @@ class Session:
                 if (self._execution_boundary is not None and self.max_model_requests is not None
                         and model_requests == self.max_model_requests - 1):
                     current_msg = (f"{current_msg}\n\n" if current_msg else "") + (
-                        "This is your last model request for this assignment. Stop exploring and give "
+                        "This is your last model request for this assignment, and it has no tools. Give "
                         "your final answer now from what you have found, saying what you could not check.")
                 continue
             else:

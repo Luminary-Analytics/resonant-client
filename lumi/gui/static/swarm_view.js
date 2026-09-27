@@ -72,7 +72,8 @@ window.LumiSwarmView = class LumiSwarmView {
             <label>Allowance per worker<input data-swarm="worker-requests" type="number" min="1" max="1000" step="1" value="4" required></label></div>
             <label class="swarm-switch"><input type="checkbox" data-swarm="autonomous"> Let the orchestrator run the team</label>
             <div class="swarm-fields" data-swarm="autonomy-fields" hidden><label>Orchestrator rounds<input data-swarm="rounds" type="number" min="1" max="8" step="1" value="3" required></label></div>
-            <p class="swarm-help" data-swarm="autonomy-help" hidden>The orchestrator plans, starts workers, reads their findings and plans again for up to this many rounds, then writes a final report. It doesn’t wait for you at each step: findings it uses are marked accepted by the orchestrator, not reviewed by you. File changes still wait for you. You can pause or stop the team at any time.</p></div>
+            <label class="swarm-switch" data-swarm="auto-apply-label" hidden><input type="checkbox" data-swarm="auto-apply"> Apply changes that pass every check</label>
+            <p class="swarm-help" data-swarm="autonomy-help" hidden>The orchestrator plans, starts workers, reads their findings and plans again for up to this many rounds, then writes a final report. It doesn’t wait for you at each step: findings it uses are marked accepted by the orchestrator, not reviewed by you. <span data-swarm="apply-help-manual">File changes still wait for you.</span><span data-swarm="apply-help-auto" hidden>Writers’ changes are combined and applied to your checkout once every declared check passes, without your review; a failing check sends the writers back once with its output. Keep the checkout clean and on its branch while the team runs.</span> You can pause or stop the team at any time.</p></div>
             <div data-swarm="tasks" class="swarm-tasks"></div><button type="button" data-swarm="add-task" class="swarm-secondary">Add investigation</button>
             <button type="submit" data-swarm="start" class="swarm-primary">Start read-only team</button></form></section>
             <section data-swarm="run-section" hidden aria-labelledby="swarm-run-title"><div class="swarm-section-heading"><h3 id="swarm-run-title">Selected team</h3><span class="swarm-badge" data-swarm="run-state"></span></div>
@@ -181,7 +182,7 @@ window.LumiSwarmView = class LumiSwarmView {
         nodes.slots.addEventListener('change', () => this._swarmRenumberTasks());
         nodes['allow-writes'].addEventListener('change', () => this._swarmRenumberTasks());
         nodes['add-check'].addEventListener('click', () => this._swarmAddCheck());
-        for (const name of ['plan-mode', 'coordinator-requests', 'worker-requests', 'manual-worker-requests', 'autonomous']) {
+        for (const name of ['plan-mode', 'coordinator-requests', 'worker-requests', 'manual-worker-requests', 'autonomous', 'auto-apply']) {
             nodes[name].addEventListener('input', () => this._swarmRenumberTasks());
         }
         nodes.form.addEventListener('submit', event => {
@@ -201,7 +202,10 @@ window.LumiSwarmView = class LumiSwarmView {
             if (coordinator) {
                 setup.coordinator_requests = Number(nodes['coordinator-requests'].value);
                 setup.worker_requests = Number(nodes['worker-requests'].value);
-                if (nodes.autonomous.checked) setup.autonomy = {rounds: Number(nodes.rounds.value)};
+                if (nodes.autonomous.checked) {
+                    setup.autonomy = {rounds: Number(nodes.rounds.value)};
+                    if (nodes['allow-writes'].checked && nodes['auto-apply'].checked) setup.autonomy.apply = true;
+                }
                 this.requestSwarm('start', setup);
                 return;
             }
@@ -351,6 +355,13 @@ window.LumiSwarmView = class LumiSwarmView {
         nodes['autonomy-fields'].hidden = !autonomous;
         nodes['autonomy-help'].hidden = !autonomous;
         nodes.rounds.disabled = !autonomous;
+        // Applying needs writer access: its checks are what decide.
+        const canApply = autonomous && writers;
+        nodes['auto-apply-label'].hidden = !canApply;
+        nodes['auto-apply'].disabled = !canApply;
+        const applies = canApply && nodes['auto-apply'].checked;
+        nodes['apply-help-manual'].hidden = applies;
+        nodes['apply-help-auto'].hidden = !applies;
         [...nodes.tasks.children].forEach((row, index) => {
             row.disabled = coordinator;
             row.querySelector('[data-task-role-label]').hidden = !writers;
@@ -1475,7 +1486,8 @@ window.LumiSwarmView = class LumiSwarmView {
         nodes.orchestrator.hidden = !autonomy;
         if (!autonomy) return;
         const turn = autonomy.closing ? 'Closing turn' : `Round ${autonomy.round} of ${autonomy.rounds}`;
-        nodes['orchestrator-status'].textContent = `${turn} · ${autonomy.detail || ''}`;
+        const applies = autonomy.apply ? ' · Applies checked changes' : '';
+        nodes['orchestrator-status'].textContent = `${turn}${applies} · ${autonomy.detail || ''}`;
         const report = autonomy.final_report || '';
         nodes['orchestrator-report'].hidden = !report;
         if (report === nodes['orchestrator-report-text'].dataset.source) return;
@@ -1519,6 +1531,9 @@ window.LumiSwarmView = class LumiSwarmView {
             command_pause: 'Pause requested', command_resume: 'Team resumed', command_stop: 'Stop requested', recovery_required: 'Recovery needed', command_recover: 'Recovery reviewed',
             command_submit: 'Findings submitted for review', command_review_read_result: 'Owner accepted findings', command_accept: 'Investigation accepted', command_complete: 'Team completed', command_set_concurrency: 'Worker assignment limit updated',
             command_accept_under_grant: 'The orchestrator accepted findings (not reviewed by you)', command_decide_proposal: 'A plan was decided',
+            command_accept_writer: 'Owner accepted applied changes', command_accept_writer_under_grant: 'The orchestrator accepted applied changes (not reviewed by you)',
+            command_reject: 'A result was sent back', command_retry: 'A task was retried', candidate_applied: 'Checked changes were applied to the project',
+            candidate_check_observed: 'A check finished on combined changes',
             coordinator_proposed: 'A plan was proposed', tool_refused: 'A worker’s call was refused: outside its assignment'})[kind] || 'Team state updated';
     }
 };

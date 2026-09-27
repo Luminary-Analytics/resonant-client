@@ -492,4 +492,6 @@ def test_a_guarded_participant_hears_before_its_last_request(tmp_path):
     events = list(session.run("Inspect a.txt", input_origin="generated"))
     notices = ["last model request" in (call["user_msg"] or "") for call in backend.stream_calls]
     assert notices == [False, False, True]
+    # A call on the last request could never be followed up: it offers no tools.
+    assert [call["tool_count"] > 0 for call in backend.stream_calls] == [True, True, False]
     assert any(event.get("text") == "Final: a.txt says alpha." for event in events)

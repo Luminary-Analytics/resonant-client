@@ -74,11 +74,22 @@ def policy_refusal(action: str) -> str:
     Team workers don't yet take an organization's model, mode, shell, approval
     or sharing rules, so the preview starts no new team work where a policy
     applies, as tasks from chat never run on a managed computer. Viewing,
-    stopping and recovering retained work stays available.
+    stopping and recovering retained work stays available. Before that rule,
+    and independent of it, organization oversight's notice must be confirmed
+    (lumi/oversight.py): relaxing the policy rule never lets a team reach a
+    model for a person who hasn't.
     """
     if action in _POLICY_SAFE_ACTIONS:
         return ""
     reason = blocked_reason()
+    if reason:
+        return reason
+    # Nothing reaches a model before the person confirms the notice of an
+    # organization's oversight (lumi/oversight.py): not a team's start, and
+    # not a step of its orchestrator loop (autopilot.py asks here too).
+    from ... import oversight
+
+    reason = oversight.refusal("team")
     if reason:
         return reason
     policy = current_policy()

@@ -217,6 +217,7 @@ class LocalSpecialistRunner:
         specialist_backend_resolver: Optional[Callable[[str], Any]] = None,
         mcp_manager: Any = None,
         hook_runner_for: Optional[Callable[[str], Any]] = None,
+        oversight_trigger: str = "plan",
     ):
         self.backend = backend
         self.project_path = project_path
@@ -240,6 +241,10 @@ class LocalSpecialistRunner:
         self._specialist_backend_resolver = specialist_backend_resolver
         # Maps the project root to the hooks a specialist runs; see _hook_runner.
         self._hook_runner_for = hook_runner_for
+        # What started these specialists, for organization oversight's
+        # records (lumi/oversight.py): "plan" for /plan, "mission" for a
+        # mission or autonomous session.
+        self.oversight_trigger = oversight_trigger if oversight_trigger in ("plan", "mission") else "plan"
 
     def __call__(self, node: PlanNode, graph: PlanGraph) -> SpecialistResult:
         if self.cancel_event.is_set():
@@ -305,10 +310,13 @@ class LocalSpecialistRunner:
 
     def _run_node(self, node: PlanNode, graph: PlanGraph) -> SpecialistResult:
         # Specialists run in Full-auto, which an organization can leave out
-        # of its allowed modes (lumi/policy.py). Checked as each one starts,
-        # so a policy that arrives mid-mission stops the rest: no model
-        # request, no tool call.
-        refusal = full_auto_refusal()
+        # of its allowed modes (lumi/policy.py), and nothing reaches a model
+        # before the person confirms the organization's oversight notice
+        # (lumi/oversight.py). Checked as each one starts, so a policy that
+        # arrives mid-mission stops the rest: no model request, no tool call.
+        from .. import oversight
+
+        refusal = full_auto_refusal() or oversight.refusal(self.oversight_trigger)
         if refusal:
             return SpecialistResult(status=NodeStatus.BLOCKED, confidence=0.0, summary=refusal)
 
@@ -396,6 +404,8 @@ class LocalSpecialistRunner:
         session._settings_ref = self.settings
         session._mcp_manager = self.mcp_manager
         session.hook_runner = self._hook_runner(project_root)
+        # The person who started the plan or mission, for oversight's records.
+        session.oversight_trigger = self.oversight_trigger
 
         result = self._drive_session(session, node, graph)
 

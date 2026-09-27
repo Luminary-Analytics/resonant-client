@@ -34,7 +34,7 @@ logger = logging.getLogger(__name__)
 
 _API_BASE = "https://slack.com/api"
 _MAX_MESSAGE_CHARS = 3900
-_ACTIONS = {"lumi_approve": "approve", "lumi_deny": "deny"}
+_ACTIONS = {"lumi_approve": "approve", "lumi_deny": "deny", "lumi_acknowledge": "acknowledge"}
 
 
 class SlackChannel(ChannelAdapter):
@@ -151,7 +151,7 @@ class SlackChannel(ChannelAdapter):
         on_message(InboundMessage(chat_id=channel, sender=user, text=_plain(text), channel=self.name))
 
     def _buttons(self, payload: dict, on_message: Callable[[InboundMessage], None]) -> None:
-        """Approve and Deny buttons, answered as ``/approve <id>`` or ``/deny <id>``."""
+        """Approve, Deny and I've read this buttons: ``/approve <id>``, ``/deny <id>``, ``/acknowledge <token>``."""
         user = str((payload.get("user") or {}).get("id") or "")
         channel = str((payload.get("channel") or {}).get("id") or "")
         for action in payload.get("actions") or []:
@@ -189,6 +189,21 @@ class SlackChannel(ChannelAdapter):
         except Exception:
             logger.exception("Failed to send a Slack approval request to %s", chat_id)
             super().ask(chat_id, text, approval_id)
+
+    def notice(self, chat_id: str, text: str, token: str) -> bool:
+        blocks = [
+            {"type": "section", "text": {"type": "plain_text", "text": text[:2900]}},
+            {"type": "actions", "elements": [
+                {"type": "button", "action_id": "lumi_acknowledge", "value": token, "style": "primary",
+                 "text": {"type": "plain_text", "text": "I've read this"}},
+            ]},
+        ]
+        try:
+            self._api("chat.postMessage", channel=chat_id, text=text[:_MAX_MESSAGE_CHARS], blocks=blocks)
+        except Exception:
+            logger.exception("Failed to send the oversight notice to %s", chat_id)
+            return False
+        return True
 
     def stop(self) -> None:
         self._stop.set()

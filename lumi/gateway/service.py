@@ -16,8 +16,11 @@ approval, and nobody answering in time refuses it. Restrict who can reach the
 gateway with the channel's allowlist.
 
 When the organization's policy has Lumi share work with its Lumi Cloud
-(lumi/oversight.py), each chat is sent the notice before its first turn is
-recorded, once per policy; a chat that wasn't sent it isn't recorded.
+(lumi/oversight.py), a chat's requests don't run until someone in that chat
+confirms the organization's notice: the chat is sent it, with an "I've read
+this" button, and a press or the reply "I've read this" confirms it for that
+chat and that policy (signed with this computer's device key and sent to
+Lumi Cloud). Until then each request is answered with the notice instead.
 """
 
 from __future__ import annotations
@@ -43,11 +46,14 @@ _HELP_TEXT = (
     "status — the project, permission mode and model, and what's running\n"
     "stop — stop the request that's running\n"
     "approve, deny — answer a request to run an action\n"
+    "acknowledge — confirm your organization's oversight notice, when one is shown\n"
     "clear — start a fresh conversation\n"
     "help — this message\n\n"
     "Anything else is sent to the agent."
 )
-_COMMANDS = {"approve", "deny", "stop", "status", "clear", "help", "start", "model"}
+_COMMANDS = {"approve", "deny", "stop", "status", "clear", "help", "start", "model", "acknowledge"}
+# Commands that take an argument: an approval's id, the notice's token.
+_WITH_ARGUMENT = ("approve", "deny", "acknowledge")
 
 
 def parse_command(text: str) -> tuple[str, str]:
@@ -61,7 +67,7 @@ def parse_command(text: str) -> tuple[str, str]:
     if not words or len(words) > 2:
         return "", ""
     name = words[0].lower().lstrip("/").split("@", 1)[0]
-    if name not in _COMMANDS or (len(words) == 2 and name not in ("approve", "deny")):
+    if name not in _COMMANDS or (len(words) == 2 and name not in _WITH_ARGUMENT):
         return "", ""
     return name, words[1] if len(words) == 2 else ""
 
@@ -109,11 +115,14 @@ class GatewayService:
         *,
         describe: Optional[Callable[[], str]] = None,
         approval_seconds: float = 600.0,
+        oversight_signer: Optional[Callable[[bytes], str]] = None,
     ):
         self._adapter = adapter
         self._factory = session_factory
         self._describe = describe or (lambda: "")
         self._approval_seconds = approval_seconds
+        # Signs a chat's confirmation of the oversight notice with the device key (CloudClient.sign_as_device).
+        self._oversight_signer = oversight_signer
         self._sessions: dict[str, object] = {}
         self._queue: "queue.Queue[InboundMessage]" = queue.Queue()
         self._stop = threading.Event()
@@ -222,9 +231,13 @@ class GatewayService:
             self._status(msg.chat_id)
             return
 
-        self._adapter.notify_busy(msg.chat_id)
         session = self._session_for(msg.chat_id)
-        self._send_oversight_notice(msg.chat_id, session)
+        if not self._oversight_admits(msg, session):
+            return
+        if command == "acknowledge":
+            self._adapter.send(msg.chat_id, "Nothing here needs confirming.")
+            return
+        self._adapter.notify_busy(msg.chat_id)
         # A /stop cancels one turn, not every later one in this chat.
         session.reset_cancel()
         with self._lock:
@@ -255,26 +268,37 @@ class GatewayService:
             return
         self._adapter.send(msg.chat_id, "\n\n".join(reply_parts).strip() or "(no response)")
 
-    def _send_oversight_notice(self, chat_id: str, session: object) -> None:
-        """Tell the chat what its organization receives before its first recorded turn (lumi/oversight.py).
+    def _oversight_admits(self, msg: InboundMessage, session: object) -> bool:
+        """Whether this chat's request may run: its people confirmed the organization's notice (lumi/oversight.py).
 
-        Once per policy: the chat's turns are recorded only after its notice
-        was sent, so a send that fails leaves them unrecorded.
+        While they haven't, the request doesn't run: the chat is sent the
+        notice with an "I've read this" button. The button (``/acknowledge
+        <token>``) or the reply "I've read this", once the chat was sent the
+        notice for the policy in force, confirms it for this chat and this
+        policy; the person then sends the request again.
         """
         from .. import oversight
 
+        chat_id = msg.chat_id
         key = str(getattr(session, "audit_session_id", "") or "") or f"{oversight.CHAT_PREFIX}{chat_id}"
         pending = oversight.chat_notice(key)
         if pending is None:
-            return
-        text, fingerprint = pending
+            return True
+        notice, fingerprint = pending
+        command, token = parse_command(msg.text)
+        confirming = (command == "acknowledge" and token in ("", fingerprint)) or oversight.is_acknowledgment(msg.text)
+        if confirming and oversight.chat_notified(key, fingerprint) and oversight.acknowledge(
+                fingerprint, "gateway", chat=key, notice=notice, signer=self._oversight_signer):
+            self._adapter.send(chat_id, "Thanks. Lumi runs this chat's requests from now on: send yours again.")
+            return False
         try:
-            delivered = self._adapter.send(chat_id, text) is not False
+            delivered = self._adapter.notice(chat_id, oversight.chat_message(notice), fingerprint) is not False
         except Exception:
             logger.warning("Couldn't send the oversight notice to chat %s", chat_id, exc_info=True)
             delivered = False
         if delivered:
             oversight.chat_notice_sent(key, fingerprint)
+        return False
 
     def _asker(self, chat_id: str) -> Callable[[str, dict], bool]:
         """The session's permission prompt: ask in the chat and wait for the answer."""

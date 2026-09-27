@@ -686,6 +686,14 @@ class Session:
         # wrapped (the app's sprint harness); organization oversight
         # (lumi/oversight.py) shares this, not the wrapper. One turn only.
         self.display_prompt: Optional[str] = None
+        # What starts this session's turns, for organization oversight
+        # (lumi/oversight.py TRIGGERS; "" means worked out from
+        # audit_session_id), and whether nobody is there to be shown its
+        # notice. Only a surface that sets ``oversight_unattended`` runs
+        # without the person's confirmation, under the policy's
+        # ``oversight.unattended``; every other turn needs it.
+        self.oversight_trigger: str = ""
+        self.oversight_unattended: bool = False
         self.event_logger = None  # EventLogger, set externally for JSONL logging
         self.agent_registry: Optional[AgentRegistry] = None
         self.agent_id: str = ""
@@ -1857,8 +1865,11 @@ class Session:
         (lumi/usage.py) and the audit log (lumi/audit.py) see model calls,
         tool calls and results, file changes, redactions and errors from GUI,
         gateway and worker turns alike. So does organization oversight
-        (lumi/oversight.py), which records the turn for the organization's
-        Lumi Cloud only when its policy asks and the person has seen the notice.
+        (lumi/oversight.py): while an organization's policy has it in force,
+        a turn whose person hasn't confirmed its notice is refused here
+        before anything reaches a model (``oversight.admit``, asked again
+        before each model request), and an admitted turn is recorded for
+        the organization's Lumi Cloud.
         """
         from .. import audit, oversight
 
@@ -1883,10 +1894,19 @@ class Session:
         outcome = "completed"
         written_paths: dict[str, str] = {}
         trace = self._begin_trace_turn()
-        # None unless the organization's policy asks for oversight (and never raises).
-        tracker = oversight.begin_turn(self, user_msg, images=len(images or ()), input_origin=input_origin)
-        turn = self._run_turn(user_msg, on_permission, on_choice, on_user_input, images,
-                              input_origin=input_origin)
+        # Organization oversight (never raises): a person who hasn't confirmed
+        # the notice in force gets a refusal and nothing reaches a model.
+        admission = oversight.admit(self)
+        if admission.refusal:
+            self.display_prompt = None
+            tracker = None
+            turn = self._oversight_refused(admission.refusal)
+        else:
+            # None unless the organization's policy records this turn.
+            tracker = oversight.begin_turn(self, user_msg, images=len(images or ()), input_origin=input_origin,
+                                           admission=admission)
+            turn = self._run_turn(user_msg, on_permission, on_choice, on_user_input, images,
+                                  input_origin=input_origin)
         try:
             for event in turn:
                 # A delegated worker's events, passed on for display, were
@@ -1918,6 +1938,19 @@ class Session:
             audit.record("turn.end", **common, outcome=outcome, elapsed=round(time.time() - started, 3))
             if tracker is not None:
                 tracker.finish(outcome)
+
+    def _oversight_checkpoint(self) -> str:
+        """Why organization oversight stops this turn before its next model request, or ''."""
+        from .. import oversight
+
+        return oversight.admit(self).refusal
+
+    @staticmethod
+    def _oversight_refused(message: str) -> Iterator[dict]:
+        """A turn organization oversight refused (lumi/oversight.py): nothing reaches a model or the history."""
+        from ..oversight import REFUSAL_CODE
+
+        yield make_event(EngineEvent.ERROR, message=message, code=REFUSAL_CODE)
 
     def _next_fallback(self, error: str) -> Iterator[dict]:
         """Switch to the next usable fallback model; returns whether it did.
@@ -2299,6 +2332,7 @@ class Session:
         model_requests = 0
         request_limit_reached = False
         budget_stop = ""
+        oversight_stop = ""
         implementation_started = False
         cli_tool_starts = {}
 
@@ -2575,6 +2609,12 @@ class Session:
                 break
             budget_stop = yield from self._budget_checkpoint(on_user_input)
             if budget_stop:
+                break
+            # Organization oversight, again before every model request: a
+            # policy that arrives mid-turn with a notice the person hasn't
+            # confirmed stops the turn here (lumi/oversight.py).
+            oversight_stop = self._oversight_checkpoint()
+            if oversight_stop:
                 break
             if self.max_steps is not None and iteration >= self.max_steps:
                 step_limit_reached = True
@@ -4084,6 +4124,11 @@ class Session:
 
         if budget_stop:
             yield make_event(EngineEvent.ERROR, message=budget_stop, code="budget_exceeded", recoverable=True)
+
+        if oversight_stop:
+            from ..oversight import REFUSAL_CODE
+
+            yield make_event(EngineEvent.ERROR, message=oversight_stop, code=REFUSAL_CODE)
 
         if request_limit_reached:
             terminal_error = (

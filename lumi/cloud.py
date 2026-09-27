@@ -24,10 +24,12 @@ keys (lumi/policy.py) and applies it. A revoked device forgets its
 enrollment and the downloaded policy.
 
 **Organization oversight** (lumi/oversight.py) is separate: only when the
-organization's policy asks, and after the person has confirmed the notice,
-turn records and security flags go to ``/api/v1/oversight/events`` through
-``device_call``. Leaving the organization deletes any still queued, and
-leaving or signing out forgets the confirmed notice.
+organization's policy asks, turn records and security flags go to
+``/api/v1/oversight/events`` through ``device_call``. A person's confirmation
+of the notice is a record signed with this computer's device key
+(``sign_as_device``) and sent to ``/api/v1/oversight/acknowledgments``.
+Leaving the organization deletes records still queued, and leaving or
+signing out forgets the confirmed notice.
 """
 
 from __future__ import annotations
@@ -62,11 +64,16 @@ LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "::1")
 
 
 class CloudError(Exception):
-    """Something Lumi Cloud refused or couldn't do; the message is for people."""
+    """Something Lumi Cloud refused or couldn't do; the message is for people.
 
-    def __init__(self, message: str, *, code: str = "") -> None:
+    ``code`` is Lumi Cloud's error code (or the HTTP status when it gave
+    none); ``status`` the HTTP status, 0 when Lumi Cloud wasn't reached.
+    """
+
+    def __init__(self, message: str, *, code: str = "", status: int = 0) -> None:
         super().__init__(message)
         self.code = code
+        self.status = status
 
 
 def normalize_url(url: str) -> str:
@@ -271,7 +278,8 @@ class CloudClient:
             code = str(data.get("error") or response.status_code) if isinstance(data, dict) else str(
                 response.status_code)
             message = data.get("error_description") if isinstance(data, dict) else ""
-            raise CloudError(str(message or f"Lumi Cloud answered {response.status_code}."), code=code)
+            raise CloudError(str(message or f"Lumi Cloud answered {response.status_code}."), code=code,
+                             status=response.status_code)
         return data if isinstance(data, dict) else {}
 
     # ── Signing in ─────────────────────────────────────────────────────────
@@ -494,16 +502,30 @@ class CloudClient:
         self._changed()
 
     # ── Device sign-in and check-ins ───────────────────────────────────────
-    def _device_token(self) -> str:
-        if self._device_access and self._device_access[1] > time.monotonic():
-            return self._device_access[0]
+    def _device_key(self):
+        """This computer's enrolled Ed25519 key (CloudError when it isn't enrolled)."""
         from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
         device = self.device()
         secret = self.settings.get("api_keys", DEVICE_SECRET) or ""
         if not device or not secret:
             raise CloudError("This computer isn't enrolled.", code="not_enrolled")
-        key = Ed25519PrivateKey.from_private_bytes(base64.b64decode(secret))
+        return Ed25519PrivateKey.from_private_bytes(base64.b64decode(secret))
+
+    def sign_as_device(self, data: bytes) -> str:
+        """An Ed25519 signature by this computer's device key over ``data``, base64url with padding.
+
+        Organization oversight signs a person's confirmation of its notice
+        with it (lumi/oversight.py); Lumi Cloud checks it against the public
+        key the device enrolled with. The key never leaves the credential store.
+        """
+        return base64.urlsafe_b64encode(self._device_key().sign(bytes(data))).decode("ascii")
+
+    def _device_token(self) -> str:
+        if self._device_access and self._device_access[1] > time.monotonic():
+            return self._device_access[0]
+        device = self.device()
+        key = self._device_key()
         now = int(time.time())
         audience = f"{self.url}/api/v1/devices/token"
         assertion = eddsa_jwt({"iss": device["id"], "sub": device["id"], "aud": audience, "iat": now,

@@ -129,24 +129,33 @@ host enrollment and actual packaged/learned-benefit qualification remain open.
 - Organization oversight (`oversight.py`, `security_flags.py`) is the only
   path that sends people's turns to Lumi Cloud: off unless the policy's
   `oversight` section asks (a key or version Lumi doesn't know turns it off,
-  never the policy), only to the Lumi Cloud that policy came from, and only
-  after the person confirmed the notice for that policy
-  (`oversight.acknowledge`: the notice's own button, never a status push or
-  a painted page, or an interactive terminal; a fingerprint of the
-  organization, the enrollment and the section). `Session.run` records
-  every turn, so a new entry point is covered by running through it; a new
-  surface that runs turns must show `oversight.terminal_notice` or the
-  app's notice first, and one whose people aren't the computer's person (the
-  gateway's chats) tells them itself first (`oversight.chat_notice`).
-  Anything shared passes `secret_scan.redact_for_sharing` before it is cut;
-  file contents and tool output never leave, and excluded files and their
-  patterns are never named. A flag's `rule` is a label from
-  `security_flags.RULES`, never free text; what someone wrote goes only in
-  the excerpt, which goes only with messages. Session titles go only with
-  messages. Patterns that run on tool output must take linear time.
-  Refusals carry `denied_by` on their `tool.result` for the flags; a new
-  place that refuses a tool call should set it. Tests use fake clients,
-  never a real Lumi Cloud.
+  never the policy), only to the Lumi Cloud that policy came from. While it
+  is in force, nothing reaches a model until the person confirmed the
+  notice for that policy on this computer (`oversight.admit`, asked by
+  `Session.run` before each turn and each model request, and
+  `oversight.refusal` at entry points outside a turn: the app's message
+  box, plans, missions, autonomous sessions, Team's `policy_refusal`, model
+  comparisons, evaluations, dictation). A new entry point runs through
+  `Session.run` and refuses before it starts; `TestEveryPath` fails if code
+  calls the turn loop another way. Confirmation (`oversight.acknowledge`)
+  comes only from a person: the notice's own button (never a status push,
+  a timer or a painted page, and focus never moves onto it), a typed yes at
+  an interactive terminal, or a gateway chat's button or reply for that
+  chat. It is a record signed with the device key
+  (`CloudClient.sign_as_device`), kept locally and sent in the background
+  to `/api/v1/oversight/acknowledgments`. Only a surface that sets
+  `Session.oversight_unattended` (scheduled tasks, `lumi run` without an
+  interactive terminal) runs unconfirmed, under the policy's
+  `oversight.unattended` (`record` or `block`); every record carries its
+  `trigger` and `unattended`. Anything shared passes
+  `secret_scan.redact_for_sharing` before it is cut; file contents and tool
+  output never leave, and excluded files and their patterns are never
+  named. A flag's `rule` is a label from `security_flags.RULES`, never free
+  text; what someone wrote goes only in the excerpt, which goes only with
+  messages. Session titles go only with messages. Patterns that run on tool
+  output must take linear time. Refusals carry `denied_by` on their
+  `tool.result` for the flags; a new place that refuses a tool call should
+  set it. Tests use fake clients, never a real Lumi Cloud.
 - `lumi run` (`headless.py`) builds its session from the same pieces as the
   app: `engine/policies.project_execution_policy`, `ExclusionRules`, workspace
   trust and policy checks. Keep the two in step, and never let a headless run

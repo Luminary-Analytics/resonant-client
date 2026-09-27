@@ -3,10 +3,10 @@
 An organization can have Lumi share what its people do with the agent: each
 turn's activity, optionally the messages, and security flags. Its Lumi Cloud
 shows them to the organization's security staff. This page covers the
-desktop app's side. Code: `lumi/oversight.py` (recording, the notice,
-sending), `lumi/security_flags.py` (detection) and
-`secret_scan.redact_for_sharing` (what is removed before anything leaves).
-Lumi Cloud's side is in its own repository.
+desktop app's side. Code: `lumi/oversight.py` (the notice and its
+confirmation, admitting turns, recording, sending), `lumi/security_flags.py`
+(detection) and `secret_scan.redact_for_sharing` (what is removed before
+anything leaves). Lumi Cloud's side is in its own repository.
 
 Status: first pass, source only, not released.
 
@@ -27,7 +27,8 @@ Only an [organization policy](enterprise-policy.md) can turn it on, with an
   "security_flags": true,
   "retention_days": 90,
   "notice": "Questions: security@example.com",
-  "project_paths": false
+  "project_paths": false,
+  "unattended": "record"
 }
 ```
 
@@ -40,69 +41,199 @@ Only an [organization policy](enterprise-policy.md) can turn it on, with an
 | `retention_days` | How long Lumi Cloud keeps it, counted from when each turn ran: 1 to 3650 days, default 90. |
 | `notice` | Up to 500 characters in the organization's own words, shown with Lumi's description, never instead of it. |
 | `project_paths` | `true` shares full project paths instead of folder names. |
+| `unattended` | What a run with nobody to show the notice to does while nobody confirmed it as that computer user: `record` (the default) or `block`. See [runs with nobody at the screen](#runs-with-nobody-at-the-screen). |
 
 A `version` or a key this Lumi doesn't know turns oversight **off**, and
 Settings > Privacy & security says why (in Organization policy and
 Organization oversight); the rest of the policy stays in force. This section
 decides what is collected about people, so Lumi collects nothing rather than
 guess, and a newer Lumi Cloud never stops model requests on an older Lumi.
-Other mistakes (a value of the wrong type, `messages` without `activity`)
-make the policy invalid, like a mistake in any section, and an invalid
-policy stops model requests until it's fixed ([When something is
-wrong](enterprise-policy.md#when-something-is-wrong)).
+`unattended` is a version 1 key: no Lumi that read version 1 without it was
+released, and one that doesn't know it turns oversight off. Other mistakes
+(a value of the wrong type, `messages` without `activity`, an `unattended`
+other than `record` or `block`) make the policy invalid, like a mistake in
+any section, and an invalid policy stops model requests until it's fixed
+([When something is wrong](enterprise-policy.md#when-something-is-wrong)).
 
 In Lumi Cloud, administrators set this on the Policy page and publish it;
 the page asks them to confirm members will be told whenever a version
 collects more than what the members it reaches have now.
 
-## People always know
+## Nothing reaches a model until the notice is confirmed
 
-- **A notice beside the message box** names the organization and what it
-  receives, for example: *"Acme receives your sessions and what they did,
-  your messages, Lumi's replies and your sessions' titles (shortened,
+While oversight is **in force** (the policy asks for something, and records
+have [somewhere to go](#where-it-goes-and-when-it-doesnt)) and the person
+hasn't confirmed its notice on this computer, Lumi sends nothing to a model:
+
+- **In the app**, a notice above the message box names the organization and
+  what it receives, for example: *"Acme receives your sessions and what they
+  did, your messages, Lumi's replies and your sessions' titles (shortened,
   without code or secrets) and security flags from Lumi on this computer."*
-  The organization's own `notice` follows. It has no close button. **What's
-  shared** opens the details.
-- **Nothing is recorded until the person confirms the notice** with its
-  **I've read this** button. Only that click tells Lumi which policy's
-  notice was read (a fingerprint of the organization, this computer's
-  enrollment and the `oversight` section); a turn is recorded only if it
-  matches the policy in force. A notice that arrives while the window is
-  minimized or in the background is never confirmed for the person. A
-  policy that collects more, another enrollment, or another organization
-  needs the notice confirmed again, and leaving the organization or signing
-  out of Lumi Cloud forgets the confirmation. A notice that says nothing is
-  collected (the computer isn't enrolled, or the policy comes from
-  elsewhere) can't be confirmed.
-- **Settings > Privacy & security > Organization oversight** lists exactly
-  what is shared and what never is, how long it's kept, what is waiting to
-  be sent, what was sent, and anything dropped, refused, expired or
-  deleted. It also lists the person's own security flags.
-- **About Lumi** says it too, under *What leaves this computer*.
-- `lumi run` and the terminal UI print the notice when they start. At an
-  interactive terminal that counts as confirmed. An unattended run (a
-  scheduled task, CI, a model comparison) records only after the person has
-  confirmed the notice in the app or a terminal.
-- **The chat gateway** tells each chat in the chat, once per policy, before
-  that chat's first turn is recorded. A chat's turns are recorded only after
-  its notice was sent, whoever confirmed the notice on the computer; if the
-  notice can't be delivered, the chat's turns aren't recorded. The gateway's
-  status message includes the notice too.
+  The organization's own `notice` follows. It has no close button. Below it:
+  *Lumi won't send anything to a model until you confirm you've read this.*
+  The message box, its send button, attachments, dictation and the
+  autonomous-session button are disabled until the person presses **I've
+  read this**; a draft stays in the box. Focus never moves onto the button by
+  itself (a key meant for the message box can't confirm the notice): when the
+  box locks with focus in it, focus goes to the notice, and Tab reaches
+  **What's shared** and **I've read this**. Confirming unlocks the box and
+  puts focus back in it.
+- **Every entry point refuses**, with a message that says how to confirm:
+  `Session.run` (every turn: the app, `lumi run`, scheduled tasks, the
+  terminal UI, the chat gateway, tasks from chat, plan and mission
+  specialists, Team workers), `/plan`, a mission's **Build this roadmap**,
+  autonomous sessions (start, resume and each iteration), Team (the desktop
+  runtime's commands and every step of its orchestrator loop, through
+  `service.policy_refusal`), model comparisons (at the start and before each
+  run), model evaluations, a scheduled task's **Run now** (the person's own
+  action, unlike the schedule itself), dictation, AI Employee advice, and
+  tasks from chat (the chat is told why). The server refuses a message even
+  if a page sends one.
+- `Session.run` asks before the turn and again before **each model
+  request**, so a policy that arrives mid-turn with a notice the person
+  hasn't confirmed stops the turn there. A refused turn never reaches the
+  conversation's history. A delegated worker follows its parent's surface.
+  A new entry point is covered by running through `Session.run`; a test
+  (`TestEveryPath`) fails if any code calls the turn loop another way.
+- A notice that says nothing is collected (the computer isn't enrolled, or
+  the policy comes from elsewhere) blocks nothing and can't be confirmed.
+- If the check itself fails while a policy asks for oversight, the turn is
+  refused rather than admitted.
+
+A policy that collects more, another enrollment, or another organization
+needs the notice confirmed again, and leaving the organization or signing
+out of Lumi Cloud forgets the confirmation (the app locks again at once).
+Confirmations are per computer user: another person signing in to the same
+computer confirms for themselves.
+
+**Settings > Privacy & security > Organization oversight** lists exactly what
+is shared and what never is, who can read messages, what happens to runs
+with nobody at the screen, how long it's kept, the person's confirmation
+(when, which notice, and whether Lumi Cloud has it), what is waiting to be
+sent, what was sent, and anything dropped, refused, expired or deleted. It
+also lists the person's own security flags. **About Lumi** says it too, under
+*What leaves this computer*.
 
 Lumi never records keystrokes, screenshots, the clipboard or anything done
 outside its own turns.
 
+## Confirming the notice: a signed record
+
+A confirmation comes only from a person:
+
+- **app**: the notice's own **I've read this** button (never a status push,
+  a timer or a painted page). The page sends the fingerprint and the notice
+  as it showed it; a page that showed another policy's notice or text
+  confirms nothing.
+- **terminal**: `lumi run` at an interactive terminal (standard input and
+  standard error are both terminals) and the terminal UI print the notice
+  and ask for a typed `yes`; anything else stops without sending anything.
+- **gateway**: a chat's own button or reply (below).
+
+Each produces this record, kept with the confirmation in
+`~/.lumi/oversight/notice.json` (a chat's in `chats.json`), with the exact
+notice text that was shown:
+
+```json
+{"kind": "lumi.oversight-acknowledgment/v1", "organization": "<org id>",
+ "notice_fingerprint": "<fingerprint>", "notice_sha256": "<sha256 of the notice text shown>",
+ "surface": "app|terminal|gateway",
+ "person": {"account": "<Lumi Cloud user id or null>", "os_user": "<computer user>", "chat": "<chat id or null>"},
+ "device_id": "<enrolled device id>", "acknowledged_at": "2026-09-27T12:34:56Z"}
+```
+
+- `organization` and `device_id` are this computer's enrollment;
+  `account` is the signed-in Lumi Cloud user (`null` when nobody is signed
+  in, and always for a chat, whose people aren't this computer's account).
+- The notice text is Lumi's sentence and the organization's words, as the
+  surface shows it ("from Lumi on this computer" in the app and terminals,
+  "from Lumi through this chat" in a chat).
+- **Signed** with the enrolled device's Ed25519 key (`api_keys`
+  `lumi_cloud_device_key`, `CloudClient.sign_as_device`) over the record's
+  canonical JSON: sorted keys, no whitespace, UTF-8 (`ensure_ascii=False`),
+  as policies are signed. The signature is base64url **with** padding.
+- The person is unblocked at once. The record then waits in the queue's
+  `acknowledgments` table and goes to `POST /api/v1/oversight/acknowledgments`
+  (`{"record": ..., "signature": ...}`, signed in as the device) before any
+  turn records, retried with the same backoff. A record the key couldn't
+  sign when it was made is signed by the sender first.
+- Lumi Cloud answers `201 {"id": ...}`, or refuses: `409 notice_mismatch`
+  (the fingerprint isn't one the organization's policy produced), `422
+  invalid_signature`. A refusal (also a 400 or 403) is shown in Settings and
+  never sent again; it doesn't block the person. A record made under another
+  enrollment isn't sent to this one. Processes claim a record before sending
+  it, so two never send one twice.
+
+## Runs with nobody at the screen
+
+A scheduled task (`lumi schedule run`, trigger `schedule`) and `lumi run`
+without an interactive terminal (CI, service accounts, output or input
+piped; trigger `headless`) have nobody to show the notice to.
+
+- If this computer user confirmed the notice for the policy in force (in the
+  app or at a terminal), the run proceeds and is recorded as theirs.
+- Otherwise `oversight.unattended` decides:
+  - `record` (the default): the run proceeds. It prints the notice first
+    (on standard error; at the top of the output with `--output text`; as a
+    first `lumi.oversight` line with `jsonl`; as the result's first key,
+    `oversight`, with `json`), the audit log records
+    `oversight.unattended_run`, and its records carry the computer user and
+    this computer as who ran it.
+  - `block`: the run is refused before anything starts (exit code 2) until
+    someone confirms the notice on this computer as that user: in the app,
+    or by typing yes at an interactive `lumi run` or the terminal UI.
+- A scheduled run's kept result has the notice in its summary, not as an
+  error. A model comparison's runs are `lumi run`s too; a comparison only
+  starts once its person confirmed the notice, so they run as theirs.
+- Tasks from chat never run on a managed computer (AGENTS.md); on a joined
+  one they run only after the person confirmed the notice.
+
+Only a surface that says nobody is there (`Session.oversight_unattended`)
+runs under `record`; every other turn needs a person's confirmation.
+
+## The chat gateway
+
+The person running `lumi gateway` is shown the notice at their terminal.
+The people in each chat confirm it themselves before that chat's requests
+run:
+
+- A chat that hasn't confirmed the notice for the policy in force is sent it
+  instead of a reply, with an **I've read this** button (Telegram, Slack) and
+  *reply "I've read this"*. The request doesn't run and nothing reaches a
+  model.
+- The button (`/acknowledge <token>`) or the reply `I've read this` (any
+  case, with or without the curly apostrophe; also `I have read this`)
+  confirms it for that chat and that policy's fingerprint: a signed record
+  with `surface: "gateway"` and `person.chat`. A reply counts only once the
+  chat was sent that notice, and a button from an older notice is answered
+  with the current one. The chat then sends its request again.
+- A policy that collects more is confirmed again. **status** repeats the
+  notice. The gateway sends records and confirmations to Lumi Cloud while
+  it runs.
+
 ## What a turn record holds
 
-Recorded for every turn that goes through `Session.run`: the app, `lumi run`,
-scheduled tasks, the terminal UI, the chat gateway, tasks from chat, plans
-and missions. A delegated worker's calls are part of its parent's turn.
+Recorded for every turn that goes through `Session.run` while oversight is
+in force and the turn was admitted. A delegated worker's calls are part of
+its parent's turn.
+
+Every record (turns and flags) carries:
+
+- `trigger`: what started it: `app`, `terminal` (the terminal UI, or `lumi
+  run` someone confirmed at an interactive terminal), `gateway` (the chat
+  gateway and tasks from chat), `schedule`, `headless` (`lumi run` without an
+  interactive terminal), `plan`, `mission` (a mission's roadmap or an
+  autonomous session) or `team` (a Team worker);
+- `unattended`: `true` when nobody was there to be shown the notice
+  (`schedule`, `headless`), `false` otherwise;
+- `os_user`: the computer user who ran it (who an unattended run belongs
+  to).
 
 With `activity`:
 
 - the session's id, the project folder's name (its path with
-  `project_paths`) and where it ran (`app`, `lumi run`, `terminal`,
-  `chat gateway`, `task from chat`);
+  `project_paths`) and where it ran (`surface`: `app`, `lumi run`,
+  `terminal`, `chat gateway`, `task from chat`);
 - the turn's number, start and end, provider, model, permission mode and
   outcome (`completed`, `error`, `cancelled`, `stopped`);
 - requests, tokens and cost (`null` when the model has no price);
@@ -187,50 +318,83 @@ of an output are searched.
 Records go only to the Lumi Cloud of the organization whose policy asks for
 them: the policy must come from that Lumi Cloud (signed and verified for
 this enrolled computer), or be a machine policy that enrolled the computer
-there. Otherwise Settings says why nothing is collected.
+there. Otherwise Settings says why nothing is collected, and nothing is
+blocked.
 
 1. After each turn, Lumi adds the turn and its flags to a queue in
    `~/.lumi/oversight/queue.sqlite3`. The queue holds at most 5,000 records
    (20 MB); past that the oldest are dropped and counted. Records older than
    the policy's `retention_days` are deleted unsent and counted: Lumi Cloud
    would only delete them.
-2. A background thread in the app sends them in batches of up to 100 to
-   `POST /api/v1/oversight/events`, signed in as the device
-   (`lumi/cloud.py`), never on the UI's thread. Failures are retried after
-   30 seconds, then up to an hour apart; new turns don't cut that wait
-   short, a policy change does. `lumi run` prints its result first, then
-   tries for up to 5 seconds before it exits; the app sends the rest.
-3. Before every batch Lumi checks the policy again. If the organization
-   stopped asking, Lumi Cloud answers `oversight_off`, or the computer left
-   the organization, queued records are **deleted, not sent**.
+2. A background thread sends confirmations of the notice first, then turn
+   records in batches of up to 100 to `POST /api/v1/oversight/events`,
+   signed in as the device (`lumi/cloud.py`), never on the UI's thread. The
+   app, the terminal UI and the chat gateway run it; `lumi run` prints its
+   result first, then tries for up to 5 seconds before it exits (the app or
+   the next run sends the rest). Failures are retried after 30 seconds, then
+   up to an hour apart; new turns don't cut that wait short, a policy change
+   does.
+3. Before every batch of records Lumi checks the policy again. If the
+   organization stopped asking, Lumi Cloud answers `oversight_off`, or the
+   computer left the organization, queued records are **deleted, not
+   sent**.
 4. A batch Lumi Cloud refuses as invalid isn't sent again; it's counted.
 
 Every record dropped, refused, expired or deleted, and the last error, show
-in Settings. The audit log records when a notice was confirmed
-(`oversight.notice_shown`, also for each gateway chat), when confirmations
-were forgotten (`oversight.notice_forgotten`) and when records were deleted
+in Settings. The audit log records each confirmation
+(`oversight.notice_shown`, with its surface, fingerprint and the notice's
+SHA-256), when confirmations were forgotten (`oversight.notice_forgotten`),
+unattended runs (`oversight.unattended_run`), confirmations Lumi Cloud
+refused (`oversight.acknowledgment_refused`) and when records were deleted
 (`oversight.discarded`).
 
-Lumi Cloud deletes what it keeps `retention_days` after each turn ran.
-Viewing messages, titles and excerpts there needs a security admin or
-auditor role, or an owner's grant, and every view is recorded in the
-organization's activity log.
+Lumi Cloud deletes what it keeps `retention_days` after each turn ran. In
+Lumi Cloud, owners, security admins and auditors can read messages, titles
+and excerpts through their role; anyone else only if an owner allows them;
+and every view is recorded in the organization's activity log.
 
-Files: `~/.lumi/oversight/` holds `queue.sqlite3`, `state.json` (the
-counts), `flags.jsonl` (the person's last 500 flags), `notice.json` (the
-notice last confirmed), `chats.json` (which gateway chats were sent which
-notice) and `sessions.json` (turn numbers).
+Files: `~/.lumi/oversight/` holds `queue.sqlite3` (records and confirmations
+waiting to be sent), `state.json` (the counts), `flags.jsonl` (the person's
+last 500 flags), `notice.json` (this person's confirmation, its record and
+signature), `chats.json` (which gateway chats were sent and confirmed which
+notice, with their records) and `sessions.json` (turn numbers).
+
+## The contract with Lumi Cloud
+
+What Lumi Cloud implements against (lumi-cloud's oversight ingest):
+
+- **The fingerprint** of the notice in force: the first 16 hex characters of
+  SHA-256 over the canonical JSON (sorted keys, no whitespace, UTF-8,
+  `ensure_ascii=False`) of `{"device": <device id>, "organization_id":
+  <organization id>, "oversight": <the policy's oversight section exactly as
+  published>}` (`oversight.notice_fingerprint`). Lumi Cloud computes it for
+  the device from each policy version it published to tell a notice it
+  produced. A machine policy's section that Lumi Cloud didn't publish
+  can't match, so its confirmations are refused (`409`) and shown as such.
+- **Acknowledgments**: `POST /api/v1/oversight/acknowledgments`, device
+  authenticated like `POST /api/v1/oversight/events`; body `{"record":
+  <the record above>, "signature": "<base64url Ed25519 over the canonical
+  JSON of record>"}`. Lumi Cloud verifies it with the device's registered
+  public key, checks that `organization` and `device_id` match the
+  authenticated device, and stores it immutably. Answers: `201 {"id": ...}`;
+  `409 notice_mismatch`; `422 invalid_signature`.
+- **Events** carry `trigger` and `unattended` (and `os_user`) as above; Lumi
+  Cloud shows and filters by `trigger` and `unattended`.
+- **Policy**: `oversight.unattended`, `record` (the default) or `block`, a
+  version 1 key.
 
 ## Known limits
 
-- The app can be used without confirming the notice: nothing is recorded
-  until then, so an organization that relies on oversight sees nothing from
-  someone who never confirms it.
+- `lumi run` counts as interactive only when standard input and standard
+  error are both terminals: a person who pipes a task in (`lumi run -`) is
+  an unattended run, which prints the notice and, under `record`, runs.
+- The check reads small files before every turn and model request
+  (`settings.json`, the confirmation): cheap, but not free.
 - A worker's own secret redactions and model usage aren't in its parent's
   record: the parent sees the worker's tool calls only.
-- Codex and Claude Code run their own tool loops: their turns are recorded,
-  but their tools' refusals aren't seen by Lumi.
-- An unattended run on a computer where nobody has confirmed the notice (a
-  CI server with a service account) records nothing.
+- Codex and Claude Code run their own tool loops: their turns are admitted
+  and recorded, but their tools' refusals aren't seen by Lumi.
+- `os_user` on records isn't part of the written contract with Lumi Cloud
+  yet (Lumi Cloud ignores fields it doesn't know).
 - Credentials with no name, no known format and no randomness (a short
   password typed as a bare argument) can't be told from ordinary text.

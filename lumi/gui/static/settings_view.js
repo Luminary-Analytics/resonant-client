@@ -547,10 +547,13 @@ class LumiSettingsView {
     // While an organization's policy has Lumi share activity, messages or
     // security flags with its Lumi Cloud, a notice beside the message box
     // names the organization and what it receives. It can't be dismissed, and
-    // Lumi records nothing until the person confirms it with the notice's own
-    // "I’ve read this" button: only that click tells the server which
-    // policy's notice was read (its fingerprint). A status that arrives while
-    // the window is minimized or in the background is never confirmed for them.
+    // until the person confirms it with the notice's own "I’ve read this"
+    // button the message box is locked: nothing is sent to a model (the
+    // server refuses too). Only that click tells the server which policy's
+    // notice was read (its fingerprint, and the text as shown here). A status
+    // that arrives while the window is minimized or in the background is never
+    // confirmed for them, and focus never moves onto the button by itself, so
+    // a key pressed for the message box can't confirm it.
 
     _initOversightNotice() {
         const notice = document.getElementById('oversight-notice');
@@ -560,38 +563,76 @@ class LumiSettingsView {
         document.getElementById('oversight-notice-confirm')?.addEventListener('click', () => this._confirmOversightNotice());
     }
 
+    _oversightPending(status) {
+        // Only a notice that says something is collected, with somewhere to send
+        // it, locks the message box and asks to be confirmed.
+        return Boolean(status?.configured && status.destination && status.fingerprint
+            && (status.required ?? !status.acknowledged));
+    }
+
     _applyOversight(status) {
         if (!status) return;
         this.oversightStatus = status;
         const notice = document.getElementById('oversight-notice');
         const text = document.getElementById('oversight-notice-text');
+        const lock = document.getElementById('oversight-notice-lock');
         const confirm = document.getElementById('oversight-notice-confirm');
+        const shown = Boolean(status.configured);
+        const pending = this._oversightPending(status);
         if (notice && text) {
-            const shown = Boolean(status.configured);
-            // Confirming starts recording, so only a notice that would record asks for it.
-            const pending = shown && Boolean(status.destination) && !status.acknowledged && Boolean(status.fingerprint);
-            const words = shown ? [status.notice, status.organization_notice, status.reason,
-                pending ? 'Nothing is shared until you confirm you’ve read this.' : ''].filter(Boolean).join(' ') : '';
+            // Exactly the server's notice: confirming it covers this text.
+            const noticeText = status.notice_text
+                || [status.notice, status.organization_notice].filter(Boolean).join(' ');
+            const words = shown ? [noticeText, status.reason].filter(Boolean).join(' ') : '';
             if (text.textContent !== words) text.textContent = words;
             notice.hidden = !shown;
             notice.classList.toggle('oversight-notice-inactive', shown && Boolean(status.reason));
             notice.classList.toggle('oversight-notice-pending', pending);
+            if (lock) lock.hidden = !pending;
             if (confirm) {
                 const hadFocus = document.activeElement === confirm;
                 confirm.hidden = !pending;
-                // Confirmed: keep keyboard focus in the notice rather than losing it with the button.
-                if (hadFocus && !pending) document.getElementById('oversight-notice-details')?.focus();
+                // Confirmed: the message box unlocks below and takes the focus the button had.
+                if (hadFocus && !pending) this._oversightFocusAfterConfirm = true;
             }
         }
+        this._setOversightLock(pending);
         if (this.currentView === 'settings') this.renderSettingsView();
+    }
+
+    _setOversightLock(locked) {
+        const was = Boolean(this._oversightLocked);
+        this._oversightLocked = locked;
+        const input = this.userInput || document.getElementById('user-input');
+        const hadFocus = Boolean(input) && document.activeElement === input;
+        for (const id of ['user-input', 'send-btn', 'add-context-btn', 'composer-prompts-btn', 'mic-btn', 'composer-autonomous-btn']) {
+            const control = document.getElementById(id);
+            if (control) control.disabled = locked;
+        }
+        if (input) {
+            input.placeholder = locked ? 'Confirm the notice above to start'
+                : this.isRunning ? 'Write a follow-up for the running agent...' : 'Message Lumi';
+            input.closest?.('.input-wrapper')?.classList.toggle('is-oversight-locked', locked);
+        }
+        if (locked && !was && hadFocus) {
+            // The message box can't keep focus while locked: move it to the notice
+            // itself (not its button), where Tab reaches What’s shared and I’ve read this.
+            document.getElementById('oversight-notice')?.focus();
+        }
+        if (!locked && was && this._oversightFocusAfterConfirm && input) {
+            this._oversightFocusAfterConfirm = false;
+            input.focus();
+        }
     }
 
     _confirmOversightNotice() {
         // Sent only from the button's own click (or Enter/Space on it); the
-        // server checks the fingerprint is still the policy in force.
+        // server checks the fingerprint and text are still the policy in force.
         const status = this.oversightStatus;
-        if (!status?.configured || !status.destination || status.acknowledged || !status.fingerprint) return;
-        this.send({command: 'oversight_notice_shown', fingerprint: status.fingerprint});
+        if (!this._oversightPending(status)) return;
+        const shown = document.getElementById('oversight-notice-text')?.textContent || '';
+        this.send({command: 'oversight_notice_shown', fingerprint: status.fingerprint,
+            notice: status.notice_text || shown});
     }
 
     _openOversightSettings() {
@@ -654,11 +695,33 @@ class LumiSettingsView {
         const list = items => `<ul class="oversight-list">${(items || []).map(item => `<li>${esc(item)}</li>`).join('')}</ul>`;
         const state = s.reason ? `Nothing is collected: ${esc(s.reason)}`
             : s.acknowledged ? `On. ${esc(s.notice)}`
-            : 'Starts once you confirm the notice beside the message box with I’ve read this. Until then nothing is recorded.';
+            : 'Lumi sends nothing to a model until you confirm the notice beside the message box with I’ve read this.';
+        // This person's confirmation: when, which notice, and whether Lumi Cloud has it.
+        const ack = s.acknowledgment;
+        let confirmed = '';
+        if (ack) {
+            const upload = ack.upload || {};
+            const surfaces = {app: ' in the app', terminal: ' at a terminal', gateway: ' in a chat'};
+            const clouds = {
+                sent: 'Lumi Cloud has it.',
+                pending: 'It’s waiting to be sent to Lumi Cloud.',
+                refused: 'Lumi Cloud refused it.',
+                not_sent: 'It wasn’t sent to Lumi Cloud.',
+            };
+            const which = ack.current ? 'the notice in force' : 'an earlier notice';
+            const cloud = clouds[upload.state] || 'Lumi Cloud hasn’t answered yet.';
+            const why = upload.error && upload.state !== 'sent' ? ` ${esc(upload.error)}` : '';
+            const unsigned = ack.signed ? '' : ' It isn’t signed with this computer’s key yet.';
+            confirmed = row('Your confirmation', `You confirmed ${which}${surfaces[ack.surface] || ''} on ${esc(when(ack.at))}. ${cloud}${why}${unsigned}`, 'status', 'org-oversight-confirmation')
+                + (ack.notice ? row('The notice you confirmed', `${esc(ack.notice)} (notice ${esc(ack.fingerprint)})`) : '');
+        }
         return `${row(`Managed by ${esc(s.organization)}`, state, 'status', 'org-oversight-start')}
             ${s.organization_notice ? row(`From ${esc(s.organization)}`, esc(s.organization_notice)) : ''}
+            ${confirmed}
             <h4 class="settings-subheading">What ${esc(s.organization)} receives</h4>${list(s.shared)}
             <h4 class="settings-subheading">What it never receives</h4>${list(s.not_shared)}
+            ${s.readers ? row('Who reads messages', esc(s.readers)) : ''}
+            ${s.unattended_runs ? row('Runs with nobody at the screen', esc(s.unattended_runs)) : ''}
             ${row('How long it’s kept', esc(s.retention))}
             ${row('Sending', sending || 'Nothing recorded yet.')}${problem}
             <h4 class="settings-subheading">Your security flags</h4>

@@ -2275,6 +2275,11 @@ class AppState:
     def _cloud_changed(self, status: dict) -> None:
         """Lumi Cloud's status changed (a sign-in, an enrollment, a check-in)."""
         self._push_ws_event({"event": "cloud_status", "data": status})
+        # Signing out or leaving forgets the oversight notice's confirmation
+        # (lumi/oversight.py): the page shows the notice, and locks, at once.
+        from .. import oversight
+
+        self._push_ws_event({"event": "oversight_status", "data": oversight.status()})
         marker = (status.get("policy_version"), status.get("policy_source"))
         if marker == getattr(self, "_cloud_policy_marker", None):
             return
@@ -2700,6 +2705,18 @@ async def _process_chat_message(ws: WebSocket, msg: dict[str, Any]) -> None:
     if swarm_busy(state):
         await ws.send_json({"event": "error", "message": "Finish or stop the active team before starting another operation."})
         return
+    # Organization oversight (lumi/oversight.py): nothing reaches a model, and
+    # nothing is saved or titled, before the person confirms the notice. Every
+    # queued or steered message (and employee task) passes here; Session.run
+    # refuses as well.
+    from .. import oversight
+
+    if msg.get('command') == 'employee_task' or str(msg.get("text") or "").strip():
+        refusal = await asyncio.to_thread(oversight.refusal, "app")
+        if refusal:
+            await ws.send_json({"event": "oversight_status", "data": await asyncio.to_thread(oversight.status)})
+            await ws.send_json({"event": "error", "message": refusal, "code": oversight.REFUSAL_CODE})
+            return
     if msg.get('command') == 'employee_task':
         from .employee_tasks import command as task_command
         await task_command(state, ws.send_json, msg)

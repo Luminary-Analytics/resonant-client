@@ -43,7 +43,8 @@ What a policy can do (every section is optional)::
       "budgets": [{"scope": "user", "period": "month", "warn_usd": 200, "block_usd": 400}],
       "approvals": {"commands": ["git push --force*", "terraform apply*"], "wait_minutes": 30},
       "oversight": {"activity": true, "messages": "redacted", "security_flags": true,
-                    "retention_days": 90, "notice": "Questions: security@acme.example"}
+                    "retention_days": 90, "notice": "Questions: security@acme.example",
+                    "unattended": "record"}
     }
 
 ``approvals`` lists commands (``fnmatch`` patterns over the whole command)
@@ -55,12 +56,16 @@ run (engine/second_approval.py).
 ``redacted`` or ``full``, secrets removed at every level) and security flags,
 kept there for ``retention_days``. It is off unless a policy turns it on, and
 the person is always told: Lumi shows a notice naming the organization and
-what it receives, and shares nothing until they have confirmed they read it.
-Its ``version`` (1, the default) says which keys it may have. A key or a
-version this Lumi doesn't know turns oversight off, with the reason in
-Settings, and leaves the rest of the policy in force: Lumi never collects
-less or more than it can describe, and a newer Lumi Cloud never blocks model
-requests on an older Lumi.
+what it receives, and sends nothing to a model until they have confirmed
+they read it. ``unattended`` says what a run with nobody to show the notice
+to does (a scheduled task, ``lumi run`` without an interactive terminal)
+while nobody has confirmed it as that computer user: ``record`` (the
+default) runs it, prints the notice with its output and records it;
+``block`` refuses it. Its ``version`` (1, the default) says which keys it
+may have. A key or a version this Lumi doesn't know turns oversight off,
+with the reason in Settings, and leaves the rest of the policy in force:
+Lumi never collects less or more than it can describe, and a newer Lumi
+Cloud never blocks model requests on an older Lumi.
 
 Locked settings override the user's value and can't be changed in Settings,
 which shows who manages them. Lists match ``fnmatch`` patterns.
@@ -102,10 +107,15 @@ class PolicyError(ValueError):
 # How much of people's messages an organization's oversight receives (lumi/oversight.py).
 OVERSIGHT_MESSAGE_LEVELS = ("off", "redacted", "full")
 # The section's versions this Lumi understands, and each one's keys.
+# ``unattended`` is a version 1 key: no Lumi that read version 1 without it
+# was released, and one that doesn't know it turns oversight off (fail safe).
 OVERSIGHT_VERSIONS = (1,)
 OVERSIGHT_KEYS = frozenset({"version", "activity", "messages", "security_flags", "retention_days", "notice",
-                            "project_paths"})
+                            "project_paths", "unattended"})
 OVERSIGHT_NOTICE_LIMIT = 500
+# What a run nobody can be shown the notice to does while nobody confirmed it
+# as that computer user (lumi/oversight.py): run and record it, or refuse it.
+OVERSIGHT_UNATTENDED = ("record", "block")
 
 
 @dataclass(frozen=True)
@@ -123,6 +133,9 @@ class Oversight:
     * ``retention_days``: how long Lumi Cloud keeps it.
     * ``notice``: the organization's own words, shown with Lumi's description.
     * ``project_paths``: full project paths instead of folder names.
+    * ``unattended``: what a run with nobody to show the notice to does
+      while nobody confirmed it as that computer user: ``record`` (run it,
+      print the notice with its output, record it) or ``block`` (refuse it).
     * ``error``: why a section this Lumi can't honor (an unknown key or
       version) turned oversight off; shown in Settings.
     """
@@ -133,6 +146,7 @@ class Oversight:
     retention_days: int = 90
     notice: str = ""
     project_paths: bool = False
+    unattended: str = "record"
     version: int = 1
     error: str = ""
 
@@ -144,8 +158,8 @@ class Oversight:
     def summary(self) -> dict:
         return {"version": self.version, "activity": self.activity, "messages": self.messages,
                 "security_flags": self.security_flags, "retention_days": self.retention_days,
-                "notice": self.notice, "project_paths": self.project_paths, "enabled": self.enabled,
-                "error": self.error}
+                "notice": self.notice, "project_paths": self.project_paths, "unattended": self.unattended,
+                "enabled": self.enabled, "error": self.error}
 
 
 def _oversight(value: Any) -> Oversight:
@@ -190,10 +204,16 @@ def _oversight(value: Any) -> Oversight:
     notice = value.get("notice") or ""
     if not isinstance(notice, str) or len(notice) > OVERSIGHT_NOTICE_LIMIT:
         raise PolicyError(f"oversight.notice must be text of at most {OVERSIGHT_NOTICE_LIMIT} characters.")
+    unattended = value.get("unattended", "record")
+    if unattended is None:
+        unattended = "record"
+    if unattended not in OVERSIGHT_UNATTENDED:
+        raise PolicyError('oversight.unattended must be "record" or "block".')
     return Oversight(activity=activity, messages=messages,
                      security_flags=_flag(value.get("security_flags"), "oversight.security_flags"),
                      retention_days=retention, notice=" ".join(notice.split()),
-                     project_paths=_flag(value.get("project_paths"), "oversight.project_paths"))
+                     project_paths=_flag(value.get("project_paths"), "oversight.project_paths"),
+                     unattended=unattended)
 
 
 @dataclass

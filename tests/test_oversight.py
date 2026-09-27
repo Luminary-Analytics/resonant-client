@@ -1,16 +1,24 @@
-"""Organization oversight (lumi/oversight.py): the policy section, the notice, recording turns and sending them."""
+"""Organization oversight (lumi/oversight.py): the policy section, the notice and its confirmation, recording
+turns, unattended runs, the chat gateway's chats, and sending records and confirmations to Lumi Cloud."""
 
 from __future__ import annotations
 
+import ast
 import asyncio
+import base64
+import hashlib
+import io
 import json
+import re
 import threading
 import time
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from types import SimpleNamespace
 
 import httpx
 import pytest
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from lumi import oversight, policy
 from lumi.cloud import CloudError
@@ -24,18 +32,36 @@ BASE = {"schema": "lumi.policy/v1", "organization": "Acme"}
 GITHUB_TOKEN = "ghp_" + "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8"
 EVERYTHING = {"activity": True, "messages": "redacted", "security_flags": True, "retention_days": 30,
               "notice": "Questions:   security@acme.example"}
+# This computer's device key in these tests (the app keeps it in api_keys, lumi/cloud.py).
+DEVICE_KEY = Ed25519PrivateKey.generate()
+REFUSED = oversight.REFUSAL_CODE
+
+
+def _sign(data: bytes) -> str:
+    """As CloudClient.sign_as_device: Ed25519 by the device key, base64url with padding."""
+    return base64.urlsafe_b64encode(DEVICE_KEY.sign(data)).decode("ascii")
+
+
+def _verifies(record: dict, signature: str) -> bool:
+    try:
+        DEVICE_KEY.public_key().verify(base64.urlsafe_b64decode(signature), json.dumps(
+            record, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8"))
+        return True
+    except Exception:
+        return False
 
 
 def _parse(section, **extra):
     return policy.parse({**BASE, **extra, "oversight": section}, source="test")
 
 
-def _device(how="joined", device_id="dev-1", organization_id="org_acme"):
+def _device(how="joined", device_id="dev-1", organization_id="org_acme", account=None):
     home = state_home()
     home.mkdir(parents=True, exist_ok=True)
-    (home / "settings.json").write_text(json.dumps({"cloud": {"device": {
-        "id": device_id, "how": how, "organization_id": organization_id, "organization_name": "Acme"}}}),
-        encoding="utf-8")
+    cloud = {"device": {"id": device_id, "how": how, "organization_id": organization_id, "organization_name": "Acme"}}
+    if account:
+        cloud["account"] = {"user_id": account, "email": "ada@acme.example"}
+    (home / "settings.json").write_text(json.dumps({"cloud": cloud}), encoding="utf-8")
 
 
 @pytest.fixture
@@ -56,10 +82,10 @@ def org(monkeypatch):
     return install
 
 
-def _shown():
-    """The person confirmed the notice for the policy in force."""
+def _shown(surface="app"):
+    """The person confirmed the notice for the policy in force (the app's button, signed by the device key)."""
     status = oversight.status()
-    assert oversight.acknowledge(status["fingerprint"], "app")
+    assert oversight.acknowledge(status["fingerprint"], surface, notice=status["notice_text"], signer=_sign)
     return status
 
 
@@ -79,6 +105,17 @@ def _session(tmp_path, backend, *, tier="full-auto", title="Fix the login loop")
     return session
 
 
+class NeverCalled(StreamingBackend):
+    """A model that must not be reached: nothing is sent before the notice is confirmed."""
+
+    def stream(self, **kwargs):
+        raise AssertionError("A request reached the model before the oversight notice was confirmed")
+
+
+def _refused(events):
+    return [event for event in events if event.get("event") == "error" and event.get("code") == REFUSED]
+
+
 # ── The policy section ──────────────────────────────────────────────────────
 
 
@@ -95,10 +132,17 @@ class TestPolicySection:
         assert current.oversight == policy.Oversight(activity=True, messages="redacted", security_flags=True,
                                                      retention_days=30, notice="Questions: security@acme.example")
         assert current.summary()["oversight"]["enabled"] is True
+        # Unattended runs are recorded unless the policy says to block them.
+        assert current.oversight.unattended == "record" and current.summary()["oversight"]["unattended"] == "record"
         policy.set_for_tests(current)
         assert policy.oversight_settings().messages == "redacted"
         # Flags alone are allowed: nothing about the work but what was flagged.
         assert _parse({"security_flags": True}).oversight.enabled
+
+    def test_unattended_is_a_version_1_key(self):
+        blocking = _parse({"version": 1, "activity": True, "unattended": "block"}).oversight
+        assert blocking.enabled and not blocking.error and blocking.unattended == "block"
+        assert _parse({"activity": True, "unattended": None}).oversight.unattended == "record"
 
     @pytest.mark.parametrize(("section", "problem"), [
         ("yes", "oversight must be an object"),
@@ -112,6 +156,9 @@ class TestPolicySection:
         ({"activity": True, "notice": "x" * 501}, "at most 500 characters"),
         ({"activity": True, "notice": 7}, "oversight.notice must be text"),
         ({"activity": True, "project_paths": "no"}, "oversight.project_paths must be true or false"),
+        ({"activity": True, "unattended": "sometimes"}, 'oversight.unattended must be "record" or "block"'),
+        ({"activity": True, "unattended": True}, 'oversight.unattended must be "record" or "block"'),
+        ({"activity": True, "unattended": 1}, 'oversight.unattended must be "record" or "block"'),
     ])
     def test_mistakes_make_the_policy_invalid(self, section, problem):
         with pytest.raises(policy.PolicyError, match=problem.replace("(", r"\(").replace(")", r"\)")):
@@ -119,10 +166,12 @@ class TestPolicySection:
 
     @pytest.mark.parametrize(("section", "named"), [
         ({"activity": True, "messages": "full", "screenshots": True}, "screenshots"),
+        ({"activity": True, "unattended": "record", "keystrokes": "all"}, "keystrokes"),
         ({"version": 2, "activity": True, "keystrokes": "all"}, "version 2"),
+        ({"version": 2, "activity": True, "unattended": "block"}, "version 2"),
         ({"version": "1", "activity": True}, 'version "1"'),
     ])
-    def test_a_section_this_lumi_cant_honor_turns_oversight_off_not_the_policy(self, section, named):
+    def test_a_section_this_lumi_cant_honor_turns_oversight_off_not_the_policy(self, section, named, tmp_path):
         # A newer Lumi Cloud may add keys; an older Lumi collects nothing rather than guessing,
         # and the rest of the organization's policy stays in force.
         current = _parse(section, models={"allowed": ["ollama:*"]}, shell={"rules": [
@@ -133,8 +182,13 @@ class TestPolicySection:
         policy.set_for_tests(current)
         assert policy.blocked_reason() == ""  # model requests go on
         status = oversight.status()
-        assert not status["configured"] and named in status["policy_error"]
-        assert named in oversight.terminal_notice(True, "terminal") and not oversight.status()["acknowledged"]
+        assert not status["configured"] and named in status["policy_error"] and not status["required"]
+        terminal = oversight.for_terminal(unattended=False)
+        assert named in terminal.notice and not terminal.confirm and not oversight.status()["acknowledged"]
+        # Nothing is collected, so nothing waits for a confirmation either.
+        backend = StreamingBackend(events=[text_delta("Hi."), done()])
+        events = list(_session(tmp_path, backend).run("hello"))
+        assert not _refused(events) and backend.stream_count == 1
 
     def test_a_machine_policy_with_a_newer_section_still_applies(self, monkeypatch, tmp_path):
         machine = tmp_path / "policy.json"
@@ -153,34 +207,55 @@ class TestPolicySection:
             policy.set_for_tests(None)
 
 
-# ── The notice and where records go ─────────────────────────────────────────
+# ── The notice, and nothing before it is confirmed ──────────────────────────
 
 
 class TestNotice:
-    def test_nothing_is_recorded_until_the_notice_has_been_confirmed(self, org, tmp_path):
+    def test_nothing_reaches_a_model_until_the_notice_is_confirmed(self, org, tmp_path):
         org(EVERYTHING)
         status = oversight.status()
-        assert status["configured"] and status["destination"] and not status["acknowledged"]
-        assert not status["active"]
+        assert status["configured"] and status["destination"] and status["required"]
+        assert not status["acknowledged"] and not status["active"]
         assert status["notice"] == ("Acme receives your sessions and what they did, your messages, Lumi's "
                                     "replies and your sessions' titles (shortened, without code or secrets) and "
                                     "security flags from Lumi on this computer.")
         assert status["organization_notice"] == "Questions: security@acme.example"
-        assert "30 days" in status["retention"] and len(status["shared"]) == 3
-        list(_session(tmp_path, StreamingBackend(events=[text_delta("Hi."), done()])).run("hello"))
-        assert _queue() == []
-        # A page that showed another policy's notice doesn't start this one.
-        assert not oversight.acknowledge("0" * 16, "app")
-        assert oversight.acknowledge(status["fingerprint"], "app")
-        assert oversight.status()["active"]
+        # What the page shows, and what confirming it covers: Lumi's words, then the organization's.
+        assert status["notice_text"] == f"{status['notice']} Questions: security@acme.example"
+        assert "30 days" in status["retention"] and len(status["shared"]) == 4
+        assert "owners, security admins and auditors" in status["readers"]
 
-    def test_a_policy_that_collects_more_needs_its_own_notice(self, org):
+        session = _session(tmp_path, NeverCalled())
+        events = list(session.run("hello"))
+        [refusal] = _refused(events)
+        assert "until you confirm Acme's oversight notice" in refusal["message"] and "I've read this" in \
+            refusal["message"]
+        # Refused before anything happened: not in the history, not recorded.
+        assert session.conversation_history == [] and _queue() == []
+        # A page that showed another policy's notice, or another text, confirms nothing.
+        assert not oversight.acknowledge("0" * 16, "app", notice=status["notice_text"])
+        assert not oversight.acknowledge(status["fingerprint"], "app", notice="Acme receives nothing.")
+        assert not oversight.status()["acknowledged"]
+        assert oversight.acknowledge(status["fingerprint"], "app", notice=status["notice_text"], signer=_sign)
+        after = oversight.status()
+        assert after["active"] and not after["required"]
+        backend = StreamingBackend(events=[text_delta("Hi."), done()])
+        events = list(_session(tmp_path, backend).run("hello"))
+        assert not _refused(events) and backend.stream_count == 1
+        assert [record["type"] for record in _queue()] == ["turn"]
+
+    def test_a_policy_that_collects_more_needs_its_own_notice(self, org, tmp_path):
         org({"activity": True})
         _shown()
         org({"activity": True, "messages": "full"})
         status = oversight.status()
-        assert status["configured"] and not status["acknowledged"] and not status["active"]
+        assert status["configured"] and not status["acknowledged"] and not status["active"] and status["required"]
         assert "your messages, Lumi's replies and your sessions' titles (without secrets)" in status["notice"]
+        assert _refused(list(_session(tmp_path, NeverCalled()).run("hello")))
+        # Blocking unattended runs changes the notice too: it is part of the section.
+        _shown()
+        org({"activity": True, "messages": "full", "unattended": "block"})
+        assert oversight.status()["required"]
 
     def test_the_notice_belongs_to_one_organization_and_enrollment(self, org):
         org(EVERYTHING)
@@ -192,21 +267,42 @@ class TestNotice:
         _device(organization_id="org_other")
         assert oversight.status()["fingerprint"] not in (first, "") and not oversight.status()["active"]
 
-    def test_records_go_only_to_the_organizations_own_lumi_cloud(self, org):
+    def test_the_fingerprint_is_the_organization_the_enrollment_and_the_section_as_published(self, org):
+        section = {"activity": True, "notice": "  Ask   security  "}
+        org(section)
+        # SHA-256 over the canonical JSON Lumi Cloud can compute from what it published (docs/organization-oversight.md).
+        expected = hashlib.sha256(json.dumps({"device": "dev-1", "organization_id": "org_acme", "oversight": section},
+                                             sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+                                  .encode("utf-8")).hexdigest()[:16]
+        assert oversight.status()["fingerprint"] == expected
+
+    def test_each_computer_user_confirms_for_themselves(self, org, monkeypatch):
+        org(EVERYTHING)
+        _shown()
+        assert oversight.status()["acknowledged"]
+        monkeypatch.setattr(oversight, "os_user", lambda: "someone-else")
+        assert oversight.status()["required"] and oversight.refusal()
+
+    def test_records_go_only_to_the_organizations_own_lumi_cloud(self, org, tmp_path):
         org(EVERYTHING, enrolled=False)
         status = oversight.status()
         assert "isn't enrolled in Acme's Lumi Cloud" in status["reason"] and not status["destination"]
+        # Nothing is collected, so nothing is blocked either.
+        assert not status["required"] and oversight.refusal() == ""
+        backend = StreamingBackend(events=[text_delta("Hi."), done()])
+        assert not _refused(list(_session(tmp_path, backend).run("hello"))) and backend.stream_count == 1
         # A notice that says nothing is collected can't be confirmed into collecting later.
-        assert not oversight.acknowledge(status["fingerprint"], "app")
+        assert not oversight.acknowledge(status["fingerprint"], "app", notice=status["notice_text"])
         # A machine policy asks, but this computer joined an organization in the app.
         org(EVERYTHING, cloud=False)
         status = oversight.status()
-        assert "doesn't come from" in status["reason"] and not status["active"]
+        assert "doesn't come from" in status["reason"] and not status["active"] and not status["required"]
         assert not oversight.acknowledge(status["fingerprint"], "app")
         assert not (state_home() / "oversight" / "notice.json").exists()
         # A machine policy that enrolled the computer itself.
         org(EVERYTHING, cloud=False, extra={"cloud": {"url": "https://cloud.example.test"}})
         _device(how="managed")
+        assert oversight.status()["required"]
         _shown()
         assert oversight.status()["active"]
 
@@ -215,7 +311,7 @@ class TestNotice:
         _shown()
         oversight.chat_notice_sent("gateway:42", oversight.status()["fingerprint"])
         oversight.forget_notice("Signed out of Lumi Cloud")
-        assert not oversight.status()["acknowledged"]
+        assert not oversight.status()["acknowledged"] and oversight.status()["required"]
         assert not (state_home() / "oversight" / "chats.json").exists()
 
     def test_workers_are_recorded_with_their_parent(self, org):
@@ -224,15 +320,313 @@ class TestNotice:
         worker = SimpleNamespace(is_subagent=True)
         assert oversight.begin_turn(worker, "sub task") is None
 
+    def test_a_worker_follows_its_parent(self, org):
+        org(EVERYTHING)
+        parent = SimpleNamespace(parent_session=None, audit_session_id="conv-1")
+        worker = SimpleNamespace(parent_session=parent, audit_session_id="")
+        assert oversight.admit(worker).refusal
+        _shown()
+        admitted = oversight.admit(worker)
+        assert not admitted.refusal and admitted.scope is None  # recorded with its parent's turn
+        # A chat's worker needs that chat's confirmation, like the chat.
+        chat = SimpleNamespace(parent_session=None, audit_session_id="gateway:42")
+        assert oversight.admit(SimpleNamespace(parent_session=chat, audit_session_id="")).refusal
+
     def test_a_terminal_notice(self, org):
         org(EVERYTHING)
-        unattended = oversight.terminal_notice(False, "lumi run")
-        assert unattended.startswith("Acme receives") and "Nothing is recorded until" in unattended
-        assert not oversight.status()["acknowledged"]
-        attended = oversight.terminal_notice(True, "terminal")
-        assert "Questions: security@acme.example" in attended and oversight.status()["acknowledged"]
+        attended = oversight.for_terminal(unattended=False)
+        assert attended.notice.startswith("Acme receives") and "Questions: security@acme.example" in attended.notice
+        # Printing it confirms nothing: the person types yes (acknowledge) first.
+        assert attended.confirm and not attended.recorded and not oversight.status()["acknowledged"]
+        unattended = oversight.for_terminal(unattended=True)
+        assert unattended.recorded and not unattended.confirm and not unattended.refusal
+        org({**EVERYTHING, "unattended": "block"})
+        blocked = oversight.for_terminal(unattended=True)
+        assert "doesn't let Lumi run unattended" in blocked.refusal and not blocked.recorded
+        _shown("terminal")
+        assert oversight.for_terminal(unattended=True).recorded and oversight.for_terminal(unattended=True).acknowledged
         org(None)
-        assert oversight.terminal_notice(True, "terminal") == ""
+        assert oversight.for_terminal(unattended=False).notice == ""
+
+    def test_a_policy_that_arrives_mid_turn_stops_the_turn_before_its_next_request(self, org, tmp_path):
+        org({"activity": True})
+        _shown()
+
+        class PolicyArrives(StreamingBackend):
+            def stream(self, **kwargs):
+                yield from super().stream(**kwargs)
+                org({"activity": True, "messages": "full"})  # collects more: its notice isn't confirmed
+
+        backend = PolicyArrives(scripts=[[tool_call("file_read", {"path": "README.md"}), done()],
+                                         [text_delta("Never sent."), done()]])
+        events = list(_session(tmp_path, backend).run("read it"))
+        assert backend.stream_count == 1 and _refused(events)
+        assert "Never sent." not in json.dumps(events)
+
+
+# ── Every path a turn can take ──────────────────────────────────────────────
+
+
+class TestEveryPath:
+    """While the notice isn't confirmed, no entry point reaches a model."""
+
+    def test_turn_paths_go_through_the_gate(self):
+        # Every turn runs through Session.run (AGENTS.md), which asks oversight
+        # before the turn and before each model request. A new entry point that
+        # called the loop itself would skip it: this fails first.
+        root = Path(__file__).resolve().parents[1] / "lumi"
+        callers = []
+        for path in root.rglob("*.py"):
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            for scope in ast.walk(tree):
+                if not isinstance(scope, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    continue
+                for node in ast.walk(scope):
+                    if isinstance(node, ast.Call) and getattr(node.func, "attr", "") == "_run_turn":
+                        callers.append((path.relative_to(root).as_posix(), scope.name))
+        assert sorted(set(callers)) == [("engine/session.py", "run")]
+        source = (root / "engine" / "session.py").read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        session = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "Session")
+        methods = {node.name: node for node in session.body if isinstance(node, ast.FunctionDef)}
+        run = ast.get_source_segment(source, methods["run"])
+        assert run.index("oversight.admit(self)") < run.index("self._run_turn(")
+        loop = ast.get_source_segment(source, methods["_run_turn"])
+        assert loop.index("self._oversight_checkpoint()") < loop.index("self._model_stream(")
+
+    def test_session_run_refuses_every_surface(self, org, tmp_path):
+        org(EVERYTHING)
+        for key, trigger in (("conv-1", ""), ("headless:r1", ""), ("tui:t1", ""), ("chat-task:c1", ""),
+                             ("", "plan"), ("", "mission"), ("", "team"), ("gateway:42", "")):
+            session = _session(tmp_path, NeverCalled())
+            session.audit_session_id, session.oversight_trigger = key, trigger
+            assert _refused(list(session.run("hello"))), (key, trigger)
+        # Only a surface that says nobody is there runs under `unattended: record`.
+        session = _session(tmp_path, StreamingBackend(events=[text_delta("Ran."), done()]))
+        session.audit_session_id, session.oversight_unattended = "headless:r2", True
+        assert not _refused(list(session.run("hello")))
+
+    def test_the_app_the_socket_and_dictation_refuse(self, org, monkeypatch):
+        from lumi.gui import app as gui
+
+        org(EVERYTHING)
+        sent = []
+
+        class WS:
+            async def send_json(self, payload):
+                sent.append(payload)
+
+        monkeypatch.setattr(gui.state, "session", _session(Path(state_home()), NeverCalled()))
+        asyncio.run(gui._process_chat_message(WS(), {"command": "message", "text": "hello"}))
+        assert sent[0]["event"] == "oversight_status" and sent[0]["data"]["required"]
+        assert sent[1]["code"] == REFUSED
+        for command, msg, event in (("message", {"text": "hello"}, "error"),
+                                    ("voice_transcribe", {"audio": "", "request_id": "r1"}, "voice.error"),
+                                    ("evaluation_start", {}, "error"),
+                                    # Run now is the person's own action, not an unattended run.
+                                    ("schedule_change", {"id": "s1", "action": "run"}, "schedule_error")):
+            answer = _command(command, **msg)
+            assert answer[0]["event"] == "oversight_status" and answer[-1]["event"] == event, command
+            assert "oversight notice" in answer[-1]["message"], command
+        # The paused AI Employee advice reaches SONN: refused too.
+        state = SimpleNamespace(project=SimpleNamespace(project_path=str(state_home()), current_session=None))
+        answer = _command("employee_task", state=state, action="advice", question="What next?")
+        assert answer[-1]["event"] == "employee_task_state" and "oversight notice" in answer[-1]["error"]
+
+    def test_plans_missions_and_autonomous_sessions_refuse(self, org, tmp_path):
+        from lumi.engine.tools import AGENT_TOOLS
+        from lumi.gui.autonomous_loop import AutonomousMissionDaemon
+        from lumi.gui.autonomous_session import resume_autonomous_mission, start_autonomous_mission
+        from lumi.orchestration import LocalSpecialistRunner, NodeStatus, PlanGraph, PlanNode, new_node_id
+        from lumi.orchestration.intent_service import IntentService
+        from tests.test_autonomous_session import _SPEC_MD, _StubAppState, _StubProject
+
+        org(EVERYTHING)
+        project = tmp_path / "project"
+        project.mkdir()
+        service = IntentService(project_path=str(project), backend=NeverCalled(), all_tools=list(AGENT_TOOLS))
+        for trigger in ("plan", "mission"):
+            with pytest.raises(ValueError, match="oversight notice"):
+                service.start_intent("Build the counter", trigger=trigger)
+        assert service.list_active() == []
+        runner = LocalSpecialistRunner(backend=NeverCalled(), project_path=str(project), all_tools=list(AGENT_TOOLS),
+                                       oversight_trigger="mission")
+        graph = PlanGraph.new("look")
+        node = PlanNode(id=new_node_id(), intent_id=graph.intent_id, goal="look")
+        graph.add_node(node)
+        result = runner(node, graph)
+        assert result.status == NodeStatus.BLOCKED and "oversight notice" in result.summary
+        state = _StubAppState(project=_StubProject(str(project)))
+        with pytest.raises(ValueError, match="oversight notice"):
+            start_autonomous_mission(state=state, intent_id="auto-1", feature="counter", spec_markdown=_SPEC_MD,
+                                     on_event=lambda event: None)
+        with pytest.raises(ValueError, match="oversight notice"):
+            resume_autonomous_mission(state=state, intent_id="auto-1", on_event=lambda event: None)
+        reason, message = AutonomousMissionDaemon._mode_not_allowed()
+        assert reason == "mode_not_allowed" and "oversight notice" in message
+        app_state = SimpleNamespace(backend=NeverCalled(), get_intent_service=lambda on_event=None: service)
+        answer = _command("intent_start", state=app_state, text="Build the counter")
+        assert answer[-1]["code"] == REFUSED and service.list_active() == []
+        _shown()
+        assert AutonomousMissionDaemon._mode_not_allowed() is None
+
+    def test_team_model_comparisons_and_tasks_from_chat_refuse(self, org, monkeypatch, tmp_path):
+        from lumi import model_evals
+        from lumi.engine.swarming.service import policy_refusal
+        from lumi.remote_tasks import RemoteTasks
+
+        org(EVERYTHING)
+        # Team: its start and every step of its orchestrator loop ask policy_refusal.
+        for action in ("start", "request_plan", "decide_proposal", "assign"):
+            assert "oversight notice" in policy_refusal(action), action
+        assert policy_refusal("view") == "" and policy_refusal("stop") == ""
+        # Model comparisons.
+        comparison = model_evals.Comparison(id="c1", name="x", project=str(tmp_path), tasks=[], models=[])
+        monkeypatch.setattr(model_evals, "get", lambda comparison_id: comparison)
+        with pytest.raises(model_evals.EvalError, match="oversight notice"):
+            model_evals.Runner().start("c1")
+        assert comparison.status == "ready"
+        # Tasks from chat: claimed, refused with the reason sent back to the chat.
+        results = []
+
+        class Cloud:
+            def device(self):
+                return {"id": "dev-1", "how": "joined"}
+
+            def device_call(self, method, path, **kwargs):
+                if path.endswith("/result"):
+                    results.append(kwargs["json"])
+                return {}
+
+        def factory(project, mode, task_id):
+            session = _session(tmp_path, NeverCalled())
+            session.audit_session_id = f"chat-task:{task_id}"
+            return session
+
+        settings = SimpleNamespace(get=lambda section, key=None, default=None: default)
+        RemoteTasks(settings, Cloud(), session_factory=factory).run({"id": "t1", "prompt": "hello"})
+        assert results[0]["status"] == "failed" and "confirm Acme's oversight notice in the Lumi app" in \
+            results[0]["text"]
+
+
+# ── Confirming the notice: a signed acknowledgment ──────────────────────────
+
+
+class _AckClient:
+    """Stands in for CloudClient: signs as the device, answers acknowledgments and events."""
+
+    def __init__(self, *failures, key=DEVICE_KEY):
+        self.failures = list(failures)
+        self.acknowledgments: list[dict] = []
+        self.events: list[dict] = []
+        self.key = key
+
+    def sign_as_device(self, data: bytes) -> str:
+        return base64.urlsafe_b64encode(self.key.sign(data)).decode("ascii")
+
+    def device_call(self, method, path, **kwargs):
+        assert method == "POST"
+        if path == oversight.ACKNOWLEDGMENT_PATH:
+            if self.failures:
+                raise self.failures.pop(0)
+            self.acknowledgments.append(kwargs["json"])
+            return {"id": f"ack_{len(self.acknowledgments)}"}
+        assert path == oversight.UPLOAD_PATH
+        self.events.append(kwargs["json"])
+        return {"accepted": len(kwargs["json"]["events"])}
+
+
+class TestAcknowledgment:
+    def test_the_record_is_canonical_and_signed_by_the_device_key(self, org, monkeypatch):
+        org(EVERYTHING)
+        _device(account="usr_ada")
+        monkeypatch.setattr(oversight, "os_user", lambda: "ada")
+        status = _shown()
+        saved = json.loads((state_home() / "oversight" / "notice.json").read_text(encoding="utf-8"))
+        record, signature = saved["record"], saved["signature"]
+        assert set(record) == {"kind", "organization", "notice_fingerprint", "notice_sha256", "surface", "person",
+                               "device_id", "acknowledged_at"}
+        assert record["kind"] == "lumi.oversight-acknowledgment/v1"
+        assert (record["organization"], record["device_id"], record["surface"]) == ("org_acme", "dev-1", "app")
+        assert record["notice_fingerprint"] == status["fingerprint"]
+        assert record["notice_sha256"] == hashlib.sha256(status["notice_text"].encode("utf-8")).hexdigest()
+        assert record["person"] == {"account": "usr_ada", "os_user": "ada", "chat": None}
+        assert re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ", record["acknowledged_at"])
+        # Canonical JSON: sorted keys, no spaces, UTF-8; the signature is the device key's over it.
+        assert oversight.canonical(record) == json.dumps(record, sort_keys=True, separators=(",", ":"),
+                                                         ensure_ascii=False).encode("utf-8")
+        assert _verifies(record, signature) and signature.endswith("=")
+        # Kept with the confirmation, and with the notice as it was shown.
+        assert saved["notice"] == status["notice_text"] and saved["surface"] == "app"
+        tampered = {**record, "surface": "terminal"}
+        assert not _verifies(tampered, signature)
+
+    def test_the_person_is_unblocked_at_once_and_lumi_cloud_hears_in_the_background(self, org):
+        org(EVERYTHING)
+        _shown()
+        # Before any upload: unblocked, and the confirmation waits to be sent.
+        assert oversight.refusal() == "" and oversight.acknowledgments_waiting() == 1
+        assert oversight.status()["acknowledgment"]["upload"]["state"] == "pending"
+        client = _AckClient()
+        assert oversight.upload_pending(client) == "idle"
+        [sent] = client.acknowledgments
+        assert set(sent) == {"record", "signature"} and _verifies(sent["record"], sent["signature"])
+        acknowledgment = oversight.status()["acknowledgment"]
+        assert acknowledgment["upload"] == {**acknowledgment["upload"], "state": "sent", "id": "ack_1"}
+        assert acknowledgment["current"] and acknowledgment["surface"] == "app" and acknowledgment["at"]
+        # Sent once.
+        assert oversight.upload_pending(client) == "idle" and len(client.acknowledgments) == 1
+
+    @pytest.mark.parametrize(("status", "code"), [(409, "notice_mismatch"), (422, "invalid_signature")])
+    def test_a_refusal_is_shown_and_never_sent_again(self, org, status, code):
+        org(EVERYTHING)
+        _shown()
+        client = _AckClient(CloudError("No.", code=code, status=status))
+        assert oversight.upload_pending(client) == "idle"
+        upload = oversight.status()["acknowledgment"]["upload"]
+        assert upload["state"] == "refused" and code in upload["error"]
+        assert oversight.upload_pending(client) == "idle" and client.acknowledgments == []
+        # Refused by Lumi Cloud, not by this computer: the person stays unblocked.
+        assert oversight.refusal() == ""
+
+    def test_a_failure_is_retried_later(self, org):
+        org(EVERYTHING)
+        _shown()
+        client = _AckClient(CloudError("Lumi Cloud couldn't be reached (ConnectError).", code="unreachable"))
+        assert oversight.upload_pending(client) == "retry"
+        assert oversight.status()["acknowledgment"]["upload"]["state"] == "pending"
+        assert oversight.upload_pending(client) == "idle" and len(client.acknowledgments) == 1
+
+    def test_a_confirmation_signed_later_keeps_its_signature(self, org):
+        org(EVERYTHING)
+        status = oversight.status()
+        # The key couldn't be read when the person confirmed: they're unblocked all the same.
+        assert oversight.acknowledge(status["fingerprint"], "app", notice=status["notice_text"],
+                                     signer=lambda data: (_ for _ in ()).throw(OSError("keychain locked")))
+        assert oversight.refusal() == "" and not oversight.status()["acknowledgment"]["signed"]
+        client = _AckClient()
+        assert oversight.upload_pending(client) == "idle"
+        [sent] = client.acknowledgments
+        assert _verifies(sent["record"], sent["signature"])
+        saved = json.loads((state_home() / "oversight" / "notice.json").read_text(encoding="utf-8"))
+        assert saved["signature"] == sent["signature"] and oversight.status()["acknowledgment"]["signed"]
+
+    def test_a_confirmation_from_another_enrollment_isnt_sent(self, org):
+        org(EVERYTHING)
+        _shown()
+        _device(device_id="dev-2")  # left and enrolled again
+        client = _AckClient()
+        oversight.upload_pending(client)
+        assert client.acknowledgments == []
+        assert oversight.acknowledgment_upload(json.loads((state_home() / "oversight" / "notice.json").read_text(
+            encoding="utf-8"))["id"])["state"] == "not_sent"
+
+    def test_two_processes_never_send_one_twice(self, org):
+        org(EVERYTHING)
+        _shown()
+        claimed = oversight._claim_acknowledgments(10)
+        assert len(claimed) == 1 and oversight._claim_acknowledgments(10) == []
+        assert oversight.acknowledgments_waiting() == 1  # claimed, not yet sent
 
 
 # ── Recording turns ─────────────────────────────────────────────────────────
@@ -257,6 +651,8 @@ class TestRecording:
         # With messages shared, the title goes too, at their level (no email addresses).
         assert turn["session"] == {"id": "conv-1", "title": "Plan for [email]", "project": "acme-app",
                                    "surface": "app"}
+        # What started it, whether anyone was there, and which computer user ran it.
+        assert (turn["trigger"], turn["unattended"], turn["os_user"]) == ("app", False, oversight.os_user())
         assert (turn["turn"], turn["outcome"], turn["mode"], turn["provider"]) == (1, "completed", "full-auto",
                                                                                    "ollama")
         assert turn["usage"]["input_tokens"] == 2100 and turn["usage"]["requests"] == 2
@@ -271,15 +667,26 @@ class TestRecording:
         flag = next(record for record in records if record["type"] == "flag")
         assert (flag["kind"], flag["severity"], flag["rule"], flag["turn"]) == ("secret_redacted", "medium",
                                                                                 "secret_removed", 1)
+        assert (flag["trigger"], flag["unattended"], flag["os_user"]) == ("app", False, oversight.os_user())
         assert flag["id"] in turn["flags"]
         # File contents never leave, at any level.
         assert "SECRET FILE CONTENT" not in json.dumps(records)
         # The person sees their own flags, with what each rule means.
         mine = oversight.status()["flags"][0]
         assert mine["kind"] == "secret_redacted" and mine["rule_text"] == "Secrets were removed"
-        backend.scripts = [[text_delta("Again."), done()]]
         list(session.run("once more"))
         assert [r["turn"] for r in _queue() if r["type"] == "turn"] == [1, 2]
+
+    @pytest.mark.parametrize(("key", "trigger", "expected"), [
+        ("tui:t1", "", "terminal"), ("", "plan", "plan"), ("", "mission", "mission"), ("", "team", "team"),
+        ("headless:r1", "schedule", "schedule")])
+    def test_each_surface_names_its_trigger(self, org, tmp_path, key, trigger, expected):
+        org({"activity": True})
+        _shown()
+        session = _session(tmp_path, StreamingBackend(events=[text_delta("ok"), done()]))
+        session.audit_session_id, session.oversight_trigger = key, trigger
+        list(session.run("hello"))
+        assert _queue()[0]["trigger"] == expected and _queue()[0]["unattended"] is False
 
     def test_activity_only_carries_no_content(self, org, tmp_path):
         org({"activity": True, "security_flags": True})
@@ -467,6 +874,20 @@ class TestRecording:
         events = list(_session(tmp_path, StreamingBackend(events=[text_delta("Hi."), done()])).run("hello"))
         assert events[-1]["event"] == "session.end"
 
+    def test_a_broken_check_refuses_rather_than_admits(self, org, tmp_path, monkeypatch):
+        org(EVERYTHING)
+        _shown()
+
+        def broken():
+            raise OSError("disk unreadable")
+
+        monkeypatch.setattr(oversight, "Scope", broken)
+        [refusal] = _refused(list(_session(tmp_path, NeverCalled()).run("hello")))
+        assert "couldn't check" in refusal["message"]
+        # Without a policy asking for oversight the same failure blocks nothing.
+        org(None)
+        assert oversight.admit(SimpleNamespace(audit_session_id="conv-1")).refusal == ""
+
     def test_the_typed_message_not_the_wrapper(self, org, tmp_path):
         org({"activity": True, "messages": "full"})
         _shown()
@@ -481,7 +902,7 @@ class TestRecording:
 
 
 class TestChatGateway:
-    """People in a gateway chat are told in the chat before their turns are recorded."""
+    """People in a gateway chat confirm the notice in the chat before its requests run."""
 
     @pytest.fixture
     def gateway(self, monkeypatch, tmp_path):
@@ -501,59 +922,88 @@ class TestChatGateway:
         def start(chat=None):
             chat = chat or Chat()
             service = cli.build_service(_args(project=str(project), mode="bypass"), GatewaySettings(), chat)
+            service._oversight_signer = _sign  # this computer's device key
             worker = threading.Thread(target=service._worker, daemon=True)
             worker.start()
             services.append((service, worker))
             return service, chat
 
+        start.backend = backend
         yield start
         for service, worker in services:
             service.stop()
             worker.join(timeout=2)
 
-    def test_each_chat_gets_the_notice_before_its_first_recorded_turn(self, org, gateway):
+    def test_a_chat_confirms_the_notice_before_its_requests_run(self, org, gateway):
         from tests.test_chat_gateway import message, wait_for
 
         org(EVERYTHING)
         service, chat = gateway()
         service.receive(message("hello", "42"))
-        wait_for(lambda: "Reply 0." in chat.texts())
-        notice, reply = chat.texts()[0], chat.texts()[1]
+        wait_for(lambda: chat.texts())
+        notice = chat.texts()[0]
         assert notice.startswith("Organization oversight: Acme receives") and "through this chat" in notice
-        assert "Questions: security@acme.example" in notice and reply == "Reply 0."
+        assert "Questions: security@acme.example" in notice and 'reply "I\'ve read this"' in notice
+        # The request didn't run and nothing reached the model.
+        time.sleep(0.2)
+        assert "Reply 0." not in chat.texts() and gateway.backend.stream_count == 0 and _queue() == []
+        # The reply confirms it for this chat; the request is sent again.
+        service.receive(message("I’ve read this.", "42"))
+        wait_for(lambda: any(text.startswith("Thanks.") for text in chat.texts()))
+        service.receive(message("hello", "42"))
+        wait_for(lambda: "Reply 0." in chat.texts())
         turn = next(r for r in _queue() if r["type"] == "turn")
         assert turn["session"]["surface"] == "chat gateway" and turn["messages"]["user"]["text"] == "hello"
-        # Once per policy: the next turn doesn't repeat it, and the app's own notice was never needed.
-        service.receive(message("again", "42"))
-        wait_for(lambda: "Reply 1." in chat.texts())
-        assert sum(text.startswith("Organization oversight:") for text in chat.texts()) == 1
+        assert (turn["trigger"], turn["unattended"]) == ("gateway", False)
+        # A signed record for this chat, kept with the chat's confirmation.
+        entry = json.loads((state_home() / "oversight" / "chats.json").read_text(encoding="utf-8"))["gateway:42"]
+        assert entry["record"]["surface"] == "gateway" and entry["record"]["person"]["chat"] == "42"
+        assert entry["record"]["person"]["account"] is None and _verifies(entry["record"], entry["signature"])
+        # The computer's person confirmed nothing: the chat's confirmation is the chat's own.
         assert not oversight.status()["acknowledged"]
-        # Another chat is told too.
+        # Another chat confirms for itself.
         service.receive(message("hi", "7"))
-        wait_for(lambda: "Reply 2." in chat.texts())
-        assert chat.sent[3][0] == "7" and chat.sent[3][1].startswith("Organization oversight:")
-        # A policy that collects more is announced again before the next recorded turn.
+        wait_for(lambda: chat.sent[-1][0] == "7" and chat.sent[-1][1].startswith("Organization oversight:"))
+        # A policy that collects more is confirmed again before the next request runs.
         org({**EVERYTHING, "messages": "full"})
         service.receive(message("and now", "42"))
-        wait_for(lambda: "Reply 3." in chat.texts())
-        assert "(without secrets)" in chat.texts()[-2]
-        assert len([r for r in _queue() if r["type"] == "turn"]) == 4
+        wait_for(lambda: chat.texts()[-1].startswith("Organization oversight:") and "(without secrets)" in
+                 chat.texts()[-1])
+        assert len([r for r in _queue() if r["type"] == "turn"]) == 1
 
-    def test_a_chat_that_wasnt_told_isnt_recorded(self, org, gateway):
+    def test_the_button_confirms_it_and_a_stale_one_doesnt(self, org, gateway):
+        from tests.test_chat_gateway import message, wait_for
+
+        org(EVERYTHING)
+        service, chat = gateway()
+        service.receive(message("hello", "42"))
+        wait_for(lambda: chat.texts())
+        fingerprint = oversight.status()["fingerprint"]
+        service.receive(message("/acknowledge 0000000000000000", "42"))  # a notice from before a change
+        wait_for(lambda: len(chat.texts()) == 2)
+        assert chat.texts()[-1].startswith("Organization oversight:")
+        service.receive(message(f"/acknowledge {fingerprint}", "42"))
+        wait_for(lambda: chat.texts()[-1].startswith("Thanks."))
+        service.receive(message("hello", "42"))
+        wait_for(lambda: "Reply 0." in chat.texts())
+
+    def test_a_chat_that_was_never_shown_the_notice_cant_confirm_it(self, org, gateway):
         from tests.test_chat_gateway import Chat, message, wait_for
 
         class Unreachable(Chat):
-            def send(self, chat_id, text):
-                if text.startswith("Organization oversight:"):
-                    return False  # the adapter couldn't deliver it
-                return super().send(chat_id, text)
+            def notice(self, chat_id, text, token):
+                return False  # the adapter couldn't deliver it
 
         org(EVERYTHING)
         _shown()  # the person running the gateway confirmed it; the chat's people didn't see it
         service, chat = gateway(Unreachable())
+        service.receive(message("I've read this", "42"))
         service.receive(message("hello", "42"))
-        wait_for(lambda: "Reply 0." in chat.texts())
-        assert _queue() == []
+        wait_for(lambda: service._queue.empty() and not service._running)
+        time.sleep(0.1)
+        said = [text for text in chat.texts() if not text.startswith("Queued:")]
+        assert said == [] and _queue() == [] and gateway.backend.stream_count == 0
+        assert not oversight.chat_notified("gateway:42", oversight.status()["fingerprint"])
 
     def test_nothing_is_sent_to_chats_when_nothing_is_collected(self, org, gateway):
         from tests.test_chat_gateway import message, wait_for
@@ -563,6 +1013,159 @@ class TestChatGateway:
         service.receive(message("hello", "42"))
         wait_for(lambda: "Reply 0." in chat.texts())
         assert chat.texts() == ["Reply 0."] and _queue() == []
+
+    def test_acknowledge_is_a_command_only_while_a_notice_waits(self, org, gateway):
+        from lumi.gateway.service import parse_command
+        from tests.test_chat_gateway import message, wait_for
+
+        assert parse_command("/acknowledge ab12cd34") == ("acknowledge", "ab12cd34")
+        assert parse_command("acknowledge") == ("acknowledge", "")
+        org(EVERYTHING, enrolled=False)
+        service, chat = gateway()
+        service.receive(message("/acknowledge", "42"))
+        wait_for(lambda: chat.texts())
+        assert chat.texts() == ["Nothing here needs confirming."]
+
+
+# ── Unattended runs: `lumi run`, scheduled tasks ─────────────────────────────
+
+
+class _Terminal(io.StringIO):
+    """An interactive terminal: someone is there to read and answer."""
+
+    def isatty(self):
+        return True
+
+
+def _lumi_run(monkeypatch, tmp_path, backend, *args, answer=None):
+    """``lumi run`` with a scripted model; ``answer`` makes it an interactive terminal typing that line."""
+    from lumi import headless
+    from tests.test_headless import MODEL
+
+    monkeypatch.setattr(headless, "build_spec", lambda settings, provider, model, project: SimpleNamespace(
+        create_backend=lambda settings: backend, permission_mode=""))
+    out = io.StringIO()
+    err = _Terminal() if answer is not None else io.StringIO()
+    stdin = _Terminal(answer) if answer is not None else io.StringIO("")
+    code = headless.main(["--provider", "anthropic", "--model", MODEL, "--project", str(tmp_path), *args],
+                         stdin=stdin, stdout=out, stderr=err)
+    return code, out.getvalue(), err.getvalue()
+
+
+class TestUnattended:
+    def test_lumi_run_without_a_terminal_runs_and_is_recorded_under_record(self, org, monkeypatch, tmp_path):
+        from lumi import audit
+        from tests.test_headless import call, scripted
+
+        org(EVERYTHING)  # unattended: record, the default
+        code, out, err = _lumi_run(monkeypatch, tmp_path, scripted(call(0.01, text_delta("Done."))), "Summarize",
+                                   "--mode", "bypass")
+        assert code == 0 and "lumi run: organization oversight: Acme receives" in err
+        result = json.loads(out)
+        # The notice heads the run's output.
+        assert next(iter(result)) == "oversight"
+        assert result["oversight"] == {"organization": "Acme", "notice": oversight.status()["notice_text"],
+                                       "trigger": "headless", "unattended": True, "acknowledged": False,
+                                       "recorded": True}
+        turn = _queue()[0]
+        assert (turn["trigger"], turn["unattended"], turn["os_user"]) == ("headless", True, oversight.os_user())
+        assert turn["session"]["surface"] == "lumi run" and turn["session"]["id"].startswith("headless:")
+        assert not oversight.status()["acknowledged"]  # nobody confirmed anything
+        # The log records it too.
+        logged = [json.loads(line) for day in (state_home() / "audit").glob("*.jsonl")
+                  for line in day.read_text(encoding="utf-8").splitlines()]
+        assert any(entry["type"] == "oversight.unattended_run" and entry["data"]["os_user"] == oversight.os_user()
+                   for entry in logged), audit
+
+    def test_text_output_starts_with_the_notice(self, org, monkeypatch, tmp_path):
+        from tests.test_headless import call, scripted
+
+        org(EVERYTHING)
+        code, out, _err = _lumi_run(monkeypatch, tmp_path, scripted(call(0.01, text_delta("Done."))), "Summarize",
+                                    "--mode", "bypass", "--output", "text")
+        assert code == 0 and out.startswith("Organization oversight: Acme receives")
+        code, out, _err = _lumi_run(monkeypatch, tmp_path, scripted(call(0.01, text_delta("Done."))), "Summarize",
+                                    "--mode", "bypass", "--output", "jsonl")
+        assert json.loads(out.splitlines()[0])["event"] == "lumi.oversight"
+
+    def test_lumi_run_without_a_terminal_is_refused_under_block(self, org, monkeypatch, tmp_path):
+        from tests.test_headless import call, scripted
+
+        org({**EVERYTHING, "unattended": "block"})
+        code, out, err = _lumi_run(monkeypatch, tmp_path, NeverCalled(), "Summarize", "--mode", "bypass")
+        assert code == 2 and out == "" and "doesn't let Lumi run unattended" in err and _queue() == []
+        # Once this computer user confirmed the notice, it runs and is recorded as theirs.
+        _shown()
+        code, out, _err = _lumi_run(monkeypatch, tmp_path, scripted(call(0.01, text_delta("Done."))), "Summarize",
+                                    "--mode", "bypass")
+        assert code == 0 and json.loads(out)["oversight"]["acknowledged"] is True
+        assert (_queue()[0]["trigger"], _queue()[0]["unattended"]) == ("headless", True)
+
+    def test_an_interactive_lumi_run_asks_for_yes_first(self, org, monkeypatch, tmp_path):
+        from tests.test_headless import call, scripted
+
+        org(EVERYTHING)
+        code, out, err = _lumi_run(monkeypatch, tmp_path, NeverCalled(), "Summarize", "--mode", "bypass",
+                                   answer="no\n")
+        assert code == 3 and "Type yes to confirm" in err and "nothing was sent" in err
+        assert out == "" and _queue() == [] and not oversight.status()["acknowledged"]
+        code, out, err = _lumi_run(monkeypatch, tmp_path, scripted(call(0.01, text_delta("Done."))), "Summarize",
+                                   "--mode", "bypass", answer="yes\n")
+        assert code == 0 and json.loads(out)["oversight"]["acknowledged"] is True
+        # The typed confirmation is an acknowledgment from the terminal.
+        assert oversight.status()["acknowledgment"]["surface"] == "terminal"
+        turn = _queue()[0]
+        assert (turn["trigger"], turn["unattended"]) == ("terminal", False)
+
+    def test_a_scheduled_run_is_attributed_to_the_computer_user_who_confirmed(self, org, monkeypatch, tmp_path):
+        from lumi import headless, schedules
+        from tests.test_headless import call, scripted
+
+        project = tmp_path / "project"
+        project.mkdir()
+        org(EVERYTHING)
+        _shown()  # this computer user, in the app
+        backend = scripted(call(0.01, text_delta("All current.")))
+        monkeypatch.setattr(headless, "build_spec", lambda settings, provider, model, folder: SimpleNamespace(
+            create_backend=lambda settings: backend, permission_mode=""))
+        schedule = schedules.save({"name": "Nightly", "prompt": "Check the dependencies.", "project": str(project),
+                                   "time": "02:30", "mode": "bypass", "provider": "anthropic", "model": "claude-x"})
+        assert schedules.run(schedule.id) == 0
+        turn = _queue()[0]
+        assert (turn["trigger"], turn["unattended"], turn["os_user"]) == ("schedule", True, oversight.os_user())
+        kept = schedules.runs(schedule.id)[0]
+        assert kept["summary"]["oversight"]["acknowledged"] is True and kept["summary"]["oversight"]["trigger"] == \
+            "schedule"
+        # The notice isn't an error.
+        assert kept["error"] == ""
+
+    def test_a_scheduled_run_under_block_waits_for_a_confirmation(self, org, monkeypatch, tmp_path):
+        from lumi import headless, schedules
+
+        project = tmp_path / "project"
+        project.mkdir()
+        org({**EVERYTHING, "unattended": "block"})
+        monkeypatch.setattr(headless, "build_spec", lambda settings, provider, model, folder: SimpleNamespace(
+            create_backend=lambda settings: NeverCalled(), permission_mode=""))
+        schedule = schedules.save({"name": "Nightly", "prompt": "Check the dependencies.", "project": str(project),
+                                   "time": "02:30", "mode": "bypass", "provider": "anthropic", "model": "claude-x"})
+        assert schedules.run(schedule.id) == 2
+        last = schedules.last_run(schedule.id)
+        assert "doesn't let Lumi run unattended" in last["error"] and _queue() == []
+
+    def test_the_terminal_ui_asks_for_yes(self, org, monkeypatch):
+        from rich.console import Console
+
+        from tests.test_tui import tui  # imported with its stream wrapping kept off pytest's streams
+
+        monkeypatch.setattr(tui, "console", Console(file=io.StringIO(), width=100, color_system=None))
+        org(EVERYTHING)
+        monkeypatch.setattr(tui, "pt_prompt", lambda *args, **kwargs: "no")
+        assert tui.confirm_oversight(None) is False and not oversight.status()["acknowledged"]
+        monkeypatch.setattr(tui, "pt_prompt", lambda *args, **kwargs: "yes")
+        assert tui.confirm_oversight(None) is True
+        assert oversight.status()["acknowledgment"]["surface"] == "terminal"
+        assert tui.confirm_oversight(None) is True  # nothing more to confirm
 
 
 # ── The queue and sending ───────────────────────────────────────────────────
@@ -609,6 +1212,17 @@ class TestSending:
             ["r0", "r1", "r2"]
         status = oversight.queue_status()
         assert (status["pending"], status["uploaded"], status["last_error"]) == (0, 3, "")
+
+    def test_confirmations_go_before_records(self, org, tmp_path):
+        org(EVERYTHING)
+        _shown()
+        list(_session(tmp_path, StreamingBackend(events=[text_delta("Hi."), done()])).run("hello"))
+        order = []
+        client = _AckClient()
+        original = client.device_call
+        client.device_call = lambda method, path, **kwargs: order.append(path) or original(method, path, **kwargs)
+        assert oversight.upload_pending(client) == "idle"
+        assert order == [oversight.ACKNOWLEDGMENT_PATH, oversight.UPLOAD_PATH]
 
     def test_records_older_than_the_retention_are_never_sent(self, org):
         # Offline for longer than Acme keeps records: Lumi Cloud would only delete them.
@@ -709,7 +1323,7 @@ class TestSending:
 # ── The app's socket ────────────────────────────────────────────────────────
 
 
-def _command(command, **msg):
+def _command(command, state=None, **msg):
     from lumi.gui import ws_commands
 
     sent = []
@@ -718,7 +1332,7 @@ def _command(command, **msg):
         async def send_json(self, payload):
             sent.append(payload)
 
-    ctx = ws_commands.CommandContext(ws=WS(), state=SimpleNamespace(), msg={"command": command, **msg},
+    ctx = ws_commands.CommandContext(ws=WS(), state=state or SimpleNamespace(), msg={"command": command, **msg},
                                      runs=SimpleNamespace(busy=False))
     asyncio.run(ws_commands.HANDLERS[command](ctx))
     return sent
@@ -728,34 +1342,24 @@ class TestSocket:
     def test_status_and_the_notices_confirmation(self, org):
         org(EVERYTHING)
         status = _command("oversight_status")[0]["data"]
-        assert status["configured"] and status["destination"] and not status["acknowledged"]
-        stale = _command("oversight_notice_shown", fingerprint="not-this-policy")[0]["data"]
-        assert not stale["acknowledged"]
-        shown = _command("oversight_notice_shown", fingerprint=status["fingerprint"])[0]["data"]
-        assert shown["acknowledged"] and shown["active"]
+        assert status["configured"] and status["destination"] and status["required"] and not status["acknowledged"]
+        stale = _command("oversight_notice_shown", fingerprint="not-this-policy", notice=status["notice_text"])
+        assert not stale[0]["data"]["acknowledged"]
+        # The page must have shown this policy's notice as the server wrote it.
+        other = _command("oversight_notice_shown", fingerprint=status["fingerprint"], notice="Something else.")
+        assert not other[0]["data"]["acknowledged"]
+        shown = _command("oversight_notice_shown", fingerprint=status["fingerprint"],
+                         notice=status["notice_text"])[0]["data"]
+        assert shown["acknowledged"] and shown["active"] and not shown["required"]
+        assert shown["acknowledgment"]["surface"] == "app" and shown["acknowledgment"]["current"]
 
     def test_a_notice_saying_nothing_is_collected_cant_be_confirmed(self, org):
         org(EVERYTHING, enrolled=False)
         status = _command("oversight_status")[0]["data"]
-        answer = _command("oversight_notice_shown", fingerprint=status["fingerprint"])[0]["data"]
+        assert not status["required"]
+        answer = _command("oversight_notice_shown", fingerprint=status["fingerprint"],
+                          notice=status["notice_text"])[0]["data"]
         assert not answer["acknowledged"] and not (state_home() / "oversight" / "notice.json").exists()
-
-
-def test_lumi_run_says_what_is_shared_before_it_starts(org, monkeypatch, tmp_path):
-    from tests.test_headless import call, run, scripted
-
-    org(EVERYTHING)
-    code, _out, err = run(monkeypatch, tmp_path, scripted(call(0.01, text_delta("Done."))), "Summarize",
-                          "--mode", "bypass")
-    assert code == 0 and "lumi run: organization oversight: Acme receives" in err
-    # Nobody at a terminal (stderr isn't one here) and no notice confirmed in the app: nothing recorded.
-    assert "Nothing is recorded until" in err and _queue() == []
-    _shown()
-    code, _out, err = run(monkeypatch, tmp_path, scripted(call(0.01, text_delta("Done."))), "Summarize",
-                          "--mode", "bypass")
-    turn = _queue()[0]
-    assert code == 0 and turn["session"]["surface"] == "lumi run" and turn["session"]["id"].startswith("headless:")
-    assert turn["messages"]["user"]["text"] == "Summarize"
 
 
 def test_lumi_run_prints_its_result_before_a_slow_upload(org, monkeypatch, tmp_path):
@@ -815,22 +1419,42 @@ def _cloud(monkeypatch, tmp_path, section):
     return fake, client
 
 
+def _confirm_with(client):
+    status = oversight.status()
+    assert oversight.acknowledge(status["fingerprint"], "app", notice=status["notice_text"],
+                                 signer=client.sign_as_device)
+    return status
+
+
 def test_joined_organization_end_to_end(monkeypatch, tmp_path):
     """Join an organization whose policy asks for oversight, confirm the notice, run a turn, send it, leave."""
     fake, client = _cloud(monkeypatch, tmp_path, {"version": 1, "activity": True, "messages": "redacted",
                                                   "security_flags": True})
     client.enroll("org_acme")
-    assert policy.load().cloud and oversight.status()["configured"]
+    assert policy.load().cloud and oversight.status()["configured"] and oversight.status()["required"]
 
     session = _session(tmp_path, StreamingBackend(events=[text_delta("Done."), done()]))
-    list(session.run("before the notice"))
-    assert _queue() == []  # not confirmed yet: nothing recorded
-    _shown()
+    assert _refused(list(session.run("before the notice")))
+    assert _queue() == []  # not confirmed yet: refused, nothing recorded
+    status = _confirm_with(client)
     list(session.run("after the notice"))
+    # Lumi Cloud is unavailable at first: the confirmation waits and is sent on the next try.
+    fake.acknowledgment_failures = [httpx.Response(503, json={"error": "unavailable",
+                                                              "error_description": "Try again later."})]
+    assert oversight.upload_pending(client) == "retry"
+    assert fake.acknowledgments == [] and oversight.status()["acknowledgment"]["upload"]["state"] == "pending"
     assert oversight.upload_pending(client) == "idle"
+    # Lumi Cloud verified the confirmation with the key this computer enrolled with, and the notice
+    # is one its policy produced for this device.
+    [stored] = fake.acknowledgments
+    assert stored["record"]["notice_fingerprint"] == status["fingerprint"]
+    assert stored["record"]["device_id"] == client.device()["id"] and stored["record"]["person"]["account"] == "usr_1"
+    assert oversight.status()["acknowledgment"]["upload"]["state"] == "sent"
     sent = fake.uploads[-1]
     assert sent["policy_version"] == 1
-    assert [e["messages"]["user"]["text"] for e in sent["events"] if e["type"] == "turn"] == ["after the notice"]
+    turns = [e for e in sent["events"] if e["type"] == "turn"]
+    assert [e["messages"]["user"]["text"] for e in turns] == ["after the notice"]
+    assert (turns[0]["trigger"], turns[0]["unattended"]) == ("app", False)
 
     list(session.run("queued, then the computer leaves"))
     assert len(_queue()) == 1
@@ -839,6 +1463,27 @@ def test_joined_organization_end_to_end(monkeypatch, tmp_path):
     assert not oversight.status()["configured"]
     # Joining again, even the same organization, needs the notice confirmed again.
     assert not (state_home() / "oversight" / "notice.json").exists()
+
+
+def test_lumi_cloud_refuses_a_notice_it_didnt_produce_or_a_bad_signature(monkeypatch, tmp_path):
+    fake, client = _cloud(monkeypatch, tmp_path, {"activity": True})
+    client.enroll("org_acme")
+    _confirm_with(client)
+    published, fake.published = fake.published, []  # as if no policy of Acme's showed that notice
+    assert oversight.upload_pending(client) == "idle"
+    upload = oversight.status()["acknowledgment"]["upload"]
+    assert upload["state"] == "refused" and "notice_mismatch" in upload["error"]
+    # A signature by another key.
+    fake.published = published
+    oversight.forget_notice("test")
+    status = oversight.status()
+    other = Ed25519PrivateKey.generate()
+    assert oversight.acknowledge(status["fingerprint"], "app", notice=status["notice_text"],
+                                 signer=lambda data: base64.urlsafe_b64encode(other.sign(data)).decode())
+    assert oversight.upload_pending(client) == "idle"
+    upload = oversight.status()["acknowledgment"]["upload"]
+    assert upload["state"] == "refused" and "invalid_signature" in upload["error"]
+    assert fake.acknowledgments == []
 
 
 def test_a_newer_oversight_section_from_lumi_cloud_is_applied_with_oversight_off(monkeypatch, tmp_path):

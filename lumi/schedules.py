@@ -13,8 +13,12 @@ days and time (this computer's local time) it runs. Schedules live in
 A run is ``lumi run`` (lumi/headless.py) with the schedule's settings, so the
 organization policy, budgets, the audit log, file exclusions, the sandboxes
 and the person's Settings hooks apply as for any unattended run, and nothing
-asks a person. Repository instructions apply only if the project is trusted in
-the app; a schedule never trusts one itself. A run stops after the schedule's
+asks a person. Under an organization's oversight (lumi/oversight.py) a run is
+unattended (``trigger`` ``schedule``): it runs as the computer user who
+confirmed the notice, or under the policy's ``oversight.unattended``, which
+records it with the notice in its result or refuses it. Repository
+instructions apply only if the project is trusted in the app; a schedule
+never trusts one itself. A run stops after the schedule's
 ``max_minutes`` (a hook already running finishes first), and a
 schedule never runs twice at once (``running.json`` names the process). Each
 run's result (the ``lumi run`` JSON summary) is kept under
@@ -324,7 +328,7 @@ def _run_claimed(schedule: Schedule) -> int:
     started = datetime.now(timezone.utc)
     out, err = io.StringIO(), io.StringIO()
     try:
-        code = headless.main(argv_for(schedule), stdin=io.StringIO(""), stdout=out, stderr=err)
+        code = headless.main(argv_for(schedule), stdin=io.StringIO(""), stdout=out, stderr=err, trigger="schedule")
     except Exception as exc:  # keep a record of the failure, whatever it was
         logger.exception("Scheduled run %s failed", schedule_id)
         code, err = 1, io.StringIO(f"{exc.__class__.__name__}: {exc}")
@@ -339,8 +343,12 @@ def _run_claimed(schedule: Schedule) -> int:
 def _keep(schedule_id: str, started: datetime, code: int, summary: dict, stderr: str) -> None:
     """Write a run's result and drop the oldest past ``KEEP_RUNS``."""
     # The run's own errors (a refused request, an exhausted budget) when it
-    # got as far as a summary; otherwise what ``lumi run`` printed.
+    # got as far as a summary; otherwise what ``lumi run`` printed, without
+    # the organization's oversight notice (kept in the summary), which isn't one.
+    from .headless import NOTICE_PREFIX
+
     problems = "; ".join(str(e.get("message") or "") for e in summary.get("errors") or [] if isinstance(e, dict))
+    stderr = "\n".join(line for line in stderr.splitlines() if not line.startswith(NOTICE_PREFIX)).strip()
     record = {"started_at": started.isoformat(timespec="seconds"),
               "finished_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
               "exit_code": code, "status": summary.get("status") or ("failed" if code else "done"),

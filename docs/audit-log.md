@@ -41,8 +41,10 @@ day. `LUMI_STATE_HOME` moves the whole folder.
 | `update.check` | An [update](updates.md) check finishes | `result` (`found`, `none`, `error`), version, feed |
 | `update.deferred`, `update.install` | An update waits for a running agent turn, or its installer starts and Lumi closes | version, feed, `reason` |
 | `update.skipped`, `update.postponed`, `update.cancelled` | You skip an update, choose to be reminded later, or close the update window | version, feed |
-| `oversight.notice_shown` | The [organization oversight](organization-oversight.md) notice for the policy in force was confirmed (the app's button or an interactive terminal), or sent to a chat of the chat gateway, so recording starts | organization, surface (`app`, `lumi run`, `terminal`, `chat gateway`), the chat's session for a chat, `version`, `activity`, `messages`, `security_flags`, `retention_days`, `project_paths`, `enabled` |
+| `oversight.notice_shown` | The [organization oversight](organization-oversight.md) notice for the policy in force was confirmed: the app's button, a typed yes at an interactive terminal, or a chat of the chat gateway (its button or reply). Model requests may start | organization, surface (`app`, `terminal`, `gateway`), the acknowledgment's id, fingerprint, the notice's SHA-256, computer user, whether it was signed, the chat's session for a chat, `version`, `activity`, `messages`, `security_flags`, `retention_days`, `project_paths`, `unattended`, `enabled` |
 | `oversight.notice_forgotten` | Confirmed oversight notices were forgotten: the computer left the organization or signed out of Lumi Cloud | why |
+| `oversight.unattended_run` | A run with nobody at the screen (a scheduled task, `lumi run` without an interactive terminal) started under oversight | organization, trigger (`schedule`, `headless`), computer user, whether that user had confirmed the notice, the run's id |
+| `oversight.acknowledgment_refused` | Lumi Cloud refused a confirmation of the notice (a notice its policy didn't produce, a signature that doesn't verify) | the acknowledgment's id, Lumi Cloud's code |
 | `oversight.discarded` | Queued oversight records were deleted unsent (the policy stopped asking, Lumi Cloud refused, or the computer left the organization) | how many, why |
 | `error` | A turn reports an error | code, message by capture level |
 

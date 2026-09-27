@@ -10,7 +10,17 @@ jobs. It uses the same engine as the desktop app. These all apply:
 - file exclusions and the secret scan;
 - the path checks, command guardrails and, when it's on, the
   [shell sandbox](shell-sandbox.md);
-- your own [hooks](#hooks).
+- your own [hooks](#hooks);
+- [organization oversight](organization-oversight.md): when your organization's
+  policy turns it on, `lumi run` prints its notice first. At an interactive
+  terminal (standard input and standard error both terminals) it asks you to
+  type `yes` before anything reaches a model; anything else stops the run
+  (exit code 3). Without one (CI, a service account, input or output piped)
+  the run is unattended: it runs if this computer user confirmed the notice,
+  and otherwise the policy's `oversight.unattended` decides: `record` runs it
+  and puts the notice at the top of its output (the JSON result's first key
+  `oversight`, a first `lumi.oversight` line with `--output jsonl`, a first
+  line with `--output text`), `block` refuses it (exit code 2).
 
 The code is `lumi/headless.py`.
 

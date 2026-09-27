@@ -401,19 +401,22 @@
                              organization's policy has Lumi share activity,
                              messages or security flags, this names the
                              organization and what it receives. It can't be
-                             dismissed, and nothing is recorded until the
-                             person confirms it with "I've read this"
-                             (settings_view.js). -->
-                        <section id="oversight-notice" class="oversight-notice" aria-labelledby="oversight-notice-title" hidden>
+                             dismissed, and until the person confirms it with
+                             "I've read this" the message box is locked and
+                             nothing is sent to a model (settings_view.js). -->
+                        <section id="oversight-notice" class="oversight-notice" aria-labelledby="oversight-notice-title" tabindex="-1" hidden>
                             <svg class="oversight-notice-icon" width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
                                 <path d="M8 1 2 3v5c0 4 3 6 6 7 3-1 6-3 6-7V3z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/>
                                 <path d="M5 8.2c1.6-1.9 4.4-1.9 6 0-1.6 1.9-4.4 1.9-6 0z" stroke="currentColor" stroke-width="1.1" stroke-linejoin="round"/>
                                 <circle cx="8" cy="8.2" r=".9" fill="currentColor"/>
                             </svg>
                             <h2 id="oversight-notice-title" class="sr-only">Organization oversight</h2>
-                            <p id="oversight-notice-text" class="oversight-notice-text" role="status"></p>
+                            <div class="oversight-notice-body" role="status">
+                                <p id="oversight-notice-text" class="oversight-notice-text"></p>
+                                <p id="oversight-notice-lock" class="oversight-notice-lock" hidden>Lumi won’t send anything to a model until you confirm you’ve read this.</p>
+                            </div>
                             <button type="button" id="oversight-notice-details" class="oversight-notice-details" aria-describedby="oversight-notice-text">What’s shared</button>
-                            <button type="button" id="oversight-notice-confirm" class="oversight-notice-confirm" aria-describedby="oversight-notice-text" hidden>I’ve read this</button>
+                            <button type="button" id="oversight-notice-confirm" class="oversight-notice-confirm" aria-describedby="oversight-notice-text oversight-notice-lock" hidden>I’ve read this</button>
                         </section>
                         <div id="composer-queue" class="composer-queue" hidden></div>
                         <div class="input-wrapper">

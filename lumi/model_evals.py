@@ -17,7 +17,9 @@ Hooks aren't left out: runs try models you don't rely on yet, unattended and
 often in Bypass, which is where a guard of yours matters most. Repository
 instructions apply only if the project is trusted in the app. The check is
 your own command: it passes the command guardrails and runs in the shell
-sandbox when that's on.
+sandbox when that's on. Under an organization's oversight (lumi/oversight.py)
+a comparison doesn't start, and stops before its next run, until you have
+confirmed the organization's notice; its runs are then recorded as yours.
 
 Comparisons are kept in ``~/.lumi/model_evals/<id>.json``, diffs next to them.
 One comparison runs at a time.
@@ -261,9 +263,15 @@ class Runner:
         self.running_id = ""
 
     def start(self, comparison_id: str, on_update: Callable[[], None] = lambda: None) -> Comparison:
+        from . import oversight
+
         comparison = get(comparison_id)
         if comparison is None:
             raise EvalError("That comparison no longer exists.")
+        # Nothing reaches a model before the organization's notice is confirmed.
+        refusal = oversight.refusal("app")
+        if refusal:
+            raise EvalError(refusal)
         with self._lock:
             if self.running_id:
                 raise EvalError("Another comparison is running; stop it or wait for it to finish.")
@@ -295,6 +303,7 @@ class Runner:
             thread.join(timeout)
 
     def _run(self, comparison: Comparison, on_update: Callable[[], None]) -> None:
+        from . import oversight
         from .gui.workspace_trust import WorkspaceTrust
 
         try:
@@ -304,6 +313,10 @@ class Runner:
                 for model in comparison.models:
                     if self._stop.is_set():
                         break
+                    # A policy that arrives meanwhile, with a notice not yet confirmed, stops the rest.
+                    refusal = oversight.refusal("app")
+                    if refusal:
+                        raise EvalError(refusal)
                     result = self._one(comparison, task_index, task, model, work, trust)
                     comparison.results.append(result)
                     _save(comparison)
@@ -390,7 +403,11 @@ class Runner:
         except ValueError:
             parsed = {}
         problems = "; ".join(str(e.get("message") or "") for e in parsed.get("errors") or [] if isinstance(e, dict))
-        return parsed, (problems or (err or "").strip())[:1000], process.returncode
+        # The organization's oversight notice isn't an error (lumi/headless.py prints it first).
+        from .headless import NOTICE_PREFIX
+
+        err = "\n".join(line for line in (err or "").splitlines() if not line.startswith(NOTICE_PREFIX))
+        return parsed, (problems or err.strip())[:1000], process.returncode
 
 
 def _end(process: subprocess.Popen) -> None:

@@ -60,9 +60,11 @@ An organization's policy can also turn on **organization oversight**: each
 turn's activity, optionally your messages and sessions' titles (secrets
 removed), and security flags, sent separately from check-ins. Lumi then
 shows a notice beside the message box naming the organization and what it
-receives, records nothing until you confirm it with **I've read this**, and
-lists exactly what is shared in **Settings > Privacy & security**. Leaving
-the organization or signing out forgets the confirmation. See [organization
+receives, sends nothing to a model until you confirm it with **I've read
+this** (a record signed with this computer's device key goes to
+`/api/v1/oversight/acknowledgments`), and lists exactly what is shared in
+**Settings > Privacy & security**. Leaving the organization or signing out
+forgets the confirmation. See [organization
 oversight](organization-oversight.md).
 
 ### The organization's policy

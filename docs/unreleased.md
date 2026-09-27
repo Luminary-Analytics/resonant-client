@@ -14,6 +14,112 @@ An organization's policy can have Lumi share its people's work with the
 organization's Lumi Cloud, and Lumi tells them first. See [organization
 oversight](organization-oversight.md).
 
+### The owner's decisions (September 27): nothing reaches a model before the notice is confirmed
+
+The product owner decided how the notice and unattended runs work. Where the
+first pass and the review fixes below differ, this part describes the code
+now.
+
+- **Blocked until confirmed.** While a policy's oversight is in force (it
+  asks for something, and records have somewhere to go) and the person
+  hasn't confirmed the current notice on this computer, nothing is sent to a
+  model. The app locks the message box, its send button, attachments,
+  dictation and the autonomous-session button, and shows why under the
+  notice; **I've read this** is reachable with Tab and Shift+Tab, with a
+  visible focus ring, and focus never moves onto it by itself. Every entry
+  point refuses with a message saying how to confirm: `Session.run` (before
+  each turn and again before each model request, so a policy that arrives
+  mid-turn stops it), the app's socket, `/plan`, missions, autonomous
+  sessions (start, resume and each iteration), Team (its runtime's commands
+  and every orchestrator step, through `service.policy_refusal`, ahead of
+  the Team preview's own policy rule), model comparisons, evaluations, a
+  schedule's Run now, dictation, AI Employee advice and tasks from chat. A
+  test fails if any code calls the turn loop other than through
+  `Session.run`.
+- **Terminals ask for a typed yes.** Interactive `lumi run` (standard input
+  and error both terminals) and the terminal UI print the notice and wait
+  for `yes`; anything else stops without sending anything (`lumi run` exits
+  3). The typed yes is an acknowledgment from the `terminal` surface.
+- **Gateway chats confirm for themselves.** A chat that hasn't confirmed the
+  notice for the policy in force gets it instead of a reply, with an **I've
+  read this** button (Telegram, Slack) or the reply `I've read this`,
+  accepted only once that notice was sent to the chat; the confirmation is
+  kept per chat and per fingerprint, and the chat then sends its request
+  again.
+- **Signed acknowledgments.** Each confirmation is a
+  `lumi.oversight-acknowledgment/v1` record (organization, notice
+  fingerprint, SHA-256 of the notice text shown, surface, person: Lumi Cloud
+  account, computer user, chat; device; time to the second), signed with the
+  enrolled device's Ed25519 key over its canonical JSON
+  (`CloudClient.sign_as_device`), kept with the confirmation and queued for
+  `POST /api/v1/oversight/acknowledgments` ahead of turn records, retried like
+  them. The person is unblocked at once. A `409 notice_mismatch` or `422
+  invalid_signature` is a refusal shown in Settings, never resent. Settings >
+  Organization oversight shows the confirmation (when, which notice) and
+  whether Lumi Cloud has it. The fingerprint is now the organization id, the
+  device and the policy's `oversight` section as published, which Lumi Cloud
+  can compute.
+- **Unattended runs are visible.** A scheduled task (`trigger` `schedule`)
+  or `lumi run` without an interactive terminal (`headless`) runs as the
+  computer user who confirmed the notice; otherwise the new policy key
+  `oversight.unattended` decides: `record` (the default) runs it, prints the
+  notice at the top of its output and in its log (`oversight.unattended_run`
+  in the audit log) and records it with the computer user and this computer;
+  `block` refuses it until someone confirms the notice here as that user. Every
+  record now carries `trigger` (`app`, `terminal`, `gateway`, `schedule`,
+  `headless`, `plan`, `mission`, `team`), `unattended` and `os_user`.
+  `unattended` is a version 1 key of the strict parser; an unknown key or
+  version still turns oversight off with the reason shown.
+- **Titles and flag excerpts only with messages**: unchanged.
+- **Who reads messages**: Settings and the docs now say that in Lumi Cloud
+  owners, security admins and auditors read messages, titles and excerpts
+  through their role, anyone else only with an owner's grant, and every view
+  is recorded.
+- The chat gateway and the terminal UI now send records and confirmations
+  to Lumi Cloud while they run, as the app does.
+
+Validation of the decisions, September 27, 2026 (isolated home, a clean
+Python 3.13 venv, `PYTHONNOUSERSITE=1`):
+
+- `tests/test_oversight.py` (97 tests): no turn on any path while the
+  notice is unconfirmed (Session.run for every surface, a policy arriving
+  mid-turn, the app's socket and chat queue, dictation, evaluations, Run
+  now, AI Employee advice, `/plan`, missions, autonomous sessions, Team's
+  `policy_refusal`, model comparisons, tasks from chat) and a source check
+  that only `Session.run` calls the turn loop; the gateway flow (reply,
+  button, stale button, a chat never shown the notice, one chat per
+  confirmation); interactive `lumi run` (no, then yes) and unattended `lumi
+  run` under `record` and `block`; scheduled runs recorded as the computer
+  user who confirmed, and refused under `block`; the terminal UI's typed yes;
+  the record's canonical form and its Ed25519 signature verifying with the
+  device key; upload, queueing, retry, 409/422 refusals and a signature added
+  later, against a stand-in client and against the fake Lumi Cloud of
+  `tests/test_cloud.py` (which verifies the signature with the enrolled key
+  and recomputes the fingerprint); `unattended` parsing and unknown keys.
+- `tests/test_chat_gateway.py` (Telegram and Slack **I've read this**
+  buttons), `tests/test_cloud.py` (`sign_as_device`), and `node --test`
+  (101 UI tests, among them the locked message box: every send path blocked,
+  focus to the notice and back, a policy that collects more locking again;
+  each checked to fail when its line is removed).
+- A real browser (Playwright, headless Edge, `tests/oversight_notice.browser.cjs`
+  against `tests/fixtures/oversight_ui_server.py`: the source app, a throwaway
+  home with a managed enrollment and device key, scripted inference, loopback
+  only): the message box and its controls were disabled and a raw socket
+  message was refused with nothing reaching the model; Shift+Tab from the
+  permission mode and Tab from **What's shared** reached **I've read this**
+  with a 2 px focus ring; Enter confirmed it, the record verified with the
+  device key and waited to be sent, the box unlocked with focus in it, and
+  the next message reached the model and was recorded as `app`. At 375 px,
+  locked again, the notice fits with no horizontal scroll in both themes;
+  contrast of its text, reason and button: 13.4:1, 13.4:1, 11.4:1 (dark),
+  14.1:1, 14.1:1, 6.2:1 (light). The real `~/.resonant` and Credential Manager
+  were unchanged.
+- Not run: a packaged build, a deployed Lumi Cloud, a real Telegram or Slack
+  chat, a real terminal (the typed yes was driven through the code's own
+  prompts), screen readers.
+
+### The first pass
+
 - **Policy** (`lumi/policy.py`): an `oversight` section with `version`,
   `activity`, `messages` (`off`, `redacted`, `full`), `security_flags`,
   `retention_days`, `notice` and `project_paths`. A key or version Lumi

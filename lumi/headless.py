@@ -47,6 +47,10 @@ from typing import Any, Iterable, TextIO
 EXIT_OK, EXIT_FAILED, EXIT_USAGE, EXIT_ATTENTION = 0, 1, 2, 3
 # How long a finished run waits, at most, to send its organization oversight records.
 FLUSH_SECONDS = 5.0
+# The line `lumi run` writes to stderr with the organization's oversight
+# notice (lumi/oversight.py); callers that keep stderr (scheduled tasks,
+# model comparisons) tell it apart from errors by this.
+NOTICE_PREFIX = "lumi run: organization oversight: "
 
 # `--mode ask` is read only: nobody can answer a prompt during a run, so it
 # keeps the suggest tier, whose policy refuses changes outright. The
@@ -362,8 +366,46 @@ def exit_code(result: dict) -> int:
     return {"completed": EXIT_OK, "failed": EXIT_FAILED}.get(result["status"], EXIT_ATTENTION)
 
 
+def _interactive(stdin: TextIO, stderr: TextIO) -> bool:
+    """Someone at a terminal can read the notice and answer: stdin and stderr are both terminals."""
+    try:
+        return bool(stdin.isatty()) and bool(stderr.isatty())
+    except (AttributeError, OSError, ValueError):
+        return False
+
+
+def _confirm_oversight(gate: Any, settings: Any, stdin: TextIO, stderr: TextIO) -> bool:
+    """Ask the person at this terminal to confirm the organization's notice; True once they typed yes."""
+    from . import oversight
+    from .cloud import CloudClient
+
+    stderr.write("lumi run: nothing is sent to a model until you confirm you've read this notice. "
+                 "Type yes to confirm and start, anything else to stop: ")
+    stderr.flush()
+    try:
+        answer = stdin.readline()
+    except (OSError, ValueError):
+        answer = ""
+    if not oversight.is_yes(answer):
+        stderr.write("lumi run: nothing was sent.\n")
+        return False
+    if not oversight.acknowledge(gate.fingerprint, "terminal", notice=gate.text,
+                                 signer=CloudClient(settings).sign_as_device):
+        stderr.write("lumi run: the organization's notice changed while you read it; nothing was sent. "
+                     "Run the command again to see the current notice.\n")
+        return False
+    return True
+
+
 def main(argv: list[str] | None = None, *, stdin: TextIO | None = None, stdout: TextIO | None = None,
-         stderr: TextIO | None = None) -> int:
+         stderr: TextIO | None = None, trigger: str = "") -> int:
+    """``lumi run``.
+
+    ``trigger`` names what started it for organization oversight
+    (``schedule`` for a scheduled task, which is never interactive); by
+    default a run at an interactive terminal is ``terminal`` and any other
+    ``headless``.
+    """
     stdin, stdout, stderr = stdin or sys.stdin, stdout or sys.stdout, stderr or sys.stderr
     parser = argparse.ArgumentParser(prog="lumi run", description="Run one task without a UI and report the result.")
     parser.add_argument("prompt", nargs="?", default="", help="the task, or '-' to read it from stdin")
@@ -426,15 +468,47 @@ def main(argv: list[str] | None = None, *, stdin: TextIO | None = None, stdout: 
     except (UsageError, ValueError, OSError) as exc:
         stderr.write(f"lumi run: {exc}\n")
         return EXIT_USAGE
-    # What the organization receives from this run, before it starts
-    # (lumi/oversight.py). Someone at a terminal has now seen it; an
-    # unattended run records only after the notice was seen in the app.
+    # Organization oversight (lumi/oversight.py), before anything starts: the
+    # notice, then a typed yes from someone at an interactive terminal. A run
+    # nobody can answer (a schedule, CI) is unattended: it runs if this
+    # computer user confirmed the notice, or under the policy's
+    # `oversight.unattended` ("record" prints the notice with the output and
+    # records the run; "block" refuses it).
     from . import oversight
 
-    interactive = bool(getattr(stderr, "isatty", lambda: False)())
-    notice = oversight.terminal_notice(interactive, "lumi run")
+    interactive = trigger != "schedule" and _interactive(stdin, stderr)
+    session.oversight_trigger = trigger or ("terminal" if interactive else "headless")
+    session.oversight_unattended = not interactive
+    gate = oversight.for_terminal(unattended=not interactive)
+    notice = gate.notice
     if notice:
-        stderr.write(f"lumi run: organization oversight: {notice}\n")
+        stderr.write(f"{NOTICE_PREFIX}{notice}\n")
+    if gate.refusal:
+        stderr.write(f"lumi run: {gate.refusal}\n")
+        return EXIT_USAGE
+    if gate.confirm:
+        if not _confirm_oversight(gate, settings, stdin, stderr):
+            return EXIT_ATTENTION
+        from .cloud import CloudClient
+
+        # The confirmation unblocks this run now; Lumi Cloud hears of it in the background.
+        threading.Thread(target=oversight.flush, args=(lambda: CloudClient(settings),),
+                         kwargs={"seconds": FLUSH_SECONDS}, daemon=True, name="lumi-run-acknowledgment").start()
+        gate = oversight.for_terminal(unattended=False)
+    shown = {"organization": gate.organization, "notice": gate.text, "trigger": session.oversight_trigger,
+             "unattended": session.oversight_unattended, "acknowledged": gate.acknowledged,
+             "recorded": gate.recorded} if gate.text else None
+    if shown and session.oversight_unattended and gate.recorded:
+        from . import audit
+
+        # Nobody is at the screen: the run's own output and the audit log carry the notice.
+        audit.record("oversight.unattended_run", organization=gate.organization, trigger=session.oversight_trigger,
+                     os_user=oversight.os_user(), acknowledged=gate.acknowledged, run=run_id)
+        if args.output == "text":
+            stdout.write(f"Organization oversight: {gate.text}\n\n")
+        elif args.output == "jsonl":
+            stdout.write(json.dumps({"event": "lumi.oversight", **shown}) + "\n")
+        stdout.flush()
 
     timed_out = threading.Event()
     timer = None
@@ -466,6 +540,9 @@ def main(argv: list[str] | None = None, *, stdin: TextIO | None = None, stdout: 
 
     result = summarize(events, run_id=run_id, provider=provider, model=model, project=project, mode=mode,
                        started=started, timed_out=timed_out.is_set())
+    if shown:
+        # First in the result, so it heads the run's output.
+        result = {"oversight": shown, **result}
     from . import activity
 
     activity.record_turn(events, cancelled=timed_out.is_set())

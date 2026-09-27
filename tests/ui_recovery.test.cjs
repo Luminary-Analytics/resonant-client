@@ -2700,76 +2700,139 @@ test('a stopped plan shows the steps that will never run as abandoned', () => {
     assert.deepEqual(statuses, {n1: 'done', n2: 'abandoned', n3: 'abandoned'});
 });
 
-// Organization oversight (settings_view.js): the notice beside the message box
-// starts recording only when the person presses its "I've read this" button.
-// A status push, a timer or a window in the background never confirms it.
+// Organization oversight (settings_view.js, app.js): while the notice beside the
+// message box waits to be confirmed, the message box is locked and nothing can be
+// sent. Only the notice's "I've read this" button confirms it: a status push, a
+// timer or a window in the background never does, and focus never lands on the
+// button by itself, so a key meant for the message box can't confirm it.
 function oversightNotice() {
     const element = (id, extra = {}) => {
         const listeners = {};
         const classes = new Set();
         return {
-            id, hidden: true, textContent: '', listeners,
-            classList: {toggle: (name, on) => (on ? classes.add(name) : classes.delete(name)), has: name => classes.has(name)},
+            id, hidden: true, disabled: false, textContent: '', placeholder: 'Message Lumi', listeners, style: {},
+            classList: {toggle: (name, on) => (on ? classes.add(name) : classes.delete(name)), has: name => classes.has(name),
+                add: name => classes.add(name), remove: name => classes.delete(name)},
             addEventListener: (type, fn) => { listeners[type] = fn; },
-            focus() { document.activeElement = this; },
+            setAttribute() {},
+            focus() { if (!this.disabled) document.activeElement = this; },
             ...extra,
         };
     };
+    const wrapper = element('input-wrapper');
     const elements = {
         'oversight-notice': element('oversight-notice', {hidden: true}),
         'oversight-notice-text': element('oversight-notice-text'),
+        'oversight-notice-lock': element('oversight-notice-lock'),
         'oversight-notice-details': element('oversight-notice-details'),
         'oversight-notice-confirm': element('oversight-notice-confirm'),
+        'user-input': element('user-input', {value: 'a draft kept while locked', closest: selector => (selector === '.input-wrapper' ? wrapper : null)}),
+        'send-btn': element('send-btn'),
+        'add-context-btn': element('add-context-btn'),
+        'mic-btn': element('mic-btn'),
+        'composer-autonomous-btn': element('composer-autonomous-btn'),
+        'composer-prompts-btn': element('composer-prompts-btn'),
     };
     const document = {activeElement: null, getElementById: id => elements[id] || null};
     const timers = [];
-    const context = vm.createContext({window: {}, document, setTimeout: fn => timers.push(fn)});
+    const context = vm.createContext({console, window: {}, document, WebSocket: {OPEN: 1}, setTimeout: fn => timers.push(fn),
+        clearTimeout: () => {}});
+    vm.runInContext(source + '\nthis.App = LumiApp;', context);
     vm.runInContext(fs.readFileSync(path.join(__dirname, '../lumi/gui/static/settings_view.js'), 'utf8')
         + '\nthis.View = LumiSettingsView;', context);
-    const app = Object.create(context.View.prototype);
-    app.sent = [];
-    app.send = message => app.sent.push(message);
-    app.currentView = 'agents';
+    // As applyMixin does: the settings view's methods on the app.
+    for (const name of Object.getOwnPropertyNames(context.View.prototype)) {
+        if (name !== 'constructor') Object.defineProperty(context.App.prototype, name, Object.getOwnPropertyDescriptor(context.View.prototype, name));
+    }
+    const app = Object.create(context.App.prototype);
+    const toasts = [];
+    Object.assign(app, {
+        sent: [], userInput: elements['user-input'], sendBtn: elements['send-btn'], stopBtn: element('stop-btn'),
+        currentView: 'agents', isRunning: false, ws: {readyState: 1}, _queuedMessages: new Map(),
+        showToastMessage: message => toasts.push(message), toasts,
+        _renderAccountMenu() {}, _clearPromptSuggestion() {}, _setSessionActivity() {}, _startLiveRun() {}, _stopLiveRun() {},
+    });
+    app.send = message => app.sent.push({...message});
     app._initOversightNotice();
-    return {app, elements, document, runTimers: () => timers.splice(0).forEach(fn => fn())};
+    return {app, elements, wrapper, document, runTimers: () => timers.splice(0).forEach(fn => fn())};
 }
 
-const PENDING = {configured: true, destination: true, acknowledged: false, fingerprint: 'fp-1', reason: '',
-    notice: 'Acme receives your sessions and what they did from Lumi on this computer.', organization_notice: ''};
+const PENDING = {configured: true, destination: true, acknowledged: false, required: true, fingerprint: 'fp-1', reason: '',
+    notice: 'Acme receives your sessions and what they did from Lumi on this computer.', organization_notice: 'Ask security@acme.example.',
+    notice_text: 'Acme receives your sessions and what they did from Lumi on this computer. Ask security@acme.example.'};
+const LOCKED = ['user-input', 'send-btn', 'add-context-btn', 'mic-btn', 'composer-autonomous-btn', 'composer-prompts-btn'];
 
 test('the oversight notice is confirmed only by its button, never by arriving or being painted', () => {
-    const {app, elements, document, runTimers} = oversightNotice();
+    const {app, elements, runTimers} = oversightNotice();
     app._applyOversight(PENDING);
-    runTimers();  // no delayed acknowledgment either
+    runTimers();  // no delayed confirmation either
     const notice = elements['oversight-notice'];
     const confirm = elements['oversight-notice-confirm'];
     assert.equal(notice.hidden, false);
     assert.equal(confirm.hidden, false);
-    assert.match(elements['oversight-notice-text'].textContent, /Nothing is shared until you confirm you’ve read this\./);
-    assert.deepEqual(Array.from(app.sent), []);
+    assert.equal(elements['oversight-notice-text'].textContent, PENDING.notice_text);
+    assert.equal(elements['oversight-notice-lock'].hidden, false);
+    assert.deepEqual(app.sent, []);
 
     confirm.listeners.click();
-    assert.deepEqual(JSON.parse(JSON.stringify(app.sent)), [{command: 'oversight_notice_shown', fingerprint: 'fp-1'}]);
-
-    // The server's answer hides the button; keyboard focus stays in the notice.
-    document.activeElement = confirm;
-    app._applyOversight({...PENDING, acknowledged: true});
-    assert.equal(confirm.hidden, true);
-    assert.equal(document.activeElement, elements['oversight-notice-details']);
-    assert.doesNotMatch(elements['oversight-notice-text'].textContent, /Nothing is shared until/);
+    // The server checks both: this policy's fingerprint, and its notice as the page showed it.
+    assert.deepEqual(app.sent, [{command: 'oversight_notice_shown', fingerprint: 'fp-1', notice: PENDING.notice_text}]);
 });
 
-test('a notice that says nothing is collected asks for no confirmation', () => {
+test('the message box is locked until the notice is confirmed, and nothing can be sent', () => {
+    const {app, elements, wrapper, document} = oversightNotice();
+    document.activeElement = elements['user-input'];
+    app._applyOversight(PENDING);
+    for (const id of LOCKED) assert.equal(elements[id].disabled, true, id);
+    assert.equal(wrapper.classList.has('is-oversight-locked'), true);
+    assert.equal(elements['user-input'].placeholder, 'Confirm the notice above to start');
+    // Focus leaves the locked box for the notice itself, never for its button.
+    assert.equal(document.activeElement, elements['oversight-notice']);
+    // No send path gets through: Enter, the send button, a retry, a turn that ends.
+    app.sendMessage();
+    app.sendMessage({autoRetry: true});
+    app.setRunning(false);
+    assert.equal(elements['user-input'].disabled, true);
+    assert.deepEqual(app.sent, []);
+    assert.match(app.toasts[0], /Confirm your organization’s oversight notice/);
+    assert.equal(elements['user-input'].value, 'a draft kept while locked');
+
+    // The server's answer unlocks it; focus goes from the button to the message box.
+    elements['oversight-notice-confirm'].focus();
+    app._applyOversight({...PENDING, acknowledged: true, required: false});
+    for (const id of LOCKED) assert.equal(elements[id].disabled, false, id);
+    assert.equal(wrapper.classList.has('is-oversight-locked'), false);
+    assert.equal(elements['oversight-notice-confirm'].hidden, true);
+    assert.equal(elements['oversight-notice-lock'].hidden, true);
+    assert.equal(document.activeElement, elements['user-input']);
+    assert.equal(elements['user-input'].placeholder, 'Message Lumi');
+    app.setRunning(false);
+    assert.equal(elements['user-input'].disabled, false);
+});
+
+test('a policy that collects more locks the message box again', () => {
     const {app, elements} = oversightNotice();
-    app._applyOversight({...PENDING, destination: false,
+    app._applyOversight({...PENDING, acknowledged: true, required: false});
+    assert.equal(elements['user-input'].disabled, false);
+    app._applyOversight({...PENDING, fingerprint: 'fp-2'});
+    assert.equal(elements['user-input'].disabled, true);
+    elements['oversight-notice-confirm'].listeners.click();
+    assert.deepEqual(app.sent, [{command: 'oversight_notice_shown', fingerprint: 'fp-2', notice: PENDING.notice_text}]);
+});
+
+test('a notice that says nothing is collected asks for no confirmation and locks nothing', () => {
+    const {app, elements} = oversightNotice();
+    app._applyOversight({...PENDING, destination: false, required: false,
         reason: "This computer isn't enrolled in Acme's Lumi Cloud, so nothing is collected."});
     assert.equal(elements['oversight-notice'].hidden, false);
     assert.equal(elements['oversight-notice-confirm'].hidden, true);
+    assert.equal(elements['user-input'].disabled, false);
     app._confirmOversightNotice();
-    assert.deepEqual(Array.from(app.sent), []);
+    assert.deepEqual(app.sent, []);
     // Nor does a policy that isn't there any more.
     app._applyOversight({configured: false});
     assert.equal(elements['oversight-notice'].hidden, true);
+    assert.equal(elements['user-input'].disabled, false);
     app._confirmOversightNotice();
-    assert.deepEqual(Array.from(app.sent), []);
+    assert.deepEqual(app.sent, []);
 });

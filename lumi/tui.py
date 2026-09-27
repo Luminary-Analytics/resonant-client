@@ -1094,14 +1094,52 @@ def print_banner(backend=None, health_info: dict = None, session: Session = None
         _print(f"    [{C_MUTED}]mode[/{C_MUTED}]     [{C_TEXT}]{mode}[/{C_TEXT}]  "
                f"[{C_DIM}]{_esc(description)}[/{C_DIM}]")
         _print_project_trust(session)
-        # What the organization receives, before the first turn (lumi/oversight.py).
-        from .oversight import terminal_notice
+        # What the organization receives, before the first turn (lumi/oversight.py);
+        # confirm_oversight asks for the typed yes.
+        from .oversight import for_terminal
 
-        shared = terminal_notice(True, "terminal")
+        shared = for_terminal(unattended=False).notice
         if shared:
             _print(f"    [{C_MUTED}]shared[/{C_MUTED}]   [{C_WARN}]{_esc(shared)}[/{C_WARN}]")
     console.print(f"    [{C_MUTED}]help[/{C_MUTED}]     [{C_DIM}]/help · /plan · /model · /backend · /quit[/{C_DIM}]")
     console.print()
+
+
+def confirm_oversight(settings) -> bool:
+    """Ask for a typed yes to the organization's oversight notice before anything reaches a model.
+
+    True when nothing needs confirming, or the person typed yes (an
+    acknowledgment from the terminal, signed with this computer's device key
+    and sent to Lumi Cloud in the background; lumi/oversight.py). Session.run
+    refuses every turn until then anyway; this is where the person can say yes.
+    """
+    from . import oversight
+
+    gate = oversight.for_terminal(unattended=False)
+    if not gate.confirm:
+        return True
+    console.print()
+    _print(f"  [{C_WARN}]Organization oversight[/{C_WARN}]  [{C_TEXT}]{_esc(gate.text)}[/{C_TEXT}]")
+    _print(f"  [{C_DIM}]Nothing is sent to a model until you confirm you've read this.[/{C_DIM}]")
+    try:
+        answer = pt_prompt(HTML(f'<style fg="#{C_WARN[1:]}">  Type yes to confirm: </style>'))
+    except (EOFError, KeyboardInterrupt):
+        answer = ""
+    if not oversight.is_yes(answer):
+        _print(f"  [{C_DIM}]Nothing was sent.[/{C_DIM}]")
+        return False
+    client = None
+    if settings is not None:
+        from .cloud import CloudClient
+
+        client = CloudClient(settings)
+    if not oversight.acknowledge(gate.fingerprint, "terminal", notice=gate.text,
+                                 signer=client.sign_as_device if client is not None else None):
+        _print_refusal("The organization's notice changed while you read it; nothing was sent.")
+        return False
+    if client is not None:
+        oversight.start_uploader(client)
+    return True
 
 
 def _print_project_trust(session: Session) -> None:
@@ -1324,6 +1362,11 @@ def run_embedded(session: Session, user_msg: str, images: list = None):
     def on_choice(options):
         """Prompt user for choice selection."""
         return _render_choices(options)
+
+    # A notice confirmation forgotten meanwhile (the app signed out of Lumi
+    # Cloud) is asked for again before the turn, rather than only refused.
+    if not confirm_oversight(getattr(session, "_settings_ref", None)):
+        return
 
     # Someone is at the terminal, so there is always a prompt. The tier
     # decides which calls ask; in Bypass only a "prompt" rule in the
@@ -1710,6 +1753,17 @@ Examples:
         _print_refusal(f"The session couldn't be set up: {exc}")
         return
     print_banner(backend=backend, health_info=health_info, session=session, mode=mode, notice=mode_notice)
+    # The organization's oversight notice, confirmed before the first turn (lumi/oversight.py).
+    if not confirm_oversight(settings):
+        console.print(f"  [{C_DIM}]Goodbye[/{C_DIM}]")
+        return
+    from . import oversight
+
+    if oversight.for_terminal(unattended=False).recorded:
+        from .cloud import CloudClient
+
+        # This terminal's turns go to Lumi Cloud while it runs, as the app's do.
+        oversight.start_uploader(CloudClient(settings))
 
     history = FileHistory(str(_history_path()))
     plan_mode = False

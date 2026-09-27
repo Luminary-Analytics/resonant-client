@@ -27,6 +27,12 @@ Like the policy, these are read once at startup (``read``): a change applies
 the next time Lumi starts. ``read`` parses settings.json itself rather than
 constructing a ``SettingsManager``, which would write the file and move keys
 into the credential store before the app has started.
+
+In offline mode (lumi/offline.py) the update site is reachable only when it
+is an allowed host; otherwise ``offline`` says why and WinSparkle isn't
+loaded, so nothing checks or downloads. Updates then come from a file
+(lumi/update_file.py). Turning offline mode on stops a running WinSparkle at
+once (``updater.apply_offline_mode``).
 """
 
 from __future__ import annotations
@@ -128,6 +134,7 @@ class UpdatePreferences:
     locked: tuple[str, ...] = ()  # which keys the policy sets
     problems: tuple[str, ...] = field(default=())  # stored values that were ignored, and why
     installed_by: str = ""  # a MANAGED_INSTALLERS name: that updates this copy
+    offline: str = ""  # why offline mode keeps the updater from the update site, or ""
 
     @property
     def feed_url(self) -> str:
@@ -142,7 +149,7 @@ class UpdatePreferences:
     def as_dict(self) -> dict[str, Any]:
         return {"mode": self.mode, "channel": self.channel, "pin": self.pin, "feed": self.feed_url,
                 "describe": self.describe(), "managed_by": self.managed_by, "locked": list(self.locked),
-                "problems": list(self.problems), "installed_by": self.installed_by}
+                "problems": list(self.problems), "installed_by": self.installed_by, "offline": self.offline}
 
 
 def read(settings_path: Path | None = None, policy_state: Any = None,
@@ -182,21 +189,40 @@ def read(settings_path: Path | None = None, policy_state: Any = None,
     source = installed_by() if installer is None else installer
     if source in MANAGED_INSTALLERS:
         values["mode"] = "off"
+    offline_reason = ""
+    if values["mode"] != "off":
+        from . import offline
+
+        offline_reason = offline.refusal(FEED_BASE + feed_name(values["channel"], values["pin"]), "the update check",
+                                         offline.read(path, state))
     return UpdatePreferences(mode=values["mode"], channel=values["channel"], pin=values["pin"],
                              managed_by=policy.organization if (policy and locked) else "",
-                             locked=tuple(sorted(locked)), problems=tuple(problems), installed_by=source)
+                             locked=tuple(sorted(locked)), problems=tuple(problems), installed_by=source,
+                             offline=offline_reason)
 
 
 def main(argv: list[str] | None = None) -> int:
     """``lumi updates``: print the update settings in effect as JSON.
 
     For administrators and detection scripts; it reads settings, the policy
-    and the install marker, and never checks for updates.
+    and the install marker, and never checks for updates. ``lumi updates
+    verify <file>`` checks an offline update bundle as the updater would
+    (lumi/update_file.py), without installing it.
     """
     from . import __version__
 
+    if argv and argv[0] == "verify" and len(argv) == 2:
+        from .update_file import UpdateFileError, verify
+
+        try:
+            update = verify(argv[1])
+        except UpdateFileError as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
+        print(json.dumps(update.summary(), indent=2))
+        return 0
     if argv:
-        print("usage: lumi updates", file=sys.stderr)
+        print("usage: lumi updates [verify <installer, folder or .zip>]", file=sys.stderr)
         return 2
     print(json.dumps({"version": __version__, **read().as_dict()}, indent=2))
     return 0

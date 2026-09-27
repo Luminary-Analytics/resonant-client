@@ -3701,6 +3701,8 @@ def _update_check_message(info: dict, started: bool) -> str:
         if info.get("managed_by") and "mode" in (info.get("locked") or []):
             return f"Updates are turned off by {info['managed_by']}."
         return "Updates are turned off in Settings > Updates."
+    if info.get("offline"):
+        return f"{info['offline']} To update, install one from a file under Settings > Updates."
     if not started:
         return "This copy of Lumi doesn't update itself (it runs from source or outside Windows)."
     message = f"Checking {info.get('describe') or 'for updates'}."
@@ -3866,6 +3868,84 @@ async def _cmd_update_status(ctx: CommandContext) -> None:
     from lumi.updater import status as update_status
 
     await ctx.send({"event": "update_status", "data": await asyncio.to_thread(update_status)})
+
+
+def _update_file_result(path: str) -> dict:
+    """Settings > Updates > Install from a file: verify it (lumi/update_file.py) and say what happens next."""
+    from ..update_file import UpdateFileError, can_install_here, verify
+
+    text = str(path or "").strip().strip('"')
+    if not text:
+        return {"ok": False, "path": "", "error": "Enter the installer's path, the folder that holds it, or a .zip."}
+    target = os.path.abspath(os.path.expanduser(text))
+    try:
+        update = verify(target)
+    except UpdateFileError as exc:
+        return {"ok": False, "path": target, "error": str(exc)}
+    except Exception as exc:  # a file Lumi can't read is refused, never a crash
+        logger.exception("Verifying an update file failed")
+        return {"ok": False, "path": target, "error": f"The file couldn't be checked: {exc}"}
+    return {"ok": True, "path": target, **update.summary(), "install_problem": can_install_here()}
+
+
+@command("update_file_verify")
+async def _cmd_update_file_verify(ctx: CommandContext) -> None:
+    """Check an offline update bundle as the online updater would, without installing it."""
+    await ctx.send({"event": "update_file", "data": await asyncio.to_thread(
+        _update_file_result, str(ctx.msg.get("path") or ""))})
+
+
+@command("update_file_install")
+async def _cmd_update_file_install(ctx: CommandContext) -> None:
+    """Verify the file again, then hand it to the updater's install flow (Lumi closes)."""
+    from ..update_file import UpdateFileError, install, verify
+
+    path = os.path.abspath(os.path.expanduser(str(ctx.msg.get("path") or "").strip().strip('"')))
+    expected = str(ctx.msg.get("sha256") or "")
+
+    def run() -> dict:
+        try:
+            update = verify(path)
+            if not expected or update.sha256 != expected:
+                raise UpdateFileError("The file changed since it was checked. Check it again before installing.")
+            installer = install(update)
+        except UpdateFileError as exc:
+            return {"ok": False, "path": path, "error": str(exc)}
+        return {"ok": True, "path": path, **update.summary(), "installing": installer}
+
+    await ctx.send({"event": "update_file", "data": await asyncio.to_thread(run)})
+
+
+@command("update_file_dialog")
+async def _cmd_update_file_dialog(ctx: CommandContext) -> None:
+    """The desktop window's file picker for an update file; the page shows it only with a native bridge."""
+    from . import app as _gui_app
+
+    window = getattr(_gui_app, "_webview_window", None)
+    if window is None:
+        await ctx.send({"event": "update_file_picked", "path": "",
+                        "message": "Type the file's path: this window has no file picker."})
+        return
+
+    def pick() -> str:
+        try:
+            import webview
+
+            result = window.create_file_dialog(
+                webview.OPEN_DIALOG, allow_multiple=False,
+                file_types=("Lumi update (*.exe;*.zip)", "All files (*.*)"))
+            return str(result[0]) if result else ""
+        except Exception:
+            logger.warning("The update file picker failed", exc_info=True)
+            return ""
+
+    await ctx.send({"event": "update_file_picked", "path": await asyncio.to_thread(pick)})
+
+
+@command("offline_status")
+async def _cmd_offline_status(ctx: CommandContext) -> None:
+    """Settings > Offline mode: what applies, what it hides and the license."""
+    await ctx.send({"event": "offline_status", "data": await asyncio.to_thread(ctx.state.offline_status)})
 
 
 @command("check_updates")
@@ -4131,6 +4211,7 @@ _SOCKET_SETTING_KEYS: dict[str, frozenset[str]] = {
     "security": frozenset({"cli_adapters", "computer_use", "chat_gateway", "shell_sandbox", "scheduled_tasks",
                            "editor_bridge", "extension_panels"}),
     "updates": frozenset({"mode", "channel", "pin"}),
+    "offline": frozenset({"enabled", "allowed_hosts"}),
     "onboarding": frozenset({"dismissed"}),
     "model_favorites": frozenset({"models"}),
     "voice": frozenset({"engine", "service", "model", "language"}),
@@ -4186,6 +4267,10 @@ def _socket_setting_value(section: Any, key: Any, value: Any) -> Any:
         from ..update_channels import normalize
 
         return normalize(key, value)
+    if section == "offline":
+        from ..offline import validate_setting
+
+        return validate_setting(key, value)
     if (section, key) in {
         ("network", "system_certificates"), ("privacy", "secret_scan"), ("privacy", "audit_log"),
         ("onboarding", "dismissed"),
@@ -4355,13 +4440,16 @@ async def _cmd_update_settings(ctx: CommandContext) -> None:
         ctx.state.sonn_account_revision = getattr(ctx.state, "sonn_account_revision", 0) + 1
         await ctx.send({"event": "sonn_account", "data": None})
     await ctx.send({"event": "settings", "data": data})
-    if section == "security" and any(k == "extension_panels" for k, _ in writes):
+    if (section == "security" and any(k == "extension_panels" for k, _ in writes)) or section == "offline":
+        # Offline mode keeps panels closed (gui/extension_panels.enabled): an open one closes now.
         await _send_extension_panels(ctx)
-    if section == "updates":
-        # Settings > Updates says what changes after a restart.
+    if section in {"updates", "offline"}:
+        # Settings > Updates says what changes after a restart, and what offline mode stops now.
         from lumi.updater import status as update_status
 
         await ctx.send({"event": "update_status", "data": await asyncio.to_thread(update_status)})
+    if section == "offline":
+        await ctx.send({"event": "offline_status", "data": await asyncio.to_thread(ctx.state.offline_status)})
     await ctx.send(ctx.state.get_init_data(refresh_only=True))
 
 
@@ -4448,6 +4536,19 @@ async def _cmd_provider_connection(ctx: CommandContext) -> None:
     provider = ctx.msg.get("provider")
     action = ctx.msg.get("action", "status")
     try:
+        # Offline mode (lumi/offline.py): say why before starting Codex's own
+        # program or asking a provider this computer may not reach.
+        from .. import offline
+
+        if offline.enabled() and action in {"status", "login"}:
+            endpoints = {"openrouter": OpenRouterBackend.DEFAULT_BASE_URL, "anthropic": "https://api.anthropic.com",
+                         "openai": "https://api.openai.com/v1",
+                         "sonn": resolve_sonn_url(settings_data=ctx.state.settings.get_all())}
+            labels = {"openrouter": "OpenRouter", "anthropic": "Anthropic", "openai": "OpenAI", "sonn": "SONN"}
+            reason = offline.provider_refusal(str(provider or ""), endpoints.get(str(provider or ""), ""),
+                                              label=labels.get(str(provider or ""), ""))
+            if reason:
+                raise ValueError(reason)
         if provider == "codex":
             if action == "login":
                 if ctx.runs.busy:

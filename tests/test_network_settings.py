@@ -58,7 +58,7 @@ class TestProxyValidation:
 class TestConfigure:
     def test_proxy_and_bypass_are_exported(self, clean_network):
         state = net.configure(_Settings(proxy_url="http://proxy.corp:8080", no_proxy="git.corp, .internal"))
-        assert state == {"system_certificates": True, "proxy": True}
+        assert state == {"system_certificates": True, "proxy": True, "offline": False}
         assert os.environ["HTTPS_PROXY"] == os.environ["HTTP_PROXY"] == "http://proxy.corp:8080"
         bypass = os.environ["NO_PROXY"].split(",")
         assert bypass[:2] == ["git.corp", ".internal"]

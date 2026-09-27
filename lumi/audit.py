@@ -447,10 +447,15 @@ class OtlpExporter:
             "scopeSpans": [{"scope": {"name": "lumi.audit"}, "spans": spans}],
         }]}
         try:
-            with httpx.Client(**client_options(timeout=10.0, transport=self._transport)) as client:
+            with httpx.Client(**client_options(timeout=10.0, transport=self._transport,
+                                               feature="the OpenTelemetry export")) as client:
                 response = client.post(self.url, json=payload, headers=self.headers)
         except httpx.HTTPError as exc:
-            self.last_error = type(exc).__name__
+            # In offline mode a collector that isn't allowed is refused at once;
+            # the status shows why (lumi/offline.py).
+            from .net import error_text
+
+            self.last_error = error_text(exc)
             self.dropped += len(spans)
             return False
         if response.status_code >= 300:

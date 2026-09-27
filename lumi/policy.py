@@ -5,7 +5,9 @@ A policy is a ``lumi.policy/v1`` JSON document, supplied machine-wide by IT:
 * Windows: the registry value ``Policy`` (the JSON text) or ``PolicyFile`` (a
   path) under ``HKLM\\SOFTWARE\\Policies\\Luminary Analytics\\Lumi``, which
   the ADMX template in ``packaging/policy/`` sets through Group Policy or
-  Intune; otherwise ``%ProgramData%\\Lumi\\policy.json``;
+  Intune; otherwise ``Lumi\\policy.json`` in the ProgramData folder Windows
+  reports (``C:\\ProgramData``; never the ``ProgramData`` environment
+  variable, which a person can point anywhere);
 * macOS: the ``Policy`` key of the ``com.luminaryanalytics.lumi`` managed
   preferences (a configuration profile), otherwise
   ``/Library/Application Support/Lumi/policy.json``;
@@ -536,10 +538,13 @@ def parse(data: Any, *, source: str, trusted_keys: dict[str, str] | None = None,
     settings = _section(document, "settings")
     if not all(isinstance(k, str) and "." in k for k in settings):
         raise PolicyError("'settings' must map 'section.key' names to values.")
+    from .offline_rules import validate_policy_settings as validate_offline_settings
     from .update_channels import validate_policy_settings
 
     try:
         validate_policy_settings(settings)
+        # A list Lumi can't read must not become "no hosts" or "all hosts".
+        validate_offline_settings(settings)
     except ValueError as exc:
         raise PolicyError(str(exc)) from exc
     if "security.shell_sandbox" in settings and settings["security.shell_sandbox"] not in ("off", "project"):
@@ -704,7 +709,7 @@ def _registry_policy() -> tuple[str, str] | None:
                 if name == "Policy" and str(value).strip():
                     return str(value), f"Group Policy (HKLM\\{REGISTRY_KEY})"
                 if name == "PolicyFile" and str(value).strip():
-                    path = Path(os.path.expandvars(str(value)))
+                    path = Path(expand_machine_variables(str(value)))
                     return path.read_text(encoding=ADMIN_TEXT), f"{path} (set by Group Policy)"
     except OSError:
         return None
@@ -761,9 +766,70 @@ def managed_preferences_keys(path: Path) -> str:
     return value if isinstance(value, str) else ""
 
 
+_windows_folders: dict[str, str] = {}
+
+
+def _known_folder(guid: str, fallback: str) -> str:
+    """A Windows folder as the operating system reports it (SHGetKnownFolderPath).
+
+    Never from the environment: a person can start Lumi with ``ProgramData``
+    or ``SystemDrive`` pointing at a folder they control, and a policy or a
+    trusted key found there would be theirs, not an administrator's. The
+    folders read here are fixed ones, which a person can't redirect either.
+    """
+    if guid in _windows_folders:
+        return _windows_folders[guid]
+    folder = fallback
+    try:
+        import ctypes
+        import uuid
+        from ctypes import wintypes
+
+        class _GUID(ctypes.Structure):
+            _fields_ = [("Data1", wintypes.DWORD), ("Data2", wintypes.WORD), ("Data3", wintypes.WORD),
+                        ("Data4", ctypes.c_ubyte * 8)]
+
+        value = uuid.UUID(guid)
+        known = _GUID(value.fields[0], value.fields[1], value.fields[2], (ctypes.c_ubyte * 8)(*value.bytes[8:]))
+        path = ctypes.c_wchar_p()
+        shell32 = ctypes.WinDLL("shell32")
+        shell32.SHGetKnownFolderPath.argtypes = [ctypes.POINTER(_GUID), wintypes.DWORD, wintypes.HANDLE,
+                                                 ctypes.POINTER(ctypes.c_wchar_p)]
+        shell32.SHGetKnownFolderPath.restype = ctypes.c_long
+        result = shell32.SHGetKnownFolderPath(ctypes.byref(known), 0, None, ctypes.byref(path))
+        try:
+            if result == 0 and path.value:
+                folder = path.value
+        finally:
+            ctypes.WinDLL("ole32").CoTaskMemFree(path)
+    except Exception:  # not Windows, or no shell: the default location
+        logger.debug("The known folder %s couldn't be read; using %s", guid, fallback, exc_info=True)
+    _windows_folders[guid] = folder
+    return folder
+
+
+def _program_data() -> str:
+    return _known_folder("62AB5D82-FDC1-4DC3-A9DD-070D1D495D97", r"C:\ProgramData")  # FOLDERID_ProgramData
+
+
+def expand_machine_variables(text: str) -> str:
+    """``%ProgramData%`` and other machine folders in a path an administrator set, from the operating system.
+
+    Only machine folders expand (ProgramData, ALLUSERSPROFILE, ProgramFiles,
+    SystemRoot, windir, SystemDrive); anything else stays as written, so a
+    path that depends on a person's environment isn't found rather than
+    pointing at a folder they chose.
+    """
+    windows = _known_folder("F38BF404-1D43-42F2-9305-67DE0B28FC23", r"C:\Windows")  # FOLDERID_Windows
+    values = {"programdata": _program_data(), "allusersprofile": _program_data(),
+              "programfiles": _known_folder("905E63B6-C1BF-494E-B29C-65B732D3D21A", r"C:\Program Files"),
+              "systemroot": windows, "windir": windows, "systemdrive": windows[:2]}
+    return re.sub(r"%([^%]+)%", lambda match: values.get(match.group(1).lower(), match.group(0)), text)
+
+
 def machine_policy_file() -> Path:
     if sys.platform == "win32":
-        return Path(os.environ.get("ProgramData", r"C:\ProgramData")) / "Lumi" / "policy.json"
+        return Path(_program_data()) / "Lumi" / "policy.json"
     if sys.platform == "darwin":
         return Path("/Library/Application Support/Lumi/policy.json")
     return Path("/etc/lumi/policy.json")

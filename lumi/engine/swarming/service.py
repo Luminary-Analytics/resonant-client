@@ -109,6 +109,12 @@ def policy_refusal(action: str, *, personal: bool = False, team: Callable[[], st
     reason = blocked_reason()
     if reason:
         return reason
+    from ... import offline
+
+    if offline.enabled():
+        # Workers and their child processes don't take offline mode yet (lumi/offline.py).
+        return ("Offline mode is on, and the Team preview doesn't follow it yet, so it can't start or "
+                "change team work here. Turn offline mode off to use it.")
     if current_policy() is None:
         return ""
     if personal and action in _POLICY_PERSONAL_ACTIONS:

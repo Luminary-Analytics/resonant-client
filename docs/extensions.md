@@ -410,7 +410,9 @@ message box.
   that way. This was seen in Edge, where the proposed `webrtc 'block'`
   directive is ignored. A panel can only send what it can see: the project's
   name, the theme and what you type into it. Approve packs whose code you've
-  read or whose publisher you trust, as for hooks.
+  read or whose publisher you trust, as for hooks. For the same reason
+  [offline mode](offline.md) keeps panels closed, and turning it on closes
+  an open one.
 - One panel is open at a time, and panels don't open in the macOS and Linux
   desktop window yet.
 

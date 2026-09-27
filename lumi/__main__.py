@@ -139,6 +139,9 @@ def main():
     if len(sys.argv) > 1 and sys.argv[1] == "updates":
         from lumi.update_channels import main as updates_main
         raise SystemExit(updates_main(sys.argv[2:]))
+    if len(sys.argv) > 1 and sys.argv[1] == "license":
+        from lumi.license import main as license_main
+        raise SystemExit(license_main(sys.argv[2:]))
     if len(sys.argv) > 1 and sys.argv[1] == "extension":
         from lumi.extension_check import main as extension_main
         raise SystemExit(extension_main(sys.argv[2:]))

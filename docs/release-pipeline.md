@@ -39,7 +39,8 @@ the release workflow's executable smoke test alone does not perform them.
   `THIRD_PARTY_NOTICES.txt` from the build environment's metadata and the
   license texts each package ships. It adds the non-Python parts listed in
   `packaging/third-party-components.json` (Python runtime, PyInstaller
-  bootloader, ripgrep, WinSparkle, web assets and fonts).
+  bootloader, ripgrep, WinSparkle, web assets and fonts; Sparkle in the macOS
+  build).
   - The build fails if a shipped Python package is GPL, AGPL or LGPL without a
     recorded `license_reviews` entry.
   - Packages under `not_shipped` are excluded from the bundle by the spec and
@@ -71,9 +72,22 @@ the final bytes. It verifies each signature afterwards. It uses one of:
   - SSL.com eSigner.
 
 Without either, the release continues unsigned and the run shows a warning.
-macOS signing and notarization live in `packaging/build_macos.sh`, used by the
-macOS build workflow; the release workflow doesn't publish macOS builds yet
-(see [Lumi on macOS](macos.md)).
+
+## macOS
+
+The same tag starts two more jobs. `macos` (Apple silicon) runs
+`packaging/build_macos.sh`: the pinned build as on Windows, then Sparkle 2
+(`packaging/fetch_sparkle.sh`: a pinned release checked against its SHA-256
+before extraction) copied into `Lumi.app/Contents/Frameworks`, the DMG and the
+PKG. With the Apple secrets ([RELEASING.md](../RELEASING.md#macos-signing-and-notarization))
+the app is signed with the Developer ID and the hardened runtime (Sparkle's
+helpers without Python's entitlements), and the DMG and PKG are notarized and
+stapled; otherwise the app is signed ad hoc and the run, the release notes and
+the download page say it isn't notarized. `publish-macos` waits for the
+Windows job, then EdDSA-signs the final DMG with `winsparkle-tool` and the same
+key, checks that signature against `lumi/updater.py`'s key, adds the files to
+the GitHub Release and publishes the DMG to Pages and the macOS feeds. See
+[Lumi on macOS](macos.md).
 
 ## Signing and publication
 
@@ -101,7 +115,9 @@ byte length, notes and signature, pointing at that Pages copy:
 
 - a stable tag goes into `appcast.xml`, and the beta feed and release-line
   feeds are rebuilt from it;
-- a beta tag (`vX.Y.Z-beta.N`) goes into `appcast-beta.xml` only.
+- a beta tag (`vX.Y.Z-beta.N`) goes into `appcast-beta.xml` only;
+- the macOS disk image goes into the macOS feeds in the same way
+  (`appcast-macos.xml`, `-beta`, `-X.Y`), never into the Windows ones.
 
 [Updates](updates.md#how-the-feeds-work) describes the feeds and how installs
 choose one. The branch is pushed as one fresh commit so old installers do not
@@ -124,7 +140,8 @@ public feed serves the matching version and signature with a Pages-hosted
 installer of the matching length that downloads without signing in. Neither
 pushing a tag nor committing an appcast proves the public feed is current.
 
-The pipeline currently publishes Windows installers. Release-note prose needs
+The pipeline publishes the Windows installer and, from the first release with
+these jobs, the macOS disk image and package. Release-note prose needs
 review; CI's generated notes are not a replacement for describing behavior and
 limitations. Provider authentication and real inference are not exercised by
 ordinary CI. Keep mocked wire-contract tests distinct from live model evidence.
@@ -147,8 +164,11 @@ ordinary CI. Keep mocked wire-contract tests distinct from live model evidence.
 | `packaging/check_bundle.py`, `packaging/bundle-policy.json` | Bundle contents and size gate |
 | `packaging/installer.iss` | Windows installer (EXE) |
 | `packaging/lumi.wxs`, `packaging/build_msi.ps1` | MSI for device management |
-| `packaging/update_appcast.py` | Stable, beta and release-line update feeds |
-| `lumi/updater.py`, `lumi/update_channels.py` | WinSparkle client and verification key; update mode, channel and pin |
+| `packaging/update_appcast.py` | Stable, beta and release-line update feeds, for Windows and macOS |
+| `lumi/updater.py`, `lumi/update_channels.py` | WinSparkle client and verification key; update mode, channel, pin and platform |
+| `packaging/build_macos.sh`, `packaging/fetch_sparkle.sh` | macOS app, DMG and PKG; pinned Sparkle; Apple signing and notarization |
+| `lumi/sparkle.py` | Sparkle 2 on macOS through PyObjC: the delegate and the main-thread hand-off |
+| `.github/workflows/build-macos.yml`, `packaging/smoke_gui.py` | macOS build and smoke test on every change, the updater included |
 
 Paths are relative to the repository root. See the
 [documentation index](README.md) for release records and current guides.

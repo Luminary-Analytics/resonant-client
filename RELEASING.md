@@ -1,8 +1,9 @@
 # Releasing Lumi
 
-The release is complete when the tagged source, published Windows installer,
-and public signed update feed agree. A successful push alone is not deployment.
-See [pipeline architecture](docs/release-pipeline.md) for component ownership.
+The release is complete when the tagged source, the published Windows
+installer and macOS disk image, and the public signed update feeds agree. A
+successful push alone is not deployment. See
+[pipeline architecture](docs/release-pipeline.md) for component ownership.
 
 ## Prepare the release
 
@@ -77,7 +78,21 @@ publishes `gh-pages` as one fresh commit. GitHub Pages then deploys it.
 
 Installed apps download from Pages, not from the GitHub Release, because the
 source repository may be private and its Release assets then need sign-in.
-Pre-release tags skip the Pages step so installed apps never auto-update to one.
+A pre-release tag reaches only the beta feeds, so installs on the stable
+channel never update to one.
+
+The same tag builds the macOS release on an Apple silicon runner (jobs `macos`
+and `publish-macos`): Lumi.app with Sparkle, `lumi-X.Y.Z.dmg` and
+`lumi-X.Y.Z.pkg` from `packaging/build_macos.sh`, signed with the Developer
+ID, notarized and stapled when the Apple secrets below exist, otherwise signed
+ad hoc with a warning on the run, the release and the download page. After
+the Windows job has published, `publish-macos` signs the DMG with the same
+EdDSA key (and checks the signature with the key in `lumi/updater.py`), adds
+the DMG, PKG, macOS SBOM and notices to the GitHub Release, copies the DMG
+(and for stable tags the PKG) into the same `downloads/vX.Y.Z/` folder on
+Pages, adds the DMG to the macOS feeds (`appcast-macos*.xml`) and pushes
+gh-pages again as one fresh commit. The Windows feeds aren't touched. A failed
+macOS job doesn't hold the Windows release back.
 
 Inspect the release, Tests, and Build check runs for the exact commit SHA.
 Identify the release run ID before watching it; another workflow may be newer.
@@ -105,6 +120,13 @@ use a file to preserve literal text and newlines.
   nonempty EdDSA signature. A local `gh-pages` commit alone is insufficient.
 - The [download page](https://luminary-analytics.github.io/resonant-client/)
   links to the new installer.
+- macOS: the release also has `lumi-X.Y.Z.dmg` and `lumi-X.Y.Z.pkg`, and
+  [appcast-macos.xml](https://luminary-analytics.github.io/resonant-client/appcast-macos.xml)
+  (or `appcast-macos-beta.xml` for a beta) has the version first, with
+  `sparkle:os="macos"` and an enclosure at `downloads/vX.Y.Z/lumi-X.Y.Z.dmg`
+  whose length and EdDSA signature match the file you download from there.
+  `appcast.xml` has no macOS item. The download page offers the disk image,
+  and says how to open it when the run warned that it isn't notarized.
 - The working tree and pushed branch state match the intended result.
 
 Existing installations discover the release on their next update check;
@@ -129,6 +151,73 @@ Authenticode signing of `lumi.exe` and the installer runs through
 leaves a warning on the run; see
 [pipeline architecture](docs/release-pipeline.md#authenticode). Buying a
 certificate or a signing service is an account decision for the owner.
+
+The same `EDDSA_PRIVATE_KEY` signs the macOS disk image; Lumi.app's
+`SUPublicEDKey` is the public key from `lumi/updater.py`, so rotating the key
+changes both platforms at once.
+
+## macOS signing and notarization
+
+Without the secrets below, releases still publish the macOS build, signed ad
+hoc: it runs, updates itself (Sparkle trusts the EdDSA signature), and macOS
+asks each person to approve it once in System Settings › Privacy & Security ›
+**Open Anyway** ([Lumi on macOS](docs/macos.md#opening-a-build-that-isnt-notarized)).
+To sign and notarize it, the owner needs an Apple account. Buying the
+membership is an account decision for the owner.
+
+1. **Apple Developer Program membership**, $99 a year. Enroll Luminary
+   Analytics as an organization at
+   [developer.apple.com/programs](https://developer.apple.com/programs/enroll/),
+   so the apps say "Luminary Analytics", not a person's name. An organization
+   needs a D-U-N-S number (free from Dun & Bradstreet; Apple's enrollment
+   page can look it up or request one, which takes up to a few weeks), a
+   website on the company's domain, and someone with the authority to sign
+   Apple's agreements. The Account Holder does the next steps.
+2. **Developer ID certificates.** In Certificates, Identifiers & Profiles (or
+   Xcode › Settings › Accounts › Manage Certificates), create a **Developer ID
+   Application** certificate, which signs the app and the DMG, and a
+   **Developer ID Installer** certificate, which signs the PKG. Both need a
+   certificate signing request from Keychain Access on a Mac. Export both,
+   with their private keys, from Keychain Access as one `.p12` file with a
+   password. They're valid for five years; keep a backup outside GitHub.
+3. **Notarization credentials** for `notarytool`, either:
+   - an **App Store Connect API key** (preferred: no personal Apple ID, and
+     it can be revoked on its own). In App Store Connect › Users and Access ›
+     Integrations › App Store Connect API › Team Keys, create a key with the
+     Developer role and download the `AuthKey_XXXXXXXXXX.p8` file (it can be
+     downloaded only once). Note its key ID and the issuer ID shown on that
+     page; or
+   - an **Apple ID** in the team with an **app-specific password** (created
+     at [account.apple.com](https://account.apple.com) › Sign-In and
+     Security › App-Specific Passwords), and the team ID shown under
+     Membership details.
+4. **Repository secrets** (as LA-Rich, or anyone with admin rights):
+
+   ```sh
+   base64 -i lumi-developer-id.p12 | gh secret set MACOS_SIGN_P12_BASE64 --repo Luminary-Analytics/resonant-client
+   gh secret set MACOS_SIGN_P12_PASSWORD --repo Luminary-Analytics/resonant-client
+   gh secret set MACOS_SIGN_IDENTITY --repo Luminary-Analytics/resonant-client --body "Developer ID Application: Luminary Analytics (TEAMID)"
+   gh secret set MACOS_INSTALLER_IDENTITY --repo Luminary-Analytics/resonant-client --body "Developer ID Installer: Luminary Analytics (TEAMID)"
+   # an API key...
+   base64 -i AuthKey_XXXXXXXXXX.p8 | gh secret set APPLE_API_KEY_BASE64 --repo Luminary-Analytics/resonant-client
+   gh secret set APPLE_API_KEY_ID --repo Luminary-Analytics/resonant-client --body "XXXXXXXXXX"
+   gh secret set APPLE_API_ISSUER_ID --repo Luminary-Analytics/resonant-client --body "<issuer UUID>"
+   # ...or an Apple ID
+   gh secret set APPLE_ID --repo Luminary-Analytics/resonant-client --body "releases@example.com"
+   gh secret set APPLE_TEAM_ID --repo Luminary-Analytics/resonant-client --body "TEAMID"
+   gh secret set APPLE_APP_PASSWORD --repo Luminary-Analytics/resonant-client
+   ```
+
+   `packaging/build_macos.sh` reads the same names locally from the
+   environment. The build-check workflow for macOS uses them too, so a pull
+   request signs and notarizes its build once they exist.
+
+With them, the release job signs with the hardened runtime, notarizes the DMG
+and the PKG and staples their tickets, and the warning goes away. The first
+signed release changes the app's signature from ad hoc to the Developer ID;
+Sparkle accepts that change because the EdDSA signature still verifies.
+Keychain items saved by an ad-hoc build may ask once for permission after
+that update.
 
 ## Failures and recovery
 
@@ -155,7 +244,20 @@ certificate or a signing service is an account decision for the owner.
   stable channel never see it. The download page is left alone. Other
   hyphenated or Python `a1`-style tags fail the Pages step, which accepts only
   `X.Y.Z` and those three forms, instead of reaching installed apps. See
-  [Updates](docs/updates.md#how-the-feeds-work).
+  [Updates](docs/updates.md#how-the-feeds-work). A beta's DMG goes only into
+  `appcast-macos-beta.xml`, and a beta gets its PKG only on the GitHub Release.
+- **macOS job failed:** the Windows release is already out. Fix the cause
+  (for a signing or notarization failure, the log shows `notarytool`'s
+  verdict and its log) and rerun the failed jobs. `publish-macos` signs
+  whatever DMG the `macos` job built in the same run, so the release asset,
+  the Pages copy and the feed's length and signature stay together; rerun
+  both jobs rather than editing any of them by hand. Adding the macOS files
+  to the published release needs the repository's immutable releases off,
+  as they are now.
+- **Sparkle's pin:** `packaging/fetch_sparkle.sh` holds Sparkle's version and
+  SHA-256 (take it from the release asset's digest on GitHub, not from a
+  download alone), and `packaging/third-party-components.json` its version
+  for the notices; `tests/test_release_supply_chain.py` checks they agree.
 
 Current release evidence is recorded in [0.19.1 notes](docs/v0.19.1-release-notes.md).
 

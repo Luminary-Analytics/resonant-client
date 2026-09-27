@@ -1,17 +1,21 @@
 # Deploying Lumi on macOS: Jamf Pro, Intune and other device management
 
 Status: source only, not released. CI builds, installs and checks the
-installer package on every change (below). No macOS release has been
-published, and the package is unsigned until a Developer ID Installer
-certificate is configured.
+installer package on every change (below), and the release workflow attaches
+it to each release from the next tag on. No macOS release has been published
+yet, and the package is unsigned until a Developer ID Installer certificate
+is configured.
 
 Lumi builds two macOS packages. Both install `Lumi.app` for Apple silicon on
 macOS 12 or later:
 
 | Package | For | Updates |
 |---|---|---|
-| `lumi-X.Y.Z.dmg` | People installing Lumi themselves: drag it to Applications | The macOS app doesn't update itself yet (see [Lumi on macOS](macos.md)) |
+| `lumi-X.Y.Z.dmg` | People installing Lumi themselves: drag it to Applications | Updates itself with Sparkle, as Settings > Updates or your policy says (see [Lumi on macOS](macos.md#updates)) |
 | `lumi-X.Y.Z.pkg` | Jamf Pro, Intune, other device management, and `installer` | Never updates itself. Deploy the next PKG instead; it upgrades in place. |
+
+To keep copies that people installed from the DMG from updating themselves,
+set `"updates.mode": "off"` in the policy ([Updates](updates.md#for-administrators)).
 
 ## The PKG
 

@@ -8,6 +8,62 @@ The heartbeat remains paused. Documentation maintenance does not resume work,
 spending or grants, and changes no native implementation or installed bundle.
 The dated September 15/18 records below are historical.
 
+## September 27 macOS alpha: Sparkle updates and release publishing (source only, not released)
+
+The macOS app now updates itself, and a release tag publishes it beside the
+Windows installer. See [Lumi on macOS](macos.md) and [Updates](updates.md).
+
+- **Sparkle 2.10.0 in Lumi.app** (`packaging/fetch_sparkle.sh`: pinned, and
+  checked against its SHA-256 before extraction; its license is in the
+  notices). The XPC services, which only sandboxed apps use, are left out.
+  `packaging/build_macos.sh` copies the framework into
+  `Contents/Frameworks` after PyInstaller, signs Sparkle's installer and
+  progress app without Python's entitlements when there's a Developer ID,
+  and re-signs the app (ad hoc otherwise).
+- **`lumi/sparkle.py`** drives it through PyObjC with WinSparkle's behavior:
+  a daily check (Info.plist `SUEnableAutomaticChecks`, set from Settings >
+  Updates at each launch), `SUPublicEDKey` = the key WinSparkle checks with,
+  the feed for the mode, channel and pin, the same `update.*` audit records,
+  nothing when updates are off or the copy came from the PKG, and an install
+  that waits while an agent turn runs (Sparkle asks once; Lumi lets it go on
+  when the turn ends). Offline mode refuses every check and download Sparkle
+  asks to start. No silent installs (`SUAllowsAutomaticUpdates` off), and the
+  disk image's signature is checked before it's mounted
+  (`SUVerifyUpdateBeforeExtraction`). Only the app starts Sparkle, on the
+  main thread; in browser mode the main thread turns the run loop while it
+  waits, and Lumi closes itself when the installer starts.
+- **Feeds of its own.** `update_channels` picks `appcast-macos.xml`,
+  `appcast-macos-beta.xml` or `appcast-macos-X.Y.xml` on macOS;
+  `update_appcast.py --platform macos` writes them. The Windows feeds'
+  addresses and contents don't change. macOS items say `sparkle:os="macos"`
+  and the minimum macOS, and give the version without its dash
+  (`0.21.0beta.1`), because Sparkle compares versions only up to a dash; so
+  does Lumi.app's `CFBundleVersion`.
+- **Opening Lumi.app from Finder** (or the Dock, or Sparkle's relaunch) opens
+  the app. It used to pass no arguments to the terminal UI, which has no
+  terminal there and quit. Such launches also write the startup log.
+- **Release workflow.** New jobs build the DMG and PKG on Apple silicon,
+  signed and notarized when the Apple secrets exist (an App Store Connect API
+  key or an Apple ID; `MACOS_INSTALLER_IDENTITY` is now passed too), and
+  otherwise signed ad hoc with a warning on the run, the release notes and
+  the download page. After the Windows job they EdDSA-sign the DMG with the
+  installer's key (checked against `lumi/updater.py`), add the files to the
+  release, and publish the DMG to Pages and the macOS feeds. The download
+  page offers both platforms. [RELEASING.md](../RELEASING.md) lists the Apple
+  secrets and how to get them.
+- **CI.** `build-macos.yml` checks the Info.plist Sparkle reads, asks the
+  running app over its WebSocket what the updater reports
+  (`packaging/smoke_gui.py`), waits for Sparkle's first scheduled check to
+  fetch the macOS feed, and opens the app as Finder does. `tests.yml` runs
+  the updater tests on macOS, with the real Sparkle reading a feed
+  `update_appcast.py` wrote.
+
+Not verified: an update installed on a real Mac (no macOS release is
+published yet), Gatekeeper's first launch of a downloaded build, the native
+window beyond starting, dictation, computer use, the Keychain prompt, and a
+Developer ID signature or notarization (no Apple account yet). See
+[what still needs a real Mac](macos.md#what-still-needs-a-real-mac).
+
 ## September 27 offline and air-gapped operation, first pass (source only, not released)
 
 **Offline mode** (Settings > Offline mode, or the policy's `offline.enabled`

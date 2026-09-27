@@ -187,7 +187,9 @@ jobs:
           # No arguments and no terminal: the GUI in its own window, as a
           # double-click or Sparkle's relaunch starts it (lumi/__main__.py).
           # LaunchServices starts it in this user's real home; the runner is
-          # thrown away afterwards.
+          # thrown away afterwards. Sparkle's saved state goes first, so its
+          # first scheduled check runs here too, on AppKit's event loop.
+          defaults delete com.luminaryanalytics.lumi 2>/dev/null || true
           open -n dist/Lumi.app
           pid=""
           for i in $(seq 1 30); do
@@ -211,11 +213,45 @@ jobs:
           done
           if [ -z "$served" ]; then echo "Lumi.app served no page"; cat "$log" || true; exit 1; fi
           echo "✓ Opened from Finder, Lumi serves its page on port $served"
+
+          checked=""
+          for i in $(seq 1 60); do
+            if python3 - "$HOME/.lumi/audit" <<'PY'
+          import json, pathlib, sys
+          feed = "https://luminary-analytics.github.io/resonant-client/appcast-macos.xml"
+          for path in sorted(pathlib.Path(sys.argv[1]).glob("*.jsonl")):
+              for line in path.read_text(encoding="utf-8").splitlines():
+                  record = json.loads(line)
+                  if record.get("type") == "update.check" and record["data"].get("feed") == feed:
+                      print("update.check", json.dumps(record["data"], sort_keys=True))
+                      sys.exit(0)
+          sys.exit(1)
+          PY
+            then checked=1; break; fi
+            sleep 1
+          done
+          if [ -z "$checked" ]; then echo "Sparkle made no scheduled check in the window's event loop"; cat "$log"; exit 1; fi
+          echo "✓ In the desktop window too, Sparkle's scheduled check fetched the macOS feed"
+
           sleep 3
+          screencapture -x "$RUNNER_TEMP/lumi-opened-from-finder.png" || true
           kill -0 "$pid"
           test -f "$log"
-          if grep -E "Traceback|ERROR" "$log"; then echo "--- lumi-startup.log ---"; cat "$log"; exit 1; fi
-          echo "✓ Still running with its native window; startup log clean"
+          echo "--- lumi-startup.log ---"; cat "$log"; echo "---"
+          if grep -E "Traceback|ERROR" "$log"; then exit 1; fi
+          # Browser mode says so; the desktop window doesn't.
+          if grep -qE "Open in browser|Opened Lumi in your browser" "$log"; then
+            echo "The native window didn't open; Lumi fell back to the browser"; exit 1
+          fi
+          echo "✓ Still running in its native window; startup log clean"
+
+      - name: Keep the screenshot of the window
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lumi-macos-window
+          path: ${{ runner.temp }}/lumi-opened-from-finder.png
+          if-no-files-found: ignore
 
       - name: Check the computer-use permission checks
         run: |

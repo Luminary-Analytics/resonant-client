@@ -581,8 +581,10 @@ test('Settings say device management updates an MSI or PKG copy', () => {
     assert.match(app._renderUpdateStatus(), /managed by Acme/);
     app.updateStatus.installed_by = 'deb';
     assert.match(app._renderUpdateStatus(), /installed from the Debian package, so your package manager updates it/);
-    app.aboutInfo = {version: '0.20.0', license: 'MIT', installed_by: 'pkg'};
+    app.aboutInfo = {version: '0.20.0', license: 'Lumi End User License Agreement', installed_by: 'pkg'};
     assert.match(app._renderAbout(), /Installed from the macOS installer package; your organization’s device management updates it\./);
+    assert.match(app._renderAbout(), /© Luminary Analytics\. All rights reserved\. Licensed under the Lumi End User License Agreement\./);
+    assert.doesNotMatch(app._renderAbout(), /MIT|source is available/);
     app.aboutInfo.installed_by = 'rpm';
     assert.match(app._renderAbout(), /Installed from the RPM package; your package manager updates it\./);
 });

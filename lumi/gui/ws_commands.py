@@ -3843,7 +3843,9 @@ async def _cmd_about_info(ctx: CommandContext) -> None:
     policy = current_policy()
     await ctx.send({"event": "about_info", "data": {
         "version": __version__,
-        "license": "MIT",
+        # Lumi is proprietary (LICENSE at the repository root); the page
+        # shows the copyright line with this agreement's name.
+        "license": "Lumi End User License Agreement",
         "notices": _third_party_notices_path(),
         "organization": policy.organization if policy else "",
         "installed_by": installed_by(),

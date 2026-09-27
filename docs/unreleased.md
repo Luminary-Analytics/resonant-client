@@ -8,6 +8,80 @@ The heartbeat remains paused. Documentation maintenance does not resume work,
 spending or grants, and changes no native implementation or installed bundle.
 The dated September 15/18 records below are historical.
 
+## September 27 Lumi is commercial software: a proprietary license (source only, not released)
+
+The owner decided that Lumi is a commercial, proprietary product. The new
+wording is a draft for counsel.
+
+- **`LICENSE`** is a short proprietary notice: © 2026 Luminary Analytics, all
+  rights reserved; use only under a written license from Luminary Analytics
+  or the Lumi End User License Agreement provided with the software; no other
+  rights. It notes that versions 0.6.3 through 0.19.x were published under the
+  MIT License and remain under it. Versions before 0.6.3 declared
+  "Proprietary" and had no `LICENSE` file.
+- **Package metadata:** `license = {text = "Proprietary"}` and the classifier
+  `License :: Other/Proprietary License` in `pyproject.toml`. The table form
+  still builds with `setuptools>=68`; a PEP 639 SPDX string needs setuptools
+  77 and can't be combined with a License classifier. The deb's copyright
+  file (`License: proprietary`) and the rpm's `License:` field say the same.
+- **Settings > About Lumi** reads "© Luminary Analytics. All rights reserved.
+  Licensed under the Lumi End User License Agreement.", with the third-party
+  notices as before; searching Settings for "EULA" finds it.
+  `THIRD_PARTY_NOTICES.txt` says the same about Lumi itself, since the bundle
+  doesn't ship `LICENSE`.
+- **Still under the MIT License**, so others can build and ship extensions
+  (the proposed default; the owner decides): the Extension SDK (`sdk/LICENSE`,
+  plus `sdk/python/lumi_extension/LICENSE`, which travels with the package,
+  also into the packs `sdk/new_pack.py` makes) and the VS Code extension
+  (`lumi/code_editors/vscode/LICENSE.txt`, unchanged).
+- **Docs:** the README, [Plans](plans.md), [Extensions](extensions.md),
+  AGENTS.md, and ROADMAP.md, whose 2026-05 open-source direction is marked
+  superseded. Being free for individuals stays a product decision that the
+  license text doesn't change. [Offline mode](offline.md) now says it works
+  without an *offline* license.
+- **Ported code is credited.** `lumi/engine/truncation.py` is a Python port
+  of `truncate.ts` from pi-coding-agent (`@mariozechner/pi-coding-agent`,
+  `packages/coding-agent/src/core/tools/truncate.ts` in the pi monorepo,
+  formerly `badlogic/pi-mono`), MIT License, "Copyright (c) 2025 Mario
+  Zechner". The file is the same in 0.70.6, the npm release current when it
+  was ported on April 30, 2026. The module now opens with that notice and the
+  full MIT text. `packaging/third-party-components.json` lists it (kind
+  "Ported source code") with `packaging/licenses/pi-coding-agent-LICENSE.txt`,
+  the upstream text, so `THIRD_PARTY_NOTICES.txt` and the SBOM include it.
+- **Unchanged:** the copyleft gate. No installer shows a license page (Inno
+  Setup, the MSI and the macOS package have none), so none needed changing.
+- **Before the next release,** the End User License Agreement has to exist
+  and ship with the installers: `LICENSE` names an agreement "provided with
+  the software".
+- **Still to decide:** whether the repository stays public. On the
+  organization's free GitHub plan, a private repository turns GitHub Pages
+  off, and Pages serves the installers and the update feed (`FEED_BASE` in
+  `lumi/update_channels.py`), so installed copies would stop updating. See
+  [RELEASING.md](../RELEASING.md#signing-and-infrastructure).
+
+Validation on September 27, 2026:
+
+- `ruff check .` (0.16.9) is clean; `node --check` passes for `app.js` and
+  `settings_view.js`; the six Node UI test files pass (152 tests, with main
+  merged in).
+- With an isolated home, `test_about.py`, `test_linux_packages.py`,
+  `test_release_supply_chain.py`, `test_docs_links.py`,
+  `test_code_editors.py`, `test_content_security_policy.py`,
+  `test_provider_extensions.py`, `test_extension_panels.py`,
+  `test_bundle_policy.py` and `test_truncation.py` pass (197 tests).
+  `test_release_supply_chain.py` checks that the notices carry
+  pi-coding-agent's MIT text and that `truncation.py` keeps its copyright
+  line. The notice in the file and the copy in `packaging/licenses/` match
+  the text of the upstream `LICENSE` exactly.
+- setuptools 80.8, run on a copy of the tree, writes `License: Proprietary`,
+  the proprietary classifier and `License-File: LICENSE`; the SDK's wheel
+  holds `lumi_extension/LICENSE`.
+- In the browser pane, the GUI from this branch in a throwaway home: a
+  Settings search for "EULA" lists only About Lumi, Tab and Return open it,
+  and its License row reads the notice. At 375 px nothing overflows, and the
+  console has no errors. The copyleft gate itself runs in CI's Windows, macOS
+  and Linux builds.
+
 ## September 27 organization oversight — source only, not released
 
 An organization's policy can have Lumi share its people's work with the

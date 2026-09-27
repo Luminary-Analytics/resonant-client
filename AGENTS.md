@@ -192,7 +192,10 @@ host enrollment and actual packaged/learned-benefit qualification remain open.
   (`headless._terminal_attached`); a caller can say someone is there
   (Run now), never that nobody is. Every record carries its `trigger` and
   `unattended`. Dictation, Engram writes and `lumi extension check`'s prompt
-  wait for the notice too. Anything shared passes
+  wait for the notice too. Under offline mode, or a policy that can't be
+  used (which keeps offline mode on with no hosts), records and
+  confirmations wait unsent, never deleted, and Settings never says
+  oversight is off for such a policy. Anything shared passes
   `secret_scan.redact_for_sharing` and then the DLP rules (`dlp.shareable`,
   which may withhold it) before it is cut; file contents and tool output
   never leave, and excluded files and their patterns are never named. A flag's `rule` is a label from `security_flags.RULES`, never free

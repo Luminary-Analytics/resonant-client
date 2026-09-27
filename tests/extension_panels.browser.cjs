@@ -19,6 +19,7 @@ const {chromium} = require(process.argv[2] || 'playwright');
 
 const fixtureLaunch = async info => (await (await fetch(info.url + '/__fixture__/launch')).json()).url;
 const evidence = async info => (await fetch(info.url + '/__fixture__/evidence')).json();
+const post = async (info, route) => (await fetch(info.url + route, {method: 'POST'})).json();
 
 async function panelFrame(page) {
     const handle = await page.waitForSelector('#extension-panel-dialog iframe.extension-panel-frame');
@@ -36,7 +37,12 @@ async function openFromPalette(page) {
     await page.getByRole('dialog', {name: 'Build stats'}).waitFor();
 }
 
-test('A capability pack panel runs sandboxed and reaches the app only through the bridge', {timeout: 120000}, async () => {
+const focusedName = page => page.evaluate(() => {
+    const node = document.activeElement;
+    return node.id || node.getAttribute('aria-label') || node.tagName;
+});
+
+test('A capability pack panel runs sandboxed and reaches the app only through the bridge', {timeout: 150000}, async () => {
     const output = fs.mkdtempSync(path.join(os.tmpdir(), 'lumi-extension-panels-browser-'));
     const server = spawn(process.env.PANELS_PYTHON || 'python',
         [path.join(__dirname, 'fixtures/extension_panels_server.py'), output],
@@ -58,7 +64,7 @@ test('A capability pack panel runs sandboxed and reaches the app only through th
         console.error(`stuck; evidence: ${output}`);
         server.kill();
         process.exit(1);
-    }, 110000);
+    }, 140000);
     try {
         for (let i = 0; i < 300 && !info; i++) {
             const line = stdout.split(/\r?\n/).find(row => row.startsWith('{"url":'));
@@ -79,6 +85,7 @@ test('A capability pack panel runs sandboxed and reaches the app only through th
         page.on('websocket', socket => socket.on('framesent', frame => {
             try { commands.push(JSON.parse(frame.payload).command); } catch (_) { /* not JSON */ }
         }));
+        const sent = () => commands.filter(command => ['chat', 'send_message', 'user_message', 'shell_exec'].includes(command));
         // Nothing may leave this machine; loopback (the app and the canary) continues.
         await context.route('**/*', route => ['127.0.0.1', 'localhost'].includes(new URL(route.request().url()).hostname)
             ? route.continue() : route.abort());
@@ -86,7 +93,6 @@ test('A capability pack panel runs sandboxed and reaches the app only through th
         await page.waitForFunction(session => window.app?.currentSessionId === session, info.session_id);
         await page.locator('#user-input').fill('Existing draft');
 
-        // ── View > Panels, with the pointer ──────────────────────────────
         step('View > Panels, with the pointer');
         await page.locator('.titlebar-menu-button').click();
         await page.locator('.menubar-item[data-menu="view"]').hover();
@@ -97,7 +103,7 @@ test('A capability pack panel runs sandboxed and reaches the app only through th
         await item.click();
         const dialog = page.getByRole('dialog', {name: 'Build stats'});
         await dialog.waitFor();
-        assert.equal(await page.evaluate(() => document.activeElement.getAttribute('aria-label')), 'Close Build stats');
+        assert.equal(await focusedName(page), 'Close Build stats');
         const {handle, frame} = await panelFrame(page);
         assert.equal(await handle.getAttribute('sandbox'), 'allow-scripts');
         assert.equal(await handle.getAttribute('title'), 'Build stats, a panel from the Panel demo pack');
@@ -105,7 +111,6 @@ test('A capability pack panel runs sandboxed and reaches the app only through th
         assert.match(token, /^[A-Za-z0-9_-]{32}$/);
         await page.screenshot({path: path.join(output, 'panel-dark.png')});
 
-        // ── What the panel could do from inside its sandbox ────────────────
         step('What the panel could do from inside its sandbox');
         const probe = await frame.evaluate(() => window.probe);
         fs.writeFileSync(path.join(output, 'probe.json'), JSON.stringify(probe, null, 2));
@@ -123,73 +128,106 @@ test('A capability pack panel runs sandboxed and reaches the app only through th
         assert.equal(probe.inlineHandler, 'blocked');
         assert.notEqual(probe.inlineStyle, 'rgb(255, 0, 0)', 'inline styles are refused');
         assert.equal(probe.nativeBridge, 'ran: undefined');
-        assert.deepEqual(JSON.parse(probe.context.replace(/^reached: /, '')),
-            {project: 'project', session: 'Panel fixture conversation', theme: 'dark'});
-        assert.equal(await frame.locator('#context').textContent(), 'project / Panel fixture conversation / dark');
-        // The panel's own path serves its files; the bridge was added first.
-        assert.ok(await frame.evaluate(() => typeof window.lumi.insert === 'function'));
+        // The project's name and the theme, and nothing about the conversation.
+        assert.deepEqual(JSON.parse(probe.context.replace(/^reached: /, '')), {project: 'project', theme: 'dark'});
+        assert.equal(await frame.locator('#context').textContent(), 'project / dark');
         assert.equal(await frame.evaluate(() => document.documentElement.dataset.lumiTheme), 'dark');
+        // The private channel reached Lumi's bridge, and none of the panel's traps saw it.
+        await page.waitForTimeout(300);
+        assert.equal(await frame.evaluate(() => window.stolePort || 'none'), 'none');
 
-        // ── Adding to the message: into the draft, never sent ──────────────
-        step('Adding to the message: into the draft, never sent');
-        const sentBefore = commands.filter(command => ['chat', 'send_message', 'user_message'].includes(command)).length;
+        step('A panel can\'t close itself');
+        await frame.locator('#forge').click();
+        await frame.waitForFunction(() => window.forged === true);
+        await page.waitForTimeout(500);
+        assert.equal(await page.locator('#extension-panel-dialog').count(), 1, 'a forged close closed the panel');
+
+        step('Adding to the message: checked, into the draft, never sent');
         await frame.locator('#insert').click();
         await frame.waitForFunction(() => window.insertResult === 'ok');
         assert.equal(await page.locator('#user-input').inputValue(),
             'Existing draft\nSummarize the failing builds from the panel.');
-        await page.locator('#ui-toast-message', {hasText: 'Build stats added text to your message'}).waitFor();
+        assert.ok(commands.includes('extension_panel_check'), 'the pack is checked before text is added');
+        assert.equal(await page.locator('#user-input').evaluate(node => node.selectionStart), 15,
+            'the caret is where the added text starts');
+        await page.locator('#ui-toast-message', {hasText: 'Build stats (Panel demo pack) added text to your message'}).waitFor();
+        assert.notEqual(await focusedName(page), 'user-input');
+
+        step('Text that would run as a command is refused');
+        await page.locator('#user-input').fill('');
+        await frame.locator('#command').click();
+        await frame.waitForFunction(() => typeof window.commandResult === 'string');
+        assert.match(await frame.evaluate(() => window.commandResult), /would start with ! and run as a command/);
+        assert.equal(await page.locator('#user-input').inputValue(), '');
+        await page.locator('#ui-toast-message', {hasText: 'Lumi didn’t add Build stats’s text'}).waitFor();
+
+        step('Padding and mentions, after a long draft');
+        const draft = Array.from({length: 30}, (_, i) => `draft line ${i + 1}`).join('\n');
+        await page.locator('#user-input').fill(draft);
+        await frame.locator('#padded').click();
+        await frame.waitForFunction(() => window.paddedResult === 'ok');
+        // 3,000 spaces of indentation keep 8; blank lines collapse to one; the mention is split.
+        const added = '        Padded start\nxxxxxxxxxxxxxxxxxxxx\n\nsecond paragraph @ file:secrets.txt';
+        assert.equal(await page.locator('#user-input').inputValue(), `${draft}\n${added}`);
+        await page.locator('#ui-toast-message', {hasText: 'were split apart, so they attach nothing'}).waitFor();
+        // The first added line shows in the message box, however long the draft above it.
+        const shown = await page.locator('#user-input').evaluate((node, start) => {
+            const style = getComputedStyle(node);
+            const line = parseFloat(style.lineHeight);
+            const top = parseFloat(style.paddingTop) + node.value.slice(0, start).split('\n').length * line - line;
+            return {top, line, scrollTop: node.scrollTop, height: node.clientHeight, caret: node.selectionStart};
+        }, draft.length + 1);
+        assert.equal(shown.caret, draft.length + 1);
+        assert.ok(shown.top >= shown.scrollTop && shown.top + shown.line <= shown.scrollTop + shown.height,
+            JSON.stringify(shown));
+        await page.locator('#user-input').fill('Existing draft');
+
+        step('The panel\'s notice is its own');
         await frame.locator('#toast').click();
         await frame.waitForFunction(() => window.toastResult === 'ok');
-        await page.locator('#ui-toast-message', {hasText: 'Build stats: Saved the build filter'}).waitFor();
-        assert.equal(commands.filter(command => ['chat', 'send_message', 'user_message'].includes(command)).length,
-            sentBefore, 'the panel sent no message');
+        const notice = page.locator('#extension-panel-dialog .extension-panel-notice');
+        await notice.waitFor();
+        assert.equal(await notice.textContent(), 'Panel · Panel demo: Saved the build filter');
+        assert.doesNotMatch(await page.locator('#ui-toast-message').textContent(), /Saved the build filter/);
 
-        // ── Both themes: the dialog's tokens, and the panel is told ─────────
-        step("Both themes: the dialog's tokens, and the panel is told");
+        step('Both themes: the dialog\'s tokens, and the panel is told');
         const darkBackground = await page.locator('.extension-panel-dialog').evaluate(node => getComputedStyle(node).backgroundColor);
         await page.evaluate(() => window.LumiAppearance.setTheme('light'));
         await frame.waitForFunction(() => document.documentElement.dataset.lumiTheme === 'light');
-        assert.equal(await frame.locator('#context').textContent(), 'project / Panel fixture conversation / light');
+        assert.equal(await frame.locator('#context').textContent(), 'project / light');
         const lightBackground = await page.locator('.extension-panel-dialog').evaluate(node => getComputedStyle(node).backgroundColor);
         assert.notEqual(lightBackground, darkBackground);
         await page.screenshot({path: path.join(output, 'panel-light.png')});
         await page.evaluate(() => window.LumiAppearance.setTheme('dark'));
 
-        // ── Keyboard: Tab stays in the dialog; Escape closes, focus returns ──
-        step('Keyboard: Tab stays in the dialog; Escape closes, focus returns');
+        step('Keyboard: Tab stays in the dialog; Escape closes; focus goes back to the menu');
         await page.getByRole('button', {name: 'Close Build stats'}).focus();
         await page.keyboard.press('Tab');                                // into the panel: its first button
-        assert.equal(await page.evaluate(() => document.activeElement.tagName), 'IFRAME');
+        assert.equal(await focusedName(page), 'IFRAME');
         assert.equal(await frame.evaluate(() => document.activeElement.id), 'insert');
         // Past the panel's last tab stop (the probe added a frame after the buttons), focus comes back to Close.
-        for (let tries = 0; tries < 10 && await page.evaluate(() => document.activeElement.tagName) === 'IFRAME'; tries++) {
+        for (let tries = 0; tries < 12 && await focusedName(page) === 'IFRAME'; tries++) {
             await page.keyboard.press('Tab');
         }
-        assert.equal(await page.evaluate(() => document.activeElement.getAttribute('aria-label')), 'Close Build stats',
-            await page.evaluate(() => document.activeElement.outerHTML.slice(0, 200)));
+        assert.equal(await focusedName(page), 'Close Build stats');
         await page.keyboard.press('Shift+Tab');                          // and backwards, into the panel
-        assert.equal(await page.evaluate(() => document.activeElement.tagName), 'IFRAME');
+        assert.equal(await focusedName(page), 'IFRAME');
         await page.getByRole('button', {name: 'Close Build stats'}).focus();
-        step('keyboard: Escape on Close');
         await page.keyboard.press('Escape');
         await dialog.waitFor({state: 'detached'});
-        step('keyboard: closed');
-        // Opened from the menu, whose items take no focus: focus goes back to the message box.
-        assert.equal(await page.evaluate(() => document.activeElement.id), 'user-input');
+        // Opened from the menu: focus goes back to the menu's button, never the message box.
+        assert.equal(await focusedName(page), 'Menu');
         assert.equal((await fetch(`${info.url}/panels/${token}/index.html`)).status, 404, 'closing withdrew the token');
 
-        // From the command palette; Escape pressed inside the panel closes it too.
-        step('palette: open again');
+        step('From the command palette; a real Escape pressed inside the panel closes it');
         await openFromPalette(page);
         const again = await panelFrame(page);
-        step('palette: Escape inside the panel');
         await again.frame.locator('#toast').focus();
-        assert.equal(await page.evaluate(() => document.activeElement.tagName), 'IFRAME');
+        assert.equal(await focusedName(page), 'IFRAME');
         await page.keyboard.press('Escape');
         await page.getByRole('dialog', {name: 'Build stats'}).waitFor({state: 'detached'});
-        assert.equal(await page.evaluate(() => document.activeElement.id), 'user-input');
+        assert.equal(await focusedName(page), 'titlebar-command');
 
-        // ── A panel URL outside the frame Lumi made ──────────────────────
         step('A panel URL outside the frame Lumi made');
         await openFromPalette(page);
         const opened = await panelFrame(page);
@@ -218,36 +256,47 @@ test('A capability pack panel runs sandboxed and reaches the app only through th
         }
         await page.evaluate(() => document.getElementById('unsandboxed-probe').remove());
 
-        // ── It can't navigate itself to another site ───────────────────────
-        step("It can't navigate itself to another site");
+        step('It can\'t navigate itself to another site');
         await opened.frame.locator('#navigate').click();
         await page.waitForTimeout(1000);
-        const canaryAfterNavigation = (await evidence(info)).canary_hits;
-        assert.deepEqual(canaryAfterNavigation, [], 'navigating the frame away reached the network');
+        assert.deepEqual((await evidence(info)).canary_hits, [], 'navigating the frame away reached the network');
 
-        // ── Revoked in Settings: the open panel closes, its files are gone ──
-        step('Revoked in Settings: the open panel closes, its files are gone');
-        const revoked = await (await fetch(info.url + '/__fixture__/revoke', {method: 'POST'})).json();
-        assert.equal(revoked.status, 'needs_approval');
-        await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+        step('Revoked while open: its next addition is refused and the panel closes');
+        await page.getByRole('button', {name: 'Close Build stats'}).click();
+        await page.getByRole('dialog', {name: 'Build stats'}).waitFor({state: 'detached'});
+        assert.equal(await focusedName(page), 'titlebar-command');
+        await openFromPalette(page);
+        const beforeRevoke = await panelFrame(page);
+        const revokedToken = (await beforeRevoke.handle.getAttribute('src')).split('/')[2];
+        assert.equal((await post(info, '/__fixture__/revoke')).status, 'needs_approval');
+        await page.locator('#user-input').evaluate(node => { node.value = 'Existing draft'; });
+        await beforeRevoke.frame.locator('#insert').click();
         await page.getByRole('dialog', {name: 'Build stats'}).waitFor({state: 'detached'});
         await page.locator('#ui-toast-message', {hasText: 'Build stats closed.'}).waitFor();
-        assert.notEqual((await fetch(`${info.url}/panels/${liveToken}/index.html`)).status, 200);
+        assert.equal(await page.locator('#user-input').inputValue(), 'Existing draft', 'a revoked pack added text');
+        assert.notEqual((await fetch(`${info.url}/panels/${revokedToken}/index.html`)).status, 200);
         await page.locator('.titlebar-menu-button').click();
         await page.locator('.menubar-item[data-menu="view"]').hover();
         await page.waitForFunction(() => Array.isArray(window.app._extensionPanels) && !window.app._extensionPanels.length);
         assert.equal(await page.locator('.extension-panel-menu-item').count(), 0);
         await page.keyboard.press('Escape');
 
-        // ── Compact width ──────────────────────────────────────────────────
-        step('Compact width');
-        await page.setViewportSize({width: 390, height: 844});
-        // Approved again, as Settings > Capability packs would.
-        const reapproved = await (await fetch(info.url + '/__fixture__/approve', {method: 'POST'})).json();
-        assert.equal(reapproved.status, 'approved');
+        step('Its connection drops: the open panel closes');
+        assert.equal((await post(info, '/__fixture__/approve')).status, 'approved');
         await page.evaluate(() => window.app._requestExtensionPanels(true));
         await page.waitForFunction(() => window.app._extensionPanels?.length === 1);
-        await page.evaluate(() => window.app.openExtensionPanel('panel-demo', 'build-stats'));
+        await openFromPalette(page);
+        await panelFrame(page);
+        await page.evaluate(() => window.app.ws.close());
+        await page.getByRole('dialog', {name: 'Build stats'}).waitFor({state: 'detached'});
+        await page.locator('#ui-toast-message', {hasText: 'connection dropped'}).waitFor();
+        await page.waitForFunction(() => window.app.ws?.readyState === 1, null, {timeout: 20000});
+
+        step('Compact width');
+        await page.setViewportSize({width: 390, height: 844});
+        await page.evaluate(() => window.app._requestExtensionPanels(true));
+        await page.waitForFunction(() => window.app._extensionPanels?.length === 1);
+        await page.evaluate(() => window.app.openExtensionPanel('panel-demo', 'build-stats', 'menu'));
         const compact = await panelFrame(page);
         const box = await page.locator('.extension-panel-dialog').boundingBox();
         assert.ok(box.x >= 0 && box.x + box.width <= 390.5 && box.height <= 844.5, JSON.stringify(box));
@@ -258,13 +307,15 @@ test('A capability pack panel runs sandboxed and reaches the app only through th
         await page.screenshot({path: path.join(output, 'panel-compact.png')});
         await page.keyboard.press('Escape');
         await page.getByRole('dialog', {name: 'Build stats'}).waitFor({state: 'detached'});
+        assert.notEqual(await focusedName(page), 'user-input');
 
-        // Nothing got out, from any of it; the page itself raised no errors.
+        step('Nothing got out, and nothing was sent');
         const final = await evidence(info);
         assert.deepEqual(final.canary_hits, [], 'a request reached the canary');
         assert.equal(final.live_providers_called, false);
+        assert.deepEqual(sent(), [], 'a panel caused a message or a command to be sent');
         assert.deepEqual(errors, []);
-        fs.writeFileSync(path.join(output, 'evidence.json'), JSON.stringify({probe, final}, null, 2));
+        fs.writeFileSync(path.join(output, 'evidence.json'), JSON.stringify({probe, final, steps}, null, 2));
         console.log(`evidence: ${output}`);
     } catch (error) {
         if (page) await page.screenshot({path: path.join(output, 'failure.png')}).catch(() => {});

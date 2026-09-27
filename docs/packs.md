@@ -48,7 +48,7 @@ approve itself. See [how trust works](#trust) below.
 | `skills` | Paths to skill files. Skills that match the conversation are offered to the model, which loads them with `skill_view`. |
 | `hooks` | Commands run at lifecycle events, described below. |
 | `mcp_servers` | Named MCP servers, `{"command", "args", "env"}` or `{"url"}`. They are registered as `<pack id>-<name>`. |
-| `ui_panels` | Pages the pack adds under View > Panels, each shown in a sandboxed frame with no network access. See [Panels](extensions.md#panels). |
+| `ui_panels` | Pages the pack adds under View > Panels, each shown in a sandboxed frame with no network access except WebRTC. See [Panels](extensions.md#panels). |
 | `permissions`, `commands`, `recipes`, `metadata` | Shown for review and listed in the pack catalog. They grant nothing by themselves. |
 | `manifest_version`, `lumi` | The Extension SDK's manifest version (1) and the Lumi versions the pack works with. A pack without `manifest_version` is read as version 0. See [Extensions](extensions.md#the-manifest). |
 | `providers` | Model providers Lumi starts for requests to their models. Only personal packs provide them. See [Extensions](extensions.md). |

@@ -364,11 +364,15 @@ host enrollment and actual packaged/learned-benefit qualification remain open.
   from `/panels/<panel token>/` with their own Content-Security-Policy
   (`connect-src 'none'`, `sandbox allow-scripts`). Each request checks the
   pack again and serves only files the approval covered, as approved. The
-  bridge answers only that frame (`event.source`, origin `"null"`): context,
-  composer text that is never sent, a named notice, close on Escape. Widening
-  it needs a security review. The desktop window refuses bridge calls that
-  aren't plain identifiers (`webview_bridge.checked_bridge_call`); WebKit
-  windows open no panels.
+  bridge answers only that frame (`event.source`, origin `"null"`): the
+  project name and theme; composer text that is never sent, is checked with
+  the server first, and never starts the message with `!` or `/` or carries
+  an attaching @mention; a notice marked as the pack's. A panel can't close
+  itself (Escape comes over the bridge script's private port), and focus
+  never returns to the composer. Widening the bridge needs a security review.
+  The desktop window refuses bridge calls that aren't plain identifiers
+  (`webview_bridge.checked_bridge_call`); only WebView2 desktop windows open
+  panels.
 - Pack signatures (`engine/pack_signing.py`, `lumi-pack.sig`) are checked
   whenever a pack loads. They name a pack's publisher and never approve it.
   An invalid signature makes the pack unverifiable. Only the organization's

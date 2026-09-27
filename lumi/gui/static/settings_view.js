@@ -282,7 +282,7 @@ class LumiSettingsView {
                     ${hooks ? `<h4>Hooks (shell commands)</h4><ul>${hooks}</ul>` : '<p class="editor-help">No hooks.</p>'}
                     ${servers ? `<h4>MCP servers</h4><ul>${servers}</ul>` : '<p class="editor-help">No MCP servers.</p>'}
                     ${providers ? `<h4>Model providers (run for each request to their models)</h4>${providerNote}<ul>${providers}</ul>` : ''}
-                    ${panels ? `<h4>Panels (its pages and scripts, in a sandbox without network access)</h4><ul>${panels}</ul>` : ''}
+                    ${panels ? `<h4>Panels (its pages and scripts, in a sandbox with no network access except WebRTC)</h4><ul>${panels}</ul>` : ''}
                     ${pinned ? `<h4>Repository files its commands run</h4><ul>${pinned}</ul>` : ''}
                     <p class="editor-help">${(pack.agents || []).length} agents · ${(pack.skills || []).length} skills · content digest <code>${esc((pack.digest || '').slice(0, 12))}</code></p>
                 </details>
@@ -2013,7 +2013,7 @@ class LumiSettingsView {
                     { key: 'editor_bridge', label: 'Code editors', type: 'toggle', default: true,
                       hint: 'Lets the VS Code extension and JetBrains tools on this computer add files to your message and show what Lumi changed (Settings > Code editors).' },
                     { key: 'extension_panels', label: 'Panels from capability packs', type: 'toggle', default: true,
-                      hint: 'Pages that approved packs add under View > Panels. Each runs in a sandbox without network access; it can add text to your message but not send it.' },
+                      hint: 'Pages that approved packs add under View > Panels. Each runs in a sandbox with no network access except WebRTC; it can add text to your message but not send it.' },
                 ]
             },
             {

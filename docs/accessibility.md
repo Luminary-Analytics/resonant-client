@@ -47,7 +47,10 @@
     goes into the panel and, past the panel's last control, back to the close
     button, and Shift+Tab goes the other way.
   - Escape closes it from the close button or from inside the panel, and
-    focus returns to what opened it, or to the message box.
+    focus returns to the Menu button or the command palette's button,
+    whichever opened it. It never goes to the message box, where the next
+    Enter would send text a panel added.
+  - A panel's notices show in its dialog as a status line, apart from Lumi's.
   - Panels are listed under View, which is used with the pointer, and in the
     command palette for the keyboard. Contrast inside a panel is the pack's
     own, not measured here.

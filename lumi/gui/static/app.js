@@ -163,6 +163,7 @@ const LUMI_EVENT_DELEGATES = {
     'choices': 'handleChoices',
     'context.compression': 'handleCompression',
     'dir_list': 'handleDirList',
+    'extension_panel_checked': 'receiveExtensionPanelChecked',
     'extension_panel_opened': 'receiveExtensionPanelOpened',
     'extension_panels': 'receiveExtensionPanels',
     'git_result': 'handleGitResult',
@@ -509,6 +510,7 @@ class LumiApp {
 
         this.ws.onclose = () => {
             this.swarmConnectionChanged(false);
+            this.extensionPanelsDisconnected?.();
             this.sonnAccount = null;
             this._sonnAccountPending = false;
             this._renderAccountMenu();

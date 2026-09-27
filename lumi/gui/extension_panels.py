@@ -31,22 +31,34 @@ changes settings. So:
 * The frame's own sandbox leaves out allow-same-origin, allow-top-navigation,
   allow-popups, allow-forms and allow-modals, and the app page's
   ``frame-src 'self'`` keeps the frame from navigating to another site.
-* HTML files get one script added, Lumi's bridge (``static/panel_frame.js``),
-  served under the same path. It only wraps the postMessage protocol that
-  panels_view.js checks: read the project name, session title and theme; add
-  text to the message box without sending it; show a notice; close on Escape.
+* HTML files get one script added before anything else, Lumi's bridge
+  (``static/panel_frame.js``), served under the same path. It wraps the
+  postMessage protocol that panels_view.js checks: read the project name and
+  theme, add text to the message box without sending it, show a notice. It
+  also holds a private channel to the page, which it uses only to report a
+  real Escape key press, so a panel's own script can't close the panel.
+* Adding text to the message box asks this module first (:func:`check`), so
+  a panel whose pack was revoked or changed while it was open adds nothing.
+
+Checking a pack hashes its files, so a verified pack is kept for a few seconds
+(``VERIFIED_TTL``), keyed by the approval, the publishers and the policy in
+force: a panel loading many files hashes its pack once. Every served file's
+bytes are still hashed against the approval. Panel files are read on their
+own small thread pool, so they never hold up the app socket's commands.
 """
 
 from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import logging
 import re
 import secrets
 import threading
 import time
 import unicodedata
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -92,6 +104,10 @@ FETCH_DESTINATIONS = frozenset({"iframe", "frame", "script", "style", "image"})
 PERMISSIONS_POLICY = ", ".join(f"{name}=()" for name in (
     "accelerometer", "camera", "display-capture", "geolocation", "gyroscope", "hid", "magnetometer",
     "microphone", "midi", "payment", "serial", "usb"))
+VERIFIED_TTL = 3.0
+# Panel files are read and hashed here, never on the default pool the app
+# socket's commands use.
+_PANEL_IO = ThreadPoolExecutor(max_workers=2, thread_name_prefix="lumi-panels")
 
 
 class PanelError(Exception):
@@ -251,6 +267,92 @@ def _folder(entry: str) -> str:
     return "" if parent == "." else parent
 
 
+@dataclass(frozen=True)
+class _Verified:
+    """A grant's pack as checked against its approval: its folder, its name, and each approved file's hash."""
+
+    path: str
+    name: str
+    hashes: dict[str, str]
+
+
+_verified: dict[tuple, tuple[float, _Verified]] = {}
+_verified_lock = threading.Lock()
+
+
+def _fingerprint(state: Any, pack_id: str) -> str:
+    """What decides a pack's approval besides its files: its approval, the trusted publishers, the policy."""
+    from ..policy import current
+
+    policy = current()
+    plugins = state.settings.get("plugins") or {}
+    material = [plugins.get(pack_id) if isinstance(plugins, dict) else None,
+                state.settings.get("pack_publishers") or {}, policy.raw if policy else None]
+    return hashlib.sha256(json.dumps(material, sort_keys=True, default=str).encode("utf-8")).hexdigest()
+
+
+def _verify(state: Any, grant: PanelGrant, *, fresh: bool = False) -> _Verified:
+    """The grant's pack, still allowed, approved, enabled and unchanged; PanelError, grant withdrawn, otherwise.
+
+    A pack checked in the last ``VERIFIED_TTL`` seconds under the same
+    approval, publishers and policy is reused unless ``fresh``: its files'
+    hashes are the approved ones, and every file served is hashed against them.
+    """
+    allowed, reason = enabled(state.settings)
+    if not allowed:
+        grants.revoke(grant.token)
+        raise PanelError(reason)
+    key = (grant.project, grant.pack_id, grant.location, grant.panel_id, grant.entry,
+           _fingerprint(state, grant.pack_id))
+    now = time.monotonic()
+    if not fresh:
+        with _verified_lock:
+            cached = _verified.get(key)
+        if cached and cached[0] > now:
+            return cached[1]
+    manager = _packs(state, grant.project)
+    try:
+        pack, panel = _find(manager, grant.pack_id, grant.panel_id, grant.location)
+    except PanelError:
+        # A revoked, disabled or removed pack loses its open panels for good.
+        grants.revoke(grant.token)
+        raise
+    hashes = manager.verified_files(pack) if panel["entry"] == grant.entry else None
+    if hashes is None:
+        grants.revoke(grant.token)
+        raise PanelError(f"The {_label(pack.name)} pack changed since you approved it. Review it in Settings > "
+                         "Capability packs.")
+    verified = _Verified(path=pack.path, name=_label(pack.name), hashes=hashes)
+    with _verified_lock:
+        for stale in [k for k, (expires, _) in _verified.items() if expires <= now]:
+            del _verified[stale]
+        _verified[key] = (now + VERIFIED_TTL, verified)
+    return verified
+
+
+def forget_verified() -> None:
+    """Drop every kept check (tests; a changed approval or policy misses the cache by itself)."""
+    with _verified_lock:
+        _verified.clear()
+
+
+def check(state: Any, token: str, owner: int) -> None:
+    """Before a panel adds text to the message box: the panel is this page's, its pack still as approved.
+
+    Checked from scratch, not from what was kept for serving files: a pack
+    changed or revoked while its panel was open adds nothing.
+    """
+    grant = grants.get(token) if _TOKEN.fullmatch(token or "") else None
+    if grant is None or grant.owner != owner:
+        raise PanelError("This panel has closed.", 404)
+    _verify(state, grant, fresh=True)
+
+
+async def run_io(function: Any, *args: Any) -> Any:
+    """``function(*args)`` on the panels' own threads, off the event loop and the default pool."""
+    return await asyncio.get_running_loop().run_in_executor(_PANEL_IO, function, *args)
+
+
 def open_panel(state: Any, pack_id: str, panel_id: str, *, owner: int) -> dict:
     """Check the pack again and issue a token for one of its panels."""
     from .. import audit
@@ -298,59 +400,46 @@ def content_security_policy(host: str, token: str, scheme: str = "http") -> str:
     ))
 
 
-_HEAD = re.compile(rb"<head(?:\s[^>]*)?>", re.I)
-_HTML = re.compile(rb"<html(?:\s[^>]*)?>", re.I)
 _DOCTYPE = re.compile(rb"\A(?:\xef\xbb\xbf)?\s*<!doctype[^>]*>", re.I)
 
 
 def with_bridge(html: bytes, token: str) -> bytes:
-    """``html`` with Lumi's bridge script first in its head, so ``window.lumi`` exists for the panel's scripts."""
+    """``html`` with Lumi's bridge script before anything else, after the doctype if there is one.
+
+    It must run before any of the panel's scripts: it registers its message
+    listener first, which keeps the page's private channel from the panel's
+    own code. Browsers build the head around a script placed here.
+    """
     tag = f'<script src="/panels/{token}/{BRIDGE_PATH}"></script>'.encode("ascii")
-    for pattern in (_HEAD, _HTML, _DOCTYPE):
-        match = pattern.search(html)
-        if match:
-            return html[:match.end()] + tag + html[match.end():]
+    match = _DOCTYPE.search(html)
+    if match:
+        return html[:match.end()] + tag + html[match.end():]
     bom = b"\xef\xbb\xbf" if html.startswith(b"\xef\xbb\xbf") else b""
     return bom + tag + html[len(bom):]
 
 
 def _read(state: Any, grant: PanelGrant, path: str, bridge_file: Path) -> tuple[bytes, str]:
-    """The bytes and type to serve for ``path``; PanelError otherwise. Runs off the event loop."""
+    """The bytes and type to serve for ``path``; PanelError otherwise. Runs on the panels' threads."""
     from ..engine.capability_packs import pack_relative_path
 
-    allowed, reason = enabled(state.settings)
-    if not allowed:
-        grants.revoke(grant.token)
-        raise PanelError(reason)
-    manager = _packs(state, grant.project)
-    try:
-        pack, panel = _find(manager, grant.pack_id, grant.panel_id, grant.location)
-    except PanelError:
-        # A revoked, disabled or removed pack loses its open panels for good.
-        grants.revoke(grant.token)
-        raise
-    hashes = manager.verified_files(pack) if panel["entry"] == grant.entry else None
-    if hashes is None:
-        grants.revoke(grant.token)
-        raise PanelError(f"The {_label(pack.name)} pack changed since you approved it. Review it in Settings > "
-                         "Capability packs.")
+    verified = _verify(state, grant)
     if path == BRIDGE_PATH:
         return bridge_file.read_bytes(), CONTENT_TYPES[".js"]
     relative = pack_relative_path(path)
     folder = _folder(grant.entry)
     in_pack = f"{folder}/{relative}" if folder and relative else relative
-    expected = hashes.get(in_pack) if in_pack else None
+    expected = verified.hashes.get(in_pack) if in_pack else None
     kind = CONTENT_TYPES.get(PurePosixPath(in_pack or "").suffix.lower())
     if expected is None or kind is None:
         raise PanelError("This panel has no such file.", 404)
-    with open(Path(pack.path) / in_pack, "rb") as handle:
+    with open(Path(verified.path) / in_pack, "rb") as handle:
         data = handle.read(MAX_PANEL_FILE_BYTES + 1)
     if len(data) > MAX_PANEL_FILE_BYTES:
         raise PanelError("This panel file is larger than 4 MB.", 413)
     # What was read, not only what was checked: a file changed since is refused.
     if hashlib.sha256(data).hexdigest() != expected:
         grants.revoke(grant.token)
-        raise PanelError(f"The {_label(pack.name)} pack changed since you approved it.")
+        raise PanelError(f"The {verified.name} pack changed since you approved it.")
     if kind.startswith("text/html"):
         data = with_bridge(data, grant.token)
     return data, kind
@@ -396,7 +485,7 @@ async def serve(request: Any, state: Any, *, bridge_file: Path) -> Any:
     if grant is None:
         return refuse("This panel has closed. Open it again from View > Panels.", 404)
     try:
-        data, kind = await asyncio.to_thread(_read, state, grant, path, bridge_file)
+        data, kind = await run_io(_read, state, grant, path, bridge_file)
     except PanelError as exc:
         return refuse(str(exc), exc.status)
     except OSError:

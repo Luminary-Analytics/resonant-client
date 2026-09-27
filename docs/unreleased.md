@@ -13,10 +13,9 @@ The dated September 15/18 records below are historical.
 **Capability packs can add panels.** A pack's `ui_panels` (an id, a title and
 an entry HTML file) are pages the person opens under **View > Panels** or
 from the command palette ("Open panel: …"). A panel opens in a dialog and
-talks to Lumi through a bridge: it reads the project's name, the
-conversation's title and the theme, adds text to the message box without
-sending it, and shows a notice that names it. See
-[Panels](extensions.md#panels).
+talks to Lumi through a bridge: it reads the project's name and the theme,
+adds text to the message box without sending it, and shows a notice marked
+as its pack's. See [Panels](extensions.md#panels).
 
 **How a panel is kept apart.**
 - It runs in `<iframe sandbox="allow-scripts">`: an opaque origin with no
@@ -25,22 +24,36 @@ sending it, and shows a notice that names it. See
 - Its files come from `/panels/<panel token>/`. The token is made when the
   panel opens and withdrawn when it closes or its page goes; it isn't the
   launch token. Each response has a Content-Security-Policy of its own: no
-  network, only the panel's own files, `sandbox allow-scripts`. Fetch
-  Metadata refuses a panel URL opened as a top-level page.
+  network except WebRTC, only the panel's own files, `sandbox allow-scripts`.
+  Fetch Metadata refuses a panel URL opened as a top-level page.
 - Every file is checked as it's served: panels allowed; the pack approved,
   enabled, allowed by policy and unchanged; the file one the approval covered
-  and its bytes the approved ones. A revoked, disabled or changed pack's open
-  panel stops loading at once and closes the next time panels are listed.
+  and its bytes the approved ones. A pack found unchanged is trusted for 3
+  seconds, so a panel's many files hash it once, and panel files are read on
+  threads of their own, off the app socket's pool.
+- A revoked, disabled or changed pack's open panel stops loading at once. Its
+  next addition to the message box is refused (each is checked with the
+  server), and it closes when panels are next listed, which happens after
+  pack changes in Settings, or when the app's connection drops.
 - The page takes bridge messages only from that frame, with origin `"null"`,
-  limited in size and rate. Inserted text loses invisible characters. Notices
-  name their panel, and approvals show above panels.
+  limited in size and rate.
+- Text a panel adds loses invisible characters and padding, is at most 20
+  lines, has its @mentions split apart (`@ file:`) so they attach nothing,
+  and is refused if the message would then start with `!` or `/` and run as
+  a command. The caret goes to where the text starts.
+- A panel can't close itself: Escape reaches the page only over a private
+  port that Lumi's bridge script holds and uses for a real key press. When a
+  panel closes, focus goes to the Menu or command palette button, never the
+  message box.
+- A panel's notices show in its dialog as "Panel · *pack*: …", apart from
+  Lumi's, and approvals show above panels.
 - The app page's policy now names `frame-src 'self'`, which also keeps a
   panel from navigating itself to another site.
 - The desktop window refuses pywebview bridge calls whose name or id isn't a
-  plain identifier. pywebview writes both into script it runs in the page,
-  and WebKit (macOS, Linux) gives the bridge to every frame, so WebKit windows
-  don't open panels yet. On Windows, a sandboxed frame's messages didn't reach
-  pywebview in a WebView2 probe.
+  plain identifier: pywebview writes both into script it runs in the page.
+  Panels open only in a browser or the WebView2 window (Windows), where a
+  sandboxed frame's messages didn't reach pywebview in a probe. WebKit
+  (macOS, Linux) and Qt give the bridge to every frame.
 
 **Settings and policy.** Settings > Privacy & security > **Panels from
 capability packs** (`security.extension_panels`, on by default); a policy
@@ -55,9 +68,9 @@ packs lists them for review, and `lumi extension check` lists them.
 
 **Not covered.** Browsers don't apply the Content-Security-Policy to WebRTC
 (Edge ignores `webrtc 'block'`), so a panel's script can send what it sees
-(the project's name, the conversation's title, the theme and what's typed
-into it) to a server of its choosing. Panels don't open in the macOS and
-Linux desktop window, and one opens at a time.
+(the project's name, the theme and what's typed into it) to a server of its
+choosing. Panels don't open in the macOS and Linux desktop window, and one
+opens at a time.
 
 ## September 27 Team: a team's results in its chat (source only, not released)
 

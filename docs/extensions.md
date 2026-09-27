@@ -199,9 +199,10 @@ else { say({type: 'text', text: 'Hello from Node'}); say({type: 'done', usage: {
 A pack can add **panels**: pages made of its own HTML, scripts, styles and
 images that the person opens in Lumi, such as a build dashboard or a prompt
 picker. A panel talks to Lumi through a small bridge. It can read the
-project's name, the conversation's title and the theme, add text to the
-message box without sending it, and show a notice. It can't reach the
-network, read Lumi's page, settings, keys or files, run tools, or send a
+project's name and the theme, add text to the message box without sending
+it, and show a notice. It has no network access except WebRTC (see
+[what panels don't do](#what-panels-dont-do)), and it can't read Lumi's
+page, the conversation, settings, keys or files, run tools, or send a
 message.
 
 ### Declaring a panel
@@ -239,18 +240,21 @@ the panels it found.
 Panels from approved, enabled packs are listed under **View > Panels** in the
 application menu, and in the command palette (Ctrl+K) as "Open panel: …".
 Settings > Capability packs lists a pack's panels for review before you
-approve it. A panel opens in a dialog over the conversation; Escape or ×
-closes it, and focus goes back to where it was. **Panels from capability
-packs** in Settings > Privacy & security turns them all off.
+approve it. A panel opens in a dialog over the conversation. Escape (in the
+panel or on the dialog) or × closes it, and focus goes back to the Menu
+button or the command palette's button, whichever opened it; it never goes
+to the message box. **Panels from capability packs** in Settings > Privacy &
+security turns them all off.
 
-The desktop window on macOS and Linux doesn't open panels yet (see
-[how panels are isolated](#how-panels-are-isolated)). Open Lumi with
-**File > Open in Browser** to use them there.
+Panels open in a browser and in the Windows desktop window. The macOS and
+Linux desktop window doesn't open them yet (see
+[how panels are isolated](#how-panels-are-isolated)): use
+**File > Open in Browser** there.
 
 ### Writing the page
 
-Lumi adds its bridge script at the start of each HTML file of the panel, so
-`window.lumi` is ready for the panel's own scripts:
+Lumi adds its bridge script at the start of each HTML file of the panel,
+before anything else, so `window.lumi` is ready for the panel's own scripts:
 
 ```html
 <!doctype html>
@@ -268,7 +272,7 @@ Lumi adds its bridge script at the start of each HTML file of the panel, so
 ```
 
 ```js
-lumi.onContext(({project, session, theme}) => {
+lumi.onContext(({project, theme}) => {
   document.querySelector('h1').textContent = `Build stats for ${project}`;
 });
 document.getElementById('ask').addEventListener('click', async () => {
@@ -279,16 +283,32 @@ document.getElementById('ask').addEventListener('click', async () => {
 
 | Call | What it does |
 |---|---|
-| `lumi.context()` | Resolves to `{project, session, theme}`: the project folder's name (never its path), the conversation's title (empty in a new one), and `"dark"` or `"light"`. |
-| `lumi.onContext(fn)` | Calls `fn` with the context when the panel loads and when the theme changes. Call `lumi.context()` for it at other times. |
-| `lumi.insert(text)` | Adds `text`, up to 8,000 characters, after what the person has typed. Lumi never sends it: the person reads it, edits it and sends it. Lumi removes invisible characters (Unicode format and control characters other than tab and newline), so what shows in the message box is what the model gets. Refused when no conversation is open. |
-| `lumi.toast(text)` | Shows a one-line notice of up to 200 characters, after the panel's title. One a second. |
+| `lumi.context()` | Resolves to `{project, theme}`: the project folder's name (never its path) and `"dark"` or `"light"`. |
+| `lumi.onContext(fn)` | Calls `fn` with the context when the panel loads and when the theme changes. |
+| `lumi.insert(text)` | Adds `text` after what the person has typed. Lumi never sends it: the person reads it, edits it and sends it. See the rules below. |
+| `lumi.toast(text)` | Shows a one-line notice of up to 200 characters in the panel's dialog, marked "Panel · *pack name*", apart from Lumi's own notices. One a second. |
 
 Each call returns a Promise that rejects with Lumi's reason when the request
-is refused. The bridge also closes the panel when the person presses Escape in
-it, unless the panel handled the key (`event.preventDefault()`), and marks the
-page `<html data-lumi-theme="dark">` or `"light"` so styles can follow the
-theme:
+is refused. Before adding text, Lumi checks with its server that the pack is
+still installed, approved, enabled and unchanged, and it holds the text to
+what the person can review in the message box:
+
+- up to 8,000 characters and 20 lines;
+- no invisible characters (Unicode format and control characters other than
+  tab and newline), so what shows is what the model gets;
+- no padding: runs of spaces become one, indentation keeps at most 8
+  columns, and blank lines collapse to one;
+- no attachments: an @mention such as `@file:app.py` is split apart
+  (`@ file:app.py`), so it attaches nothing unless the person rejoins it;
+- never a command: text that would make the message start with `!` (a shell
+  command) or `/` (a Lumi command) is refused, and Lumi says so.
+
+Lumi puts the caret where the added text starts and scrolls the message box
+to it. Text is refused when no conversation is open.
+
+The bridge closes the panel when the person presses Escape in it, unless the
+panel handled the key (`event.preventDefault()`), and marks the page
+`<html data-lumi-theme="dark">` or `"light"` so styles can follow the theme:
 
 ```css
 body { background: #13152e; color: #ebebeb; }
@@ -313,13 +333,19 @@ parent.postMessage({lumi: 1, id: 7, method: 'composer.insert', text: 'Hello'}, '
 // or {lumi: 1, id: 7, ok: false, error: "…"}.
 ```
 
-The methods are `context`, `composer.insert` and `toast` (both with `text`),
-and `close`, which the bridge sends for Escape and which works only while the
-panel has keyboard focus. `id` is optional: a whole number, or a string of up
-to 64 characters, returned in the answer. Lumi ignores a message without
-`lumi: 1`, answers another method with an error, and answers at most 20
-requests a second. It sends `{lumi: 1, event: "context", context: {…}}` when
-the panel loads and when the theme changes.
+The methods are `context`, and `composer.insert` and `toast`, both with
+`text`. `id` is optional: a whole number, or a string of up to 64
+characters, returned in the answer. Lumi ignores a message without `lumi: 1`,
+answers another method with an error, and answers at most 20 requests a
+second. It sends `{lumi: 1, event: "context", context: {…}}` when the panel
+loads and when the theme changes.
+
+A panel can't close itself. Closing on Escape uses a private channel (a
+`MessagePort`) that Lumi's page hands its bridge script as the panel loads.
+The script runs first, so the panel's own scripts never see the channel, and
+it sends on it only for an Escape key press the browser reports as real. A
+panel that could close itself could send the person's next keystrokes to the
+message box.
 
 ### How panels are isolated
 
@@ -328,7 +354,7 @@ the panel loads and when the theme changes.
   page, its storage (which holds the launch's access token), cookies or
   socket. The frame can't navigate the window, open popups, submit forms or
   show dialogs.
-- **No network.** Each panel file is served with its own
+- **No network except WebRTC.** Each panel file is served with its own
   Content-Security-Policy: scripts, styles and images only from the panel's
   own path (`/panels/<token>/`), `connect-src 'none'`, no frames, workers,
   objects, forms or base URL, and `sandbox allow-scripts`, which sandboxes the
@@ -338,25 +364,30 @@ the panel loads and when the theme changes.
 - **Only the files you approved.** Lumi serves a panel's files under a random
   token it makes when you open the panel. It isn't the launch token, reads
   only that panel's folder, and ends when the panel closes, when the page
-  closes, or after 12 hours. Every file is checked as it's served: panels
+  closes, or after 12 hours. Each file is checked as it's served: panels
   allowed, and the pack installed, approved, enabled, allowed by your
-  organization and unchanged. The file must be one the approval covered, and
-  what's read must match what was approved. So a revoked, disabled or changed
-  pack's open panel can't load anything more, and Lumi closes it when it next
-  lists panels: when you come back to the window, open the menu or the
-  command palette.
+  organization and unchanged. So that a panel loading many files doesn't
+  hash its pack for each, a pack found unchanged is trusted for 3 seconds
+  under the same approval and policy, but every file's bytes are still
+  checked against the approval. The file must be one the approval covered.
+- **A revoked or changed pack.** Its open panel can't load anything more or
+  add text (each addition checks the pack again), and Lumi closes it: when
+  it next lists panels (after a change in Settings, when you come back to
+  the window, open the menu or the command palette), or when the app's
+  connection drops.
 - **A narrow bridge.** Lumi's page takes a message only from that exact frame
   (`event.source`) with the sandbox's origin (`"null"`), in the shape above,
-  limited in size and rate. It answers that frame only. A notice always names
-  its panel, and an approval or another dialog always shows above a panel.
-- **The desktop window.** On Windows, the desktop window's own bridge
-  (WebView2) answers only Lumi's page: a sandboxed frame there can post, but
-  its messages don't reach the app (checked with pywebview 6.1). WebKit, which
-  the window uses on macOS and Linux, gives the window's bridge to every frame
-  in it, so there Lumi opens panels only in the browser for now. The desktop
-  window also refuses a bridge call whose name or id isn't a plain
-  identifier, which keeps any frame from running script in Lumi's page
-  through pywebview.
+  limited in size and rate. It answers that frame only. A panel's notice
+  shows in its dialog, marked as the pack's, and can't replace or pass for
+  one of Lumi's. An approval or another dialog always shows above a panel.
+- **The desktop window.** Lumi opens panels only where its own window bridge
+  can't be reached from the panel's frame. On Windows (WebView2), a
+  sandboxed frame can post to the window's bridge, but its messages don't
+  reach the app (checked with pywebview 6.1). WebKit, which the window uses
+  on macOS and Linux, gives the bridge to every frame, and so does Qt, so
+  those windows send the person to the browser. The desktop window also
+  refuses a bridge call whose name or id isn't a plain identifier, which
+  keeps any frame from running script in Lumi's page through pywebview.
 - **Organization policy.** A pack your organization's policy turns off
   (`extensions.allowed_packs`, `require_signed`, `registry_only`) has no
   panels, and a policy can turn panels off for everyone with
@@ -372,8 +403,8 @@ the panel loads and when the theme changes.
   to WebRTC, so a panel's script can send data to a server of its choosing
   that way. This was seen in Edge, where the proposed `webrtc 'block'`
   directive is ignored. A panel can only send what it can see: the project's
-  name, the conversation's title, the theme and what you type into it. Approve
-  packs whose code you've read or whose publisher you trust, as for hooks.
+  name, the theme and what you type into it. Approve packs whose code you've
+  read or whose publisher you trust, as for hooks.
 - One panel is open at a time, and panels don't open in the macOS and Linux
   desktop window yet.
 

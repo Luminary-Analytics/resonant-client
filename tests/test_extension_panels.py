@@ -135,8 +135,10 @@ def gui_state(tmp_path, monkeypatch):
     state.codebase_index = object()
     monkeypatch.setattr(gui, "state", state)
     extension_panels.grants.clear()
+    extension_panels.forget_verified()
     yield state
     extension_panels.grants.clear()
+    extension_panels.forget_verified()
 
 
 def _write_demo_pack(root: Path, pack_id: str = "demo") -> Path:
@@ -182,11 +184,13 @@ class _Socket:
 
 
 def _send(state, command: str, message: dict | None = None, socket: _Socket | None = None) -> list[dict]:
+    """What the command sent back; a page (``socket``) may send several commands."""
     socket = socket or _Socket()
+    before = len(socket.sent)
     asyncio.run(ws_commands.HANDLERS[command](
-        ws_commands.CommandContext(ws=socket, state=state, msg=message or {}),
+        ws_commands.CommandContext(ws=socket, state=state, msg=message or {}, runs=types.SimpleNamespace(busy=False)),
     ))
-    return socket.sent
+    return socket.sent[before:]
 
 
 def _open(state, socket: _Socket | None = None) -> dict:
@@ -243,9 +247,9 @@ def test_a_panel_page_gets_its_own_policy_and_the_bridge(demo, gui_state):
     assert page.headers["referrer-policy"] == "no-referrer"
     assert "camera=()" in page.headers["permissions-policy"]
     assert "x-frame-options" not in page.headers
-    # Lumi's bridge comes first in <head>, before the panel's own scripts.
-    assert page.text.startswith(f'<!doctype html><html><head><script src="/panels/{token}/.lumi/bridge.js"></script>'
-                                "<title>Demo</title>")
+    # Lumi's bridge comes before anything else in the page, right after the doctype.
+    assert page.text.startswith(f'<!doctype html><script src="/panels/{token}/.lumi/bridge.js"></script>'
+                                "<html><head><title>Demo</title>")
 
     bridge = _get(f"/panels/{token}/.lumi/bridge.js")
     assert bridge.status_code == 200 and bridge.headers["content-type"] == "text/javascript; charset=utf-8"
@@ -461,6 +465,99 @@ def test_opening_is_checked_and_recorded(demo, gui_state, monkeypatch):
     assert records == [("extension.panel_open", {"pack": "demo", "panel": "demo"})]
 
 
+def test_adding_text_checks_the_pack_again_from_scratch(demo, gui_state):
+    """Before each addition to the message box, not only when files load."""
+    page = _Socket()
+    token = _open(gui_state, page)["token"]
+    check = {"token": token, "request_id": "c1"}
+    [reply] = _send(gui_state, "extension_panel_check", check, page)
+    assert reply == {"event": "extension_panel_checked", "request_id": "c1", "ok": True}
+
+    # Another page can't use this page's panel.
+    [reply] = _send(gui_state, "extension_panel_check", check, _Socket())
+    assert reply["ok"] is False and reply["error"] == "This panel has closed."
+
+    # A pack changed while its panel was open adds nothing, even right after a file loaded.
+    assert _get(f"/panels/{token}/index.html").status_code == 200
+    _write(demo / "panels" / "demo" / "panel.js", "// changed after approval\n")
+    [reply] = _send(gui_state, "extension_panel_check", check, page)
+    assert reply["ok"] is False and "changed since you approved it" in reply["error"]
+    [reply] = _send(gui_state, "extension_panel_check", check, page)
+    assert reply["error"] == "This panel has closed."
+
+
+def test_a_revoked_pack_adds_nothing(demo, gui_state):
+    page = _Socket()
+    token = _open(gui_state, page)["token"]
+    manager = CapabilityPackManager(gui_state.project.project_path, configured=gui_state.settings.get("plugins"))
+    pack = next(p for p in manager.discover() if p.id == "demo")
+    gui_state.settings.set("plugins", None, revoke_pack_approval(gui_state.settings.get("plugins"), pack))
+    [reply] = _send(gui_state, "extension_panel_check", {"token": token, "request_id": "c2"}, page)
+    assert reply["ok"] is False and "Approve the Demo pack" in reply["error"]
+
+
+def test_a_panel_loading_many_files_checks_its_pack_once(demo, gui_state, monkeypatch):
+    token = _open(gui_state)["token"]
+    reads = []
+    real = extension_panels._packs
+    monkeypatch.setattr(extension_panels, "_packs", lambda state, project: reads.append(project) or real(state, project))
+    for name in ("index.html", "panel.js", "style.css", ".lumi/bridge.js", "panel.js"):
+        assert _get(f"/panels/{token}/{name}").status_code == 200
+    assert len(reads) == 1
+    # A changed approval is a different check, at once.
+    plugins = json.loads(json.dumps(gui_state.settings.get("plugins")))
+    for approval in plugins["demo"]["approvals"].values():
+        approval["enabled"] = False
+    gui_state.settings.set("plugins", None, plugins)
+    assert _get(f"/panels/{token}/panel.js").status_code == 403
+    assert len(reads) == 2
+
+
+def test_a_kept_check_expires_and_never_hides_a_changed_file(demo, gui_state, monkeypatch):
+    token = _open(gui_state)["token"]
+    clock = [1000.0]
+    monkeypatch.setattr(extension_panels.time, "monotonic", lambda: clock[0])
+    reads = []
+    real = extension_panels._packs
+    monkeypatch.setattr(extension_panels, "_packs", lambda state, project: reads.append(project) or real(state, project))
+    assert _get(f"/panels/{token}/panel.js").status_code == 200
+    clock[0] += extension_panels.VERIFIED_TTL + 0.5
+    assert _get(f"/panels/{token}/panel.js").status_code == 200
+    assert len(reads) == 2
+    # Within the few seconds a check is kept, a file still can't change unseen: each one is hashed.
+    _write(demo / "panels" / "demo" / "style.css", "body { color: red; }\n")
+    assert _get(f"/panels/{token}/style.css").status_code == 403
+    assert len(reads) == 2
+
+
+def test_panel_files_are_read_on_the_panels_own_threads(demo, gui_state, monkeypatch):
+    import threading
+
+    token = _open(gui_state)["token"]
+    names = []
+    real = extension_panels._read
+    monkeypatch.setattr(extension_panels, "_read", lambda *args: names.append(threading.current_thread().name) or real(*args))
+    assert _get(f"/panels/{token}/panel.js").status_code == 200
+    assert names and names[0].startswith("lumi-panels")
+
+
+def test_the_page_hears_when_panels_may_have_changed(demo, gui_state):
+    """After approving, revoking or removing a pack, or switching panels off, the page gets the list again."""
+    manager = CapabilityPackManager(gui_state.project.project_path, configured=gui_state.settings.get("plugins"))
+    pack = next(p for p in manager.discover() if p.id == "demo")
+    replies = _send(gui_state, "capability_pack_revoke", {"pack_id": "demo", "path": pack.path})
+    assert replies[-1]["event"] == "extension_panels" and replies[-1]["panels"] == []
+    [listed] = [r for r in _send(gui_state, "capability_pack_list") if r["event"] == "capability.pack_list"]
+    [row] = [p for p in listed["packs"] if p["id"] == "demo"]
+    replies = _send(gui_state, "capability_pack_approve", {"pack_id": "demo", "path": row["path"],
+                                                           "digest": row["digest"]})
+    assert [p["panel"] for p in replies[-1]["panels"]] == ["demo"]
+    gui_state.codebase_index = None  # saving a setting reapplies the project, which indexes it
+    replies = _send(gui_state, "update_settings", {"section": "security", "key": "extension_panels", "value": False})
+    [listing] = [r for r in replies if r["event"] == "extension_panels"]
+    assert listing["enabled"] is False and listing["panels"] == []
+
+
 def test_a_failure_to_list_panels_keeps_the_connection(gui_state, monkeypatch):
     def broken(state):
         raise RuntimeError("disk gone")
@@ -490,11 +587,14 @@ def test_panel_tokens_are_bounded_in_number_and_age(monkeypatch):
 
 
 @pytest.mark.parametrize("html, expected", [
-    (b"<!DOCTYPE html><HTML lang=en><HEAD><title>t</title>", b"<!DOCTYPE html><HTML lang=en><HEAD>TAG<title>t</title>"),
-    (b"<html><header>no head</header>", b"<html>TAG<header>no head</header>"),
-    (b"<!doctype html><p>bare", b"<!doctype html>TAG<p>bare"),
+    (b"<!DOCTYPE html><HTML lang=en><HEAD><title>t</title>", b"<!DOCTYPE html>TAG<HTML lang=en><HEAD><title>t</title>"),
+    (b"  <!doctype html>\n<p>bare", b"  <!doctype html>TAG\n<p>bare"),
+    (b"<html><header>no doctype</header>", b"TAG<html><header>no doctype</header>"),
+    # Before any script of the panel's, even one it puts ahead of <head>.
+    (b"<!doctype html><script src=first.js></script><head>", b"<!doctype html>TAG<script src=first.js></script><head>"),
     (b"<p>fragment", b"TAG<p>fragment"),
     (b"\xef\xbb\xbf<p>bom", b"\xef\xbb\xbfTAG<p>bom"),
+    (b"\xef\xbb\xbf<!doctype html><p>", b"\xef\xbb\xbf<!doctype html>TAG<p>"),
 ])
 def test_the_bridge_goes_first(html, expected):
     tag = b'<script src="/panels/T/.lumi/bridge.js"></script>'

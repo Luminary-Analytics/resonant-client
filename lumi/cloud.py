@@ -22,6 +22,11 @@ the organization publishes a new policy, or the cached one is within a week
 of expiring, Lumi downloads it, checks its signature against the trusted
 keys (lumi/policy.py) and applies it. A revoked device forgets its
 enrollment and the downloaded policy.
+
+**Organization oversight** (lumi/oversight.py) is separate: only when the
+organization's policy asks, and after the person has seen the notice, turn
+records and security flags go to ``/api/v1/oversight/events`` through
+``device_call``. Leaving the organization deletes any still queued.
 """
 
 from __future__ import annotations
@@ -477,6 +482,10 @@ class CloudClient:
             logger.warning("Couldn't delete the downloaded organization policy", exc_info=True)
         policy.load(force=True)
         audit.record("cloud.unenrolled", organization=organization, reason=reason)
+        # Oversight records meant for the organization aren't sent anywhere else (lumi/oversight.py).
+        from . import oversight
+
+        oversight.discard(f"This computer left {organization or 'the organization'} ({reason}).")
         self._changed()
 
     # ── Device sign-in and check-ins ───────────────────────────────────────

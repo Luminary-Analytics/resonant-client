@@ -799,6 +799,28 @@ async def _audit_status(ctx: CommandContext) -> None:
     await ctx.send(await _in_executor(ctx.state.audit_status))
 
 
+@command("oversight_status")
+async def _oversight_status(ctx: CommandContext) -> None:
+    """Settings > Privacy & security: what the organization's oversight collects, the queue and your flags."""
+    from .. import oversight
+
+    await ctx.send({"event": "oversight_status", "data": await asyncio.to_thread(oversight.status)})
+
+
+@command("oversight_notice_shown")
+async def _oversight_notice_shown(ctx: CommandContext) -> None:
+    """The page shows the oversight notice for this policy (its fingerprint); recording may start.
+
+    A fingerprint that isn't the policy in force starts nothing: the page
+    gets the current status back and shows that notice instead.
+    """
+    from .. import oversight
+
+    fingerprint = str(ctx.msg.get("fingerprint") or "")
+    await asyncio.to_thread(oversight.acknowledge, fingerprint, "app")
+    await ctx.send({"event": "oversight_status", "data": await asyncio.to_thread(oversight.status)})
+
+
 def _code_editors_payload(settings: Any = None, **extra: Any) -> dict:
     """Settings > Code editors: the bridge, and the editors found on this computer."""
     from ..code_editors import jetbrains_config_dirs, lumi_command, vscode_editors

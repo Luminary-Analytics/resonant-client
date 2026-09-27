@@ -41,6 +41,8 @@ day. `LUMI_STATE_HOME` moves the whole folder.
 | `update.check` | An [update](updates.md) check finishes | `result` (`found`, `none`, `error`), version, feed |
 | `update.deferred`, `update.install` | An update waits for a running agent turn, or its installer starts and Lumi closes | version, feed, `reason` |
 | `update.skipped`, `update.postponed`, `update.cancelled` | You skip an update, choose to be reminded later, or close the update window | version, feed |
+| `oversight.notice_shown` | The [organization oversight](organization-oversight.md) notice for the policy in force was shown, so recording starts | organization, surface (`app`, `lumi run`, `terminal`, `chat gateway`), `activity`, `messages`, `security_flags`, `retention_days`, `project_paths` |
+| `oversight.discarded` | Queued oversight records were deleted unsent (the policy stopped asking, Lumi Cloud refused, or the computer left the organization) | how many, why |
 | `error` | A turn reports an error | code, message by capture level |
 
 Turns from the chat gateway name their chat as `gateway:<chat id>`, and the

@@ -323,10 +323,14 @@ class LumiSettingsView {
             ? `Installed from ${installer[0]}; ${installer[1]} updates it.`
             : info.organization ? `Managed by ${esc(info.organization)}.` : '';
         const row = (label, body) => `<div class="settings-row"><div class="settings-row-copy"><span class="settings-row-label">${label}</span><div class="settings-row-hint">${body}</div></div></div>`;
+        // An organization's oversight sends its Lumi Cloud more (lumi/oversight.py); say so here too.
+        const oversight = this.oversightStatus?.configured
+            ? `Your prompts, code and keys go to the model providers you choose. ${esc(this.oversightStatus.notice)} Privacy & security lists exactly what. Luminary Analytics also receives the update check, which you can turn off in Updates.`
+            : 'Your prompts, code and keys go only to the model providers you choose. Luminary Analytics receives only the update check, which you can turn off in Updates.';
         return [
             row(`Lumi ${esc(info.version)}`, `The coding agent by Luminary Analytics. ${managed}`),
             row('Free for individuals', 'The whole agent, every tool, provider and feature in this app, works without an account: with your own API keys, your ChatGPT sign-in, or models on your own computer.'),
-            row('What leaves this computer', 'Your prompts, code and keys go only to the model providers you choose. Luminary Analytics receives only the update check, which you can turn off in Updates.'),
+            row('What leaves this computer', oversight),
             row('For teams and organizations', 'Lumi Cloud adds central policy, members, devices and usage reporting; if your organization uses it, sign in from Lumi account. Without it, organizations set policy on each computer (see docs/enterprise-policy.md).'),
             row('License', `Lumi’s source is available under the ${esc(info.license)} license.${info.notices ? ` Third-party components and their licenses: <code>${esc(info.notices)}</code>` : ''}`),
         ].join('');
@@ -534,6 +538,121 @@ class LumiSettingsView {
             ['Capability packs', list(policy.packs_allowed, 'all')],
         ];
         return rows.map(([label, value]) => `<div class="settings-row"><div class="settings-row-copy"><span class="settings-row-label">${label}</span></div><div class="settings-row-value settings-policy-value">${value}</div></div>`).join('');
+    }
+
+    // ── Organization oversight (lumi/oversight.py) ─────────────────────────
+    // While an organization's policy has Lumi share activity, messages or
+    // security flags with its Lumi Cloud, a notice beside the message box
+    // names the organization and what it receives. It can't be dismissed, and
+    // Lumi records nothing until it has been on screen: the page then tells
+    // the server which policy it showed (its fingerprint).
+
+    _initOversightNotice() {
+        const notice = document.getElementById('oversight-notice');
+        if (!notice || this._oversightNoticeReady) return;
+        this._oversightNoticeReady = true;
+        document.getElementById('oversight-notice-details')?.addEventListener('click', () => this._openOversightSettings());
+        if (typeof IntersectionObserver === 'function') {
+            // The message box (and the notice with it) can appear after the
+            // status arrives: acknowledge when the notice comes into view.
+            new IntersectionObserver(entries => {
+                if (entries.some(entry => entry.isIntersecting)) this._acknowledgeOversight();
+            }).observe(notice);
+        }
+    }
+
+    _applyOversight(status) {
+        if (!status) return;
+        this.oversightStatus = status;
+        const notice = document.getElementById('oversight-notice');
+        const text = document.getElementById('oversight-notice-text');
+        if (notice && text) {
+            const shown = Boolean(status.configured);
+            const words = shown ? [status.notice, status.organization_notice, status.reason].filter(Boolean).join(' ') : '';
+            if (text.textContent !== words) text.textContent = words;
+            notice.hidden = !shown;
+            notice.classList.toggle('oversight-notice-inactive', shown && Boolean(status.reason));
+        }
+        // A notice already on screen doesn't come into view again; give it a
+        // moment to be painted, then acknowledge this policy's notice.
+        setTimeout(() => this._acknowledgeOversight(), 250);
+        if (this.currentView === 'settings') this.renderSettingsView();
+    }
+
+    _acknowledgeOversight() {
+        const status = this.oversightStatus;
+        const notice = document.getElementById('oversight-notice');
+        if (!status?.configured || status.acknowledged || !status.fingerprint || !notice || notice.hidden) return;
+        if (!notice.getClientRects().length) return;  // the message box isn't on screen yet
+        if (this._oversightAcknowledged === status.fingerprint) return;
+        this._oversightAcknowledged = status.fingerprint;
+        this.send({command: 'oversight_notice_shown', fingerprint: status.fingerprint});
+    }
+
+    _openOversightSettings() {
+        this.openSettingsPage('privacy');
+        // The section's first row has an id, so focus survives the redraws
+        // that follow as the page's data arrives (renderSettingsView).
+        const focus = () => {
+            const start = document.getElementById('org-oversight-start');
+            if (!start) return false;
+            start.scrollIntoView({block: 'start'});
+            start.focus();
+            return true;
+        };
+        if (!focus()) setTimeout(focus, 0);
+    }
+
+    _renderOrgOversight() {
+        const s = this.oversightStatus;
+        if (!s) return '<p class="editor-help">Loading…</p>';
+        const esc = value => this.escapeHtml(String(value ?? ''));
+        const when = value => {
+            const date = value ? new Date(value) : null;
+            return date && !Number.isNaN(date.getTime()) ? date.toLocaleString() : '';
+        };
+        const row = (label, hint, role = '', id = '') => `<div class="settings-row"${id ? ` id="${id}" tabindex="-1"` : ''}><div class="settings-row-copy"><span class="settings-row-label">${label}</span><div class="settings-row-hint"${role ? ` role="${role}"` : ''}>${hint}</div></div></div>`;
+        const q = s.queue || {};
+        const counts = [];
+        if (q.pending) counts.push(`${esc(q.pending)} waiting to send`);
+        if (q.uploaded) counts.push(`${esc(q.uploaded)} sent${q.last_upload ? `, last at ${esc(when(q.last_upload))}` : ''}`);
+        if (q.dropped) counts.push(`${esc(q.dropped)} dropped because too many were waiting`);
+        if (q.rejected) counts.push(`${esc(q.rejected)} refused by Lumi Cloud`);
+        if (q.discarded) counts.push(`${esc(q.discarded)} deleted without sending${q.last_discard_reason ? ` (${esc(q.last_discard_reason)})` : ''}`);
+        const sending = counts.join(' · ');
+        const problem = q.last_error ? row('Last problem sending', `${esc(q.last_error)}${q.next_attempt ? ` Lumi tries again at ${esc(when(q.next_attempt))}.` : ''}`, 'status') : '';
+        const labels = {
+            destructive_command: 'Destructive command refused', dangerous_command: 'Risky command refused',
+            policy_denied: 'Refused by a rule', excluded_file: 'Excluded file', outside_project: 'Outside the project',
+            approval_denied: 'Approval declined', secret_redacted: 'Secret removed', prompt_injection: 'Possible prompt injection',
+        };
+        const severities = {low: 'Low', medium: 'Medium', high: 'High'};
+        const flags = (s.flags || []).map(flag => {
+            const severity = severities[flag.severity] ? flag.severity : 'low';
+            const session = flag.session || {};
+            const where = [session.title || 'Untitled session', session.project, flag.turn ? `turn ${flag.turn}` : '', when(flag.at)].filter(Boolean).map(esc).join(' · ');
+            return `<li class="oversight-flag"><span class="oversight-severity oversight-severity-${severity}">${severities[severity]}</span>
+                <div class="oversight-flag-copy"><strong>${esc(labels[flag.kind] || flag.kind)}</strong>: ${esc(flag.rule)}${flag.tool ? ` · <code>${esc(flag.tool)}</code>` : ''}
+                <div class="settings-row-hint">${where}</div>${flag.excerpt ? `<div class="settings-row-hint oversight-excerpt">${esc(flag.excerpt)}</div>` : ''}</div></li>`;
+        }).join('');
+        const flagList = flags ? `<ul class="oversight-flags">${flags}</ul>` : '<p class="editor-help">None.</p>';
+        if (!s.configured) {
+            return `<p class="editor-help" id="org-oversight-start" tabindex="-1">Off. No organization policy on this computer asks Lumi to share your activity, messages or security flags.</p>
+                ${sending ? row('Earlier records', sending) : ''}${flags ? `<h4 class="settings-subheading">Earlier security flags</h4>${flagList}` : ''}`;
+        }
+        const list = items => `<ul class="oversight-list">${(items || []).map(item => `<li>${esc(item)}</li>`).join('')}</ul>`;
+        const state = s.reason ? `Nothing is collected: ${esc(s.reason)}`
+            : s.acknowledged ? `On. ${esc(s.notice)}`
+            : 'Starts once the notice beside the message box has been shown.';
+        return `${row(`Managed by ${esc(s.organization)}`, state, 'status', 'org-oversight-start')}
+            ${s.organization_notice ? row(`From ${esc(s.organization)}`, esc(s.organization_notice)) : ''}
+            <h4 class="settings-subheading">What ${esc(s.organization)} receives</h4>${list(s.shared)}
+            <h4 class="settings-subheading">What it never receives</h4>${list(s.not_shared)}
+            ${row('How long it’s kept', esc(s.retention))}
+            ${row('Sending', sending || 'Nothing recorded yet.')}${problem}
+            <h4 class="settings-subheading">Your security flags</h4>
+            <p class="editor-help">What Lumi flagged in your turns, as ${esc(s.organization)} sees it${s.settings?.messages === 'off' ? ' (without the excerpts shown here)' : ''}.</p>
+            ${flagList}`;
     }
 
     _renderModelComparisons() {
@@ -1689,7 +1808,7 @@ class LumiSettingsView {
             {id:'capability_packs', title:'Capability packs', group:'Coding', icon:'cube', description:'Review what a pack would run, then approve or revoke it. Nothing in a pack runs until you approve it.', sections:['capability_packs'], keywords:'plugins extensions trust approve repository pack'},
             {id:'code_review', title:'Code review', group:'Coding', icon:'shield', description:'Have named people review the agent’s pull requests before they merge.', sections:['review'], keywords:'review reviewer approve approval pull request merge request push main master protected branch queue'},
             {id:'scheduled_tasks', title:'Scheduled tasks', group:'Coding', icon:'clock', description:'Run a saved task at set times, even when Lumi is closed.', sections:['scheduled_tasks'], keywords:'schedule cron nightly recurring automation task scheduler launchd unattended'},
-            {id:'privacy', title:'Privacy & security', group:'Security', icon:'shield', description:'Control what Lumi reads, keeps and sends, and which tools it may use.', sections:['org_policy','privacy','file_exclusions','transcripts','audit_log','audit','audit_status','security','shell_sandbox','project_trust'], keywords:'audit log opentelemetry otlp tamper evidence secrets redact scan credentials DLP exclude ignore lumiignore env retention delete trust AGENTS.md policy codex claude computer gateway organization managed group policy MDM sandbox seatbelt bubblewrap bwrap shell commands'},
+            {id:'privacy', title:'Privacy & security', group:'Security', icon:'shield', description:'Control what Lumi reads, keeps and sends, and which tools it may use.', sections:['org_policy','org_oversight','privacy','file_exclusions','transcripts','audit_log','audit','audit_status','security','shell_sandbox','project_trust'], keywords:'audit log opentelemetry otlp tamper evidence secrets redact scan credentials DLP exclude ignore lumiignore env retention delete trust AGENTS.md policy codex claude computer gateway organization managed group policy MDM sandbox seatbelt bubblewrap bwrap shell commands oversight monitoring shared messages activity security flags prompt injection'},
             {id:'local_backends', title:'Ollama runtime', group:'Advanced', icon:'cube', description:'Tune your local model runtime.', sections:['local_backends']},
             {id:'prompt_inspector', title:'Prompt inspector', group:'Advanced', icon:'book', description:'Inspect the instructions used by the active model.', sections:['prompt_inspector']},
             {id:'model_evaluations', title:'Model evaluations', group:'Advanced', icon:'chart', description:'Compare models on your own tasks, and review model quality and runtime diagnostics.', sections:['model_comparisons', 'model_evaluations'], keywords:'compare comparison benchmark evaluate models tasks switch pass rate'},
@@ -1790,6 +1909,7 @@ class LumiSettingsView {
         if (page === 'privacy') {
             this.send({command: 'project_trust_list'});
             this.send({command: 'audit_status'});
+            this.send({command: 'oversight_status'});
         }
         if (page === 'scheduled_tasks') this.send({command: 'schedules_list'});
         if (page === 'code_editors') this.send({command: 'code_editors_list'});
@@ -1980,6 +2100,7 @@ class LumiSettingsView {
                 ]
             },
             { id: 'org_policy', title: 'Organization policy', custom: true },
+            { id: 'org_oversight', title: 'Organization oversight', custom: true },
             {
                 id: 'privacy', title: 'Before each model request',
                 note: 'Commands the agent runs, hooks and MCP servers never receive Lumi’s model keys, and your saved keys are removed from tool output before it reaches a model.',
@@ -2182,6 +2303,8 @@ class LumiSettingsView {
                 bodyHtml = this._renderLumiAccount();
             } else if (section.id === 'org_policy') {
                 bodyHtml = this._renderOrgPolicy();
+            } else if (section.id === 'org_oversight') {
+                bodyHtml = this._renderOrgOversight();
             } else if (section.id === 'file_exclusions') {
                 bodyHtml = this._renderFileExclusions();
             } else if (section.id === 'project_trust') {

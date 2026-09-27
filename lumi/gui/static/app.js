@@ -1331,6 +1331,7 @@ class LumiApp {
             this.openCommandPalette();
         });
         this._initAccountMenu();
+        this._initOversightNotice?.();
         document.getElementById('settings-back')?.addEventListener('click', () => {
             this.switchView('agents');
             if (this.userInput?.getClientRects().length) this.userInput.focus();
@@ -4297,6 +4298,10 @@ class LumiApp {
                 this.auditStatus = event;
                 if (this.currentView === 'settings') this.renderSettingsView();
                 break;
+            case 'oversight_status':
+                // The organization's oversight: the notice and Settings (settings_view.js).
+                this._applyOversight?.(event.data);
+                break;
             case 'cloud_status':
                 this.cloudStatus = event.data;
                 if (event.data && !event.data.signing_in && event.data.signed_in) this._cloudUrlDraft = undefined;
@@ -4697,6 +4702,10 @@ class LumiApp {
         if (Array.isArray(event.autonomous_missions)) {
             this.handleAutonomousMissions({ missions: event.autonomous_missions });
         }
+
+        // What the organization's oversight receives: the notice beside the
+        // message box, shown before anything is recorded (settings_view.js).
+        if (event.oversight) this._applyOversight?.(event.oversight);
 
         // Plans still running when this page connected; only the socket's
         // own init lists them. Before the returns below: a plan runs on the

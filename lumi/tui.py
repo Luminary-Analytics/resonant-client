@@ -1094,6 +1094,12 @@ def print_banner(backend=None, health_info: dict = None, session: Session = None
         _print(f"    [{C_MUTED}]mode[/{C_MUTED}]     [{C_TEXT}]{mode}[/{C_TEXT}]  "
                f"[{C_DIM}]{_esc(description)}[/{C_DIM}]")
         _print_project_trust(session)
+        # What the organization receives, before the first turn (lumi/oversight.py).
+        from .oversight import terminal_notice
+
+        shared = terminal_notice(True, "terminal")
+        if shared:
+            _print(f"    [{C_MUTED}]shared[/{C_MUTED}]   [{C_WARN}]{_esc(shared)}[/{C_WARN}]")
     console.print(f"    [{C_MUTED}]help[/{C_MUTED}]     [{C_DIM}]/help · /plan · /model · /backend · /quit[/{C_DIM}]")
     console.print()
 

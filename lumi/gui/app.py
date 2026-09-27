@@ -2282,9 +2282,14 @@ class AppState:
         try:
             self.apply_policy_change()
             self._push_ws_event({"event": "settings", "data": self.settings.get_masked()})
+            # The init refresh carries the oversight notice for the new policy.
             self._push_ws_event(self.get_init_data(refresh_only=True))
         except Exception:
             logger.exception("Applying the new organization policy failed")
+        # Queued oversight records go now, or are deleted if the policy stopped asking.
+        from .. import oversight
+
+        oversight.wake()
 
     def apply_policy_change(self) -> None:
         """Apply a different organization policy (from Lumi Cloud) to the running app.
@@ -2474,7 +2479,17 @@ class AppState:
             # Includes running + complete + paused + failed, sorted
             # newest-first by autonomous_started_at.
             "autonomous_missions": _list_autonomous_missions(self),
+            # What the organization's oversight collects, for the notice
+            # beside the message box (lumi/oversight.py). The page shows
+            # it before anything is recorded.
+            "oversight": _oversight_status(),
         }
+
+
+def _oversight_status() -> dict:
+    from .. import oversight
+
+    return oversight.status()
 
 
 state = AppState()
@@ -3515,6 +3530,10 @@ async def _run_session_streaming(
     active_record = getattr(state.project, "current_session", None)
     # Audit records of this run name the saved conversation.
     session.audit_session_id = str(getattr(active_record, "id", "") or "")
+    # Organization oversight shares what the person typed, not a wrapper
+    # the model gets around it (lumi/oversight.py).
+    if event_source is None and display_user_msg and display_user_msg != user_msg:
+        session.display_prompt = display_user_msg
     # So do its checkpoints, which its Timeline lists.
     state.bind_conversation_checkpoints(session)
     if event_source is None:

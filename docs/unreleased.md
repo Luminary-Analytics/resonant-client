@@ -8,6 +8,72 @@ The heartbeat remains paused. Documentation maintenance does not resume work,
 spending or grants, and changes no native implementation or installed bundle.
 The dated September 15/18 records below are historical.
 
+## September 27 organization oversight — source only, not released
+
+An organization's policy can have Lumi share its people's work with the
+organization's Lumi Cloud, and Lumi tells them first. See [organization
+oversight](organization-oversight.md).
+
+- **Policy** (`lumi/policy.py`): an `oversight` section with `activity`,
+  `messages` (`off`, `redacted`, `full`), `security_flags`,
+  `retention_days`, `notice` and `project_paths`, read strictly: a key Lumi
+  doesn't know makes the policy invalid. `policy.oversight_settings()` reads
+  it. Off without it.
+- **Recording** (`lumi/oversight.py`): `Session.run` builds each turn's
+  record (session, title, project folder, turn number, times, model, mode,
+  outcome, tools and whether each ran, cost) and, at the configured level,
+  the person's message and Lumi's final reply and the tools' commands and
+  paths. Secrets are removed at every level; `redacted` also drops code
+  blocks and email addresses. File contents and tool output never leave, and
+  excluded files appear as `[excluded file]`.
+- **Security flags** (`lumi/security_flags.py`): refused destructive and
+  risky commands, organization and project rule denials, excluded files,
+  paths outside the project, declined approvals, removed secrets and signs
+  of prompt injection in tool output, each with a severity. The engine now
+  marks refused `tool.result` events with `denied_by` (and `denied_rule`).
+- **The notice**: beside the message box while a policy asks, naming the
+  organization and what it receives, with no close button; **What's shared**
+  opens Settings > Privacy & security > Organization oversight, which lists
+  what is and isn't shared, the queue and the person's own flags. Nothing is
+  recorded until the notice for the policy in force has been shown (the
+  page acknowledges its fingerprint); `lumi run`, the terminal UI and the
+  chat gateway print it.
+- **Sending**: a bounded queue in `~/.lumi/oversight/`, sent from a
+  background thread to `POST /api/v1/oversight/events` with the device's
+  sign-in, retried with backoff. Nothing is sent once the policy stops
+  asking, Lumi Cloud says oversight is off, or the computer leaves the
+  organization: queued records are deleted and counted.
+
+Validation on September 27, 2026:
+
+- `tests/test_oversight.py` (39) and `tests/test_security_flags.py` (31):
+  strict parsing; no recording before the notice or for another policy's
+  fingerprint; real `Session.run` turns at each level (secrets, code
+  blocks and addresses removed, file contents never sent, excluded files
+  never named); flags from real guardrail, organization rule, exclusion and
+  user refusals and from injection in a file; `lumi run`'s notice; the
+  queue's bound, retries, refusals, halving and deletion; and joining the
+  fake Lumi Cloud of `tests/test_cloud.py`, sending a turn, then leaving.
+- Full `pytest`: 4,699 passed, 5 skipped. `ruff`, `node --check` and the
+  node UI tests pass.
+- In the browser pane, against an isolated fixture (a copied source tree, a
+  throwaway home, an Ollama stub and a stub Lumi Cloud, with a machine
+  policy that enrolled the computer): the notice appeared above the message
+  box and the page acknowledged it before the first turn (`notice.json`, an
+  `oversight.notice_shown` audit record). A turn asking to delete the home
+  folder, with a GitHub token and an email address in the message, reached
+  the stub Lumi Cloud with the token and address removed, the refused
+  `rm -rf ~` and two flags (destructive command, removed secret); a README
+  with injection text raised two prompt-injection flags. Shift+Tab from the
+  message box reached **What's shared** (visible focus); Enter opened
+  Privacy & security with focus on the oversight section, which listed the
+  four flags. At 375 px the notice wraps with no horizontal scroll; its
+  text contrast is 13.4:1 (dark) and 14.1:1 (light). The real `~/.resonant`
+  and Credential Manager were unchanged.
+- Not run: a packaged build, a real Lumi Cloud (see its own pull request),
+  the terminal UI and gateway notices in a real terminal, and screen
+  readers.
+
 ## September 26–27 the Team (swarming) preview — source only, not released
 
 **Where it came from.** Codex sessions built this on September 26 in the

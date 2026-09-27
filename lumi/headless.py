@@ -424,6 +424,15 @@ def main(argv: list[str] | None = None, *, stdin: TextIO | None = None, stdout: 
     except (UsageError, ValueError, OSError) as exc:
         stderr.write(f"lumi run: {exc}\n")
         return EXIT_USAGE
+    # What the organization receives from this run, before it starts
+    # (lumi/oversight.py). Someone at a terminal has now seen it; an
+    # unattended run records only after the notice was seen in the app.
+    from . import oversight
+
+    interactive = bool(getattr(stderr, "isatty", lambda: False)())
+    notice = oversight.terminal_notice(interactive, "lumi run")
+    if notice:
+        stderr.write(f"lumi run: organization oversight: {notice}\n")
 
     timed_out = threading.Event()
     timer = None
@@ -458,6 +467,12 @@ def main(argv: list[str] | None = None, *, stdin: TextIO | None = None, stdout: 
     from . import activity
 
     activity.record_turn(events, cancelled=timed_out.is_set())
+    if notice:
+        # Send this run's oversight records now if Lumi Cloud answers quickly;
+        # otherwise the app, or the next run, sends them.
+        from .cloud import CloudClient
+
+        oversight.flush(lambda: CloudClient(settings), seconds=10.0)
     if args.output == "json":
         stdout.write(json.dumps(result, indent=2) + "\n")
     elif args.output == "jsonl":

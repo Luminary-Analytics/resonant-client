@@ -11047,6 +11047,68 @@ body:not([data-autonomous-sessions="1"]) .autonomous-mission-browser,
     color: var(--text);
 }
 
+/* Organization oversight (lumi/oversight.py): beside the message box while an
+   organization's policy has Lumi share work. There is no close button. */
+.oversight-notice {
+    order: -1;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    max-width: var(--content-max-width);
+    margin: 0 auto 8px;
+    padding: 8px 12px;
+    border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
+    border-radius: 8px;
+    background: color-mix(in srgb, var(--accent) 9%, var(--bg));
+    color: var(--text);
+    font-size: 12.5px;
+    line-height: 1.45;
+    box-sizing: border-box;
+}
+.oversight-notice[hidden] { display: none; }
+.oversight-notice-inactive { border-style: dashed; }
+.oversight-notice-icon { flex: 0 0 auto; color: var(--accent); }
+.oversight-notice-text { flex: 1 1 auto; min-width: 0; margin: 0; overflow-wrap: anywhere; }
+.oversight-notice-details {
+    flex: 0 0 auto;
+    padding: 3px 9px;
+    border: 1px solid color-mix(in srgb, var(--accent) 55%, transparent);
+    border-radius: 5px;
+    background: transparent;
+    color: var(--text);
+    font: inherit;
+    white-space: nowrap;
+    cursor: pointer;
+}
+.oversight-notice-details:hover { background: color-mix(in srgb, var(--accent) 16%, transparent); }
+.oversight-notice-details:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+@media (max-width: 600px) {
+    .oversight-notice { flex-wrap: wrap; }
+    .oversight-notice-text { flex-basis: calc(100% - 26px); }
+    .oversight-notice-details { margin-left: 26px; }
+}
+.oversight-list { margin: 4px 0 8px; padding-left: 20px; color: var(--text-secondary); font-size: 12.5px; line-height: 1.5; }
+.oversight-list li + li { margin-top: 4px; }
+.oversight-flags { margin: 4px 0 8px; padding: 0; list-style: none; }
+.oversight-flag { display: flex; align-items: flex-start; gap: 10px; padding: 8px 0; border-top: 1px solid var(--border); font-size: 12.5px; }
+.oversight-flag:first-child { border-top: 0; }
+.oversight-flag-copy { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.oversight-severity {
+    flex: 0 0 auto;
+    min-width: 54px;
+    padding: 1px 6px;
+    border: 1px solid var(--border-strong);
+    border-radius: 999px;
+    color: var(--text);
+    font-size: 11px;
+    text-align: center;
+}
+.oversight-severity-high { border-color: var(--err); background: color-mix(in srgb, var(--err) 18%, transparent); }
+.oversight-severity-medium { border-color: var(--warn); background: color-mix(in srgb, var(--warn) 16%, transparent); }
+.oversight-severity-low { background: color-mix(in srgb, var(--text) 6%, transparent); }
+.oversight-excerpt { font-family: var(--font-mono); font-size: 11.5px; }
+
 .live-run-surface {
     order: 4;
     position: relative;

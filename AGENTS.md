@@ -126,6 +126,18 @@ host enrollment and actual packaged/learned-benefit qualification remain open.
   (`activity.py`), never prompts, code, paths or titles. A downloaded policy applies only when it verifies against machine
   keys, or keys pinned when the person joined, and a joined organization
   never replaces a machine policy (`policy._with_cloud_policy`).
+- Organization oversight (`oversight.py`, `security_flags.py`) is the only
+  path that sends people's turns to Lumi Cloud: off unless the policy's
+  `oversight` section asks, only to the Lumi Cloud that policy came from,
+  and only after the person has seen the notice for that policy
+  (`oversight.acknowledge`, a fingerprint of the section). `Session.run`
+  records every turn, so a new entry point is covered by running through
+  it; a new surface that runs turns must show `oversight.terminal_notice`
+  or the app's notice first. Secrets are removed at every level, file
+  contents and tool output never leave, and excluded files are never named.
+  Refusals carry `denied_by` on their `tool.result` for the flags; a new
+  place that refuses a tool call should set it. Tests use fake clients,
+  never a real Lumi Cloud.
 - `lumi run` (`headless.py`) builds its session from the same pieces as the
   app: `engine/policies.project_execution_policy`, `ExclusionRules`, workspace
   trust and policy checks. Keep the two in step, and never let a headless run

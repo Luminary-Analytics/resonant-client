@@ -41,12 +41,21 @@ What a policy can do (every section is optional)::
       "extensions": {"allowed_packs": ["team-*"]},
       "pricing": {"prices": {"anthropic:claude-opus-*": {"input": 3.2, "output": 16}}},
       "budgets": [{"scope": "user", "period": "month", "warn_usd": 200, "block_usd": 400}],
-      "approvals": {"commands": ["git push --force*", "terraform apply*"], "wait_minutes": 30}
+      "approvals": {"commands": ["git push --force*", "terraform apply*"], "wait_minutes": 30},
+      "oversight": {"activity": true, "messages": "redacted", "security_flags": true,
+                    "retention_days": 90, "notice": "Questions: security@acme.example"}
     }
 
 ``approvals`` lists commands (``fnmatch`` patterns over the whole command)
 that a second person in the organization approves in Lumi Cloud before they
 run (engine/second_approval.py).
+
+``oversight`` has Lumi share work with the organization's Lumi Cloud
+(lumi/oversight.py): each turn's activity, messages at a level (``off``,
+``redacted`` or ``full``, secrets removed at every level) and security flags,
+kept there for ``retention_days``. It is off unless a policy turns it on, and
+the person is always told: Lumi shows a notice naming the organization and
+what it receives, and shares nothing until that notice has been shown.
 
 Locked settings override the user's value and can't be changed in Settings,
 which shows who manages them. Lists match ``fnmatch`` patterns.
@@ -83,6 +92,77 @@ PERMISSION_MODES = ("ask", "auto-edit", "plan", "bypass")
 
 class PolicyError(ValueError):
     """A policy that can't be used; the message says why."""
+
+
+# How much of people's messages an organization's oversight receives (lumi/oversight.py).
+OVERSIGHT_MESSAGE_LEVELS = ("off", "redacted", "full")
+OVERSIGHT_KEYS = frozenset({"activity", "messages", "security_flags", "retention_days", "notice", "project_paths"})
+OVERSIGHT_NOTICE_LIMIT = 500
+
+
+@dataclass(frozen=True)
+class Oversight:
+    """What the organization's policy has Lumi share with its Lumi Cloud; nothing by default.
+
+    * ``activity``: each turn's metadata: session, project folder name, title,
+      model, outcome, tool names, cost.
+    * ``messages``: the person's message and Lumi's final reply with each turn:
+      ``off``, ``redacted`` (without code blocks or email addresses, shortened)
+      or ``full`` (as written). Secrets are removed at every level.
+    * ``security_flags``: refused dangerous commands, policy and file denials,
+      declined approvals, removed secrets and signs of prompt injection.
+    * ``retention_days``: how long Lumi Cloud keeps it.
+    * ``notice``: the organization's own words, shown with Lumi's description.
+    * ``project_paths``: full project paths instead of folder names.
+    """
+
+    activity: bool = False
+    messages: str = "off"
+    security_flags: bool = False
+    retention_days: int = 90
+    notice: str = ""
+    project_paths: bool = False
+
+    @property
+    def enabled(self) -> bool:
+        """Whether anything is shared (messages come only with activity)."""
+        return self.activity or self.security_flags
+
+    def summary(self) -> dict:
+        return {"activity": self.activity, "messages": self.messages, "security_flags": self.security_flags,
+                "retention_days": self.retention_days, "notice": self.notice, "project_paths": self.project_paths,
+                "enabled": self.enabled}
+
+
+def _oversight(value: Any) -> Oversight:
+    """The ``oversight`` section. Keys Lumi doesn't know are refused rather than guessed at:
+    this section decides what is collected about people."""
+    if value is None:
+        return Oversight()
+    if not isinstance(value, dict):
+        raise PolicyError("oversight must be an object.")
+    unknown = sorted(str(key) for key in value if key not in OVERSIGHT_KEYS)
+    if unknown:
+        raise PolicyError(f"oversight doesn't take {', '.join(unknown)}; it takes "
+                          f"{', '.join(sorted(OVERSIGHT_KEYS))}.")
+    activity = _flag(value.get("activity"), "oversight.activity")
+    messages = value.get("messages", "off")
+    if messages is None:
+        messages = "off"
+    if messages not in OVERSIGHT_MESSAGE_LEVELS:
+        raise PolicyError('oversight.messages must be "off", "redacted" or "full".')
+    if messages != "off" and not activity:
+        raise PolicyError('oversight.messages needs "activity": true; messages are shared with each turn\'s activity.')
+    retention = value.get("retention_days", 90)
+    if isinstance(retention, bool) or not isinstance(retention, int) or not 1 <= retention <= 3650:
+        raise PolicyError("oversight.retention_days must be a whole number of days from 1 to 3650.")
+    notice = value.get("notice") or ""
+    if not isinstance(notice, str) or len(notice) > OVERSIGHT_NOTICE_LIMIT:
+        raise PolicyError(f"oversight.notice must be text of at most {OVERSIGHT_NOTICE_LIMIT} characters.")
+    return Oversight(activity=activity, messages=messages,
+                     security_flags=_flag(value.get("security_flags"), "oversight.security_flags"),
+                     retention_days=retention, notice=" ".join(notice.split()),
+                     project_paths=_flag(value.get("project_paths"), "oversight.project_paths"))
 
 
 @dataclass
@@ -129,6 +209,8 @@ class Policy:
     # Commands a second person approves in Lumi Cloud before they run (engine/second_approval.py).
     approval_commands: tuple[str, ...] = ()
     approval_wait_minutes: int = 30
+    # What Lumi shares with the organization's Lumi Cloud (lumi/oversight.py); nothing unless set.
+    oversight: Oversight = field(default_factory=Oversight)
     raw: dict = field(default_factory=dict)
 
     # ── Queries ────────────────────────────────────────────────────────────
@@ -210,6 +292,7 @@ class Policy:
             "require_zero_retention": self.require_zero_retention,
             "zero_retention_providers": list(self.zero_retention_providers),
             "approval_commands": list(self.approval_commands),
+            "oversight": self.oversight.summary(),
         }
 
 
@@ -453,6 +536,7 @@ def parse(data: Any, *, source: str, trusted_keys: dict[str, str] | None = None,
     wait_minutes = approvals.get("wait_minutes", 30)
     if isinstance(wait_minutes, bool) or not isinstance(wait_minutes, int) or not 1 <= wait_minutes <= 240:
         raise PolicyError("approvals.wait_minutes must be a whole number from 1 to 240.")
+    oversight = _oversight(document.get("oversight"))
 
     return Policy(
         organization=str(document.get("organization") or "your organization"),
@@ -490,6 +574,7 @@ def parse(data: Any, *, source: str, trusted_keys: dict[str, str] | None = None,
         capability_overrides=capability_overrides,
         approval_commands=approval_commands,
         approval_wait_minutes=wait_minutes,
+        oversight=oversight,
         raw=document,
     )
 
@@ -798,6 +883,17 @@ def trusted_cloud_keys() -> dict[str, str]:
 
 def current() -> Policy | None:
     return load().policy
+
+
+def oversight_settings() -> Oversight:
+    """What the policy in force has Lumi share with the organization's Lumi Cloud (off without one)."""
+    policy = current()
+    return policy.oversight if policy is not None else Oversight()
+
+
+def enrolled_device() -> dict:
+    """This computer's Lumi Cloud enrollment from settings.json ({} when it isn't enrolled)."""
+    return dict(_joined_device())
 
 
 def blocked_reason() -> str:

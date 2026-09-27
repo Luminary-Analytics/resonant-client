@@ -73,6 +73,7 @@ guidance needs an explicit status notice and a current replacement.
 - [docs/packs.md](packs.md)
 - [docs/lumi-cloud.md](lumi-cloud.md)
 - [Team preview](swarming.md): current source behavior, with packaged and provider qualification still pending.
+- [docs/organization-oversight.md](organization-oversight.md)
 - [docs/unreleased.md](unreleased.md)
 
 ## Planning proposals

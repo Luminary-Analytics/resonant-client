@@ -120,7 +120,14 @@ def build_service(args: argparse.Namespace, settings: SettingsManager, adapter) 
         return session
 
     def describe() -> str:
-        return f"Project: {project}\nPermission mode: {mode}\nModel: {model} ({provider})"
+        text = f"Project: {project}\nPermission mode: {mode}\nModel: {model} ({provider})"
+        # People in the chat hear what their organization receives, as the app shows it (lumi/oversight.py).
+        from ..oversight import Scope, notice_text
+
+        scope = Scope()
+        if scope.configured:
+            text += f"\nOversight: {notice_text(scope.settings, scope.organization)}"
+        return text
 
     minutes = args.approval_minutes or float(settings.get("gateway", "approval_minutes", 10) or 10)
     return GatewayService(adapter, session_for, describe=describe, approval_seconds=max(1.0, minutes) * 60)
@@ -172,6 +179,11 @@ def main(argv: list[str] | None = None) -> None:
         raise SystemExit(1)
 
     print(f"Gateway starting on {adapter.name}.\n{service._describe()}")
+    from ..oversight import terminal_notice
+
+    notice = terminal_notice(sys.stdout.isatty(), "chat gateway")
+    if notice:
+        print(f"Organization oversight: {notice}")
     if not allowed:
         print(
             "WARNING: nothing is allowed yet. The bot will reply to new chats with their IDs so you "

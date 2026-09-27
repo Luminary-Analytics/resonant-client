@@ -79,7 +79,12 @@ hasn't confirmed its notice on this computer, Lumi sends nothing to a model:
   itself (a key meant for the message box can't confirm the notice): when the
   box locks with focus in it, focus goes to the notice, and Tab reaches
   **What's shared** and **I've read this**. Confirming unlocks the box and
-  puts focus back in it.
+  puts focus back in it. The button takes only a click or key press the
+  browser reports as the person's (`isTrusted`), never a click a script
+  made. A capability pack's [panel](extensions.md#panels) can still add
+  text to the locked box, but it can't send it, and it can't reach the
+  button: its sandboxed frame has no access to the page or the app's
+  socket, and its bridge has no method that confirms or sends.
 - **Every entry point refuses**, with a message that says how to confirm:
   `Session.run` (every turn: the app, `lumi run`, scheduled tasks, the
   terminal UI, the chat gateway, tasks from chat, plan and mission

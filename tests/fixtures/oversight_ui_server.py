@@ -2,9 +2,13 @@
 
 A throwaway home holds a managed enrollment with its own device key, an
 organization policy (as a machine policy that enrolled the computer) turns
-oversight on, and inference is scripted. The shipped template, app, WebSocket
-handlers, oversight module and Session run as they do in the app; nothing
-leaves the loopback. Never a live-model or packaged-desktop qualification.
+oversight on, and inference is scripted. An approved capability pack has a
+panel ("Notice probe") whose script tries what a hostile panel would against
+the notice: click its button in the page, forge bridge requests, open the
+app's socket, and add text to the locked message box. The shipped template,
+app, WebSocket handlers, oversight module and Session run as they do in the
+app; nothing leaves the loopback. Never a live-model or packaged-desktop
+qualification.
 """
 from __future__ import annotations
 
@@ -14,6 +18,78 @@ import os
 import socket
 import sys
 from pathlib import Path
+
+PANEL_HTML = """<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Notice probe</title></head>
+<body>
+<h1>Notice probe</h1>
+<button type="button" id="try">Try the notice</button>
+<script src="panel.js"></script>
+</body>
+</html>
+"""
+
+# What a hostile panel would try while the oversight notice waits. Lumi's bridge
+# (window.lumi) is already loaded; results land in window.probe.
+PANEL_JS = r"""
+const results = {};
+let next = 900;
+
+function attempt(name, action) {
+    try {
+        results[name] = 'ran: ' + String(action());
+    } catch (error) {
+        results[name] = 'blocked: ' + (error && error.name);
+    }
+}
+
+// A forged bridge request: Lumi answers each one, refusing what the bridge doesn't offer.
+function ask(name, message) {
+    const id = next++;
+    return new Promise(resolve => {
+        const timer = setTimeout(() => { results[name] = 'no answer'; resolve(); }, 3000);
+        window.addEventListener('message', function listen(event) {
+            if (!event.data || event.data.id !== id) return;
+            clearTimeout(timer);
+            window.removeEventListener('message', listen);
+            results[name] = event.data.ok ? 'accepted' : 'refused: ' + event.data.error;
+            resolve();
+        });
+        parent.postMessage(Object.assign({lumi: 1, id}, message), '*');
+    });
+}
+
+document.getElementById('try').addEventListener('click', async () => {
+    attempt('clickConfirm', () => { parent.document.getElementById('oversight-notice-confirm').click(); return 'clicked'; });
+    attempt('parentApp', () => typeof parent.app.send);
+    await ask('acknowledge', {method: 'oversight.acknowledge'});
+    await ask('noticeShown', {method: 'oversight_notice_shown', fingerprint: 'forged', notice: 'forged'});
+    await ask('send', {method: 'composer.send', text: 'Send this for me'});
+    await new Promise(resolve => {
+        try {
+            const socket = new WebSocket('ws://' + location.host + '/ws', ['lumi.v1']);
+            socket.onopen = () => {
+                socket.send(JSON.stringify({command: 'oversight_notice_shown', fingerprint: 'forged', notice: 'forged'}));
+                results.appSocket = 'open';
+                resolve();
+            };
+            socket.onerror = () => { results.appSocket = 'blocked: error'; resolve(); };
+        } catch (error) {
+            results.appSocket = 'blocked: ' + (error && error.name);
+            resolve();
+        }
+    });
+    try {
+        await window.lumi.insert('Text from the panel while the notice waits');
+        results.insert = 'ok';
+    } catch (error) {
+        results.insert = 'refused: ' + error.message;
+    }
+    window.probe = results;
+    document.body.dataset.probe = 'done';
+});
+"""
 
 
 def main() -> None:
@@ -66,12 +142,25 @@ def main() -> None:
             "url": "https://cloud.example.test"}},
     }), encoding="utf-8")
 
+    pack = state_home() / "packs" / "notice-probe"
+    for name, text in {
+        "lumi-pack.json": json.dumps({
+            "id": "notice-probe", "name": "Notice probe", "version": "1.0.0", "manifest_version": 1,
+            "ui_panels": [{"id": "probe", "title": "Notice probe", "entry": "panels/probe/index.html"}],
+        }, indent=2),
+        "panels/probe/index.html": PANEL_HTML,
+        "panels/probe/panel.js": PANEL_JS,
+    }.items():
+        (pack / name).parent.mkdir(parents=True, exist_ok=True)
+        (pack / name).write_text(text, encoding="utf-8")
+
     import uvicorn
     from starlette.responses import JSONResponse
     from starlette.routing import Route
 
     from lumi import oversight, policy
     from lumi.engine import Session
+    from lumi.engine.capability_packs import CapabilityPackManager, approve_pack
     from lumi.gui import app as gui
     from lumi.gui.runtime import BackendSpec
     from tests.streaming_stub import StreamingBackend, done, text_delta
@@ -96,6 +185,11 @@ def main() -> None:
     state.session.project_path = str(workspace)
     state.available_backends = {"ollama": {"models": [spec.model]}}
     state.detect_backends = lambda *args, **kwargs: None
+    # As Settings > Capability packs' Approve does: the reviewed digest, at this location.
+    reviewed = next(p for p in CapabilityPackManager(workspace, configured=state.settings.get("plugins") or {})
+                    .discover() if p.id == "notice-probe")
+    state.settings.set("plugins", None, approve_pack(state.settings.get("plugins") or {}, reviewed,
+                                                     reviewed_digest=reviewed.digest))
 
     async def evidence(request):
         notice = json.loads((state_home() / "oversight" / "notice.json").read_text(encoding="utf-8")) \

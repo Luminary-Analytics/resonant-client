@@ -1,7 +1,8 @@
 /* Organization oversight in the source app, through the real WebSocket: the locked
- * message box, the notice's keyboard path, the signed confirmation that unlocks it,
- * and the notice at 375 px in both themes. Inference is scripted; nothing leaves
- * the loopback (tests/fixtures/oversight_ui_server.py).
+ * message box, a script's click and a capability pack's panel that can't confirm
+ * the notice or send, the notice's keyboard path, the signed confirmation that
+ * unlocks it, and the notice at 375 px in both themes. Inference is scripted;
+ * nothing leaves the loopback (tests/fixtures/oversight_ui_server.py).
  * node tests/oversight_notice.browser.cjs [absolute-path-to-playwright-module]
  * Optional OVERSIGHT_PYTHON selects the Python that runs the fixture.
  */
@@ -98,6 +99,40 @@ test('the oversight notice locks the message box until its button confirms it', 
         assert.equal(await page.locator('.error-block, .task-card').count(), 0);
         await page.evaluate(() => { app.userInput.value = ''; });
 
+        // A click a script makes on I've read this confirms nothing: only the person's own does.
+        await page.evaluate(() => document.getElementById('oversight-notice-confirm').click());
+        await page.waitForTimeout(500);
+        assert.equal(sent.filter(message => message.command === 'oversight_notice_shown').length, 0);
+        assert.equal(await page.locator('#user-input').isDisabled(), true);
+
+        // A capability pack's panel (View > Panels) can add text to the locked box, but can't send it,
+        // click the notice's button, confirm it through the bridge or reach the app's socket.
+        const beforePanel = sent.length;
+        await page.locator('.titlebar-menu-button').click();
+        await page.locator('.menubar-item[data-menu="view"]').hover();
+        await page.locator('.extension-panel-menu-item', {hasText: 'Notice probe'}).click();
+        await page.getByRole('dialog', {name: 'Notice probe'}).waitFor();
+        const panel = await (await page.waitForSelector('#extension-panel-dialog iframe.extension-panel-frame')).contentFrame();
+        await panel.locator('#try').click();
+        await panel.waitForSelector('body[data-probe="done"]');
+        const probe = await panel.evaluate(() => window.probe);
+        record.panelProbe = probe;
+        assert.match(probe.clickConfirm, /^blocked: SecurityError/);
+        assert.match(probe.parentApp, /^blocked: /);
+        for (const name of ['acknowledge', 'noticeShown', 'send']) assert.match(probe[name], /^refused: /, name);
+        assert.match(probe.appSocket, /^blocked: /);
+        assert.equal(probe.insert, 'ok');
+        await page.getByRole('button', {name: 'Close Notice probe'}).click();
+        const panelText = 'Text from the panel while the notice waits';
+        assert.equal(await page.locator('#user-input').inputValue(), panelText);
+        assert.equal(await page.locator('#user-input').isDisabled(), true);
+        await page.evaluate(() => app.sendMessage());
+        await page.waitForTimeout(300);
+        assert.equal(sent.slice(beforePanel).filter(message => ['message', 'oversight_notice_shown'].includes(message.command))
+            .length, 0);
+        assert.deepEqual((await evidence(info)).requests, [], 'the panel\'s text reached no model');
+        await page.screenshot({path: path.join(output, 'locked-after-panel.png')});
+
         // Keyboard: Shift+Tab from the permission mode reaches I've read this, with a visible focus ring; so
         // does Tab from What's shared. Focus is never put on the button by the page itself.
         assert.notEqual(await page.evaluate(() => document.activeElement?.id), 'oversight-notice-confirm');
@@ -130,6 +165,9 @@ test('the oversight notice locks the message box until its button confirms it', 
         assert.equal(confirmed.signature_verifies, true, 'signed with the enrolled device key');
         assert.equal(confirmed.upload.state, 'pending', 'queued for Lumi Cloud in the background');
         record.acknowledgment = confirmed.notice.record;
+        // The panel's text waits in the box for the person; confirming sent nothing.
+        assert.equal(await page.locator('#user-input').inputValue(), panelText);
+        assert.deepEqual(confirmed.requests, []);
 
         // Now a message reaches the model and is recorded as the app's.
         await page.locator('#user-input').fill('hello after confirming');

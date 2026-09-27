@@ -54,6 +54,8 @@ def check(folder: str | Path, *, prompt: str = DEFAULT_PROMPT, api_key: str = ""
     if pack.manifest_version < MANIFEST_VERSION:
         findings.append(("note", f'Add "manifest_version": {MANIFEST_VERSION}; without it, Lumi reads the '
                                   "manifest as one from before the Extension SDK."))
+    for panel in pack.ui_panels:
+        findings.append(("ok", f"Panel {panel['title']} opens {panel['entry']} in a sandboxed frame."))
     if not pack.providers:
         findings.append(("note", "It declares no model providers."))
     for provider in pack.providers:

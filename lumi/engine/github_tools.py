@@ -8,6 +8,14 @@ Settings, or ``GITHUB_TOKEN`` / ``GH_TOKEN`` (set in GitHub Actions); it is
 sent only in the request header, never in tool output, and the secret scan
 removes its value from anything sent to a model.
 
+The token goes only to hosts the person trusts (``token_hosts``): github.com
+and api.github.com, hosts listed in Settings (``code_hosts.github_hosts``,
+which a policy can lock) or ``LUMI_GITHUB_HOSTS``, and in GitHub Actions the
+hosts of ``GITHUB_SERVER_URL`` and ``GITHUB_API_URL``. An issue link can name
+any host (engine/issue_trackers.py), so a request to any other host is
+refused before it's made. The GitLab token follows the same rule
+(engine/code_hosts.py).
+
 ``github_pr_view`` and ``github_check_log`` only read and are approved like
 ``git_log``. ``github_pr_create``, ``github_pr_comment`` and
 ``github_pr_update`` change things other people see, so auto-edit asks first.
@@ -23,15 +31,23 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 _token_source: Callable[[], str] = lambda: ""  # noqa: E731
+_hosts_source: Callable[[str], Any] = lambda key: []  # noqa: E731
 _transport: Any = None  # httpx.MockTransport in tests
 _BODY_LIMIT = 1_500
 _LOG_TAIL_LINES = 150
+# Where each kind of token may always go; other hosts must be listed.
+_HOME_HOSTS = {"github": frozenset({"github.com", "api.github.com"}), "gitlab": frozenset({"gitlab.com"})}
+# The CI server's own variables, which name the host that issued the job's token.
+_CI_HOSTS = {"github": ("GITHUB_SERVER_URL", "GITHUB_API_URL"), "gitlab": ("CI_SERVER_HOST", "CI_API_V4_URL")}
+_LABELS = {"github": "GitHub", "gitlab": "GitLab"}
 
 
 def configure(settings: Any) -> None:
-    """Read the token from Settings at use, so a changed key applies at once."""
-    global _token_source
+    """Read the token and trusted hosts from Settings at use, so a change applies at once."""
+    global _token_source, _hosts_source
     _token_source = (lambda: str(settings.get("api_keys", "github", "") or "")) if settings is not None else (lambda: "")
+    _hosts_source = ((lambda key: settings.get("code_hosts", key, []) or []) if settings is not None
+                     else (lambda key: []))
     from . import code_hosts, issue_trackers, review_gate  # the same Settings
 
     code_hosts.configure(settings)
@@ -50,6 +66,53 @@ def _token() -> str:
 
 class GitHubError(Exception):
     """A GitHub call that can't be made or failed; the message says what to do."""
+
+
+def token_hosts(kind: str) -> tuple[frozenset[str], bool]:
+    """The hosts a ``github`` or ``gitlab`` token may be sent to, and whether a policy lists them.
+
+    Always github.com and api.github.com (or gitlab.com). Then the hosts in
+    Settings (``code_hosts.github_hosts`` or ``gitlab_hosts``), in
+    ``LUMI_GITHUB_HOSTS`` or ``LUMI_GITLAB_HOSTS``, and the CI server's own
+    (GitHub Actions' ``GITHUB_SERVER_URL`` and ``GITHUB_API_URL``, GitLab
+    CI's ``CI_SERVER_HOST`` and ``CI_API_V4_URL``). When an organization's
+    policy locks the Settings list, only the policy's hosts are added: the
+    environment can't widen it.
+    """
+    from ..net import host_names
+    from ..policy import current
+
+    key = f"{kind}_hosts"
+    home = _HOME_HOSTS[kind]
+    policy = current()
+    if policy is not None and policy.locked("code_hosts", key):
+        return home | frozenset(host_names(policy.value("code_hosts", key), strict=False)), True
+    try:
+        listed = _hosts_source(key)
+    except Exception:  # a Settings store that can't be read lists nothing
+        listed = []
+    hosts = set(host_names(listed, strict=False))
+    hosts.update(host_names(os.environ.get(f"LUMI_{kind.upper()}_HOSTS", ""), strict=False))
+    hosts.update(host_names([os.environ.get(name, "") for name in _CI_HOSTS[kind]], strict=False))
+    return home | frozenset(hosts), False
+
+
+def check_token_host(kind: str, *hosts: str, error: type[Exception] = GitHubError) -> None:
+    """Raise ``error`` unless every host may receive the ``github`` or ``gitlab`` token (see token_hosts)."""
+    trusted, managed = token_hosts(kind)
+    label = _LABELS[kind]
+    for host in hosts:
+        name = str(host or "").lower()
+        if name in trusted:
+            continue
+        shown = name or "That host"
+        if managed:
+            raise error(f"{shown} isn't one of the {label} hosts your organization's policy lists, so Lumi "
+                        f"won't send it your {label} token.")
+        where = "GitHub Enterprise Server" if kind == "github" else "self-managed GitLab"
+        raise error(f"{shown} isn't a {label} host you've listed, so Lumi won't send it your {label} token. "
+                    f"If it's your {where}, add it in Settings > Issue trackers > Your code hosts, or to "
+                    f"LUMI_{kind.upper()}_HOSTS.")
 
 
 @dataclass(frozen=True)
@@ -85,11 +148,20 @@ def _git(cwd: str, *args: str) -> str:
 
 
 def _github_host(host: str) -> bool:
-    """github.com, an Enterprise Server host (by name, or the one Actions runs on)."""
+    """github.com, an Enterprise Server host (by name, listed, or the one Actions runs on).
+
+    A host found by its name alone gets no token until it's listed
+    (check_token_host). Under a policy that lists the hosts, one in
+    ``LUMI_GITHUB_HOSTS`` is still recognized, so its refusal names the policy.
+    """
     from urllib.parse import urlsplit
 
+    from ..net import host_names
+
     server = (urlsplit(os.environ.get("GITHUB_SERVER_URL", "")).hostname or "").lower()
-    return host == "github.com" or "github" in host or (bool(server) and host == server)
+    named = host_names(os.environ.get("LUMI_GITHUB_HOSTS", ""), strict=False)
+    return (host == "github.com" or "github" in host or (bool(server) and host == server) or host in named
+            or host in token_hosts("github")[0])
 
 
 def repo_for(cwd: str) -> Repo:
@@ -116,6 +188,14 @@ def _request(repo: Repo, method: str, path: str, *, json: Any = None, params: di
 
     from ..net import client_options
 
+    # GraphQL lives at /api/graphql on GitHub Enterprise Server, not under /api/v3.
+    url = (repo.api.removesuffix("/v3") + path) if path == "/graphql" else repo.api + path
+    try:
+        # Both the host the repository or issue link names and the one the
+        # request goes to (GITHUB_API_URL can differ) must be trusted.
+        check_token_host("github", repo.host, httpx.URL(url).host)
+    except httpx.InvalidURL as exc:
+        raise GitHubError(f"{repo.host} isn't a host Lumi can reach.") from exc
     token = _token()
     if not token:
         raise GitHubError("No GitHub token: add one in Settings > API keys (GitHub), or set GITHUB_TOKEN.")
@@ -124,8 +204,6 @@ def _request(repo: Repo, method: str, path: str, *, json: Any = None, params: di
     try:
         # Log downloads redirect to storage on another host; httpx drops the
         # Authorization header when a redirect leaves the API's origin.
-        # GraphQL lives at /api/graphql on GitHub Enterprise Server, not under /api/v3.
-        url = (repo.api.removesuffix("/v3") + path) if path == "/graphql" else repo.api + path
         with httpx.Client(**client_options(timeout=30.0, transport=_transport), follow_redirects=True) as client:
             response = client.request(method, url, headers=headers, json=json, params=params)
     except httpx.HTTPError as exc:

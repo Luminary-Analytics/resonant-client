@@ -699,6 +699,7 @@ async def _set_capability_pack_approval(ctx: CommandContext, *, approve: bool) -
             "Capability pack approval revoked. Its hooks and MCP servers are off."
         ),
     })
+    await _send_extension_panels(ctx)
 
 
 @command("capability_pack_approve")
@@ -723,6 +724,7 @@ async def _pack_publisher_change(ctx: CommandContext, change, notice: str) -> No
         return
     await ctx.send(payload)
     await ctx.send({"event": "ui_notice", "message": notice})
+    await _send_extension_panels(ctx)
 
 
 @command("capability_pack_trust_publisher")
@@ -757,6 +759,7 @@ async def _capability_pack_install(ctx: CommandContext) -> None:
     await ctx.send({"event": "ui_notice", "message": (
         f"Installed {installed['name']} at {installed['commit'][:12]}. It's off until you review "
         "what it would run and approve it.")})
+    await _send_extension_panels(ctx)
 
 
 @command("capability_pack_install_registry")
@@ -776,6 +779,7 @@ async def _capability_pack_install_registry(ctx: CommandContext) -> None:
     await ctx.send({"event": "ui_notice", "message": (
         f"Installed {installed['name']} at {installed['commit'][:12]}, the version your organization pins. "
         "It's off until you review what it would run and approve it.")})
+    await _send_extension_panels(ctx)
 
 
 @command("capability_pack_remove")
@@ -791,6 +795,73 @@ async def _capability_pack_remove(ctx: CommandContext) -> None:
         return
     await ctx.send(payload)
     await ctx.send({"event": "ui_notice", "message": "Capability pack removed."})
+    await _send_extension_panels(ctx)
+
+
+async def _send_extension_panels(ctx: CommandContext) -> None:
+    """The open project's panels, sent after anything that may change them (the page closes a panel gone)."""
+    from . import extension_panels
+
+    try:
+        payload = await extension_panels.run_io(extension_panels.listing, ctx.state)
+    except Exception:  # panels are optional; listing them must never end the connection
+        logger.warning("Listing extension panels failed", exc_info=True)
+        payload = {"event": "extension_panels", "enabled": False, "panels": [],
+                   "reason": "Lumi couldn't read the capability packs' panels."}
+    await ctx.send(payload)
+
+
+@command("extension_panels")
+async def _extension_panels(ctx: CommandContext) -> None:
+    """The open project's panels from approved packs (gui/extension_panels.py)."""
+    await _send_extension_panels(ctx)
+
+
+@command("extension_panel_open")
+async def _extension_panel_open(ctx: CommandContext) -> None:
+    """Check the pack again and issue a token that reads only that panel's files."""
+    from . import extension_panels
+
+    request_id = str(ctx.msg.get("request_id") or "")[:64]
+    reply: dict[str, Any] = {"event": "extension_panel_opened", "request_id": request_id}
+    try:
+        reply.update(await extension_panels.run_io(lambda: extension_panels.open_panel(
+            ctx.state, str(ctx.msg.get("pack_id") or ""), str(ctx.msg.get("panel_id") or ""), owner=id(ctx.ws))))
+    except extension_panels.PanelError as exc:
+        reply["error"] = str(exc)
+    except Exception:
+        logger.warning("Opening an extension panel failed", exc_info=True)
+        reply["error"] = "Lumi couldn't open that panel."
+    await ctx.send(reply)
+
+
+@command("extension_panel_close")
+async def _extension_panel_close(ctx: CommandContext) -> None:
+    """Withdraw a closed panel's token, so its files can't be read again."""
+    from . import extension_panels
+
+    token = str(ctx.msg.get("token") or "")
+    grant = extension_panels.grants.get(token)
+    if grant is not None and grant.owner == id(ctx.ws):
+        extension_panels.grants.revoke(token)
+
+
+@command("extension_panel_check")
+async def _extension_panel_check(ctx: CommandContext) -> None:
+    """Before a panel adds text to the message box: its pack is still approved, enabled and unchanged."""
+    from . import extension_panels
+
+    request_id = str(ctx.msg.get("request_id") or "")[:64]
+    reply: dict[str, Any] = {"event": "extension_panel_checked", "request_id": request_id, "ok": True}
+    try:
+        await extension_panels.run_io(extension_panels.check, ctx.state, str(ctx.msg.get("token") or ""),
+                                      id(ctx.ws))
+    except extension_panels.PanelError as exc:
+        reply.update(ok=False, error=str(exc))
+    except Exception:
+        logger.warning("Checking an extension panel failed", exc_info=True)
+        reply.update(ok=False, error="Lumi couldn't check the panel's pack.")
+    await ctx.send(reply)
 
 
 @command("audit_status")
@@ -4029,6 +4100,7 @@ _SOCKET_SETTING_KEYS: dict[str, frozenset[str]] = {
     "api_keys": frozenset({"sonn", "openrouter", "kimi", "anthropic", "openai", "otlp", "github", "gitlab", "bitbucket",
                            "azure_devops", "jira", "linear"}),
     "issue_trackers": frozenset({"jira_url", "jira_email"}),
+    "code_hosts": frozenset({"github_hosts", "gitlab_hosts"}),
     "review": frozenset({"agent_changes", "reviewers"}),
     "engram": frozenset({"enabled", "server_url"}),
     "cost_tracking": frozenset({"enabled", "budget_alert_usd", "daily_limit_usd", "turn_limit_usd",
@@ -4039,7 +4111,7 @@ _SOCKET_SETTING_KEYS: dict[str, frozenset[str]] = {
     }),
     "audit": frozenset({"otlp_endpoint", "otlp_auth_header"}),
     "security": frozenset({"cli_adapters", "computer_use", "chat_gateway", "shell_sandbox", "scheduled_tasks",
-                           "editor_bridge"}),
+                           "editor_bridge", "extension_panels"}),
     "updates": frozenset({"mode", "channel", "pin"}),
     "onboarding": frozenset({"dismissed"}),
     "model_favorites": frozenset({"models"}),
@@ -4201,6 +4273,10 @@ def _socket_setting_value(section: Any, key: Any, value: Any) -> Any:
         from .. import voice
 
         return voice.validate(key, value)
+    elif section == "code_hosts":
+        from ..net import host_names
+
+        return host_names(value)
     return value
 
 
@@ -4261,6 +4337,8 @@ async def _cmd_update_settings(ctx: CommandContext) -> None:
         ctx.state.sonn_account_revision = getattr(ctx.state, "sonn_account_revision", 0) + 1
         await ctx.send({"event": "sonn_account", "data": None})
     await ctx.send({"event": "settings", "data": data})
+    if section == "security" and any(k == "extension_panels" for k, _ in writes):
+        await _send_extension_panels(ctx)
     if section == "updates":
         # Settings > Updates says what changes after a restart.
         from lumi.updater import status as update_status

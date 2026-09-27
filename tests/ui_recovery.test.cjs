@@ -2774,7 +2774,11 @@ test('the oversight notice is confirmed only by its button, never by arriving or
     assert.equal(elements['oversight-notice-lock'].hidden, false);
     assert.deepEqual(app.sent, []);
 
+    // A click a script makes (element.click(), dispatchEvent) isn't the person's.
+    confirm.listeners.click({isTrusted: false});
     confirm.listeners.click();
+    assert.deepEqual(app.sent, []);
+    confirm.listeners.click({isTrusted: true});
     // The server checks both: this policy's fingerprint, and its notice as the page showed it.
     assert.deepEqual(app.sent, [{command: 'oversight_notice_shown', fingerprint: 'fp-1', notice: PENDING.notice_text}]);
 });
@@ -2816,7 +2820,7 @@ test('a policy that collects more locks the message box again', () => {
     assert.equal(elements['user-input'].disabled, false);
     app._applyOversight({...PENDING, fingerprint: 'fp-2'});
     assert.equal(elements['user-input'].disabled, true);
-    elements['oversight-notice-confirm'].listeners.click();
+    elements['oversight-notice-confirm'].listeners.click({isTrusted: true});
     assert.deepEqual(app.sent, [{command: 'oversight_notice_shown', fingerprint: 'fp-2', notice: PENDING.notice_text}]);
 });
 

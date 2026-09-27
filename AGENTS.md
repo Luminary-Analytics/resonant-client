@@ -155,8 +155,9 @@ host enrollment and actual packaged/learned-benefit qualification remain open.
   through `Session.run` and refuses before it starts, and a new request
   outside a turn asks too; `TestEveryPath` fails if code calls the turn
   loop another way. Confirmation (`oversight.acknowledge`)
-  comes only from a person: the notice's own button (never a status push,
-  a timer or a painted page, and focus never moves onto it), a typed yes at
+  comes only from a person: the notice's own button, on a trusted click or
+  key press (never a status push, a timer, a painted page, a script's click
+  or a panel, and focus never moves onto it), a typed yes at
   an interactive terminal, or a gateway chat's button or reply for that
   chat. It is a record signed with the device key
   (`CloudClient.sign_as_device`), kept locally and sent in the background
@@ -405,6 +406,21 @@ host enrollment and actual packaged/learned-benefit qualification remain open.
   Keep the SDK (`sdk/python/lumi_extension`) standard-library only and the
   protocol backward compatible; a breaking change needs a new
   `manifest_version`. Tests start real providers with `sys.executable`.
+- Capability-pack panels (`gui/extension_panels.py`, `static/panels_view.js`,
+  docs/extensions.md#panels) never run in the app's origin: an `<iframe
+  sandbox="allow-scripts">`, never `allow-same-origin`, whose files come only
+  from `/panels/<panel token>/` with their own Content-Security-Policy
+  (`connect-src 'none'`, `sandbox allow-scripts`). Each request checks the
+  pack again and serves only files the approval covered, as approved. The
+  bridge answers only that frame (`event.source`, origin `"null"`): the
+  project name and theme; composer text that is never sent, is checked with
+  the server first, and never starts the message with `!` or `/` or carries
+  an attaching @mention; a notice marked as the pack's. A panel can't close
+  itself (Escape comes over the bridge script's private port), and focus
+  never returns to the composer. Widening the bridge needs a security review.
+  The desktop window refuses bridge calls that aren't plain identifiers
+  (`webview_bridge.checked_bridge_call`); only WebView2 desktop windows open
+  panels.
 - Pack signatures (`engine/pack_signing.py`, `lumi-pack.sig`) are checked
   whenever a pack loads. They name a pack's publisher and never approve it.
   An invalid signature makes the pack unverifiable. Only the organization's
@@ -446,7 +462,7 @@ python -m ruff check .
 python -m pytest -q
 node --check lumi/gui/static/app.js
 node --check lumi/gui/static/settings_view.js
-node --test tests/ui_recovery.test.cjs tests/appearance.test.cjs tests/autonomous_view.test.cjs tests/vscode_extension.test.cjs tests/voice_input.test.cjs
+node --test tests/ui_recovery.test.cjs tests/appearance.test.cjs tests/autonomous_view.test.cjs tests/vscode_extension.test.cjs tests/voice_input.test.cjs tests/extension_panels.test.cjs
 git diff --check
 ```
 

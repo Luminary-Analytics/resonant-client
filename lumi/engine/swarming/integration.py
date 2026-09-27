@@ -310,6 +310,16 @@ class SwarmIntegration:
     def _clean(self, path: Path) -> bool:
         return not self._git(path, "status", "--porcelain=v1", "-z", "--untracked-files=all").stdout
 
+    def _unchanged(self, path: Path) -> bool:
+        """A candidate still holds exactly its revision's tracked content.
+
+        Its committed revision is what checks verify and what is applied, so
+        files a check creates (bytecode, caches, reports) don't change it: a
+        live team's Python check wrote __pycache__ and was refused as changed
+        input. A modified tracked file still means the check saw other content.
+        """
+        return not self._git(path, "status", "--porcelain=v1", "-z", "--untracked-files=no").stdout
+
     def _path(self, value: str) -> Path:
         original = Path(value)
         path = original.resolve(strict=True)
@@ -690,7 +700,7 @@ class SwarmIntegration:
             if record["state"] not in ("ready", "failed", "verified"):
                 raise Conflict("Candidate is unavailable for verification")
             path = self._path(record["path"])
-            if self._head(path) != record["result_revision"] or not self._clean(path):
+            if self._head(path) != record["result_revision"] or not self._unchanged(path):
                 raise Conflict("Check input no longer matches the immutable candidate")
             checks = {item["key"]: item for item in json.loads(record["manifest_json"])["checks"]}
             if check_key not in checks:
@@ -715,7 +725,7 @@ class SwarmIntegration:
                 if observed.interruption is not None:
                     raise observed.interruption
                 self._admit(authority)
-                exact = self._head(path) == record["result_revision"] and self._clean(path)
+                exact = self._head(path) == record["result_revision"] and self._unchanged(path)
                 state = "passed" if observed.exit_code == 0 and observed.output_complete and exact else "failed"
                 if observed.timed_out or observed.cancelled:
                     state = "timed_out" if observed.timed_out else "cancelled"
@@ -805,7 +815,7 @@ class SwarmIntegration:
             if candidate["state"] != "verified":
                 raise Conflict("Only an independently checked exact candidate can be applied")
             path = self._path(candidate["path"])
-            if self._head(path) != candidate["result_revision"] or not self._clean(path):
+            if self._head(path) != candidate["result_revision"] or not self._unchanged(path):
                 raise Conflict("Candidate changed after verification")
             if self._head(self.project) != candidate["base_revision"] or not self._clean(self.project):
                 raise Conflict("Application deferred: user checkout is dirty or its base changed")

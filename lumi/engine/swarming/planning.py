@@ -20,6 +20,12 @@ from .policy import AssignmentGrant, ModelSelection, PolicyProfile, SwarmPolicy,
 
 _MAX_BYTES = 65536
 _TOP_FIELDS = {"summary", "use_team", "work_items"}
+# The captured planning data's own field names (coordinator.py). A live model
+# copied coordinator_read_roots into its plan; such echoes carry no meaning
+# and are dropped. Any other extra field still refuses the plan.
+_INPUT_ECHOES = {"objective", "read_roots", "write_roots", "worker_slots", "coordinator_read_roots",
+                 "proposed_work_namespace", "allowed_criteria", "existing_work", "recent_untrusted_findings",
+                 "graph_sha256", "untrusted_messages_to_orchestrator"}
 _ITEM_FIELDS = {"id", "objective", "role", "dependencies", "read_roots", "write_roots", "criteria"}
 _LOGICAL_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,79}\Z")
 _FENCE = re.compile(r"```(?:json)?\r?\n(.*)\r?\n```\Z", re.DOTALL)
@@ -202,7 +208,7 @@ def parse_plan(
     except (json.JSONDecodeError, RecursionError, ValueError) as exc:
         # Do not echo a model response; rejected extras may contain credentials.
         raise PlanRejected("Coordinator output must be one strict JSON object") from exc
-    if type(proposal) is not dict or set(proposal) != _TOP_FIELDS:
+    if type(proposal) is not dict or not _TOP_FIELDS <= set(proposal) <= _TOP_FIELDS | _INPUT_ECHOES:
         raise PlanRejected("Coordinator proposal has missing or unsupported fields")
     summary = _text(proposal["summary"])
     use_team = proposal["use_team"]

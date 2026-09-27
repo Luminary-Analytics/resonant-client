@@ -7,7 +7,25 @@ def auxiliary_stream(backend, purpose: str, *, usage_context: dict | None = None
     ``purpose`` names the request in the usage records (lumi/usage.py);
     ``usage_context`` adds the session, project and agent when known.
     ``record=False`` leaves recording to the caller: a Team participant's
-    requests are recorded by the host that admits them.
+    requests are recorded by the host that admits them. The organization's
+    DLP rules (lumi/dlp.py) check the request first: it is sent with their
+    redactions, or ``dlp.Blocked`` is raised and nothing is sent.
+    """
+    from .. import dlp
+
+    checked = dlp.check_request(
+        kwargs, purpose=purpose, provider=str(getattr(backend, "name", "") or ""),
+        model=str(getattr(backend, "model", "") or ""), audit_fields=usage_context,
+    )
+    return send_checked(backend, purpose, usage_context=usage_context, record=record, **checked.request)
+
+
+def send_checked(backend, purpose: str, *, usage_context: dict | None = None, record: bool = True, **kwargs):
+    """Send an auxiliary request that already passed ``dlp.check_request``, recording
+    its usage unless ``record`` is False (as for ``auxiliary_stream``).
+
+    Only ``Session._model_stream``, which checks its requests itself, calls
+    this directly; anything else uses ``auxiliary_stream``.
     """
     method = getattr(backend, "stream_auxiliary", None)
     stream = method(purpose=purpose, **kwargs) if callable(method) else backend.stream(**kwargs)

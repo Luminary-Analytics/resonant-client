@@ -181,6 +181,10 @@ def should_compress(
 
 def _extract_text(entry: dict) -> str:
     """Extract text content from a history entry."""
+    if entry.get("dlp_withheld"):
+        # The organization's DLP rules blocked it (lumi/dlp.py): it stays on this
+        # computer, so it can't reach a summary (or block every compaction).
+        return "[Withheld: this content was blocked by your organization's data loss prevention rules.]"
     content = entry.get("content", "")
     if isinstance(content, str):
         return content

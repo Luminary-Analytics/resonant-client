@@ -14,12 +14,13 @@ the log alone; export to a collector for a copy off the machine.
 
 Event types: ``turn.start``, ``turn.end``, ``model.usage``, ``tool.call``,
 ``tool.result``, ``file.change``, ``approval``, ``privacy.redaction``,
-``settings.change``, ``trust.decision``, ``budget.warning``, ``budget.approval``,
-``budget.block``, ``model.fallback`` and ``error``; for the Team preview
-(engine/swarming/organization.py) ``team.start``, ``team.stop``,
-``team.complete``, ``team.participant.start``, ``team.participant.end``,
-``team.decision``, ``team.integration``, ``team.refusal`` and
-``team.request_refused``.
+``dlp.finding`` and ``dlp.error`` (lumi/dlp.py: rule, action, content kind and
+count, never the matched text), ``settings.change``, ``trust.decision``,
+``budget.warning``, ``budget.approval``, ``budget.block``, ``model.fallback``
+and ``error``; for the Team preview (engine/swarming/organization.py)
+``team.start``, ``team.stop``, ``team.complete``, ``team.participant.start``,
+``team.participant.end``, ``team.decision``, ``team.integration``,
+``team.refusal`` and ``team.request_refused``.
 
 **Capture levels** (``privacy.audit_capture``, lockable by policy):
 

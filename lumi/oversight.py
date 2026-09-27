@@ -127,7 +127,7 @@ KNOWN_CHATS = 2_000
 # Acknowledgments kept once Lumi Cloud has them (or refused them), newest first.
 KEPT_ACKNOWLEDGMENTS = 200
 ACKNOWLEDGMENTS_PER_STEP = 20
-# A claim on an acknowledgment another process was sending, past which it is sent again.
+# A claim on a record or acknowledgment another process was sending, past which it is sent again.
 SENDING_SECONDS = 600
 IDLE_SECONDS = 300.0
 BUSY_SECONDS = 2.0
@@ -1315,8 +1315,9 @@ def recent_flags(limit: int = 50) -> list[dict]:
 # a record, taking a batch and removing a sent one don't read the rest of the
 # queue, so a long time offline doesn't slow every turn's end. The app,
 # `lumi run`, the terminal UI and the chat gateway share it; SQLite's own
-# locking serializes them. Confirmations of the notice wait in their own
-# table and are claimed before sending, so two processes never send one twice.
+# locking serializes them. Records, and confirmations of the notice in their
+# own table, are claimed before sending, so two processes never send one
+# twice; a claim older than SENDING_SECONDS (its sender stopped) is taken over.
 
 
 def _counters() -> dict:
@@ -1336,12 +1337,26 @@ def _count(**changes: Any) -> None:
     _write_json(_root() / "state.json", data)
 
 
+def _has_column(connection: sqlite3.Connection, table: str, column: str) -> bool:
+    return any(row[1] == column for row in connection.execute(f"PRAGMA table_info({table})"))
+
+
 def _database() -> sqlite3.Connection:
     path = _root() / "queue.sqlite3"
     path.parent.mkdir(parents=True, exist_ok=True)
     connection = sqlite3.connect(path, timeout=30.0, isolation_level=None)
+    # sending_until: when the claim of the process sending the record runs
+    # out (_claim_batch); '' while nobody is sending it.
     connection.execute("CREATE TABLE IF NOT EXISTS records (seq INTEGER PRIMARY KEY AUTOINCREMENT, "
-                       "id TEXT UNIQUE NOT NULL, at TEXT NOT NULL, size INTEGER NOT NULL, body TEXT NOT NULL)")
+                       "id TEXT UNIQUE NOT NULL, at TEXT NOT NULL, size INTEGER NOT NULL, body TEXT NOT NULL, "
+                       "sending_until TEXT NOT NULL DEFAULT '')")
+    if not _has_column(connection, "records", "sending_until"):
+        # A queue from before records were claimed.
+        try:
+            connection.execute("ALTER TABLE records ADD COLUMN sending_until TEXT NOT NULL DEFAULT ''")
+        except sqlite3.OperationalError:
+            if not _has_column(connection, "records", "sending_until"):  # not another process adding it too
+                raise
     connection.execute("CREATE INDEX IF NOT EXISTS records_at ON records (at)")
     # state: pending (to send), sending (claimed by a process), sent, refused
     # (Lumi Cloud said no) or not_sent (this computer left before it went).
@@ -1423,22 +1438,24 @@ def expire(retention_days: int) -> int:
     return expired
 
 
+def _parsed(body: str) -> dict | None:
+    """A queued record, or None when it can't be read or has no id (it's never sent)."""
+    try:
+        record = json.loads(body)
+    except ValueError:
+        return None
+    return record if isinstance(record, dict) and record.get("id") else None
+
+
 def queued_records(limit: int | None = None) -> list[dict]:
-    """The records waiting to be sent, oldest first."""
+    """The records waiting to be sent, oldest first (those a process is sending too)."""
     if not (_root() / "queue.sqlite3").exists():
         return []
     with closing(_database()) as connection:
         rows = connection.execute("SELECT body FROM records ORDER BY seq" + (" LIMIT ?" if limit else ""),
                                   (limit,) if limit else ()).fetchall()
-    records = []
-    for (body,) in rows:
-        try:
-            record = json.loads(body)
-        except ValueError:
-            continue
-        if isinstance(record, dict) and record.get("id"):
-            records.append(record)
-    return records
+    parsed = (_parsed(body) for (body,) in rows)
+    return [record for record in parsed if record is not None]
 
 
 def discard(reason: str) -> int:
@@ -1607,24 +1624,75 @@ def _upload_acknowledgments(client: Any) -> str:
 # ── Sending ─────────────────────────────────────────────────────────────────
 
 
-def _batch() -> list[dict]:
-    batch, size = [], 0
-    for record in queued_records(BATCH_RECORDS):
-        length = len(json.dumps(record, separators=(",", ":")))
-        if batch and size + length > BATCH_BYTES:
-            break
-        batch.append(record)
-        size += length
-    return batch
+def _claim_batch() -> tuple[list[dict], str]:
+    """The next batch to send, oldest first, claimed so no other process sends it too; and the claim.
+
+    Up to BATCH_RECORDS records and BATCH_BYTES (the first goes whatever its
+    size). Records another process claimed are skipped until its claim runs
+    out, SENDING_SECONDS after it was made: a sender that stopped or hung
+    doesn't keep them. The claim is when it runs out (``sending_until``).
+    """
+    if not (_root() / "queue.sqlite3").exists():
+        return [], ""
+    claim = (datetime.now(timezone.utc) + timedelta(seconds=SENDING_SECONDS)).isoformat(
+        timespec="milliseconds").replace("+00:00", "Z")
+    batch: list[dict] = []
+    size = 0
+    with _lock, exclusive(_root() / ".lock"), closing(_database()) as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        try:
+            # Unclaimed ('', before every time) or claimed by a sender whose claim ran out.
+            rows = connection.execute("SELECT body, size FROM records WHERE sending_until < ? ORDER BY seq LIMIT ?",
+                                      (_now(), BATCH_RECORDS)).fetchall()
+            for body, length in rows:
+                record = _parsed(body)
+                if record is None:
+                    continue
+                if batch and size + length > BATCH_BYTES:
+                    break
+                batch.append(record)
+                size += length
+            ids = [str(record["id"]) for record in batch]
+            for start in range(0, len(ids), 500):
+                chunk = ids[start:start + 500]
+                connection.execute(f"UPDATE records SET sending_until = ? WHERE id IN "
+                                   f"({','.join('?' * len(chunk))})", [claim, *chunk])
+            connection.execute("COMMIT")
+        except BaseException:
+            connection.execute("ROLLBACK")
+            raise
+    return batch, claim
+
+
+def _release(batch: list[dict], claim: str) -> None:
+    """Give up this process's claim on a batch it couldn't send, so the next try (anyone's) sends it at once.
+
+    Only while the claim is still this one: once it ran out, another process
+    may have claimed the records again.
+    """
+    ids = [str(record["id"]) for record in batch]
+    with _lock, exclusive(_root() / ".lock"), closing(_database()) as connection:
+        for start in range(0, len(ids), 500):
+            chunk = ids[start:start + 500]
+            connection.execute(f"UPDATE records SET sending_until = '' WHERE sending_until = ? AND id IN "
+                               f"({','.join('?' * len(chunk))})", [claim, *chunk])
 
 
 def _remove(ids: set[str], *, outcome: str, error: str = "") -> None:
+    """Delete records Lumi Cloud took (``uploaded``) or refused (``rejected``) and count them.
+
+    Only records still queued are counted: one deleted meanwhile (discarded,
+    expired, dropped) was counted then, and one sent again after its claim
+    ran out is counted by whichever sender deletes it first.
+    """
     with _lock, exclusive(_root() / ".lock"), closing(_database()) as connection:
         listed = sorted(ids)
+        removed = 0
         for start in range(0, len(listed), 500):
             chunk = listed[start:start + 500]
-            connection.execute(f"DELETE FROM records WHERE id IN ({','.join('?' * len(chunk))})", chunk)
-        changes: dict[str, Any] = {outcome: len(ids)}
+            removed += connection.execute(f"DELETE FROM records WHERE id IN ({','.join('?' * len(chunk))})",
+                                          chunk).rowcount or 0
+        changes: dict[str, Any] = {outcome: removed}
         if outcome == "uploaded":
             changes.update(last_upload=_now(), last_error="")
         else:
@@ -1679,20 +1747,24 @@ def _upload_records(client: Any, max_batches: int) -> str:
             discard(scope.reason)
             return "discarded"
         expire(scope.settings.retention_days)
-        batch = _batch()
+        batch, claim = _claim_batch()
         if not batch:
-            return "idle"
-        state = policy.load()
-        version = state.policy.raw.get("policy_version") if state.policy else None
+            return "idle"  # nothing, or only what another process is sending
         try:
+            state = policy.load()
+            version = state.policy.raw.get("policy_version") if state.policy else None
             _send(client, batch, version)
         except _OversightOff as exc:
             discard(f"{scope.organization}'s Lumi Cloud doesn't have oversight on ({exc}).")
             return "discarded"
         except CloudError as exc:
+            _release(batch, claim)
             with _lock, exclusive(_root() / ".lock"):
                 _count(last_error=str(exc)[:300])
             return "retry"
+        except BaseException:
+            _release(batch, claim)
+            raise
     return "more"
 
 

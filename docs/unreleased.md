@@ -120,6 +120,12 @@ now.
   is recorded.
 - The chat gateway and the terminal UI now send records and confirmations
   to Lumi Cloud while they run, as the app does.
+- **Records are claimed before they're sent**, as confirmations are: with
+  the app and a `lumi run` (or a scheduled task, the terminal UI, the chat
+  gateway) sending at once, each record goes once and Settings counts it
+  once (the end-to-end run counted one twice). A retryable failure gives
+  the claim back; a claim older than 10 minutes (its sender stopped) is
+  taken over. Existing queues gain the `sending_until` column.
 - **With data loss prevention** (merged from main): the notice check comes
   first, so a turn refused for the notice never reaches the DLP rules or a
   DLP service. Everything oversight shares passes the organization's DLP

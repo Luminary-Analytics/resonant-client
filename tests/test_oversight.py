@@ -10,9 +10,11 @@ import hashlib
 import io
 import json
 import re
+import sqlite3
 import sys
 import threading
 import time
+from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -1584,6 +1586,17 @@ def _records(count, *, days_ago=0):
              "ended_at": ended.replace("+00:00", "Z")} for n in range(count)]
 
 
+def _later(monkeypatch, seconds):
+    """Oversight's clock, ``seconds`` ahead: as if that much time had passed."""
+
+    class Later(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return datetime.now(tz) + timedelta(seconds=seconds)
+
+    monkeypatch.setattr(oversight, "datetime", Later)
+
+
 class TestSending:
     def test_the_queue_is_bounded_and_drops_are_counted(self, org, monkeypatch):
         monkeypatch.setattr(oversight, "MAX_RECORDS", 3)
@@ -1697,6 +1710,14 @@ class TestSending:
             return records
 
         monkeypatch.setattr(oversight, "queued_records", counted)
+        real_claim = oversight._claim_batch
+
+        def claimed():
+            batch, claim = real_claim()
+            reads.append(len(batch))
+            return batch, claim
+
+        monkeypatch.setattr(oversight, "_claim_batch", claimed)
         for n in range(300):
             oversight.enqueue([{"type": "turn", "id": f"t{n}", "session": {"id": "s"}, "turn": n,
                                 "padding": "x" * 2000}])
@@ -1706,6 +1727,68 @@ class TestSending:
             pass
         assert sum(len(batch["events"]) for batch in client.sent) == 300 and real() == []
         assert max(reads) <= oversight.BATCH_RECORDS
+
+    def test_two_senders_send_each_record_once(self, org):
+        # The app and a `lumi run` sending from one queue at the same time (seen end to end): the first
+        # claims its batch, so the second sends only the rest, and each record is counted once.
+        org(EVERYTHING)
+        total = oversight.BATCH_RECORDS + 20
+        oversight.enqueue(_records(total))
+        waiting, answer = threading.Event(), threading.Event()
+
+        def slow(body):
+            waiting.set()  # the first sender's batch is out, and Lumi Cloud hasn't answered yet
+            assert answer.wait(10)
+
+        first, second = _Client(slow), _Client()
+        outcomes: list[str] = []
+        sender = threading.Thread(target=lambda: outcomes.append(oversight.upload_pending(first)), daemon=True)
+        sender.start()
+        try:
+            assert waiting.wait(10)
+            assert oversight.upload_pending(second) == "idle"
+        finally:
+            answer.set()
+            sender.join(10)
+        assert outcomes == ["idle"]
+        sent = [record["id"] for client in (first, second) for batch in client.sent for record in batch["events"]]
+        assert sorted(sent) == sorted(f"r{n}" for n in range(total))
+        assert [len(batch["events"]) for batch in first.sent] == [oversight.BATCH_RECORDS]
+        status = oversight.queue_status()
+        assert (status["pending"], status["recorded"], status["uploaded"]) == (0, total, total)
+
+    def test_a_claim_that_ran_out_is_sent_again_and_counted_once(self, org, monkeypatch):
+        # A `lumi run` sent its batch and exited (or hung) before Lumi Cloud answered: its claim keeps the
+        # others off the records until it runs out, then they go again.
+        org(EVERYTHING)
+        oversight.enqueue(_records(2))
+        claimed, _claim = oversight._claim_batch()
+        assert [record["id"] for record in claimed] == ["r0", "r1"]
+        client = _Client()
+        assert oversight.upload_pending(client) == "idle" and client.sent == []
+        assert oversight.queue_status()["pending"] == 2
+        _later(monkeypatch, oversight.SENDING_SECONDS + 1)
+        assert oversight.upload_pending(client) == "idle"
+        assert [[record["id"] for record in batch["events"]] for batch in client.sent] == [["r0", "r1"]]
+        # The first sender's answer comes after all: Lumi Cloud keeps each record once, by its id, and
+        # Settings counts it once.
+        oversight._send(_Client(), claimed, 3)
+        status = oversight.queue_status()
+        assert (status["pending"], status["recorded"], status["uploaded"]) == (0, 2, 2)
+
+    def test_a_queue_from_before_claims_is_sent(self, org):
+        org(EVERYTHING)
+        path = state_home() / "oversight" / "queue.sqlite3"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        body = json.dumps(_records(1)[0], separators=(",", ":"))
+        with closing(sqlite3.connect(path)) as connection, connection:
+            connection.execute("CREATE TABLE records (seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT UNIQUE NOT NULL, "
+                               "at TEXT NOT NULL, size INTEGER NOT NULL, body TEXT NOT NULL)")
+            connection.execute("INSERT INTO records (id, at, size, body) VALUES (?, ?, ?, ?)",
+                               ("r0", oversight._now(), len(body), body))
+        client = _Client()
+        assert oversight.upload_pending(client) == "idle"
+        assert [record["id"] for record in client.sent[0]["events"]] == ["r0"] and _queue() == []
 
 
 # ── The app's socket ────────────────────────────────────────────────────────

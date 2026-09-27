@@ -413,7 +413,11 @@ blocked.
    result first, then tries for up to 5 seconds before it exits (the app or
    the next run sends the rest). Failures are retried after 30 seconds, then
    up to an hour apart; new turns don't cut that wait short, a policy change
-   does.
+   does. Each process claims a batch before sending it, so processes sending
+   at the same time (the app and a `lumi run`) never send a record twice, and
+   each is counted once. A failure worth retrying gives the claim back; a
+   batch whose sender stopped before Lumi Cloud answered (a `lumi run` that
+   gave up after 5 seconds) goes again once its claim is 10 minutes old.
 3. Before every batch of records Lumi checks the policy again. If the
    organization stopped asking, Lumi Cloud answers `oversight_off`, or the
    computer left the organization, queued records are **deleted, not
@@ -477,9 +481,6 @@ What Lumi Cloud implements against (lumi-cloud's oversight ingest):
   record: the parent sees the worker's tool calls only.
 - Codex and Claude Code run their own tool loops: their turns are admitted
   and recorded, but their tools' refusals aren't seen by Lumi.
-- The app and a `lumi run` (or scheduled task) running at the same time can
-  both send a record the run queued: Lumi Cloud keeps it once, by its id,
-  but Settings' count of sent records counts it twice.
 - A DLP service's verdicts are matched to shared text by content: a text it
   blocked is recognized when it is the shared text, holds it or is part of
   it (spacing aside; a piece shorter than 8 characters only when whole).

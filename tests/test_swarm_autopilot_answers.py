@@ -115,4 +115,4 @@ def test_a_running_worker_gets_the_orchestrators_answer_in_the_same_round(team):
     # only what answering needs (a live one spent a request on swarm_status).
     answer_requests = [row for row in run["model_requests"] if row["attempt_id"] == answers[0]["id"]]
     assert len(answer_requests) == 2
-    assert set(json.loads(answers[0]["grant_json"])["tools"]) == {"swarm_send", "file_read", "glob", "grep"}
+    assert json.loads(answers[0]["grant_json"])["tools"] == ["swarm_send"]

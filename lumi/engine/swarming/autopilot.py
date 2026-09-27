@@ -321,16 +321,12 @@ class TeamAutopilot:
             # No allowance to answer now: the next round's planning reads them.
             self._answered.update(questions)
             return False
-        # The orchestrator may read while no writer runs: its read scope would
-        # overlap a running writer's (supervisor._start_coordinator refuses that).
-        writing = any(json.loads(row["grant_json"])["write_roots"] for row in running.values())
         self._refusal("request_plan")
         self._requests += 1
         self.runtime._answer_workers(capture, run_id=self.run_id, questions=questions,
                                      request_id=f"autopilot_{self.run_id}_{self._requests}",
                                      expected_revision=snapshot["run"]["revision"],
-                                     requests=min(self.ANSWER_REQUESTS, planning["remaining_requests"]),
-                                     read_roots=[] if writing else planning["read_roots"])
+                                     requests=min(self.ANSWER_REQUESTS, planning["remaining_requests"]))
         self._answered.update(questions)
         self._set("answering", f"Round {self.round}: the orchestrator is answering a worker's question.")
         return True

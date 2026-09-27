@@ -541,13 +541,12 @@ class SwarmRuntime:
             return self._view(capture, store, run_id)
 
     def _answer_workers(self, capture, *, run_id: str, questions: list[int], request_id: str,
-                        expected_revision: int, requests: int, read_roots: list[str]):
+                        expected_revision: int, requests: int):
         """Admit one short orchestrator turn that answers workers mid-round (autopilot.py).
 
         Only the orchestrator loop starts it, for a team whose owner let the
-        orchestrator run it. It spends unallocated team requests, gets read
-        tools only for ``read_roots`` ([] while writers run) and proposes no
-        work (coordinator.OrchestratorAnswers).
+        orchestrator run it. It spends unallocated team requests, has only
+        ``swarm_send`` and proposes no work (coordinator.OrchestratorAnswers).
         """
         with self._lock:
             require_id(request_id)
@@ -563,14 +562,14 @@ class SwarmRuntime:
                 raise Conflict("Only an orchestrator the owner let run the team answers its workers")
             if type(requests) is not int or not 1 <= requests <= 1000:
                 raise ValueError("Choose an explicit answer request allowance from 1 to 1000")
-            roots = list(normalize_scopes(tuple(read_roots)))
-            # Only what answering needs: the questions carry their senders'
-            # ids. A live answer turn spent a request on swarm_status instead.
-            tools = {"swarm_send"} | ({"file_read", "glob", "grep"} if roots else set())
+            # Only swarm_send: its input carries the questions, their senders'
+            # ids and the team's findings. Live answer turns with read tools
+            # spent their requests exploring the project and never answered.
+            tools = {"swarm_send"}
             payload = {"worker_id": ANSWER_WORKER_PREFIX + hashlib.sha256(request_id.encode()).hexdigest()[:32],
                        "requests": requests, "model": {"provider": pair[0].backend_spec.backend_type,
                                                         "model": pair[0].backend_spec.model},
-                       "tools": sorted(tools), "read_roots": roots}
+                       "tools": sorted(tools), "read_roots": []}
             receipt, fresh = runner.supervisor.handle_once(Command(request_id, run_id, expected_revision,
                 runner.authority.epoch, "start_coordinator", payload), runner.authority)
             if not fresh:

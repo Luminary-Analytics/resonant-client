@@ -80,9 +80,10 @@ carry a credential.
   of 11 adversarial inputs scans in 32 to 290 ms on the development machine,
   under load.
 - `tests/dlp_ui.browser.cjs` passed five runs in a row in Edge against the
-  source app, with scripted inference and a fixture policy. It covers the
-  redaction notice, the block with **Continue**, the withheld entry, the audit
-  records and the Settings rows at desktop and phone widths.
+  source app, with scripted inference, a fixture policy and a loopback DLP
+  service that redacts a name. It covers the redaction notice, what the model
+  and the service received, the block with **Continue**, the withheld entry,
+  the audit records and the Settings rows at desktop and phone widths.
 
 ## September 27 Team: a team's results in its chat (source only, not released)
 

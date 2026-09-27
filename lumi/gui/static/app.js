@@ -163,6 +163,9 @@ const LUMI_EVENT_DELEGATES = {
     'choices': 'handleChoices',
     'context.compression': 'handleCompression',
     'dir_list': 'handleDirList',
+    'extension_panel_checked': 'receiveExtensionPanelChecked',
+    'extension_panel_opened': 'receiveExtensionPanelOpened',
+    'extension_panels': 'receiveExtensionPanels',
     'git_result': 'handleGitResult',
     'init': 'handleInit',
     'message.queue_cleared': 'handleMessageQueueCleared',
@@ -507,6 +510,7 @@ class LumiApp {
 
         this.ws.onclose = () => {
             this.swarmConnectionChanged(false);
+            this.extensionPanelsDisconnected?.();
             this.sonnAccount = null;
             this._sonnAccountPending = false;
             this._renderAccountMenu();
@@ -1049,6 +1053,7 @@ class LumiApp {
      */
     bindEvents() {
         this.bindEmployeeTaskPanel();
+        this.bindExtensionPanels();
         document.getElementById('managed-previews-button')?.addEventListener('click', () => {
             this._showManagedPreviews = true;
             this.send({command: 'preview_list'});
@@ -7529,6 +7534,7 @@ class LumiApp {
             ...(this._canOpenInBrowser()
                 ? [{ id: 'open-in-browser', icon: '\u2197', label: 'Open in browser', hint: '', action: () => this._openInBrowser() }]
                 : []),
+            ...(this.extensionPanelCommands?.() || []),
             ...projects, ...sessions,
         ];
     }
@@ -13770,6 +13776,7 @@ applyMixin(LumiApp.prototype, window.LumiAutonomousView, 'autonomous-view');
 applyMixin(LumiApp.prototype, window.LumiSettingsView, 'settings-view');
 applyMixin(LumiApp.prototype, window.LumiRunCards, 'run-cards');
 applyMixin(LumiApp.prototype, window.LumiEmployeeTasks, 'employee-tasks');
+applyMixin(LumiApp.prototype, window.LumiPanelsView, 'panels-view');
     applyMixin(LumiApp.prototype, window.LumiSwarmView, 'swarm-view');
     applyMixin(LumiApp.prototype, window.LumiCollaborationView, 'collaboration-view');
     applyMixin(LumiApp.prototype, window.LumiManagedCollaborationView, 'managed-collaboration-view');

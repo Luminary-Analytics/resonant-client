@@ -101,6 +101,14 @@ datas = [
      "lumi/gui/static"),
     (str(PKG_ROOT / "gui" / "static" / "employee_tasks.js"),
      "lumi/gui/static"),
+    # Panels from capability packs: the page's view, its styles, and the
+    # bridge script served into each panel's sandboxed frame.
+    (str(PKG_ROOT / "gui" / "static" / "panels_view.js"),
+     "lumi/gui/static"),
+    (str(PKG_ROOT / "gui" / "static" / "panels_view.css"),
+     "lumi/gui/static"),
+    (str(PKG_ROOT / "gui" / "static" / "panel_frame.js"),
+     "lumi/gui/static"),
     (str(PKG_ROOT / "gui" / "static" / "local_access.js"),
      "lumi/gui/static"),
     (str(PKG_ROOT / "gui" / "static" / "appearance.js"),

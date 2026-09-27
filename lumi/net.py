@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import threading
 import urllib.parse
 from typing import Any
@@ -62,6 +63,52 @@ def validate_proxy_url(value: str) -> str:
             "or a local helper such as px or cntlm."
         )
     return url.rstrip("/")
+
+
+_HOST_NAME = re.compile(r"(?=.{1,253}$)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*")
+MAX_LISTED_HOSTS = 50
+
+
+def host_names(value: Any, *, strict: bool = True) -> list[str]:
+    """The host names ``value`` lists, lowercase and without repeats.
+
+    ``value`` is a list, or text with names separated by lines, commas or
+    spaces. A scheme, port or path around a name is dropped, so
+    ``https://github.example.com:8443/`` lists ``github.example.com``. Each
+    host is named: wildcards, sign-in details and anything else that isn't a
+    host name raise ValueError, or are skipped when ``strict`` is false (for
+    values read at use, such as the environment or a hand-edited file).
+    """
+    items = re.split(r"[\s,]+", value) if isinstance(value, str) else value
+    if not isinstance(items, (list, tuple)):
+        if strict:
+            raise ValueError("List host names, one per line.")
+        return []
+    hosts: list[str] = []
+    for item in items:
+        text = item.strip().lower() if isinstance(item, str) else ""
+        if not text and isinstance(item, str):
+            continue
+        name = ""
+        try:
+            parts = urllib.parse.urlsplit(text if "://" in text else f"//{text}")
+            parts.port  # noqa: B018 - raises ValueError for a port that isn't a number
+            if not (parts.username or parts.password):
+                name = parts.hostname or ""
+        except ValueError:
+            name = ""
+        if not _HOST_NAME.fullmatch(name):
+            if strict:
+                shown = str(item).strip()[:80]
+                if "*" in shown:
+                    raise ValueError(f"{shown}: name each host; wildcards aren't allowed.")
+                raise ValueError(f"{shown or 'An empty entry'} isn't a host name, such as github.example.com.")
+            continue
+        if name not in hosts:
+            hosts.append(name)
+    if strict and len(hosts) > MAX_LISTED_HOSTS:
+        raise ValueError(f"List up to {MAX_LISTED_HOSTS} hosts.")
+    return hosts
 
 
 def use_system_certificates(enabled: bool) -> bool:

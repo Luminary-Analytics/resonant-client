@@ -1,13 +1,16 @@
-# Extensions: add a model provider
+# Extensions: model providers and panels
 
 A capability pack can add a **model provider**: a program Lumi starts for
 each request to one of its models. The pack's models then appear in the
 model menu like any other connection, and the agent uses them with its
-usual tools. You don't need Lumi's source to write one; this page and the
+usual tools. A pack can also add [panels](#panels): pages of its own that
+the person opens in Lumi, which run in a sandbox. You don't need Lumi's
+source to write either; this page and the
 SDK in [`sdk/`](https://github.com/Luminary-Analytics/resonant-client/tree/main/sdk)
 are the whole contract.
 
-This is the Extension SDK, version 1. Code: `lumi/engine/provider_extensions.py`.
+This is the Extension SDK, version 1. Code: `lumi/engine/provider_extensions.py`
+and, for panels, `lumi/gui/extension_panels.py`.
 Packs themselves (agents, skills, hooks, MCP servers, approval) are
 described in [Writing a capability pack](packs.md).
 
@@ -191,6 +194,220 @@ if (request.method === 'models') say({type: 'models', models: [{id: 'hello'}]});
 else { say({type: 'text', text: 'Hello from Node'}); say({type: 'done', usage: {input_tokens: 0, output_tokens: 3}}); }
 ```
 
+## Panels
+
+A pack can add **panels**: pages made of its own HTML, scripts, styles and
+images that the person opens in Lumi, such as a build dashboard or a prompt
+picker. A panel talks to Lumi through a small bridge. It can read the
+project's name and the theme, add text to the message box without sending
+it, and show a notice. It has no network access except WebRTC (see
+[what panels don't do](#what-panels-dont-do)), and it can't read Lumi's
+page, the conversation, settings, keys or files, run tools, or send a
+message.
+
+### Declaring a panel
+
+```json
+{
+  "id": "acme-builds",
+  "name": "Acme builds",
+  "version": "0.1.0",
+  "manifest_version": 1,
+  "ui_panels": [
+    {"id": "stats", "title": "Build stats", "entry": "panels/stats/index.html"}
+  ]
+}
+```
+
+| Field | Meaning |
+|---|---|
+| `id` | Lowercase letters, digits and dashes, up to 40, different for each panel in the pack. |
+| `title` | Shown under View > Panels, in the command palette and above the panel. Up to 60 characters. |
+| `entry` | The panel's page: an `.html` file inside the pack, up to 1 MB. |
+
+A pack has up to 10 panels. The panel can load files from its entry's folder
+and the folders below it: `.html`, `.js`, `.css`, `.svg`, `.png`, `.jpg`,
+`.gif`, `.webp` and `.ico` files, up to 4 MB each. So give each panel a
+folder of its own (`panels/stats/`). Paths use `/`, and no part of one may
+start with a dot or be `..`. Absolute paths, backslashes and drive letters
+are refused. Lumi checks panels when the pack loads: a panel that breaks
+these rules makes the manifest invalid, and the whole pack stays off until
+it's fixed. Other keys in a panel are ignored. `lumi extension check` lists
+the panels it found.
+
+### Opening a panel
+
+Panels from approved, enabled packs are listed under **View > Panels** in the
+application menu, and in the command palette (Ctrl+K) as "Open panel: …".
+Settings > Capability packs lists a pack's panels for review before you
+approve it. A panel opens in a dialog over the conversation. Escape (in the
+panel or on the dialog) or × closes it, and focus goes back to the Menu
+button or the command palette's button, whichever opened it; it never goes
+to the message box. **Panels from capability packs** in Settings > Privacy &
+security turns them all off.
+
+Panels open in a browser and in the Windows desktop window. The macOS and
+Linux desktop window doesn't open them yet (see
+[how panels are isolated](#how-panels-are-isolated)): use
+**File > Open in Browser** there.
+
+### Writing the page
+
+Lumi adds its bridge script at the start of each HTML file of the panel,
+before anything else, so `window.lumi` is ready for the panel's own scripts:
+
+```html
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <link rel="stylesheet" href="panel.css">
+</head>
+<body>
+  <h1>Build stats</h1>
+  <button type="button" id="ask">Ask about the failures</button>
+  <script src="panel.js"></script>
+</body>
+</html>
+```
+
+```js
+lumi.onContext(({project, theme}) => {
+  document.querySelector('h1').textContent = `Build stats for ${project}`;
+});
+document.getElementById('ask').addEventListener('click', async () => {
+  await lumi.insert('Why did the last three builds fail?');
+  await lumi.toast('Added to your message');
+});
+```
+
+| Call | What it does |
+|---|---|
+| `lumi.context()` | Resolves to `{project, theme}`: the project folder's name (never its path) and `"dark"` or `"light"`. |
+| `lumi.onContext(fn)` | Calls `fn` with the context when the panel loads and when the theme changes. |
+| `lumi.insert(text)` | Adds `text` after what the person has typed. Lumi never sends it: the person reads it, edits it and sends it. See the rules below. |
+| `lumi.toast(text)` | Shows a one-line notice of up to 200 characters in the panel's dialog, marked "Panel · *pack name*", apart from Lumi's own notices. One a second. |
+
+Each call returns a Promise that rejects with Lumi's reason when the request
+is refused. Before adding text, Lumi checks with its server that the pack is
+still installed, approved, enabled and unchanged, and it holds the text to
+what the person can review in the message box:
+
+- up to 8,000 characters and 20 lines;
+- no invisible characters (Unicode format and control characters other than
+  tab and newline), so what shows is what the model gets;
+- no padding: runs of spaces become one, indentation keeps at most 8
+  columns, and blank lines collapse to one;
+- no attachments: an @mention such as `@file:app.py` is split apart
+  (`@ file:app.py`), so it attaches nothing unless the person rejoins it;
+- never a command: text that would make the message start with `!` (a shell
+  command) or `/` (a Lumi command) is refused, and Lumi says so.
+
+Lumi puts the caret where the added text starts and scrolls the message box
+to it. Text is refused when no conversation is open.
+
+The bridge closes the panel when the person presses Escape in it, unless the
+panel handled the key (`event.preventDefault()`), and marks the page
+`<html data-lumi-theme="dark">` or `"light"` so styles can follow the theme:
+
+```css
+body { background: #13152e; color: #ebebeb; }
+[data-lumi-theme="light"] body { background: #ffffff; color: #1a1d3d; }
+```
+
+A panel's page may load scripts, styles and images from its own folder, and
+`data:` and `blob:` images. It may not use inline `<script>` elements, `on…=`
+attributes, `style="…"` attributes, `eval` or `new Function`; set computed
+styles through `element.style`. Module scripts, web fonts and `fetch` need the
+network, so they don't work, nor do frames, workers, forms, popups and dialogs
+(`alert`). Panel files are served to the panel only: a panel URL pasted into
+a browser's address bar is refused.
+
+#### The protocol
+
+`window.lumi` wraps `postMessage`, which a panel can also use directly:
+
+```js
+parent.postMessage({lumi: 1, id: 7, method: 'composer.insert', text: 'Hello'}, '*');
+// Lumi answers {lumi: 1, id: 7, ok: true, result: null}
+// or {lumi: 1, id: 7, ok: false, error: "…"}.
+```
+
+The methods are `context`, and `composer.insert` and `toast`, both with
+`text`. `id` is optional: a whole number, or a string of up to 64
+characters, returned in the answer. Lumi ignores a message without `lumi: 1`,
+answers another method with an error, and answers at most 20 requests a
+second. It sends `{lumi: 1, event: "context", context: {…}}` when the panel
+loads and when the theme changes.
+
+A panel can't close itself. Closing on Escape uses a private channel (a
+`MessagePort`) that Lumi's page hands its bridge script as the panel loads.
+The script runs first, so the panel's own scripts never see the channel, and
+it sends on it only for an Escape key press the browser reports as real. A
+panel that could close itself could send the person's next keystrokes to the
+message box.
+
+### How panels are isolated
+
+- **An origin of their own.** A panel runs in `<iframe sandbox="allow-scripts">`
+  without `allow-same-origin`: an opaque origin with no access to Lumi's
+  page, its storage (which holds the launch's access token), cookies or
+  socket. The frame can't navigate the window, open popups, submit forms or
+  show dialogs.
+- **No network except WebRTC.** Each panel file is served with its own
+  Content-Security-Policy: scripts, styles and images only from the panel's
+  own path (`/panels/<token>/`), `connect-src 'none'`, no frames, workers,
+  objects, forms or base URL, and `sandbox allow-scripts`, which sandboxes the
+  page even when it's loaded without the frame's sandbox. Lumi's page allows
+  frames only from Lumi's own server (`frame-src 'self'`), so a panel can't
+  navigate itself to another site either.
+- **Only the files you approved.** Lumi serves a panel's files under a random
+  token it makes when you open the panel. It isn't the launch token, reads
+  only that panel's folder, and ends when the panel closes, when the page
+  closes, or after 12 hours. Each file is checked as it's served: panels
+  allowed, and the pack installed, approved, enabled, allowed by your
+  organization and unchanged. So that a panel loading many files doesn't
+  hash its pack for each, a pack found unchanged is trusted for 3 seconds
+  under the same approval and policy, but every file's bytes are still
+  checked against the approval. The file must be one the approval covered.
+- **A revoked or changed pack.** Its open panel can't load anything more or
+  add text (each addition checks the pack again), and Lumi closes it: when
+  it next lists panels (after a change in Settings, when you come back to
+  the window, open the menu or the command palette), or when the app's
+  connection drops.
+- **A narrow bridge.** Lumi's page takes a message only from that exact frame
+  (`event.source`) with the sandbox's origin (`"null"`), in the shape above,
+  limited in size and rate. It answers that frame only. A panel's notice
+  shows in its dialog, marked as the pack's, and can't replace or pass for
+  one of Lumi's. An approval or another dialog always shows above a panel.
+- **The desktop window.** Lumi opens panels only where its own window bridge
+  can't be reached from the panel's frame. On Windows (WebView2), a
+  sandboxed frame can post to the window's bridge, but its messages don't
+  reach the app (checked with pywebview 6.1). WebKit, which the window uses
+  on macOS and Linux, gives the bridge to every frame, and so does Qt, so
+  those windows send the person to the browser. The desktop window also
+  refuses a bridge call whose name or id isn't a plain identifier, which
+  keeps any frame from running script in Lumi's page through pywebview.
+- **Organization policy.** A pack your organization's policy turns off
+  (`extensions.allowed_packs`, `require_signed`, `registry_only`) has no
+  panels, and a policy can turn panels off for everyone with
+  `"settings": {"security.extension_panels": false}`. A policy that can't be
+  used, or has expired, turns them off too.
+
+### What panels don't do
+
+- **Only what the bridge offers.** A panel can't read files, settings, keys
+  or the conversation, run tools or commands, send messages, or reach the
+  pack's model providers and MCP servers.
+- **WebRTC isn't covered.** Browsers don't apply the Content-Security-Policy
+  to WebRTC, so a panel's script can send data to a server of its choosing
+  that way. This was seen in Edge, where the proposed `webrtc 'block'`
+  directive is ignored. A panel can only send what it can see: the project's
+  name, the theme and what you type into it. Approve packs whose code you've
+  read or whose publisher you trust, as for hooks.
+- One panel is open at a time, and panels don't open in the macOS and Linux
+  desktop window yet.
+
 ## Signing a pack
 
 A signature tells the people who install your pack that it came from you
@@ -266,7 +483,9 @@ digest. The policy sends the list to every computer as
   request fails with the reason, and nothing starts.
 - **Only personal packs.** Providers come from packs in `~/.lumi/packs` or a
   configured folder, never from a pack inside a project, so a repository
-  can't add a model to your menu.
+  can't add a model to your menu. Panels, which run in a sandbox, may also
+  come from a pack in the project that you approved there; every file they
+  load is checked the same way (see [how panels are isolated](#how-panels-are-isolated)).
 - **It runs as you.** A provider is a program on your computer, outside the
   shell sandbox, like an MCP server from a pack. Approve packs whose code
   you've read or whose publisher you trust.

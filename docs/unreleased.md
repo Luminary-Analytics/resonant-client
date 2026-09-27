@@ -8,6 +8,90 @@ The heartbeat remains paused. Documentation maintenance does not resume work,
 spending or grants, and changes no native implementation or installed bundle.
 The dated September 15/18 records below are historical.
 
+## September 27 Panels from capability packs (source only, not released)
+
+**Capability packs can add panels.** A pack's `ui_panels` (an id, a title and
+an entry HTML file) are pages the person opens under **View > Panels** or
+from the command palette ("Open panel: …"). A panel opens in a dialog and
+talks to Lumi through a bridge: it reads the project's name and the theme,
+adds text to the message box without sending it, and shows a notice marked
+as its pack's. See [Panels](extensions.md#panels).
+
+**How a panel is kept apart.**
+- It runs in `<iframe sandbox="allow-scripts">`: an opaque origin with no
+  access to Lumi's page, its storage (which holds the launch token) or its
+  socket.
+- Its files come from `/panels/<panel token>/`. The token is made when the
+  panel opens and withdrawn when it closes or its page goes; it isn't the
+  launch token. Each response has a Content-Security-Policy of its own: no
+  network except WebRTC, only the panel's own files, `sandbox allow-scripts`.
+  Fetch Metadata refuses a panel URL opened as a top-level page.
+- Every file is checked as it's served: panels allowed; the pack approved,
+  enabled, allowed by policy and unchanged; the file one the approval covered
+  and its bytes the approved ones. A pack found unchanged is trusted for 3
+  seconds, so a panel's many files hash it once, and panel files are read on
+  threads of their own, off the app socket's pool.
+- A revoked, disabled or changed pack's open panel stops loading at once. Its
+  next addition to the message box is refused (each is checked with the
+  server), and it closes when panels are next listed, which happens after
+  pack changes in Settings, or when the app's connection drops.
+- The page takes bridge messages only from that frame, with origin `"null"`,
+  limited in size and rate.
+- Text a panel adds loses invisible characters and padding, is at most 20
+  lines, has its @mentions split apart (`@ file:`) so they attach nothing,
+  and is refused if the message would then start with `!` or `/` and run as
+  a command. The caret goes to where the text starts.
+- A panel can't close itself: Escape reaches the page only over a private
+  port that Lumi's bridge script holds and uses for a real key press. When a
+  panel closes, focus goes to the Menu or command palette button, never the
+  message box.
+- A panel's notices show in its dialog as "Panel · *pack*: …", apart from
+  Lumi's, and approvals show above panels.
+- The app page's policy now names `frame-src 'self'`, which also keeps a
+  panel from navigating itself to another site.
+- The desktop window refuses pywebview bridge calls whose name or id isn't a
+  plain identifier: pywebview writes both into script it runs in the page.
+  Panels open only in a browser or the WebView2 window (Windows), where a
+  sandboxed frame's messages didn't reach pywebview in a probe. WebKit
+  (macOS, Linux) and Qt give the bridge to every frame.
+
+**Settings and policy.** Settings > Privacy & security > **Panels from
+capability packs** (`security.extension_panels`, on by default); a policy
+can lock it off. Packs a policy refuses have no panels, and a policy that
+can't be used turns panels off.
+
+**The manifest.** `ui_panels` used to be shown for review and do nothing.
+Lumi now checks it when a pack loads: a panel with a bad id, title or entry
+makes the manifest invalid, and the pack stays off. The schema
+(`sdk/schema/lumi-pack.schema.json`) describes panels, Settings > Capability
+packs lists them for review, and `lumi extension check` lists them.
+
+**Code host tokens go only to trusted hosts.** An issue link
+(`@issue:https://…/owner/repo/issues/1`, or the `issue_view` tool) could name
+any host, and Lumi sent the GitHub or GitLab token there. Now:
+- the GitHub token goes only to github.com, to hosts listed in Settings >
+  Issue trackers > **Your code hosts** (`code_hosts.github_hosts`) or
+  `LUMI_GITHUB_HOSTS`, and in GitHub Actions to the hosts of
+  `GITHUB_SERVER_URL` and `GITHUB_API_URL`;
+- the GitLab token goes only to gitlab.com, `code_hosts.gitlab_hosts`,
+  `LUMI_GITLAB_HOSTS` and GitLab CI's `CI_SERVER_HOST` (and
+  `CI_API_V4_URL`'s host);
+- a request to any other host is refused before it's made, with a message
+  saying where to list the host;
+- a policy can set either list; then the environment can't add to it;
+- a redirect away from a GitLab host no longer carries the token (httpx
+  keeps the `PRIVATE-TOKEN` header, unlike `Authorization`).
+
+A GitHub Enterprise or self-managed GitLab origin found by its name (a host
+containing "github" or "gitlab") now needs listing too. See
+[which hosts get the token](github.md#which-hosts-get-the-token).
+
+**Not covered.** Browsers don't apply the Content-Security-Policy to WebRTC
+(Edge ignores `webrtc 'block'`), so a panel's script can send what it sees
+(the project's name, the theme and what's typed into it) to a server of its
+choosing. Panels don't open in the macOS and Linux desktop window, and one
+opens at a time.
+
 ## September 27 data loss prevention for outgoing content (source only, not released)
 
 **An organization's DLP rules check every request before it leaves for a

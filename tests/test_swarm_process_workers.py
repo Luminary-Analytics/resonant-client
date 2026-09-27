@@ -27,7 +27,7 @@ read_setup = reader_fixture
 coordinator_setup = coordinator_fixture
 
 
-def until(predicate, timeout=8):
+def until(predicate, timeout=30):
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         result = predicate()

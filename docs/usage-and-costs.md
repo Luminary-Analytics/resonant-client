@@ -27,8 +27,8 @@ month:
 | Field | Meaning |
 |---|---|
 | `user` | The operating-system account that ran Lumi |
-| `project`, `session`, `agent` | The project folder, the saved conversation (`gateway:<chat>` for the chat gateway, `tui:<id>` for a terminal UI session) and the worker, if any |
-| `purpose` | `turn`, `subagent`, `title` or `compression` |
+| `project`, `session`, `agent` | The project folder, the saved conversation (`gateway:<chat>` for the chat gateway, `tui:<id>` for a terminal UI session) and the worker, if any (`team:<run>:<worker>` for a [team](swarming.md#under-an-organization-policy) participant) |
+| `purpose` | `turn`, `subagent`, `title`, `compression`, or `team` (with `team_compression`) for a team participant's requests, recorded under the model the team configured: a router's alias (`sonn-auto`, say) is recorded as the alias |
 | `input_tokens` | Every prompt token, cached ones included; `cached_tokens` and `cache_write_tokens` are the parts read from or written to the provider's prompt cache |
 | `cost_usd` | The cost used for totals and budgets: the reported cost when there is one, otherwise the computed one. `null` when the model has no price |
 | `computed_cost_usd`, `reported_cost_usd` | Lumi's own calculation and the provider's, kept side by side |
@@ -151,7 +151,11 @@ Scopes:
 
 - `user`: this machine's account.
 - `project`: project folders matching the `match` glob.
-- `turn`: one turn.
+- `turn`: one turn. A [team](swarming.md#under-an-organization-policy) run
+  counts as one turn, and its every model request is checked before it's
+  sent; a limit that asks stops a team, since nobody can answer during it,
+  unless it was approved in a chat this period. Requests a team already has
+  running aren't stopped, so it can go past a limit by what they cost.
 
 Periods are UTC days or months. Unpriced calls can't count toward a budget,
 so `block_unpriced` refuses unpriced models while that budget applies.

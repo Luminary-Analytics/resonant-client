@@ -90,6 +90,15 @@ def configure(settings: Any) -> dict[str, Any]:
     return {"secret_scan": enabled}
 
 
+def patterns_enabled() -> bool:
+    """Whether the pattern scan is on (Settings, or a policy's lock).
+
+    A Team worker in its own process scans its requests itself and starts with
+    this switch (engine/swarming/worker_child.py); saved key values stay here.
+    """
+    return _settings()[0]
+
+
 def reset() -> None:
     """Back to the defaults: no pattern scan, no known values (tests and shutdown)."""
     with _lock:

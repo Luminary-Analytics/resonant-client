@@ -11,9 +11,10 @@ import os
 from pathlib import Path
 import sqlite3
 import threading
-from typing import Any
+from typing import Any, Callable
 import uuid
 
+from ... import audit
 from ...gui.runtime import BackendSpec
 from ...policy import blocked_reason, current as current_policy
 from ..artifacts import project_state_dir
@@ -22,10 +23,12 @@ from . import AttemptContext, Command, Scope, SwarmStore, SwarmSupervisor
 from .coordinator import ANSWER_WORKER_PREFIX, CoordinatorPlans, OrchestratorAnswers
 from . import collaboration_desktop, managed_collaboration_desktop
 from . import connections as team_connections
+from . import organization
 from .autopilot import MAX_ROUNDS, TeamAutopilot
 from .chat_context import chat_context, team_record
 from .integration import CheckSpec, SwarmIntegration
 from .models import Conflict, IdempotencyConflict, RevisionConflict, ScopeDenied, SwarmError, require_id
+from .organization import TeamGovernance
 from .policy import PolicyProfile, normalize_scopes, team_provider
 from .recovery import SwarmRecovery, record_run_host
 from .scheduler import SwarmScheduler
@@ -55,8 +58,10 @@ _MANAGED_RECOVERY_ACTIONS = {"managed_recovery_inspect", "managed_reconcile_requ
 
 
 # Team actions available while an organization policy applies: reading,
-# stopping, revoking and recovery bookkeeping. Every other action can start
-# model requests, processes, file changes or sharing (policy_refusal).
+# stopping, revoking and recovery bookkeeping, including taking over an
+# expired team (``recover`` fences its old owner and starts nothing; continuing
+# it is governed). Every other action can start model requests, processes,
+# file changes or sharing (policy_refusal).
 _POLICY_SAFE_ACTIONS = frozenset({
     "view", "events", "inspect", "inspect_candidate", "inspect_process", "history",
     "read_artifact", "export_report", "collaboration_inspect", "managed_sharing_inspect",
@@ -65,28 +70,49 @@ _POLICY_SAFE_ACTIONS = frozenset({
     "reconcile_application", "reconcile_effect", "reconcile_operation", "reconcile_process",
     "reconcile_request", "managed_reconcile_request", "managed_reconcile_action",
     "managed_reconcile_worker", "managed_reconcile_effect", "managed_retry_observations",
-    "managed_fence_absent",
+    "managed_fence_absent", "recover",
+})
+# A personal team's actions that start no participant, model request, check or
+# change: reviews and bookkeeping. Under a policy they stay available, like
+# the safe actions, whatever the team runs.
+_POLICY_PERSONAL_ACTIONS = frozenset({
+    "configure", "review_read_result", "complete", "accept_writer", "steer_worker",
+    # The orchestrator loop's own bookkeeping (autopilot.py).
+    "accept_under_grant", "accept_writer_under_grant", "reject",
+})
+# A personal team's actions that start participants, model requests, checks or
+# changes. Under a policy they run while the team keeps to its rules
+# (organization.TeamGovernance.refusal: model, modes, checks, shell sandbox).
+_POLICY_GOVERNED_ACTIONS = frozenset({
+    "start", "resume", "resume_worker", "request_plan", "decide_proposal", "retry_work", "set_concurrency",
+    "prepare_candidate", "run_check", "apply_candidate", "continue_recovered",
+    "retry",  # The orchestrator loop's retry (autopilot.py).
 })
 
 
-def policy_refusal(action: str) -> str:
+def policy_refusal(action: str, *, personal: bool = False, team: Callable[[], str] | None = None) -> str:
     """Why this team action can't run on this computer, or an empty string.
 
-    Team workers don't yet take an organization's model, mode, shell, approval
-    or sharing rules, so the preview starts no new team work where a policy
-    applies, as tasks from chat never run on a managed computer. Viewing,
-    stopping and recovering retained work stays available.
+    Viewing, stopping, revoking and recovering retained work stay available
+    whatever the policy. Where a policy applies, a personal team runs under
+    its rules (organization.py): its reviews and bookkeeping stay available,
+    and ``team`` says why it can't start more work now, if it can't. Sharing
+    with another conversation and organization-managed teams don't follow a
+    policy's rules yet, so their other actions stay refused, as does any
+    action not listed here.
     """
     if action in _POLICY_SAFE_ACTIONS:
         return ""
     reason = blocked_reason()
     if reason:
         return reason
-    policy = current_policy()
-    if policy is not None:
-        return (f"{policy.organization}'s policy applies on this computer, and the Team preview "
-                "doesn't follow organization rules yet, so it can't start or change team work here.")
-    return ""
+    if current_policy() is None:
+        return ""
+    if personal and action in _POLICY_PERSONAL_ACTIONS:
+        return ""
+    if personal and action in _POLICY_GOVERNED_ACTIONS:
+        return team() if team is not None else ""
+    return organization.unsupported_refusal()
 
 
 def _path_key(path: str) -> str:
@@ -292,7 +318,79 @@ class SwarmRuntime:
             self.team_model(spec)
         except Conflict as exc:
             return str(exc)
-        return ""
+        return (organization.preview_refusal(self.settings)
+                or organization.model_refusal(spec.backend_type, spec.model))
+
+    @staticmethod
+    def _personal(capture: CapturedSession) -> bool:
+        return capture.scope.tenant_id == f"personal:{capture.scope.owner_id}"
+
+    def _governance(self, capture: CapturedSession, run_id: str, setup: dict[str, Any]) -> TeamGovernance:
+        """A run's organization rules, budgets, usage and audit trail (organization.py), from its setup."""
+        return TeamGovernance.from_setup(self.settings, setup, run_id=run_id, project=capture.workspace,
+                                         session=capture.scope.session_id, personal=self._personal(capture))
+
+    def _run_governance(self, capture: CapturedSession, run_id: Any) -> TeamGovernance | None:
+        """The governance of a run this host owns, or one built from a retained run's setup."""
+        if not isinstance(run_id, str) or not run_id:
+            return None
+        pair = self._runners.get(run_id)
+        if pair is not None and pair[1].governance is not None:
+            return pair[1].governance
+        store = self._stores.get(_path_key(capture.workspace))
+        if store is None:
+            return None
+        try:
+            setup, _ = self._setup(store, run_id)
+        except (OSError, sqlite3.Error, SwarmError, ValueError):
+            return None
+        return self._governance(capture, run_id, setup) if setup else None
+
+    def team_governance(self, run_id: str) -> TeamGovernance | None:
+        """The governance of a run this host runs (the orchestrator loop's audit trail)."""
+        pair = self._runners.get(run_id)
+        return pair[1].governance if pair is not None else None
+
+    def team_policy_refusal(self, run_id: str, action: str) -> str:
+        """policy_refusal for a step the orchestrator loop takes on a run this host runs."""
+        pair = self._runners.get(run_id)
+        if pair is None or pair[1].governance is None:
+            return policy_refusal(action)
+        return policy_refusal(action, personal=self._personal(pair[0]), team=pair[1].governance.refusal)
+
+    def team_dispatch_refusal(self, run_id: str) -> str:
+        """Why a run this host runs may start no participant or model request now, or ''."""
+        governance = self.team_governance(run_id)
+        return governance.dispatch_refusal() if governance is not None else ""
+
+    def _team_refusal(self, capture: CapturedSession, message: dict[str, Any]) -> str:
+        """Why an existing personal team can't start more work under the policy in force, or ''."""
+        action = message.get("action")
+        if action == "start" or (action == "decide_proposal" and message.get("accept") is not True):
+            return ""  # operate checks a start in full; rejecting a plan starts nothing.
+        governance = self._run_governance(capture, message.get("run_id"))
+        return governance.refusal() if governance is not None else ""
+
+    def _start_refusal(self, capture: CapturedSession, message: dict[str, Any]) -> str:
+        """Why a new team can't start under the rules and budgets in force, before any team state.
+
+        Reads the start message leniently: _start rejects a malformed one itself.
+        """
+        request_id = message.get("request_id")
+        run_id = "swarm_" + hashlib.sha256(request_id.encode()).hexdigest() if isinstance(request_id, str) else ""
+        if run_id in self._runners:
+            return ""  # A lost acknowledgement's retry starts nothing again.
+        autonomy = message.get("autonomy") if isinstance(message.get("autonomy"), dict) else {}
+        checks = message.get("checks") if isinstance(message.get("checks"), list) else []
+        chosen = message.get("worker_model")
+        workers = ({"provider": chosen["provider"].strip().lower(), "model": chosen["model"].strip()}
+                   if isinstance(chosen, dict) and all(isinstance(chosen.get(key), str) for key in ("provider", "model"))
+                   else None)
+        setup = {"model": {"provider": capture.backend_spec.backend_type, "model": capture.backend_spec.model},
+                 "plan_mode": message.get("plan_mode", "manual"), "write_roots": message.get("write_roots") or [],
+                 "checks": checks, "autonomy": autonomy, **({"worker_model": workers} if workers else {}),
+                 **({"execution_mode": "managed"} if message.get("execution_mode") == "managed" else {})}
+        return self._governance(capture, run_id, setup).start_refusal()
 
     def execution_capture(self, capture: CapturedSession, mode: str) -> CapturedSession:
         """Resolve a new explicit scope without changing a saved personal run."""
@@ -542,6 +640,9 @@ class SwarmRuntime:
             reason = "The current coordinator must finish or be reconciled first"
         elif remaining < 1:
             reason = "The original team request allowance has no unallocated requests"
+        else:
+            # The organization's rules and the budgets in force now (organization.py).
+            reason = self.team_dispatch_refusal(run_id) or None
         return {"available": reason is None, "reason": reason, "remaining_requests": remaining,
                 "default_requests": min(setup.get("coordinator_requests", 3), remaining) if remaining else 1,
                 "read_roots": roots, "worker_requests": setup.get("worker_requests")}
@@ -590,6 +691,9 @@ class SwarmRuntime:
                        "requests": requests, "model": {"provider": pair[0].backend_spec.backend_type,
                                                          "model": pair[0].backend_spec.model},
                        "tools": sorted(tools), "read_roots": roots}
+            refusal = self.team_dispatch_refusal(run_id)
+            if refusal:
+                raise Conflict(refusal)  # Before any turn is committed (organization.py).
             # Only the first acknowledged atomic commit may dispatch. Replays
             # return their durable result without a second runner.start call.
             receipt, fresh = runner.supervisor.handle_once(Command(message["request_id"], run_id, revision,
@@ -662,6 +766,9 @@ class SwarmRuntime:
                        "requests": requests, "model": {"provider": pair[0].backend_spec.backend_type,
                                                         "model": pair[0].backend_spec.model},
                        "tools": sorted(tools), "read_roots": []}
+            refusal = self.team_dispatch_refusal(run_id)
+            if refusal:
+                raise Conflict(refusal)  # Before any turn is committed (organization.py).
             receipt, fresh = runner.supervisor.handle_once(Command(request_id, run_id, expected_revision,
                 runner.authority.epoch, "start_coordinator", payload), runner.authority)
             if not fresh:
@@ -755,6 +862,12 @@ class SwarmRuntime:
                 if self.store_setup(connection, store, run_id, message["request_id"], setup_payload) is None:
                     raise IdempotencyConflict("Team setup is incomplete; inspect retained state before continuing")
             return run_id
+        # The run's organization rules, budgets, usage and audit trail. operate
+        # checked this start already; this repeats it on the validated setup.
+        governance = self._governance(capture, run_id, setup_payload)
+        refusal = governance.dispatch_refusal()
+        if refusal:
+            raise Conflict(refusal)
         if self.busy:
             raise Conflict("Finish or stop the current team before starting another")
         latest = self._latest(store, capture.scope)
@@ -824,11 +937,19 @@ class SwarmRuntime:
                                        exclusions=self.exclusions_for(capture.workspace), connections=connections,
                                        managed_readers=self._managed_readers, integration=integration,
                                        managed_runtime=attachment.runtime if attachment is not None else None,
+                                       governance=governance,
                                        **({"writer_process_factory": None} if not self._managed_readers else {}))
             self._runners[run_id] = (capture, runner)
             with store._connection(write=True) as connection:
                 store._remember(connection, run_id, "desktop-setup", message["request_id"], setup_payload,
                                 {"run_id": run_id, **({"writer_base": writer_base} if writer_base else {})})
+            governance.record("team.start", execution_mode="managed" if managed else "personal", plan_mode=plan_mode,
+                              provider=capture.backend_spec.backend_type, model=capture.backend_spec.model,
+                              worker_provider=workers_spec.backend_type, worker_model=workers_spec.model,
+                              objective=audit.content(objective), tasks=len(tasks), request_limit=requests,
+                              max_workers=workers, write_roots=[audit.name(root) for root in write_roots],
+                              checks=[audit.name(check["key"]) for check in checks],
+                              rounds=autonomy["rounds"] if autonomy is not None else 0, apply=applies)
             if attachment is not None:
                 attachment.start_pump(runner, lambda: store.snapshot(authority.scope, authority.run_id))
             if plan_mode == "coordinator":
@@ -885,7 +1006,13 @@ class SwarmRuntime:
 
     def operate(self, capture: CapturedSession, message: dict[str, Any]) -> dict[str, Any]:
         """Apply a validated local UI intent off the event-loop thread."""
-        refusal = policy_refusal(str(message.get("action", "view")))
+        action = str(message.get("action", "view"))
+        refusal = policy_refusal(action, personal=self._personal(capture),
+                                 team=lambda: self._team_refusal(capture, message))
+        if not refusal and action == "start":
+            # The model, modes, checks and budgets this team would run under
+            # (organization.py), policy or not, before any team state exists.
+            refusal = self._start_refusal(capture, message)
         if refusal:
             raise Conflict(refusal)
         self._validate_execution_mode(capture, message)
@@ -925,6 +1052,7 @@ class SwarmRuntime:
                 if action == "stop" and pair is None and recovered is not None:
                     recovered[1].command("stop", {}, command_id=message["request_id"],
                                          expected_revision=message.get("expected_revision"))
+                    self._audit_decision(capture, run_id, "stop")
                     return self._view(capture, store, run_id)
                 if not run_id or run_id not in self._runners:
                     raise Conflict("This team needs explicit host recovery before controls can resume")
@@ -937,6 +1065,8 @@ class SwarmRuntime:
                     self._schedulers[run_id].close()
                 if action == "stop" and run_id in self._autopilots:
                     self._autopilots[run_id].close()
+                if action == "stop":
+                    self._audit_decision(capture, run_id, "stop")
             elif action in {"pause_worker", "resume_worker", "cancel_worker", "steer_worker"}:
                 if pair is None:
                     raise Conflict("Individual controls require this team's current execution host")
@@ -969,6 +1099,8 @@ class SwarmRuntime:
                 kind = {"reject_result": "reject", "retry_work": "retry"}.get(action, action)
                 self._command(runner.supervisor, runner.authority, kind, payload,
                               key=message["request_id"], revision=message["expected_revision"])
+                if action != "set_concurrency":
+                    self._audit_decision(capture, run_id, kind, **payload)
                 if action == "complete" and run_id in self._schedulers:
                     self._schedulers[run_id].close()
                 if action == "decide_proposal" and message.get("accept") is True:
@@ -1187,6 +1319,22 @@ class SwarmRuntime:
         return SwarmIntegration(store, capture.workspace,
             root=Path(self._state_root(capture.workspace)) / "swarm" / "worktrees", managed_effects=effects)
 
+    def _audit_decision(self, capture, run_id, decision: str, **payload: Any) -> None:
+        """The owner's decision on a team, in the audit log (organization.py)."""
+        try:
+            governance = self._run_governance(capture, run_id)
+            if governance is None:
+                return
+            if decision == "stop":
+                governance.record("team.stop", by="owner")
+                return
+            governance.decision(decision, by="owner", evidence=payload.get("evidence"),
+                                attempt=payload.get("attempt_id"), proposal=payload.get("proposal_id"),
+                                accept=payload.get("accept"), work_item=payload.get("work_item_id"),
+                                candidate=payload.get("candidate_id"))
+        except Exception:  # noqa: BLE001 - the audit log never changes a decision already made
+            pass
+
     def _integration_operation(self, capture, store, run_id, pair, recovered, action, message, prepared_integration=None):
         from .workflow import IntegrationWorkflow
         if pair is None and (action not in {"reconcile_application", "reconcile_operation", "reconcile_effect"} or recovered is None):
@@ -1194,6 +1342,13 @@ class SwarmRuntime:
         setup, result = self._setup(store, run_id, required=True)
         if not setup.get("write_roots"):
             raise ScopeDenied("This team has no captured writer verification contract")
+        governance = self._run_governance(capture, run_id)
+        if action == "run_check" and governance is not None:
+            # A check is a command: the guardrails, the floor, the shell rules
+            # and the shell sandbox in force now decide, policy or not.
+            refusal = governance.refusal()
+            if refusal:
+                raise Conflict(refusal)
         host = pair[1] if pair else recovered[1]
         previous = self._workflows.get(run_id)
         if previous and previous.authority != host.authority:
@@ -1203,7 +1358,8 @@ class SwarmRuntime:
             integration = pair[1].integration if pair else prepared_integration
             if integration is None:
                 raise Conflict("Captured writer integration is unavailable; refresh this team's recovery")
-            self._workflows[run_id] = IntegrationWorkflow(host.supervisor, host.authority, integration)
+            self._workflows[run_id] = IntegrationWorkflow(host.supervisor, host.authority, integration,
+                observer=governance.integration_observed if governance is not None else None)
         workflow = self._workflows[run_id]
         kind = "apply" if action == "apply_candidate" else action
         if action == "prepare_candidate":
@@ -1283,6 +1439,11 @@ class SwarmRuntime:
             recovery.command("recover", {"retry_work_items": message.get("retry_work_items", [])},
                 command_id=message["request_id"], expected_revision=message.get("expected_revision"))
             return  # A lost acknowledgement never replaces the live owner.
+        # Continuing starts participants: the rules and budgets in force now apply.
+        governance = self._governance(capture, recovery.run_id, setup)
+        refusal = governance.dispatch_refusal()
+        if refusal:
+            raise Conflict(refusal)
         attachment = None
         if managed:
             retained = self._managed_recoveries.get(recovery.run_id)
@@ -1312,6 +1473,7 @@ class SwarmRuntime:
                                    connections={**self.team_model(capture.backend_spec), **self.team_model(workers_spec)},
                                    managed_readers=self._managed_readers, integration=integration,
                                    managed_runtime=attachment.runtime if attachment else None,
+                                   governance=governance,
                                    **({"writer_process_factory": None} if not self._managed_readers else {}))
         scheduler = SwarmScheduler(runner, workers_spec, requests_per_worker=allowance,
                                    base_revision=writer_base.get("base_revision"))

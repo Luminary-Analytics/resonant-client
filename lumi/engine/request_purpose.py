@@ -1,15 +1,17 @@
 """Keep auxiliary generation distinct from customer conversation learning."""
 
 
-def auxiliary_stream(backend, purpose: str, *, usage_context: dict | None = None, **kwargs):
+def auxiliary_stream(backend, purpose: str, *, usage_context: dict | None = None, record: bool = True, **kwargs):
     """Stream an auxiliary request (a title, a summary), recording its usage.
 
     ``purpose`` names the request in the usage records (lumi/usage.py);
     ``usage_context`` adds the session, project and agent when known.
+    ``record=False`` leaves recording to the caller: a Team participant's
+    requests are recorded by the host that admits them.
     """
     method = getattr(backend, "stream_auxiliary", None)
     stream = method(purpose=purpose, **kwargs) if callable(method) else backend.stream(**kwargs)
-    return _recorded(stream, backend, purpose, dict(usage_context or {}))
+    return _recorded(stream, backend, purpose, dict(usage_context or {})) if record else stream
 
 
 def _recorded(stream, backend, purpose: str, context: dict):

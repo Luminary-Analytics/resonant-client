@@ -73,6 +73,16 @@ class Runtime:
         return {"available": True, "reason": None, "remaining_requests": self.remaining,
                 "default_requests": 3, "read_roots": ["."]}
 
+    # The organization's rules and budgets (organization.py): none refuse here.
+    def team_dispatch_refusal(self, run_id):
+        return ""
+
+    def team_policy_refusal(self, run_id, action):
+        return ""
+
+    def team_governance(self, run_id):
+        return None
+
     def _answer_workers(self, capture, **turn):
         self.answers.append(turn)
 
@@ -89,6 +99,23 @@ def test_an_orchestrator_turn_without_a_known_outcome_hands_the_team_back():
     assert loop.step() is True
     assert loop.phase == "needs_owner" and "without a known outcome" in loop.detail
     assert runtime.commands == runtime.plans == []
+
+
+def test_rules_that_refuse_the_team_hand_it_back_before_any_step():
+    # A policy or budget refusing the team (organization.py) stops the loop's
+    # steps, even with retryable work and a question waiting; it resumes when
+    # the rules allow the team again.
+    runtime = Runtime(snapshot(work_items=[item("api", "failed")],
+                               attempts=[stopped("a1", "worker", "failed", work_item_id="api")]))
+    refusal = ["Acme's policy doesn't allow chosen on ollama, so the team can't use it."]
+    runtime.team_dispatch_refusal = lambda run_id: refusal[0]
+    loop = TeamAutopilot(runtime, "run", rounds=2)
+    assert loop.step() is True
+    assert loop.phase == "needs_owner" and loop.detail == refusal[0]
+    assert runtime.commands == runtime.plans == runtime.answers == []
+    refusal[0] = ""
+    loop.step()
+    assert loop.phase == "working" and "retrying it shortly" in loop.detail
 
 
 def test_planned_tasks_dispatch_keeps_refusing_hand_the_team_back():

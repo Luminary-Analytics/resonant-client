@@ -48,6 +48,9 @@ def test_guarded_http_rejection_is_one_generation_attempt(provider, monkeypatch)
     assert calls[0].url.path.endswith("/chat/completions")
     ends = [record for record in guard.records if record["kind"] == "request.end"]
     assert len(ends) == 1 and ends[0]["outcome"] == "uncertain"
+    # The status is kept (a number, unlike the provider's text) for diagnosis.
+    assert ends[0]["error"].endswith(f"provider status {429 if provider == 'sonn' else 503}")
+    assert "fixture unavailable" not in ends[0]["error"]
 
 
 def test_guarded_exo_stream_restart_cannot_repeat_generation():

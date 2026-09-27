@@ -166,12 +166,14 @@ class ExecutionBoundary:
         end_attempted = False
         saw_done = False
         usage = None
+        status = None
         error = "Model stream closed before its complete response was observed"
         try:
             self._check_model_selection(backend, request_id)
             iterator = iter(invoke())
             for event_type, data in iterator:
                 if event_type in {"error", "cancelled"}:
+                    status = data.get("status_code")
                     raise ExecutionGuardError(str(data.get("message") or "Provider failed or cancelled"))
                 if event_type == "done":
                     saw_done = True
@@ -192,6 +194,8 @@ class ExecutionBoundary:
                 # Provider exception strings can include credential-bearing
                 # URLs. The ledger records failure class, not raw diagnostics.
                 error = f"Model response could not be fully observed ({type(exc).__name__})"
+                if type(status) is int and 100 <= status <= 599:
+                    error += f"; provider status {status}"
             raise
         finally:
             self._active_request = None

@@ -2531,7 +2531,10 @@ class KimiBackend:
                             yield (EVENT_ERROR, {
                                 "message": self._user_error_message(
                                     response.status_code, error_type, message
-                                )
+                                ),
+                                # A number, safe to keep where provider text isn't
+                                # (the guarded ledger, benchmark records).
+                                "status_code": response.status_code,
                             })
                             return
 

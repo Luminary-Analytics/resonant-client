@@ -284,6 +284,21 @@ def _backend(protocol, endpoint, api_key):
                         thinking_mode=protocol["thinking_mode"]), {})
 
 
+def _event_log(events, api_key):
+    """Worker events for diagnosis: long text shortened, and the key never kept."""
+    def clip(value):
+        if isinstance(value, str):
+            value = value.replace(api_key, "[redacted]") if api_key else value
+            return value if len(value) <= 2000 else value[:2000] + f"... [{len(value) - 2000} more characters]"
+        if isinstance(value, dict):
+            return {key: clip(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [clip(item) for item in value]
+        return value
+    kept = [event for event in events if event.get("event") not in {"text.delta", "thinking.delta", "context.state"}]
+    return {"note": "Local diagnosis only: may contain fixture file contents and model text", "events": clip(kept)}
+
+
 def _configuration(protocol, plan):
     """The exact comparable configuration; platform observations are additional."""
     return {"actors": [{"role": f"guarded_{'writer' if item['write_roots'] else 'reader'}_{index + 1}", "provider": protocol["provider"],
@@ -440,6 +455,9 @@ def execute_case(protocol, case, output, *, endpoint, api_key="", backend_factor
     finally:
         timer.cancel()
         scheduler.close()
+        # The workers' own event stream (keys already redacted by the runner):
+        # the only place a live failure's tool calls and error text survive.
+        events = runner.poll(limit=1000)["events"]
         controls = runner.close(timeout=3)
         timer.join(timeout=3)
 
@@ -478,6 +496,7 @@ def execute_case(protocol, case, output, *, endpoint, api_key="", backend_factor
         "outcome": outcome, "verification": verification}
     pack.validate_run_record(record)
     _write(directory / "runtime-report.json", report)
+    _write(directory / "worker-events.json", _event_log(events, api_key))
     _write(directory / "run.json", record)
     _write(directory / "observations.json", {"error_type": error, "stop_errors": stop_errors,
         "runtime_state": snapshot["run"]["state"],

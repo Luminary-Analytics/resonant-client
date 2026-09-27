@@ -43,22 +43,26 @@ test('DLP redacts, blocks and shows its rules in the source app', {timeout: 1200
         await page.goto(await fixtureLaunch(info));
         await page.waitForFunction(session => window.app?.currentSessionId === session, info.session_id);
 
-        // 1. A redact rule: the turn runs, the model gets the redacted copy, a quiet marker says so.
-        await page.locator('#user-input').fill(`Refund card ${CARD} for Project Falcon`);
+        // 1. A redact rule and the DLP service: the turn runs, the model gets the redacted copy,
+        // and a quiet marker says so. The service sees the text after the built-in redaction.
+        await page.locator('#user-input').fill(`Refund card ${CARD} for Jane Doe on Project Falcon`);
         await page.keyboard.press('Enter');
         const marker = page.locator('.backend-status-dlp');
         await marker.waitFor();
         assert.equal(await marker.getAttribute('role'), 'status');
         const markerText = await marker.innerText();
-        assert.match(markerText, /redacted 1 match before sending \(credit_card\)/);
-        assert.ok(!markerText.includes(CARD) && !markerText.includes('4111'), markerText);
+        assert.match(markerText, /redacted 2 matches before sending \(credit_card, person-name\)/);
+        assert.ok(!markerText.includes(CARD) && !markerText.includes('4111') && !markerText.includes('Jane'), markerText);
         await page.getByText('Noted.', {exact: true}).first().waitFor();
         await page.waitForFunction(() => !window.app.isRunning);
         let seen = await evidence(info);
         const turn = seen.requests.find(request => request.max_tokens !== 32);
         assert.ok(turn, JSON.stringify(seen.requests));
-        assert.equal(turn.user_msg, 'Refund card [REDACTED:credit_card] for Project Falcon');
-        assert.ok(!JSON.stringify(seen.requests).includes(CARD), 'no request (turn or title) may carry the card');
+        assert.equal(turn.user_msg, 'Refund card [REDACTED:credit_card] for [REDACTED:person-name] on Project Falcon');
+        assert.ok(!JSON.stringify(seen.requests).includes(CARD), 'no model request may carry the card');
+        assert.ok(!JSON.stringify(seen.requests).includes('Jane Doe'), 'the service redacted the name');
+        assert.ok(seen.service_calls.some(call => JSON.stringify(call).includes('Jane Doe')), 'the service saw the name');
+        assert.ok(!JSON.stringify(seen.service_calls).includes(CARD), 'the service gets text after the built-in redaction');
         const afterFirst = seen.requests.length;
         await page.screenshot({path: path.join(output, 'dlp-redacted-desktop.png')});
 
@@ -89,15 +93,19 @@ test('DLP redacts, blocks and shows its rules in the source app', {timeout: 1200
         assert.equal(seen.requests.length, afterFirst + 1);
         const later = JSON.stringify(seen.requests.at(-1));
         assert.ok(!later.includes(SSN) && later.includes('[Withheld: this content was blocked'), later);
+        assert.ok(!JSON.stringify(seen.service_calls).includes(SSN), 'blocked content never reaches the service');
 
         // 4. The audit log records rule, action, kind and count, never the text.
         const findings = seen.audit.filter(record => record.type === 'dlp.finding').map(record => record.data);
         const actions = new Set(findings.map(finding => `${finding.rule}:${finding.action}:${finding.kind}`));
-        for (const expected of ['credit_card:redact:prompt', 'falcon-codename:flag:prompt', 'us_ssn:block:prompt']) {
+        for (const expected of ['credit_card:redact:prompt', 'person-name:redact:prompt', 'falcon-codename:flag:prompt',
+            'us_ssn:block:prompt']) {
             assert.ok(actions.has(expected), `${expected} missing from ${[...actions]}`);
         }
         const auditText = JSON.stringify(seen.audit);
-        for (const secret of [CARD, '4111111111111111', SSN, 'Project Falcon']) assert.ok(!auditText.includes(secret), secret);
+        for (const secret of [CARD, '4111111111111111', SSN, 'Project Falcon', 'Jane Doe']) {
+            assert.ok(!auditText.includes(secret), secret);
+        }
 
         // 5. Settings shows the organization's rules, read-only, from the keyboard.
         await page.keyboard.press('Control+Comma');
@@ -109,7 +117,8 @@ test('DLP redacts, blocks and shows its rules in the source app', {timeout: 1200
         await row.waitFor();
         const rowText = await row.innerText();
         for (const expected of ['credit_card', 'redacted before sending', 'us_ssn', 'blocks the request',
-            'falcon-codename', 'recorded', 'attachment, prompt', 'Managed by Fixture Corp']) {
+            'falcon-codename', 'recorded', 'attachment, prompt', 'Also checked by 127.0.0.1',
+            'if it can’t answer, nothing is sent', 'Managed by Fixture Corp']) {
             assert.ok(rowText.includes(expected), `${expected} missing from ${rowText}`);
         }
         assert.ok(!rowText.includes('Project Falcon'), 'keywords never reach the page');
@@ -122,7 +131,8 @@ test('DLP redacts, blocks and shows its rules in the source app', {timeout: 1200
         assert.equal(await row.evaluate(node => node.scrollWidth <= node.clientWidth + 1), true, 'the row fits a phone width');
         await page.screenshot({path: path.join(output, 'dlp-settings-compact.png')});
         assert.deepEqual(errors, []);
-        console.log(JSON.stringify({screenshots: output, requests: seen.requests.length, findings: findings.length}));
+        console.log(JSON.stringify({screenshots: output, requests: seen.requests.length,
+            service_calls: seen.service_calls.length, findings: findings.length}));
     } finally {
         if (browser) await browser.close();
         if (info) await fetch(info.url + '/__fixture__/shutdown', {method: 'POST'}).catch(() => {});

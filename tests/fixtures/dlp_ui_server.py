@@ -2,9 +2,11 @@
 
 The organization policy is a fixture file and inference is scripted: the
 shipped template, app, WebSocket handlers, Session and DLP check run as they
-do for a person. ``/__fixture__/evidence`` returns what the scripted model
-received, so the check can compare it with what the page showed. Never a
-live-model or packaged-desktop qualification.
+do for a person. The policy's external DLP service is a route on this same
+loopback server, which redacts the name "Jane Doe". ``/__fixture__/evidence``
+returns what the scripted model and the service received, so the check can
+compare them with what the page showed. Never a live-model or
+packaged-desktop qualification.
 """
 from __future__ import annotations
 
@@ -40,6 +42,12 @@ def main() -> None:
     for key in tuple(os.environ):
         if any(part in key.upper() for part in ("API_KEY", "TOKEN", "SECRET", "PASSWORD")):
             os.environ.pop(key)
+    # Bind first: the policy names this server's own route as the DLP service.
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener.bind(("127.0.0.1", 0))
+    port = listener.getsockname()[1]
+    POLICY["dlp"]["service"] = {"url": f"http://127.0.0.1:{port}/__fixture__/dlp-service",
+                                "timeout_seconds": 10, "on_error": "block"}
     policy_file = root / "policy.json"
     policy_file.write_text(json.dumps(POLICY), encoding="utf-8")
     os.environ["LUMI_POLICY_FILE"] = str(policy_file)
@@ -74,6 +82,7 @@ def main() -> None:
     from tests.streaming_stub import StreamingBackend, done, text_delta
 
     received: list[dict] = []
+    service_calls: list[dict] = []
 
     class RecordingBackend(StreamingBackend):
         def stream(self, **kwargs):
@@ -100,8 +109,16 @@ def main() -> None:
     async def evidence(request):
         return JSONResponse({"kind": "source-app-scripted-native-browser", "live_providers_called": False,
                              "requests": json.loads(json.dumps(received, default=str)),
+                             "service_calls": service_calls,
                              "audit": [json.loads(line) for path in sorted((home / ".lumi" / "audit").glob("*.jsonl"))
                                        for line in path.read_text(encoding="utf-8").splitlines()]})
+
+    async def dlp_service(request):
+        payload = await request.json()
+        service_calls.append(payload)
+        if any("Jane Doe" in item["text"] for item in payload["items"]):
+            return JSONResponse({"action": "redact", "redactions": [{"text": "Jane Doe", "rule": "person-name"}]})
+        return JSONResponse({"action": "allow"})
 
     async def shutdown(request):
         server.should_exit = True
@@ -113,11 +130,10 @@ def main() -> None:
         return JSONResponse({"url": access.launch_url(str(request.base_url))})
 
     gui.app.routes.extend([Route("/__fixture__/launch", fixture_launch), Route("/__fixture__/evidence", evidence),
+                           Route("/__fixture__/dlp-service", dlp_service, methods=["POST"]),
                            Route("/__fixture__/shutdown", shutdown, methods=["POST"])])
-    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    listener.bind(("127.0.0.1", 0))
     server = uvicorn.Server(uvicorn.Config(gui.app, host="127.0.0.1", log_level="warning"))
-    print(json.dumps({"url": f"http://127.0.0.1:{listener.getsockname()[1]}", "session_id": current.id,
+    print(json.dumps({"url": f"http://127.0.0.1:{port}", "session_id": current.id,
                       "home": str(home), "python": sys.executable}), flush=True)
     server.run(sockets=[listener])
 

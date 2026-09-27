@@ -554,7 +554,7 @@ class LumiSettingsView {
             return `<li><code>${esc(rule.name)}</code> ${esc(actions[rule.action] || rule.action)}${scope}</li>`;
         }).join('');
         const service = dlp.service
-            ? `<div class="settings-row-hint">Also checked by <code>${esc(dlp.service)}</code>${dlp.service_on_error === 'allow' ? '; sent unchecked if it can’t answer' : '; nothing is sent if it can’t answer'}.</div>`
+            ? `<div class="settings-row-hint">Also checked by <code>${esc(dlp.service)}</code>${dlp.service_on_error === 'allow' ? '; if it can’t answer, requests go out with only the rules above' : '; if it can’t answer, nothing is sent'}.</div>`
             : '';
         return `${rules ? `<ul class="settings-policy-list">${rules}</ul>` : ''}${service}<div class="settings-row-hint">Applied to everything sent to a model provider. Managed by ${esc(policy.organization)}.</div>`;
     }

@@ -80,7 +80,7 @@ says offline mode stays on until the administrator fixes it.
 | Providers from capability packs (extensions) | Hidden and refused for the same reason. |
 | Lumi Cloud: sign-in, check-ins, sharing, the team library, hand-offs, reviews, second approvals, tasks from chat | Refused unless your Lumi Cloud's host is allowed. Sign-in says so before opening the browser. |
 | [Sending feedback](feedback.md) | Refused unless the feedback address's host is allowed, before the report is prepared: no diagnostics gathered, no DLP check, and **Copy to clipboard** gives only what was typed. With no address set, refused rather than kept to send later. Reports already waiting stay on this computer until they may go, and the dialog doesn't ask the address who reads its reports. |
-| Update checks and downloads | WinSparkle doesn't start, and turning offline mode on stops it at once, unless the update site (`luminary-analytics.github.io`) is allowed. **Check for updates** says why. Install updates from a file instead. |
+| Update checks and downloads | WinSparkle (Windows) and Sparkle (macOS) don't start, and turning offline mode on stops them at once, unless the update site (`luminary-analytics.github.io`) is allowed. Sparkle can't be shut down, so Lumi refuses each check it asks to start, and each download as it starts (one from an update window left open too), as it does a download from a host that isn't allowed. Sparkle follows a redirect from an allowed host without asking Lumi, though the disk image's signature is still checked. **Check for updates** says why. Install updates from a file instead (Windows). |
 | The agent's browsing (`browser_navigate`, new tabs) | Refused for other hosts, and the model is told why. A `file:` address that names another computer (`file://host/share/…`, `file:////host/share`), which Chrome on Windows opens as a network share, is refused too; this computer's files open. Lumi's Chrome starts with switches that send everything else to a closed port on this computer, so pages' own requests and scripts can't reach other hosts either, link-local addresses included. Turning offline mode on, or changing the allowed hosts, closes the Chrome Lumi started under other rules at once; the next browser tool starts it again. A Chrome that Lumi didn't start isn't used while offline mode is on. |
 | Opening an address with computer use (`open_application`) | Refused: the default browser or another program would reach it unchecked. |
 | [Panels from capability packs](extensions.md) | Stay closed, and View says why: a panel has no network except WebRTC, which browsers don't let a page's policy turn off and offline mode can't check. Turning offline mode on in Settings closes an open panel at once; when a policy turns it on, the panel's files stop loading at once and View stops offering it the next time Lumi lists panels. |
@@ -101,8 +101,8 @@ says offline mode stays on until the administrator fixes it.
   connections, sign-in token endpoints, pull requests, issue trackers, HTTP MCP
   servers, dictation and the OpenTelemetry export.
 - Where an address leaves Lumi's process, Lumi checks it before handing it
-  over: Git for packs and pull-request pushes, the update feed WinSparkle
-  reads, the page Lumi Cloud sign-in opens, Azure's own sign-in, and Lumi's
+  over: Git for packs and pull-request pushes, the update feed WinSparkle and
+  Sparkle read, the page Lumi Cloud sign-in opens, Azure's own sign-in, and Lumi's
   Chrome (`--proxy-server` to a closed port, a bypass list of this computer
   and the allowed hosts starting with `<-loopback>`, which removes Chrome's
   own direct route to link-local addresses, and no WebRTC UDP around the
@@ -214,13 +214,14 @@ command line and prints the result as JSON, without installing. It also works
 on macOS and Linux, for checking a bundle before carrying it to a Windows
 computer.
 
-**macOS and Linux.** Lumi doesn't update itself there (see
-[Updates](updates.md)), so it doesn't install from a file either; the Settings
-page says what to do instead. Install the new PKG with your device management
-or `sudo installer -pkg lumi-X.Y.Z.pkg -target /` (check it first with
-`pkgutil --check-signature`), or the new .deb or .rpm with `apt` or `dnf`, or
-replace the AppImage or tarball. A copy running from source can verify a file
-but not install it.
+**macOS and Linux.** Lumi doesn't install from a file there; the Settings
+page says what to do instead. On macOS, where Lumi otherwise updates itself
+online with Sparkle, open the new disk image and drag Lumi to Applications,
+or install the new PKG with your device management or
+`sudo installer -pkg lumi-X.Y.Z.pkg -target /` (check it first with
+`pkgutil --check-signature`). On Linux, install the new .deb or .rpm with
+`apt` or `dnf`, or replace the AppImage or tarball. A copy running from source
+can verify a file but not install it.
 
 ## The offline license
 

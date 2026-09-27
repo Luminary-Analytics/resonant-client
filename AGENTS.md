@@ -135,18 +135,30 @@ host enrollment and actual packaged/learned-benefit qualification remain open.
   loop that calls a model repeatedly must check them too.
 - Updates: `update_channels.py` picks the feed from `updates.mode`, `channel` and
   `pin` (Settings or policy, read at startup); `appcast.xml` keeps its address
-  because every earlier install polls it. Running from source never loads
-  WinSparkle, and an MSI, PKG, deb or rpm install (`lumi-install.json`) never
+  because every earlier install polls it. macOS uses Sparkle (`sparkle.py`,
+  PyObjC, main thread, app only) with the same EdDSA key and its own feeds
+  (`appcast-macos*.xml`); never put macOS items in the Windows feeds. The
+  macOS feeds are signed (`SURequireSignedFeed`, `packaging/feed_signature.py`):
+  whatever writes one signs it again (`packaging/publish_macos.ps1`), and
+  gh-pages must hold exactly the bytes signed: write feeds and pages with
+  LF line ends, keep the site's `.gitattributes` (`* -text`), and publish only
+  through `packaging/push_pages.py`, which verifies the staged blobs. Sparkle's
+  delegate checks each download request as it starts (`download_refusal`),
+  not only the check, and the found version against the channel and pin
+  (`may_proceed`), since one key signs every macOS feed. Running
+  from source never loads WinSparkle or Sparkle, and an MSI, PKG, deb or rpm install (`lumi-install.json`) never
   updates itself. A macOS configuration profile that can't be used fails closed like
   any machine policy (`policy.managed_preferences_policy`).
   Never change `packaging/lumi.wxs`'s UpgradeCode. Publishing a release or
-  feed needs the user's go-ahead.
+  feed needs the user's go-ahead. Signing secrets (EdDSA, Apple, Authenticode)
+  go only to release.yml's jobs in the `release` environment, never to a
+  workflow pull requests run; a Developer ID certificate is an update key too.
 - Offline mode (`offline.py`, docs/offline.md): every outbound connection Lumi
   makes goes through the central check, and only this computer and
   `offline.allowed_hosts` are reachable. Build HTTP clients with
   `net.client_options(..., feature=...)`, which checks each request and
   redirect before it connects; where an address leaves Lumi's process (Git,
-  Chrome, WinSparkle, a browser sign-in) call `offline.refusal` or
+  Chrome, WinSparkle, Sparkle, a browser sign-in) call `offline.refusal` or
   `check_url` first; a provider or tool that reaches the network is refused
   with the reason (`backend_refusal`, `tool_refusal`), never silently
   dropped. That refusal comes before DLP (`Session._model_stream`,

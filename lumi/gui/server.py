@@ -185,7 +185,12 @@ def launch_gui(
         print(f"  Open in browser (one-time link): {local_access.launch_url(url)}", flush=True)
         print("  Press Ctrl+C to stop.", flush=True)
         try:
-            server_thread.join()
+            # On macOS Sparkle's checks run on this (main) thread's run loop,
+            # so it turns the loop while it waits (lumi/updater.py).
+            from lumi.updater import run_main_loop
+
+            if not run_main_loop(lambda: not server_thread.is_alive()):
+                server_thread.join()
         except KeyboardInterrupt:
             print("\n  Stopped")
 

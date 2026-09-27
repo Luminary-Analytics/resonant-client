@@ -187,6 +187,143 @@ Validation:
 - **Not covered:** a real Lumi Cloud, the packaged app and the desktop
   window's clipboard; a screen reader.
 
+## September 27 macOS alpha: Sparkle updates and release publishing (source only, not released)
+
+The macOS app now updates itself, and a release tag publishes it beside the
+Windows installer. See [Lumi on macOS](macos.md) and [Updates](updates.md).
+
+- **Sparkle 2.10.0 in Lumi.app** (`packaging/fetch_sparkle.sh`: pinned, and
+  checked against its SHA-256 before extraction; its license is in the
+  notices). The XPC services, which only sandboxed apps use, are left out.
+  `packaging/build_macos.sh` copies the framework into
+  `Contents/Frameworks` after PyInstaller, signs Sparkle's installer and
+  progress app without Python's entitlements when there's a Developer ID,
+  and re-signs the app (ad hoc otherwise).
+- **`lumi/sparkle.py`** drives it through PyObjC with WinSparkle's behavior:
+  a daily check (Info.plist `SUEnableAutomaticChecks`, set from Settings >
+  Updates at each launch), `SUPublicEDKey` = the key WinSparkle checks with,
+  the feed for the mode, channel and pin, the same `update.*` audit records,
+  nothing when updates are off or the copy came from the PKG, and an install
+  that waits while an agent turn runs (Sparkle asks once; Lumi lets it go on
+  when the turn ends). Offline mode refuses every check and download Sparkle
+  asks to start. No silent installs (`SUAllowsAutomaticUpdates` off), and the
+  disk image's signature is checked before it's mounted
+  (`SUVerifyUpdateBeforeExtraction`). Only the app starts Sparkle, on the
+  main thread; in browser mode the main thread turns the run loop while it
+  waits, and Lumi closes itself when the installer starts.
+- **Feeds of its own.** `update_channels` picks `appcast-macos.xml`,
+  `appcast-macos-beta.xml` or `appcast-macos-X.Y.xml` on macOS;
+  `update_appcast.py --platform macos` writes them. The Windows feeds'
+  addresses and contents don't change. macOS items say `sparkle:os="macos"`
+  and the minimum macOS, and give the version without its dash
+  (`0.21.0beta.1`), because Sparkle compares versions only up to a dash; so
+  does Lumi.app's `CFBundleVersion`.
+- **Opening Lumi.app from Finder** (or the Dock, or Sparkle's relaunch) opens
+  the app. It used to pass no arguments to the terminal UI, which has no
+  terminal there and quit. Such launches also write the startup log. Only a
+  LaunchServices launch counts (see the review fixes below).
+- **Release workflow.** New jobs build the DMG and PKG on Apple silicon,
+  signed and notarized when the Apple secrets exist (an App Store Connect API
+  key or an Apple ID; `MACOS_INSTALLER_IDENTITY` is now passed too), and
+  otherwise signed ad hoc with a warning on the run, the release notes and
+  the download page. After the Windows job they EdDSA-sign the DMG with the
+  installer's key (checked against `lumi/updater.py`), add the files to the
+  release, and publish the DMG to Pages and the macOS feeds. The download
+  page offers both platforms. [RELEASING.md](../RELEASING.md) lists the Apple
+  secrets and how to get them.
+- **CI.** `build-macos.yml` checks the Info.plist Sparkle reads, asks the
+  running app over its WebSocket what the updater reports
+  (`packaging/smoke_gui.py`), waits for Sparkle's first scheduled check to
+  fetch the macOS feed, and opens the app as Finder does. `tests.yml` runs
+  the updater tests on macOS, with the real Sparkle reading a feed
+  `update_appcast.py` wrote.
+
+### Review fixes (September 27)
+
+- **Offline mode stops a download from an update window left open.** Sparkle
+  asks about an update once, when it finds it. The delegate now also checks
+  each download request as Sparkle starts it
+  (`updater:willDownloadUpdate:withRequest:`): after offline mode came on, or
+  to a host offline mode doesn't allow, the request gets an address Sparkle's
+  downloader refuses before connecting, and the audit log records
+  `update.refused` with the reason. Release notes from another host are
+  refused the same way.
+- **Signed macOS feeds.** Lumi.app sets `SURequireSignedFeed`, and
+  `packaging/publish_macos.ps1` signs every macOS feed it writes with the
+  release key (`packaging/feed_signature.py`: Sparkle's own block format),
+  checking each signature with the app's key. A feed changed after signing,
+  or signed with another key, or not at all, is an update error. The Windows
+  feeds don't change.
+- **Signing secrets only for tagged releases.** The jobs that sign run in the
+  `release` environment, which the owner restricts to `v*` tags and moves the
+  secrets into ([the release environment](release-pipeline.md#the-release-environment)).
+  `build-macos.yml`, which pull requests run, gets no Apple secret and signs
+  ad hoc: a Developer ID certificate can ship an update to every Mac by
+  itself, since Sparkle accepts it in place of the EdDSA signature.
+- **Hardened release workflow.** The EdDSA key file is deleted in a
+  `finally` as soon as it has signed, in both jobs; every third-party action
+  is pinned to a commit; the workflow token only reads, and only the two
+  publishing jobs get `contents: write`; checkouts that don't push keep no
+  credentials; the two jobs that push `gh-pages` share a concurrency group
+  and push with `--force-with-lease` on the commit they checked out.
+- **Signing can be required.** With the repository variable
+  `MACOS_SIGNING_REQUIRED` or `WINDOWS_SIGNING_REQUIRED` set to `true`,
+  missing Developer ID or Authenticode secrets fail the release instead of
+  shipping an unsigned build. `build_macos.sh` deletes the certificate file
+  as soon as it's imported, and its keychain and notary key when it ends.
+- **`fetch_sparkle.sh` never reuses what it hasn't verified.** It used to
+  keep a framework from an earlier run as it was; now it checks the kept
+  archive's SHA-256 on every run (downloading again when it doesn't match)
+  and always extracts afresh.
+- **Command-line runs keep the command line's behavior.** The Finder fix
+  now applies only to a LaunchServices launch (a child of launchd without a
+  terminal, whose `__CFBundleIdentifier` is Lumi's, or an old `-psn_`
+  argument). A script's `lumi run … > /dev/null` no longer writes its output
+  to the startup log, and `lumi` without arguments from a script is the
+  terminal UI, as before.
+- **Tests.** On macOS with the real Sparkle: a signed feed reads and a
+  tampered, other-key or unsigned one doesn't; nothing older than the running
+  version is offered; a refused download never reaches the server while an
+  allowed one does. `build-macos.yml` rehearses the macOS publishing on
+  Windows with a throwaway key on a scratch copy of `gh-pages`, pushing
+  nothing. Not covered: Sparkle's installer rejecting a disk image with a bad
+  signature. That check runs in Sparkle's installer, which it starts through
+  launchd to replace the app; CI instead verifies every signature it
+  publishes with the app's key.
+
+### Second review fixes (September 27)
+
+- **The signed feeds now reach Pages as signed.** On the Windows runner the
+  feeds were written with `\r\n` line ends and signed so, and Git for
+  Windows committed them with `\n`: every published macOS feed would have
+  failed its signature, and the next publish would have stopped. The feeds
+  are now written with `\n` everywhere, both jobs turn `core.autocrlf` off
+  before checking out gh-pages, the site carries a `.gitattributes` with
+  `* -text`, and `packaging/push_pages.py` commits only after the staged
+  blobs verify: every macOS feed's signature, and each disk image's length
+  and signature. `build-macos.yml` rehearses two releases in a row on
+  Windows, as the release publishes (`scripts/rehearse_pages_publish.py`),
+  checking each pushed commit, a feed changed after signing, and a checkout
+  with Git's own defaults.
+- **The channel and pin hold whatever feed arrives.** One key signs every
+  macOS feed, so the version Sparkle found is checked too: a copy on the
+  stable channel refuses a beta, a pinned copy anything outside its line
+  (`update.refused`). A replayed old feed can still keep Macs where they are;
+  that's documented as a limit.
+- **Repairing a feed.** `publish_macos.ps1 -CheckFeeds` and `-ResignFeeds`
+  check, and sign again, the macOS feeds a site has. A publish no longer
+  skips a feed whose signature doesn't verify: it stops and points at the
+  repair ([Repairing the macOS feeds](release-pipeline.md#repairing-the-macos-feeds)).
+- **Smaller:** a download address Lumi can't read is refused; Sparkle
+  follows redirects without asking, which is documented; the AWS role must
+  wait for the `v*` tag rule, and no workflow asks for an OIDC token.
+
+Not verified: an update installed on a real Mac (no macOS release is
+published yet), Gatekeeper's first launch of a downloaded build, the native
+window beyond starting, dictation, computer use, the Keychain prompt, and a
+Developer ID signature or notarization (no Apple account yet). See
+[what still needs a real Mac](macos.md#what-still-needs-a-real-mac).
+
 ## September 27 Lumi is commercial software: a proprietary license (source only, not released)
 
 The owner decided that Lumi is a commercial, proprietary product. The new

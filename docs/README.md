@@ -82,7 +82,7 @@ guide belongs in that navigation; historical records stay out of it.
 - [Updates: channels, pins and turning them off](updates.md)
 - [Offline and air-gapped operation: offline mode, allowed hosts, updates from a file and the offline license](offline.md)
 - [Deploying on Windows: the MSI, Intune, Configuration Manager and Group Policy](deploy-windows.md)
-- [Lumi on macOS: building, signing and notarizing the app](macos.md)
+- [Lumi on macOS: installing, updates with Sparkle, building, signing and notarizing](macos.md)
 - [Deploying on macOS: the PKG, Jamf Pro, Intune and configuration profiles](deploy-macos.md)
 - [Lumi on Linux: the .deb, .rpm, AppImage and tarball, the desktop app in the browser, and servers](deploy-linux.md)
 - [Product and engineering priorities](agentic-harness-north-star.md)

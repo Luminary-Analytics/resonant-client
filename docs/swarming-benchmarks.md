@@ -336,6 +336,26 @@ was fixed before the next:
    run the check itself. Follow-up planning now lists the team's checked
    changes (`checked_changes`), and the residue rule covers any closing tag.
 
+### Orchestrator answers during a round, live
+
+September 27, 2026, Nemotron 3 Super on NIM. Each run was a read-only team of
+two readers, one for `cache.py` and one for `urls.py`. The objective told each
+reader to ask the orchestrator one question, wait for the answer with
+`swarm_receive`, and cite it in its report.
+
+1. **One of two answered.** The first answer turn answered in the same round,
+   and that worker's report cited the answer. The second answer turn spent its
+   request on `swarm_status`, and its worker timed out. Answer turns now get
+   only `swarm_send` and three requests.
+2. **None answered.** Both answer turns still had read tools and spent every
+   request on `glob` and `grep`, so neither answered. (`grep` also fails in
+   source-run worker processes that lack the bundled ripgrep.) Answer turns now
+   have no file access, and their input carries the team's findings.
+3. **Both answered.** Each answer turn answered within about 34 seconds, and
+   both readers' reports cite the orchestrator's answers. The team completed in
+   158 seconds with 23 requests, all settled. One worker received its answer
+   twice, and the closing turn sent its report as a message, which was harmless.
+
 ### Nemotron 3 Super: baseline and a first single-versus-team comparison
 
 September 27, 2026, `nvidia/nemotron-3-super-120b-a12b`, source identity

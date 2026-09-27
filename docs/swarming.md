@@ -72,16 +72,27 @@ Choose one of two planning approaches:
 ### Let the orchestrator run the team
 
 With a coordinator plan, **Let the orchestrator run the team** and choose
-**Orchestrator rounds** (one to eight). The coordinator becomes the team's
-orchestrator, and you don't approve each step:
+**Orchestrator rounds** (one to eight). From the chat, `/team <objective>`
+opens this panel with the objective filled in and this option chosen. Check
+the limits and press **Start orchestrated team**. The coordinator becomes the
+team's orchestrator, and you don't approve each step:
 
-- Its plans run once the runtime has validated them against the team's
-  scopes, criteria and request allowance, as it would for your approval.
+- Its plans run after the checks your approval would get: the exact
+  proposal, the team's policy, tools, criteria and dependencies. Each task
+  must still fit the team's scopes and remaining request allowance when it
+  starts. A task that overlaps running work waits for it; when nothing can
+  start, the team is handed back to you.
 - Workers' findings are accepted **under your grant**, so later tasks and the
   next round can use them. The record says so: executor `autonomy:<owner>`,
   "Accepted under the owner's autonomy grant, not reviewed". It never claims
   your review.
 - A failed task, or an orchestrator turn without a usable plan, is retried once.
+  A retried turn is told why its plan was refused.
+- When a running worker asks the orchestrator a question or reports a blocker,
+  the orchestrator answers in the same round: a short answer turn replies with
+  `swarm_send` from the objective, the team's work and its findings. It has no
+  file access, spends up to 3 of the team's unallocated requests that planned
+  tasks don't need (it needs at least two) and proposes no work.
 - When a round's work is accepted, the orchestrator plans again from the
   findings and from workers' messages to it. It can finish early by proposing
   no more work. After the last round, a closing turn writes the final report
@@ -89,8 +100,15 @@ orchestrator, and you don't approve each step:
 
 The **Orchestrator** section shows the round, the current step and the final
 report. You can pause, steer or stop the team at any time. The orchestrator
-loop runs in the app that started the team; after a restart, continue the team
-yourself. See `engine/swarming/autopilot.py`.
+loop runs in the app that owns the team. After a restart or a lost host,
+**Recover** and **Continue** the team as for any retained team: the loop then
+resumes from the retained plans. Each accepted plan that started work counts
+as a round, and a report already written finishes the team. What you chose
+at **Continue** stands: a failed task you didn't select stays failed, and a
+task retried before the restart isn't retried again. A step on the writers'
+changes that failed before it counts too, so a failed application isn't tried
+again. An orchestrator turn retried before the restart may be retried once
+more. See `engine/swarming/autopilot.py`.
 
 File changes wait for you to check, apply and accept them, unless you also
 turn on **Apply changes that pass every check**, offered when the team has
@@ -186,13 +204,24 @@ Requesting a plan never accepts existing findings, cancels peers, or automatical
 replays interrupted work. The panel explains when the current coordinator,
 remaining allowance or missing execution host prevents another request.
 
+## Worker model
+
+The coordinator (or orchestrator) always uses the session's model. **Worker
+model** lets the team's workers use another native provider or
+OpenAI-compatible connection, such as a faster or local model, while a stronger
+one plans. The choice is kept with the team, including when the owner continues
+a recovered team. The workers' key is read once per run like the session's,
+and the running team shows which model its workers use.
+
 ## Team messages
 
 Workers running at the same time can share findings and ask each other
 questions with `swarm_send`, and wait up to 60 seconds for an answer with
 `swarm_receive` (Pause or Stop ends the wait). A worker can also write to
-`orchestrator`: the orchestrator's turn may have ended, so its next round
-reads the message as planning input. Messages are untrusted data. They never
+`orchestrator`. In a team the orchestrator runs, a question or blocker from a
+running worker gets an answer in the same round (see above). Otherwise, and in
+any case, the orchestrator's next round reads the message as planning input.
+Messages are untrusted data. They never
 widen a worker's paths, tools or allowance, and a reply doesn't prove the
 recipient followed it. **Team messages** in the panel lists who told whom what.
 
@@ -246,6 +275,11 @@ Each check specifies an executable, literal arguments entered one per line,
 and a timeout from one to 1,200 seconds. These commands execute locally with
 your account's permissions. They are owner-selected verification, not commands
 chosen by a worker. Do not put shell quoting, pipes or redirects in argument lines.
+Each check starts from the combined change's exact revision (files an earlier
+check left are removed first) and runs without Lumi's model-provider keys in
+its environment, since it runs code the writers wrote. Checks verify writers'
+changes; read-only tasks, including those a coordinator proposes, are
+accepted by review.
 
 For each manual writer, select **Implement file changes**, narrow its writable
 roots within the team's roots, and list its required check names. The total

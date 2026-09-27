@@ -715,13 +715,24 @@ class SwarmIntegration:
                     if old["state"] == "running":
                         raise Conflict("Uncertain check intent requires inspection, not replay")
                     return dict(old)
+                # A check that ran here before may have left files behind.
+                earlier = connection.execute("SELECT 1 FROM integration_checks WHERE candidate_id=? LIMIT 1",
+                                             (candidate_id,)).fetchone() is not None
                 connection.execute("INSERT INTO integration_checks(id,candidate_id,check_key,candidate_revision,argv_json,state,process_protocol) "
                                    "VALUES(?,?,?,?,?,'running',1)", (identity, candidate_id, check_key, record["result_revision"], _json(check["argv"])))
                 self.store._event(connection, authority.run_id, "candidate_check_intent", {"candidate_id": candidate_id, "receipt_id": identity})
             observed = None
             try:
+                # Each check starts from exactly the candidate's revision: files an
+                # earlier check left (caches, generated code) are removed from this
+                # Lumi-owned worktree first; a fresh candidate has none. Checks run
+                # code the writers wrote, so they get the environment without
+                # Lumi's provider keys.
+                if earlier:
+                    self._git(path, "clean", "-ffdxq", effect=(authority, "check", identity))
+                from lumi.secrets_store import child_env
                 observed = self._execute(authority, "check", identity, check["argv"], path,
-                    timeout_seconds=check["timeout_seconds"], max_output_bytes=65536)
+                    environment=child_env(), timeout_seconds=check["timeout_seconds"], max_output_bytes=65536)
                 if observed.interruption is not None:
                     raise observed.interruption
                 self._admit(authority)

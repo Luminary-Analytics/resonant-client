@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 from dataclasses import asdict, dataclass, replace
+import logging
 import hashlib
 import json
 import os
@@ -18,7 +19,7 @@ from ...policy import blocked_reason, current as current_policy
 from ..artifacts import project_state_dir
 from ..exclusions import ExclusionRules
 from . import AttemptContext, Command, Scope, SwarmStore, SwarmSupervisor
-from .coordinator import CoordinatorPlans
+from .coordinator import ANSWER_WORKER_PREFIX, CoordinatorPlans, OrchestratorAnswers
 from . import collaboration_desktop, managed_collaboration_desktop
 from . import connections as team_connections
 from .autopilot import MAX_ROUNDS, TeamAutopilot
@@ -29,6 +30,8 @@ from .recovery import SwarmRecovery, record_run_host
 from .scheduler import SwarmScheduler
 from .tools import SWARM_TOOL_NAMES
 from .workers import SwarmWorkerRunner
+
+logger = logging.getLogger(__name__)
 
 _READ_TOOLS = frozenset({"file_read", "glob", "grep", "artifact_read"}) | SWARM_TOOL_NAMES
 _WRITE_TOOLS = frozenset({"file_write", "file_edit"})
@@ -41,7 +44,7 @@ _FIELDS |= {"model_request_id", "action_id", "outcome", "used", "retry_work_item
 _FIELDS |= {"write_roots", "checks", "writer_ids", "candidate_id", "check_key", "expected_base",
             "target_revision", "approval_id", "work_item_id", "operation_id", "text", "effect_kind", "effect_id"}
 _FIELDS |= {"before_run_id", "limit", "artifact_id", "offset"}
-_FIELDS |= {"read_roots", "autonomy"}
+_FIELDS |= {"read_roots", "autonomy", "worker_model"}
 _FIELDS |= {"execution_mode"}
 _FIELDS |= {"managed_epoch", "kind", "process_id", "local_id"}
 _FIELDS |= collaboration_desktop.FIELDS
@@ -119,6 +122,8 @@ class SwarmRuntime:
         self._schedulers: dict[str, SwarmScheduler] = {}
         # Orchestrator loops for teams whose owner granted autonomy at start.
         self._autopilots: dict[str, TeamAutopilot] = {}
+        # Each team's workers' model (private, key resolved), when not the orchestrator's.
+        self._worker_specs: dict[str, BackendSpec] = {}
         self._workflows: dict[str, Any] = {}
         self._candidate_details: dict[tuple[str, str], dict[str, Any]] = {}
         self._closed = False
@@ -243,6 +248,35 @@ class SwarmRuntime:
         except ValueError as exc:
             raise Conflict(str(exc)) from None
         return {spec.backend_type: connection} if connection else {}
+
+    def _worker_spec(self, capture: CapturedSession, choice: Any) -> BackendSpec | None:
+        """The workers' model when the owner chose one other than the session's; else None.
+
+        The orchestrator plans, answers and reports with the session's model.
+        Workers may run another native provider or OpenAI-compatible
+        connection (a cheaper, faster or local model), built as ``lumi run``
+        builds a session's backend (headless.build_spec).
+        """
+        if choice is None:
+            return None
+        if (type(choice) is not dict or set(choice) != {"provider", "model"}
+                or any(type(value) is not str or not value.strip() for value in choice.values())):
+            raise ValueError("Choose the workers' provider and model")
+        provider, model = choice["provider"].strip().lower(), choice["model"].strip()
+        if (provider, model) == (capture.backend_spec.backend_type, capture.backend_spec.model):
+            return None
+        if not team_provider(provider):
+            raise Conflict("Team workers use a native provider or an OpenAI-compatible connection")
+        from ...headless import build_spec
+        return build_spec(self.settings, provider, model, capture.workspace)  # UsageError is a ValueError
+
+    def _saved_worker_spec(self, capture: CapturedSession, setup: dict[str, Any]) -> BackendSpec:
+        """A retained team's workers' model with its key resolved, or the orchestrator's."""
+        spec = self._worker_spec(capture, setup.get("worker_model"))
+        if spec is None:
+            return capture.backend_spec
+        spec.api_key = spec.resolve_api_key(self.settings)
+        return spec
 
     def _provider_label(self, backend_type: str) -> str:
         """A connection's own name ("NVIDIA NIM") for display; a native provider's id."""
@@ -417,6 +451,9 @@ class SwarmRuntime:
             setup, result = self._setup(store, run_id)
             snapshot["writer_setup"] = ({**result.get("writer_base", {}), "write_roots": setup["write_roots"],
                                          "checks": setup["checks"]} if setup.get("write_roots") else None)
+            chosen = setup.get("worker_model")
+            snapshot["worker_model"] = ({**chosen, "label": self._provider_label(chosen["provider"])}
+                                        if chosen else None)
             workflow = self._workflows.get(run_id)
             if "integration_operations" in snapshot:
                 # The private captured supervisor identity is never a browser capability.
@@ -436,13 +473,13 @@ class SwarmRuntime:
                 "execution_mode": self._execution_mode(capture), "managed": self._managed_view(capture, run_id),
                 "run": snapshot,
                 "coordinator_planning": self._planning_view(store, run_id, snapshot) if snapshot else None,
-                "autonomy": self._autonomy_view(store, run_id),
+                "autonomy": self._autonomy_view(store, run_id, snapshot),
                 "collaboration": collaboration_desktop.view(store, capture.scope, run_id) if run_id and capture.scope.tenant_id == f"personal:{capture.scope.owner_id}" else None,
                 "managed_collaboration": self._managed_sharing[run_id].view() if run_id in self._managed_sharing else managed_collaboration_desktop.historical_view(store, capture.scope, run_id),
                 "events": [asdict(event) for event in store.events(capture.scope, run_id, after=after)] if run_id else [],
                 "message": unavailable or "Workers share scoped findings and isolated changes. Submitted results await independent review."}
 
-    def _autonomy_view(self, store, run_id):
+    def _autonomy_view(self, store, run_id, snapshot=None):
         """The orchestrator loop's status, or the retained grant once this host no longer runs it."""
         if not run_id:
             return None
@@ -450,9 +487,21 @@ class SwarmRuntime:
         if autopilot is not None:
             return autopilot.inspect()
         grant = self._setup(store, run_id)[0].get("autonomy")
+        if not grant:
+            return None
+        if snapshot is None:
+            return {"enabled": True, "active": False, "rounds": grant["rounds"], "apply": grant.get("apply") is True,
+                    "phase": "stopped", "detail": "The orchestrator loop isn't running on this host.",
+                    "final_report": None}
+        # Rebuilt from the retained plans (autopilot.TeamAutopilot.retained_plans).
+        report, worked, _ = TeamAutopilot.retained_plans(snapshot)
+        done = snapshot["run"]["state"] in _TERMINAL
         return {"enabled": True, "active": False, "rounds": grant["rounds"], "apply": grant.get("apply") is True,
-                "phase": "stopped", "detail": "The orchestrator loop isn't running on this host. Continue the team yourself.",
-                "final_report": None} if grant else None
+                "round": max(1, min(worked, grant["rounds"])), "closing": False,
+                "phase": "finished" if done and snapshot["run"]["state"] == "completed" else "stopped",
+                "detail": (f"The team is {snapshot['run']['state']}." if done else
+                           "The orchestrator loop isn't running on this host. Recover and continue the team to resume it."),
+                "final_report": report}
 
     def _planning_view(self, store, run_id, snapshot):
         setup, _ = self._setup(store, run_id)
@@ -536,14 +585,81 @@ class SwarmRuntime:
         # Stop can close runner admission while slow scope/process setup runs.
         # Any ambiguous launch leaves its committed pending intent/reservation;
         # repeating the owner request never obtains another dispatch opportunity.
-        runner.start_coordinator(context, spec, plans)
+        self._start_turn(runner, context, spec, plans)
         with self._lock:
             return self._view(capture, store, run_id)
+
+    def _start_turn(self, runner, context, spec, plans) -> None:
+        """Launch an admitted orchestrator turn; one that never launched is settled as such.
+
+        Its admission is already committed. If the runner refused it before
+        taking the turn (the team paused in between, or its input was refused),
+        nothing was invoked: record that, as the scheduler does for a closed
+        dispatch, so the turn doesn't hold the team forever. Any other failure
+        may have crossed the launcher, so the turn stays pending for recovery
+        and is never replayed.
+        """
+        try:
+            runner.start_coordinator(context, spec, plans)
+        except (SwarmError, ValueError):
+            if context.attempt_id not in runner._workers:
+                try:
+                    self._command(runner.supervisor, runner.authority, "worker_stopped", {
+                        "attempt_id": context.attempt_id, "attempt_epoch": context.epoch, "outcome": "cancelled",
+                        "evidence": "The host refused to launch this orchestrator turn before invoking it"})
+                except Exception:  # noqa: BLE001 - the original refusal is the one to report
+                    logger.exception("Could not settle an orchestrator turn that never launched")
+            raise
+
+    def _answer_workers(self, capture, *, run_id: str, questions: list[int], request_id: str,
+                        expected_revision: int, requests: int):
+        """Admit one short orchestrator turn that answers workers mid-round (autopilot.py).
+
+        Only the orchestrator loop starts it, for a team whose owner let the
+        orchestrator run it. It spends unallocated team requests, has only
+        ``swarm_send`` and proposes no work (coordinator.OrchestratorAnswers).
+        """
+        with self._lock:
+            require_id(request_id)
+            if self._closed:
+                raise Conflict("This desktop runtime has closed; reopen the retained team")
+            pair = self._runners.get(run_id)
+            if pair is None:
+                raise Conflict("Answering workers requires this team's current execution host")
+            if pair[0].scope != capture.scope:
+                raise ScopeDenied("Team scope differs from its captured owner")
+            store, runner = pair[1].store, pair[1]
+            if not self._setup(store, run_id, required=True)[0].get("autonomy"):
+                raise Conflict("Only an orchestrator the owner let run the team answers its workers")
+            if type(requests) is not int or not 1 <= requests <= 1000:
+                raise ValueError("Choose an explicit answer request allowance from 1 to 1000")
+            # Only swarm_send: its input carries the questions, their senders'
+            # ids and the team's findings. Live answer turns with read tools
+            # spent their requests exploring the project and never answered.
+            tools = {"swarm_send"}
+            payload = {"worker_id": ANSWER_WORKER_PREFIX + hashlib.sha256(request_id.encode()).hexdigest()[:32],
+                       "requests": requests, "model": {"provider": pair[0].backend_spec.backend_type,
+                                                        "model": pair[0].backend_spec.model},
+                       "tools": sorted(tools), "read_roots": []}
+            receipt, fresh = runner.supervisor.handle_once(Command(request_id, run_id, expected_revision,
+                runner.authority.epoch, "start_coordinator", payload), runner.authority)
+            if not fresh:
+                return
+            context = AttemptContext(capture.scope, run_id, receipt.result["attempt_id"],
+                                     receipt.result["worker_id"], runner.authority.epoch)
+            answers = OrchestratorAnswers(runner.supervisor, runner.authority, questions=tuple(questions))
+            spec = copy.deepcopy(pair[0].backend_spec)
+        # As for planning: launch outside the control lock; a committed turn
+        # whose launch is ambiguous stays visible, never replayed.
+        self._start_turn(runner, context, spec, answers)
 
     def _start(self, capture, store, message):
         if self.settings.get("swarming", "version", 1) != 1 or self.settings.get("swarming", "enabled", False) is not True:
             raise Conflict("Enable the swarming preview before starting a team")
         connections = self.team_model(capture.backend_spec)
+        worker_spec = self._worker_spec(capture, message.get("worker_model"))
+        if worker_spec is not None:
+            connections = {**connections, **self.team_model(worker_spec)}
         objective = message.get("objective")
         tasks = message.get("tasks")
         plan_mode = message.get("plan_mode", "manual")
@@ -601,7 +717,9 @@ class SwarmRuntime:
                          **({"autonomy": {"rounds": autonomy["rounds"], **({"apply": True} if applies else {})}}
                             if autonomy is not None else {}),
                          "max_workers": workers, "model": {"provider": capture.backend_spec.backend_type,
-                                                           "model": capture.backend_spec.model}}
+                                                           "model": capture.backend_spec.model},
+                         **({"worker_model": {"provider": worker_spec.backend_type, "model": worker_spec.model}}
+                            if worker_spec is not None else {})}
         if write_roots:
             setup_payload.update(write_roots=write_roots, checks=checks, worker_requests=worker_requests)
         if managed:
@@ -656,14 +774,20 @@ class SwarmRuntime:
         private_spec = copy.deepcopy(capture.backend_spec)
         private_spec.api_key = private_spec.resolve_api_key(self.settings)
         capture = replace(capture, backend_spec=private_spec)
+        # The workers' model gets its key the same way, once per run.
+        if worker_spec is not None:
+            worker_spec.api_key = worker_spec.resolve_api_key(self.settings)
+        workers_spec = worker_spec or capture.backend_spec
         integration = SwarmIntegration(store, capture.workspace,
             root=Path(self._state_root(capture.workspace)) / "swarm" / "worktrees") if write_roots else None
         writer_base = integration.capture_base() if integration else None
         authority = supervisor.create(capture.scope, supervisor_id=uuid.uuid4().hex, objective=objective,
             request_limit=requests, run_id=run_id, lease_seconds=60,
             policy=PolicyProfile(1, _READ_TOOLS | (_WRITE_TOOLS if write_roots else frozenset()),
-                frozenset({capture.backend_spec.backend_type}), max_workers=workers, write_roots=tuple(write_roots)))
+                frozenset({capture.backend_spec.backend_type, workers_spec.backend_type}), max_workers=workers,
+                write_roots=tuple(write_roots)))
         self._active.add(run_id)
+        self._worker_specs[run_id] = workers_spec
         runner = None
         try:
             record_run_host(store, authority)
@@ -687,7 +811,7 @@ class SwarmRuntime:
             if attachment is not None:
                 attachment.start_pump(runner, lambda: store.snapshot(authority.scope, authority.run_id))
             if plan_mode == "coordinator":
-                self._schedulers[run_id] = SwarmScheduler(runner, capture.backend_spec,
+                self._schedulers[run_id] = SwarmScheduler(runner, workers_spec,
                     requests_per_worker=worker_requests, base_revision=writer_base["base_revision"] if writer_base else None)
                 assigned = self._command(supervisor, authority, "start_coordinator", {
                     "worker_id": "coordinator", "requests": coordinator_requests,
@@ -705,7 +829,7 @@ class SwarmRuntime:
                 return run_id
             self._command(supervisor, authority, "plan", {"work_items": work_items})
             if integration:
-                scheduler = self._schedulers[run_id] = SwarmScheduler(runner, capture.backend_spec,
+                scheduler = self._schedulers[run_id] = SwarmScheduler(runner, workers_spec,
                     requests_per_worker=worker_requests, base_revision=writer_base["base_revision"])
                 scheduler.start()
                 return run_id
@@ -716,11 +840,11 @@ class SwarmRuntime:
                 allocation = requests // len(tasks) + (1 if index < requests % len(tasks) else 0)
                 assigned = self._command(supervisor, authority, "assign", {
                     "work_item_id": item["id"], "worker_id": f"reader-{index + 1}", "requests": allocation,
-                    "model": {"provider": capture.backend_spec.backend_type, "model": capture.backend_spec.model},
+                    "model": {"provider": workers_spec.backend_type, "model": workers_spec.model},
                 }).result
                 contexts.append(AttemptContext(capture.scope, run_id, assigned["attempt_id"], assigned["worker_id"], authority.epoch))
             for context in contexts:
-                runner.start(context, capture.backend_spec)
+                runner.start(context, workers_spec)
         except BaseException:
             # No automatic replay. Any committed dispatch whose launch cannot
             # be confirmed remains visible for explicit host reconciliation.
@@ -844,7 +968,7 @@ class SwarmRuntime:
                             allowances.setdefault(item["work_item_id"], item["amount"])
                         if payload["work_item_id"] not in allowances:
                             raise Conflict("Repair requires a retained original request allowance")
-                        self._schedulers[run_id] = SwarmScheduler(runner, pair[0].backend_spec,
+                        self._schedulers[run_id] = SwarmScheduler(runner, self._worker_specs.get(run_id, pair[0].backend_spec),
                             requests_per_worker=allowances[payload["work_item_id"]], requests_by_work=allowances)
                     self._schedulers[run_id].start()
             elif action in {"prepare_candidate", "run_check", "apply_candidate", "reconcile_application", "reconcile_operation", "reconcile_effect"}:
@@ -1152,6 +1276,7 @@ class SwarmRuntime:
         private_spec = copy.deepcopy(capture.backend_spec)
         private_spec.api_key = private_spec.resolve_api_key(self.settings)
         capture = replace(capture, backend_spec=private_spec)
+        workers_spec = self._saved_worker_spec(capture, setup)
         authority = recovery.authority
         record_run_host(store, authority)
         integration = prepared_integration if setup.get("write_roots") else None
@@ -1163,11 +1288,11 @@ class SwarmRuntime:
         runner = SwarmWorkerRunner(recovery.supervisor, authority, capture.workspace,
                                    backend_factory=self._factory, project_instructions=capture.instructions,
                                    exclusions=self.exclusions_for(capture.workspace),
-                                   connections=self.team_model(capture.backend_spec),
+                                   connections={**self.team_model(capture.backend_spec), **self.team_model(workers_spec)},
                                    managed_readers=self._managed_readers, integration=integration,
                                    managed_runtime=attachment.runtime if attachment else None,
                                    **({"writer_process_factory": None} if not self._managed_readers else {}))
-        scheduler = SwarmScheduler(runner, capture.backend_spec, requests_per_worker=allowance,
+        scheduler = SwarmScheduler(runner, workers_spec, requests_per_worker=allowance,
                                    base_revision=writer_base.get("base_revision"))
         try:
             receipt = recovery.command("recover", {"retry_work_items": message.get("retry_work_items", [])},
@@ -1179,10 +1304,19 @@ class SwarmRuntime:
         if receipt.state not in _TERMINAL:
             self._runners[recovery.run_id] = (capture, runner)
             self._schedulers[recovery.run_id] = scheduler
+            self._worker_specs[recovery.run_id] = workers_spec
             if attachment:
                 self._managed_attachments[recovery.run_id] = attachment
                 attachment.start_pump(runner, lambda: store.snapshot(capture.scope, recovery.run_id))
             scheduler.start()
+            # The owner continued a team they let the orchestrator run: its loop
+            # goes on from the retained plans (autopilot.TeamAutopilot.resumed).
+            grant = setup.get("autonomy")
+            previous = self._autopilots.get(recovery.run_id)
+            if grant and (previous is None or not previous.inspect()["active"]):
+                autopilot = self._autopilots[recovery.run_id] = TeamAutopilot.resumed(
+                    self, recovery.run_id, grant, store.snapshot(capture.scope, recovery.run_id))
+                autopilot.start()
 
     def close(self) -> None:
         """Stop only the workers owned by this desktop runtime."""

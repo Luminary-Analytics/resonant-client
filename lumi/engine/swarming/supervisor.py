@@ -817,7 +817,13 @@ class SwarmSupervisor:
         self.store._admitting(run)
         self._decision_evidence(evidence)
         self._autonomy_grant(connection, run)
-        attempt = self._attempt(connection, run, attempt_id, attempt_epoch)
+        # As for an owner review, a result submitted before the team was
+        # recovered can be accepted from its own epoch; this grants its old
+        # worker nothing (the loop resumes on Continue, autopilot.py).
+        attempt = connection.execute("SELECT * FROM attempts WHERE run_id=? AND id=? AND epoch=?",
+                                     (run["id"], attempt_id, attempt_epoch)).fetchone()
+        if attempt is None:
+            raise ScopeDenied("Result is unavailable in this run and original epoch")
         if attempt["kind"] != "worker":
             raise Conflict("Coordinators do not represent accepted work")
         work = connection.execute("SELECT * FROM work_items WHERE id=?", (attempt["work_item_id"],)).fetchone()

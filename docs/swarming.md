@@ -72,8 +72,10 @@ Choose one of two planning approaches:
 ### Let the orchestrator run the team
 
 With a coordinator plan, **Let the orchestrator run the team** and choose
-**Orchestrator rounds** (one to eight). The coordinator becomes the team's
-orchestrator, and you don't approve each step:
+**Orchestrator rounds** (one to eight). From the chat, `/team <objective>`
+opens this panel with the objective filled in and this option chosen. Check
+the limits and press **Start orchestrated team**. The coordinator becomes the
+team's orchestrator, and you don't approve each step:
 
 - Its plans run once the runtime has validated them against the team's
   scopes, criteria and request allowance, as it would for your approval.

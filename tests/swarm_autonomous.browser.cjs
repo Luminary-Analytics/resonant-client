@@ -55,9 +55,19 @@ test('The orchestrator runs a team from the panel and reports back', {timeout: 9
         await autonomy.focus();
         await page.keyboard.press('Space');
         assert.equal(await autonomy.isChecked(),true);
-        await page.getByLabel('Orchestrator rounds').fill('2');
+        // The chat's /team opens the same panel with the objective and the orchestrator filled in.
+        await page.getByRole('button',{name:'Close team panel'}).click();
+        await page.locator('#user-input').fill('/team Check how the CSV export handles delimiters');
+        await page.locator('#user-input').press('Enter');
+        await page.getByRole('dialog',{name:'Work together'}).waitFor();
+        assert.equal(await page.getByLabel('Team objective').inputValue(),'Check how the CSV export handles delimiters');
+        assert.equal(await page.getByLabel('Planning approach').inputValue(),'coordinator');
+        assert.equal(await page.getByLabel('Let the orchestrator run the team').isChecked(),true);
+        assert.equal(await page.evaluate(()=>document.activeElement?.dataset.swarm),'rounds');
+        assert.equal(await page.locator('#user-input').inputValue(),'');
+        await page.keyboard.press('Control+A');
+        await page.keyboard.type('2');
         await page.getByText('findings it uses are marked accepted by the orchestrator, not reviewed by you',{exact:false}).waitFor();
-        await page.getByLabel('Team objective').fill('Check how the CSV export handles delimiters');
         await page.getByLabel('Total model requests').fill('20');
         await page.getByRole('button',{name:'Start orchestrated team'}).click();
         const report=page.locator('[data-swarm="orchestrator-report-text"]');

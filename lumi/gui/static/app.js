@@ -1952,6 +1952,18 @@ class LumiApp {
             }
         }
 
+        // /team opens this session's Team panel with the objective filled in and
+        // the orchestrator set to run the team. Starting it stays the person's
+        // choice, so this works while a chat turn runs.
+        if (text === '/team' || text.startsWith('/team ')) {
+            this.openSwarmWithObjective?.(text.slice('/team'.length).trim());
+            this.userInput.value = '';
+            this._clearDraft();
+            this.userInput.style.height = 'auto';
+            this._syncComposerGutter?.();
+            return;
+        }
+
         if (this.isRunning) {
             this._queueFollowUpMessage(text);
             return;

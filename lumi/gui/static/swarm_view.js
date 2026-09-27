@@ -7,6 +7,19 @@ window.LumiSwarmView = class LumiSwarmView {
         document.getElementById('swarm-team-button')?.addEventListener('click', () => this.openSwarmPanel());
     }
 
+    /** The chat's `/team <objective>`: the panel with that objective, planned and run by the orchestrator. */
+    openSwarmWithObjective(objective) {
+        this.openSwarmPanel();
+        const nodes = this._swarmNodes;
+        if (!nodes?.form) return;
+        nodes['plan-mode'].value = 'coordinator';
+        if (objective) nodes.objective.value = objective;
+        nodes.autonomous.checked = true;
+        this._swarmRenumberTasks();
+        // The person still reviews the limits and presses Start.
+        (objective ? nodes.rounds : nodes.objective).focus();
+    }
+
     openSwarmPanel() {
         if (this._swarmDialog?.open) return;
         this._swarmScope = Object.freeze({project: this.currentCwd || '', session_id: this.currentSessionId || '', run_id: ''});

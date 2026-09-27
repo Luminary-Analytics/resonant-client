@@ -8,6 +8,13 @@ The heartbeat remains paused. Documentation maintenance does not resume work,
 spending or grants, and changes no native implementation or installed bundle.
 The dated September 15/18 records below are historical.
 
+## September 27 Team: start an orchestrated team from the chat (source only, not released)
+
+`/team <objective>` in the composer opens the session's Team panel with the
+objective filled in and **Let the orchestrator run the team** chosen, with
+focus on the rounds. The person checks the limits and presses Start; nothing
+starts on its own. It works while a chat turn runs.
+
 ## September 27 Team: the orchestrator loop resumes when the owner continues a team (source only, not released)
 
 **The loop resumes after a continue.** A team its owner let the orchestrator

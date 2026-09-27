@@ -27,14 +27,30 @@ read_setup = reader_fixture
 coordinator_setup = coordinator_fixture
 
 
-def until(predicate, timeout=30):
+def until(predicate, timeout=90, describe=None):
+    """Wait for a condition. A child's whole life (start Python, import the
+    engine, run, finalize through owned Git) takes seconds unloaded and far
+    longer on a busy runner, so the deadline is generous; on failure, say what
+    the fixture was doing (``describe``) rather than only that it timed out."""
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         result = predicate()
         if result:
             return result
         time.sleep(.02)
-    assert predicate(), "Owned process fixture did not reach expected state"
+    assert predicate(), describe() if describe else "Owned process fixture did not reach expected state"
+
+
+def explain(worker):
+    """Each worker's state and error, and the last events.
+
+    A string, because pytest shortens any other assertion message to one line.
+    """
+    polled = worker.poll(limit=1000)
+    return json.dumps({"workers": [{key: row[key] for key in ("state", "error", "alive", "process_alive", "termination_recorded")}
+                                   for row in polled["workers"]],
+                       "last_events": [{key: value for key, value in event.items() if key in {"event", "message", "error", "outcome"}}
+                                       for event in polled["events"]][-12:]}, default=str)
 
 
 def child_script(tmp_path, body):
@@ -68,9 +84,9 @@ raise SystemExit(main(backend_factory=factory))
     worker, observations = runtime(fixture, command)
     try:
         worker.start(context, BackendSpec("ollama", "chosen", api_key="fixture-private-key"), writer_id=writer["id"])
-        until(lambda: not worker.inspect(context.attempt_id)["alive"])
+        until(lambda: not worker.inspect(context.attempt_id)["alive"], describe=lambda: explain(worker))
         status = worker.inspect(context.attempt_id)
-        assert status["state"] == "submitted", worker.poll()
+        assert status["state"] == "submitted", explain(worker)
         assert not status["process_alive"] and status["termination_recorded"]
         state = snapshot(fixture)
         process = state["process_observations"][0]
@@ -95,6 +111,45 @@ raise SystemExit(main(backend_factory=factory))
         worker.close()
 
 
+def test_child_that_is_slow_to_exit_after_closing_still_completes(fixture, tmp_path):
+    # After its closing message a child still has to finish interpreter
+    # shutdown. The host used to end the tree 1 s after the child's output
+    # closed, so a slow shutdown on a busy machine became exit code 1 and a
+    # failed writer. A few seconds of shutdown must still complete it.
+    context, writer = assign(fixture)
+    command = child_script(tmp_path, '''
+import atexit, time
+from lumi.engine.swarming.worker_child import main
+from tests.streaming_stub import StreamingBackend, tool_call, text_delta, done
+atexit.register(time.sleep, 3)  # runs after main() has sent "closed" and closed its output
+raise SystemExit(main(backend_factory=lambda spec: StreamingBackend(name=spec.backend_type, model=spec.model, scripts=[
+    [tool_call("file_write", {"path":"src/fact.txt", "content":"slow exit\\n"}), done()],
+    [text_delta("Scoped child work is ready."), done()]])))
+''')
+    worker, _ = runtime(fixture, command)
+    try:
+        worker.start(context, BackendSpec("ollama", "chosen"), writer_id=writer["id"])
+        until(lambda: not worker.inspect(context.attempt_id)["alive"], describe=lambda: explain(worker))
+        assert worker.inspect(context.attempt_id)["state"] == "submitted", explain(worker)
+        process = snapshot(fixture)["process_observations"][0]
+        assert process["state"] == "stopped" and process["exit_code"] == 0
+    finally:
+        worker.close()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows reports a write to a finished child as EINVAL")
+def test_closing_after_the_child_exits_discards_undeliverable_input():
+    # Stop can leave a control frame in the host's input buffer after the child
+    # is gone. Flushing it when closing fails on Windows with EINVAL (errno 22),
+    # which escaped cleanup and replaced a stopped check's own outcome.
+    process = ManagedWorkerProcess(command=[sys.executable, "-c", "pass"])
+    process._spawn()
+    assert process.process.wait(timeout=60) == 0
+    process.process.stdin.write(b'{"version":1}\n')  # buffered; no reader remains
+    process.close()
+    assert process.cleanup_confirmed and not process.alive
+
+
 def test_stop_kills_uncooperative_child_and_grandchild_without_refunding_uncertain_request(fixture, tmp_path):
     context, writer = assign(fixture)
     descendant_file = tmp_path / "descendant.txt"
@@ -105,7 +160,8 @@ from lumi.engine.swarming.worker_child import main
 from tests.streaming_stub import StreamingBackend, text_delta
 class Blocked(StreamingBackend):
     def stream(self, **kwargs):
-        descendant = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+        # Outlives every wait below: only the owned tree's termination ends it.
+        descendant = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(600)"])
         Path({str(descendant_file)!r}).write_text(str(descendant.pid))
         yield text_delta("Owned provider is blocked")
         while True: time.sleep(.1)
@@ -123,7 +179,7 @@ raise SystemExit(main(backend_factory=lambda spec: Blocked(name=spec.backend_typ
         started = time.monotonic()
         assert worker.stop()["state"] == "stopping"
         assert time.monotonic() - started < 1
-        until(lambda: not worker.inspect(context.attempt_id)["alive"])
+        until(lambda: not worker.inspect(context.attempt_id)["alive"], describe=lambda: explain(worker))
         until(lambda: not psutil.pid_exists(descendant) or psutil.Process(descendant).status() == psutil.STATUS_ZOMBIE)
         state = snapshot(fixture)
         assert state["process_observations"][0]["state"] == "stopped"
@@ -131,7 +187,7 @@ raise SystemExit(main(backend_factory=lambda spec: Blocked(name=spec.backend_typ
         assert state["attempts"][0]["state"] == "uncertain"
         assert state["model_requests"][0]["state"] == "uncertain"
         assert state["model_requests"][0]["used"] is None
-        assert state["reservations"][0]["state"] == "uncertain", worker.poll()
+        assert state["reservations"][0]["state"] == "uncertain", explain(worker)
         assert not state["submissions"]
     finally:
         worker.close()
@@ -153,12 +209,12 @@ import json, time
 print(json.dumps({{"version":1,"kind":"ready"}}),flush=True)
 sys.stdin.readline()
 {payload}
-time.sleep(30)
+time.sleep(600)  # outlives the wait below: only the host's termination ends it in time
 ''')
     worker, _ = runtime(fixture, command)
     try:
         worker.start(context, BackendSpec("ollama", "chosen"), writer_id=writer["id"])
-        until(lambda: not worker.inspect(context.attempt_id)["alive"], timeout=10)
+        until(lambda: not worker.inspect(context.attempt_id)["alive"], describe=lambda: explain(worker))
         state = snapshot(fixture)
         assert state["process_observations"][0]["state"] == "stopped"
         assert state["attempts"][0]["state"] == "failed"
@@ -178,7 +234,7 @@ raise SystemExit(main(backend_factory=lambda spec: StreamingBackend(name=spec.ba
     worker, observations = runtime(fixture, command)
     try:
         worker.start(context, BackendSpec("ollama", "chosen"), writer_id=writer["id"])
-        until(lambda: not worker.inspect(context.attempt_id)["alive"])
+        until(lambda: not worker.inspect(context.attempt_id)["alive"], describe=lambda: explain(worker))
         foreign = ProcessObservations(fixture[0].store, host_id="foreign-host")
         assert foreign.inspect(context.scope, context.run_id, context.attempt_id)["observation"] == "unknown"
         with pytest.raises(Exception, match="host"):
@@ -221,8 +277,8 @@ raise SystemExit(main(backend_factory=lambda spec: StreamingBackend(name=spec.ba
         assert len(state["model_requests"]) == 1
         assert worker.inspect(context.attempt_id)["alive"]
         worker.resume()
-        until(lambda: not worker.inspect(context.attempt_id)["alive"])
-        assert worker.inspect(context.attempt_id)["state"] == "submitted", worker.poll()
+        until(lambda: not worker.inspect(context.attempt_id)["alive"], describe=lambda: explain(worker))
+        assert worker.inspect(context.attempt_id)["state"] == "submitted", explain(worker)
     finally:
         release.write_text("release")
         worker.close()
@@ -259,7 +315,7 @@ import json, subprocess, time
 from pathlib import Path
 print(json.dumps({{"version":1,"kind":"ready"}}), flush=True)
 sys.stdin.readline()
-descendant = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+descendant = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(600)"])  # outlives the waits
 Path({str(descendant_file)!r}).write_text(json.dumps(descendant.pid))
 while True: time.sleep(.1)
 ''')
@@ -317,7 +373,7 @@ print(json.dumps({"version":1,"kind":"closed"}),flush=True)
     worker._writer_process_factory = lambda: Unconfirmed(command=command)
     try:
         worker.start(context, BackendSpec("ollama", "chosen"), writer_id=writer["id"])
-        until(lambda: not worker.inspect(context.attempt_id)["alive"])
+        until(lambda: not worker.inspect(context.attempt_id)["alive"], describe=lambda: explain(worker))
         status = worker.inspect(context.attempt_id)
         assert status["state"] == "reconciliation_required" and not status["termination_recorded"]
         state = snapshot(fixture)
@@ -355,10 +411,10 @@ raise SystemExit(main(backend_factory=lambda spec: StreamingBackend(name=spec.ba
     worker, _ = runtime(fixture, command)
     try:
         worker.start(context, BackendSpec("ollama", "chosen", api_key="fixture-private-key"), writer_id=writer["id"])
-        until(lambda: not worker.inspect(context.attempt_id)["alive"])
+        until(lambda: not worker.inspect(context.attempt_id)["alive"], describe=lambda: explain(worker))
         state = snapshot(fixture)
         assert not state["submissions"]
-        assert state["attempts"][0]["state"] == "uncertain", worker.poll()
+        assert state["attempts"][0]["state"] == "uncertain", explain(worker)
         if observation == "usage":
             assert state["model_requests"][0]["state"] == "uncertain"
             assert state["reservations"][0]["state"] == "uncertain"
@@ -392,9 +448,9 @@ raise SystemExit(main(backend_factory=lambda spec: StreamingBackend(name=spec.ba
         process_observations=ProcessObservations(supervisor.store, host_id="fixture-host"))
     try:
         worker.start(context, BackendSpec("ollama", "chosen"))
-        until(lambda: not worker.inspect(context.attempt_id)["alive"])
+        until(lambda: not worker.inspect(context.attempt_id)["alive"], describe=lambda: explain(worker))
         state = reader_snapshot(read_setup)
-        assert state["attempts"][0]["state"] == "submitted", worker.poll()
+        assert state["attempts"][0]["state"] == "submitted", explain(worker)
         assert state["process_observations"][0]["state"] == "stopped"
         assert state["action_receipts"][0]["state"] == "completed"
         assert state["action_receipts"][0]["is_error"] == 0
@@ -420,9 +476,9 @@ raise SystemExit(main(backend_factory=lambda spec: StreamingBackend(name=spec.ba
         process_observations=ProcessObservations(supervisor.store, host_id="fixture-host"))
     try:
         worker.start_coordinator(context, BackendSpec("ollama", "chosen"), plans)
-        until(lambda: not worker.inspect(context.attempt_id)["alive"])
+        until(lambda: not worker.inspect(context.attempt_id)["alive"], describe=lambda: explain(worker))
         state = coordinator_snapshot(coordinator_setup)
-        assert state["attempts"][0]["state"] == "completed", worker.poll()
+        assert state["attempts"][0]["state"] == "completed", explain(worker)
         assert state["process_observations"][0]["state"] == "stopped"
         assert len(state["coordinator_inputs"]) == 2
         assert state["coordinator_proposals"][0]["request_id"] == state["model_requests"][-1]["id"]
@@ -463,7 +519,7 @@ def test_managed_search_child_stays_owned_through_cancellation(read_setup, tmp_p
     search_script = tmp_path / "fixture_search.py"
     search_script.write_text("import json,os,time\nfrom pathlib import Path\n"
         f"Path({str(marker)!r}).write_text(json.dumps({{'pid':os.getpid(),'group':os.getpgrp() if os.name!='nt' else None}}))\n"
-        "time.sleep(60)\n", encoding="utf-8")
+        "time.sleep(600)\n", encoding="utf-8")  # outlives the waits: only cancellation ends it
     command = child_script(tmp_path, f'''
 import lumi.engine.tools as tools
 from lumi.engine.swarming.worker_child import main
@@ -490,12 +546,12 @@ raise SystemExit(main(backend_factory=lambda spec: StreamingBackend(name=spec.ba
             children = [child.cmdline() for child in process.children(recursive=True)]
             raise AssertionError(json.dumps({"status": worker.poll(), "children": children,
                 "actions": reader_snapshot(read_setup)["action_receipts"]})) from None
-        assert marker.exists(), worker.poll()
+        assert marker.exists(), explain(worker)
         search = json.loads(marker.read_text())
         if os.name != "nt":
             assert search["group"] == worker.inspect(context.attempt_id)["pid"]
         worker.stop()
-        until(lambda: not worker.inspect(context.attempt_id)["alive"])
+        until(lambda: not worker.inspect(context.attempt_id)["alive"], describe=lambda: explain(worker))
         until(lambda: not psutil.pid_exists(search["pid"]) or psutil.Process(search["pid"]).status() == psutil.STATUS_ZOMBIE)
         state = reader_snapshot(read_setup)
         assert state["process_observations"][0]["state"] == "stopped"

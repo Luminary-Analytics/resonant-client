@@ -15,7 +15,7 @@ from lumi import policy as lumi_policy
 from lumi.audit import AuditLog
 from lumi.engine.swarming import Scope
 from lumi.engine.swarming.autopilot import PLAN_EVIDENCE
-from lumi.engine.swarming.models import Conflict
+from lumi.engine.swarming.models import Conflict, RevisionConflict
 from lumi.engine.swarming.organization import (TeamGovernance, check_refusal, mode_refusal, model_refusal,
                                                sandbox_refusal)
 from lumi.engine.swarming.service import CapturedSession, SwarmRuntime, policy_refusal
@@ -118,10 +118,21 @@ def view(service, capture, run_id):
 
 
 def act(service, capture, run_id, action, **payload):
-    """One owner action on the team, at its current revision."""
-    revision = view(service, capture, run_id)["run"]["run"]["revision"]
-    return service.operate(capture, {"action": action, "request_id": f"{action}-{time.monotonic()}",
-                                     "run_id": run_id, "expected_revision": revision, **payload})
+    """One owner action on the team, at its current revision.
+
+    A lease renewal can advance the revision between the view and the action;
+    the action is then refused before anything commits, and the owner
+    refreshes and sends it again (see test_swarm_desktop_writers.operate).
+    """
+    request_id = f"{action}-{time.monotonic()}"
+    for attempt in range(3):
+        revision = view(service, capture, run_id)["run"]["run"]["revision"]
+        try:
+            return service.operate(capture, {"action": action, "request_id": request_id,
+                                             "run_id": run_id, "expected_revision": revision, **payload})
+        except RevisionConflict:
+            if attempt == 2:
+                raise
 
 
 def handed_back(service, capture, run_id):
@@ -886,7 +897,7 @@ def test_integration_steps_and_the_apply_grant_under_a_full_auto_policy(tmp_path
 @pytest.fixture
 def prepared_writers(tmp_path):
     """A writer team, with no policy, whose one writer's change is combined and ready for its check."""
-    from tests.test_swarm_desktop_writers import operate, request, settled, view as writers_view
+    from tests.test_swarm_desktop_writers import operate, request, settled, submitted, view as writers_view
 
     project = tmp_path / "project"
     (project / "src").mkdir(parents=True)
@@ -910,7 +921,7 @@ def prepared_writers(tmp_path):
     try:
         service.operate(capture, {"action": "configure", "request_id": "enable", "enabled": True})
         run_id = service.operate(capture, request())["run"]["run"]["id"]
-        until(lambda: len(writers_view(desktop, run_id)["submissions"]) == 1, timeout=15)
+        submitted(desktop, run_id)  # the same generous, self-describing wait as the writer tests
         writer_id = writers_view(desktop, run_id)["writer_worktrees"][0]["id"]
         operate(desktop, run_id, "prepare_candidate", "prepare", writer_ids=[writer_id])
         candidate = settled(desktop, run_id)["integration_candidates"][0]

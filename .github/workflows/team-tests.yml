@@ -76,5 +76,6 @@ jobs:
 
       - name: Test
         # Serial on purpose: several tests hold deadlines around real child
-        # processes. Collect only the Team files from tests/.
-        run: python -m pytest -q -o "python_files=test_swarm_*.py" tests
+        # processes. Collect only the Team files from tests/. The slowest
+        # durations show how close a runner came to a test's waits.
+        run: python -m pytest -q -o "python_files=test_swarm_*.py" --durations=30 tests

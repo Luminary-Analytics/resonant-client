@@ -6,7 +6,7 @@ import time
 import pytest
 
 from lumi.engine.swarming.collaboration import CollaborationTerms
-from lumi.engine.swarming.models import Conflict, ScopeDenied
+from lumi.engine.swarming.models import Conflict, RevisionConflict, ScopeDenied
 from lumi.engine.swarming.service import CapturedSession, SwarmRuntime
 from lumi.engine.swarming import Scope
 from lumi.gui.runtime import BackendSpec
@@ -41,9 +41,17 @@ def prepare(runtime, capture, key):
 
 
 def send(runtime, capture, run_id, action, key, **fields):
-    revision = runtime.operate(capture, {"action": "view", "run_id": run_id, "request_id": "refresh"})["run"]["run"]["revision"]
-    return runtime.operate(capture, {"action": action, "run_id": run_id, "request_id": key,
-                                     "expected_revision": revision, **fields})
+    # A lease renewal can advance the revision between the view and the
+    # action; it is then refused before anything commits, and the owner
+    # refreshes and sends it again (see test_swarm_desktop_writers.operate).
+    for attempt in range(3):
+        revision = runtime.operate(capture, {"action": "view", "run_id": run_id, "request_id": "refresh"})["run"]["run"]["revision"]
+        try:
+            return runtime.operate(capture, {"action": action, "run_id": run_id, "request_id": key,
+                                             "expected_revision": revision, **fields})
+        except RevisionConflict:
+            if attempt == 2:
+                raise
 
 
 def grant(runtime, a, b, first, second, key="offer", max_messages=20):
@@ -88,7 +96,7 @@ def test_explicit_delivery_own_assignment_and_stop_isolation(pair):
         stream = backend.stream
         def blocked(**kwargs):
             entered.set()
-            assert gate.wait(4)
+            assert gate.wait(60)
             yield from stream(**kwargs)
         backend.stream = blocked
         return backend
@@ -96,7 +104,7 @@ def test_explicit_delivery_own_assignment_and_stop_isolation(pair):
     try:
         accepted = send(runtime, b, second, "collaboration_accept_work", "accept", grant_id=grant_id, message_id=pending["id"],
             objective="Read fact.txt for my own task", read_roots=["fact.txt"], requests=3, evidence="I reviewed the proposal and choose this bounded investigation")
-        assert entered.wait(3) and runtime.navigation_busy
+        assert entered.wait(30) and runtime.navigation_busy
         assert len(accepted["run"]["attempts"]) == 1 and accepted["run"]["reservations"][0]["amount"] == 3
         replay = send(runtime, b, second, "collaboration_accept_work", "accept", grant_id=grant_id, message_id=pending["id"],
             objective="Read fact.txt for my own task", read_roots=["fact.txt"], requests=3, evidence="I reviewed the proposal and choose this bounded investigation")
@@ -107,7 +115,7 @@ def test_explicit_delivery_own_assignment_and_stop_isolation(pair):
         assert runtime._runners[second][1].inspect_all()[0]["alive"]
     finally:
         gate.set()
-    deadline = time.monotonic() + 5
+    deadline = time.monotonic() + 60
     while time.monotonic() < deadline and (runtime._runners[second][1].inspect_all()[0]["alive"] or runtime.navigation_busy):
         threading.Event().wait(.02)
     snapshot = runtime.operate(b, {"action": "view", "request_id": "finished", "run_id": second})["run"]

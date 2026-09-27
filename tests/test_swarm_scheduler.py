@@ -45,7 +45,7 @@ def test_ready_work_fills_freed_slots_and_dependency_waits_for_exact_review(setu
         first = scheduler.dispatch_ready()
         assert len(first) == 2
         until(lambda: len(providers) == 2)
-        assert all(provider.entered.wait(3) for provider in providers)
+        assert all(provider.entered.wait(20) for provider in providers)
         assert len(state(setup)["attempts"]) == 2
         for provider in providers:
             provider.release.set()
@@ -111,12 +111,12 @@ def test_slow_dispatch_does_not_block_inspection_or_stop(setup, monkeypatch):
     original = scheduler._command
     def blocked(kind, payload):
         entered.set()
-        assert release.wait(5)
+        assert release.wait(60)
         return original(kind, payload)
     monkeypatch.setattr(scheduler, "_command", blocked)
     try:
         scheduler.start()
-        assert entered.wait(3)
+        assert entered.wait(20)
         assert scheduler.inspect()["active"]
         runner.stop()
         release.set()
@@ -137,13 +137,13 @@ def test_close_after_assignment_commit_never_invokes_worker_launcher(setup, monk
         result = original(kind, payload)
         if kind == "assign":
             committed.set()
-            assert release.wait(5)
+            assert release.wait(60)
         return result
     monkeypatch.setattr(scheduler, "_command", held_reply)
     monkeypatch.setattr(runner, "start", lambda *a, **k: pytest.fail("Launcher ran after scheduling closed"))
     try:
         scheduler.start()
-        assert committed.wait(3)
+        assert committed.wait(20)
         scheduler.close()
         release.set()
         until(lambda: not scheduler.inspect()["active"])

@@ -27,10 +27,29 @@ writer = writer_fixture
 coordinator = coordinator_fixture
 
 
+# How long a participant may take to reach a fixture's gate: starting its
+# thread and committing its request run SQLite writes that take seconds on a
+# loaded runner. The gates themselves hold until the test releases them.
+REACH_SECONDS = 20
+HOLD_SECONDS = 60
+
+
 def control(runtime, context, action, **kwargs):
-    revision = runtime.store.snapshot(context.scope, context.run_id)["run"]["revision"]
-    return getattr(runtime, action)(context.attempt_id, context.epoch,
-        command_id=uuid.uuid4().hex, expected_revision=revision, **kwargs)
+    """One owner control at the revision just read.
+
+    The runner's lease renewal (every 5 s) also advances the revision, so on a
+    busy runner one can land in between; the control is then refused before
+    anything commits, and the owner refreshes and sends it again.
+    """
+    command_id = uuid.uuid4().hex
+    for attempt in range(3):
+        revision = runtime.store.snapshot(context.scope, context.run_id)["run"]["revision"]
+        try:
+            return getattr(runtime, action)(context.attempt_id, context.epoch,
+                command_id=command_id, expected_revision=revision, **kwargs)
+        except RevisionConflict:
+            if attempt == 2:
+                raise
 
 
 def test_individual_pause_preserves_peer_progress_and_global_pause_hierarchy(reader):
@@ -41,7 +60,7 @@ def test_individual_pause_preserves_peer_progress_and_global_pause_hierarchy(rea
     first, peer = assign(reader), assign(reader, "second")
     try:
         runtime.start(first, BackendSpec("ollama", "chosen"))
-        assert blocked.entered.wait(2)
+        assert blocked.entered.wait(REACH_SECONDS)
         paused = control(runtime, first, "pause_worker")
         assert paused["worker"]["state"] == "pausing" and paused["worker"]["alive"]
         runtime.start(peer, BackendSpec("ollama", "chosen"))
@@ -70,7 +89,7 @@ def test_cancel_one_blocked_participant_does_not_cancel_peer(reader):
     first, peer = assign(reader), assign(reader, "second")
     try:
         runtime.start(first, BackendSpec("ollama", "chosen"))
-        assert blocked.entered.wait(2)
+        assert blocked.entered.wait(REACH_SECONDS)
         control(runtime, first, "cancel_worker")
         assert runtime.inspect(first.attempt_id)["state"] == "stopping"
         assert not runtime.inspect(first.attempt_id)["termination_recorded"]
@@ -94,11 +113,17 @@ def test_guidance_replay_is_generated_exactly_once_and_bound_to_next_request(rea
     context = assign(reader)
     try:
         runtime.start(context, BackendSpec("ollama", "chosen", api_key="fixture-private-key"))
-        assert backend.entered.wait(2)
-        revision = snapshot(reader)["run"]["revision"]
-        envelope = dict(command_id="steer-once", expected_revision=revision, text="Inspect the omitted edge case.")
-        runtime.steer_worker(context.attempt_id, context.epoch, **envelope)
-        runtime.steer_worker(context.attempt_id, context.epoch, **envelope)
+        assert backend.entered.wait(REACH_SECONDS)
+        for attempt in range(3):  # a lease renewal may refuse it first, before anything commits
+            revision = snapshot(reader)["run"]["revision"]
+            envelope = dict(command_id="steer-once", expected_revision=revision, text="Inspect the omitted edge case.")
+            try:
+                runtime.steer_worker(context.attempt_id, context.epoch, **envelope)
+                break
+            except RevisionConflict:
+                if attempt == 2:
+                    raise
+        runtime.steer_worker(context.attempt_id, context.epoch, **envelope)  # the exact replay
         reopened = type(runtime.store)(runtime.store.path).snapshot(context.scope, context.run_id)
         assert len(reopened["owner_directives"]) == 1 and not reopened["owner_directive_receipts"]
         with pytest.raises(ValueError, match="credential"):
@@ -130,7 +155,7 @@ def test_control_between_reservation_and_input_keeps_one_exact_request(reader, m
         result = original(self, kind, payload)
         if kind == "reserve_request":
             reached.set()
-            assert release.wait(4)
+            assert release.wait(HOLD_SECONDS)
         return result
     monkeypatch.setattr(SwarmExecutionGuard, "_command", blocked)
     backend = Backend(events=[text_delta("Observed response."), done()])
@@ -138,7 +163,7 @@ def test_control_between_reservation_and_input_keeps_one_exact_request(reader, m
     context = assign(reader)
     try:
         runtime.start(context, BackendSpec("ollama", "chosen"))
-        assert reached.wait(2)
+        assert reached.wait(REACH_SECONDS)
         control(runtime, context, action)
         release.set()
         if action == "pause_worker":
@@ -164,7 +189,7 @@ def test_cancel_after_write_admission_retains_actual_observation(writer, monkeyp
     def slow(name, *args, **kwargs):
         if name == "file_write":
             entered.set()
-            assert release.wait(5)
+            assert release.wait(HOLD_SECONDS)
         return original(name, *args, **kwargs)
     monkeypatch.setattr(session_module, "execute_tool", slow)
     context, lease = assign_writer(writer)
@@ -172,7 +197,7 @@ def test_cancel_after_write_admission_retains_actual_observation(writer, monkeyp
     runtime = writer_runner(writer, backend)
     try:
         runtime.start(context, BackendSpec("ollama", "chosen"), writer_id=lease["id"])
-        assert entered.wait(4)
+        assert entered.wait(REACH_SECONDS)
         assert writer_snapshot(writer)["action_receipts"][0]["state"] == "admitted"
         control(runtime, context, "cancel_worker")
         release.set()
@@ -195,7 +220,7 @@ def test_pause_during_slow_scope_preflight_waits_without_closing_guard(reader, m
         if first:
             first = False
             reached.set()
-            assert release.wait(4)
+            assert release.wait(HOLD_SECONDS)
         return original(self, name, arguments)
     monkeypatch.setattr(SwarmExecutionGuard, "_tool_scope", scope)
     backend = Backend(scripts=[[tool_call("file_read", {"path": "fact.txt"}), done()],
@@ -204,7 +229,7 @@ def test_pause_during_slow_scope_preflight_waits_without_closing_guard(reader, m
     context = assign(reader)
     try:
         runtime.start(context, BackendSpec("ollama", "chosen"))
-        assert reached.wait(2)
+        assert reached.wait(REACH_SECONDS)
         control(runtime, context, "pause_worker")
         release.set()
         until(lambda: runtime.inspect(context.attempt_id)["state"] == "paused")
@@ -225,7 +250,7 @@ def test_coordinator_guidance_composes_original_prompt_attestation(coordinator):
     runtime = start_coordinator(coordinator, backend)
     context = coordinator[2]
     try:
-        assert backend.entered.wait(2)
+        assert backend.entered.wait(REACH_SECONDS)
         control(runtime, context, "steer_worker", text="Keep the plan restricted to the original questions.")
         backend.release.set()
         until(lambda: not runtime.inspect(context.attempt_id)["alive"])

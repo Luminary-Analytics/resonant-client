@@ -11,6 +11,7 @@ import copy
 import json
 import os
 import re
+import string
 import sys
 import time
 import logging
@@ -2883,6 +2884,12 @@ class Session:
             # ── Process collected text ──
             full_text = "".join(collected_text).strip()
             full_text = strip_tool_call_tags(full_text)
+            # A reply that is only template tokens and punctuation says nothing
+            # (Kimi K3 on NVIDIA NIM once answered "<|close|>!!!!…"): treat it as
+            # empty so the empty-response recovery below asks again.
+            if full_text and all(character in string.punctuation or character.isspace()
+                                 for character in re.sub(r"<\|[A-Za-z_]{1,32}\|>", "", full_text)):
+                full_text = ""
             if self.hook_runner:
                 after_model = self.hook_runner.emit(
                     HookType.AFTER_MODEL,

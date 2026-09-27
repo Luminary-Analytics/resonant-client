@@ -18,8 +18,10 @@ that name them cover all four.
 
 The repository is the project's `origin` remote. It can be on github.com or
 on GitHub Enterprise Server, recognized by a host name containing "github",
-or by the host in `GITHUB_SERVER_URL`. Lumi uses Enterprise Server's API at
-`https://<host>/api/v3`; `GITHUB_API_URL` overrides it.
+by the host in `GITHUB_SERVER_URL`, or by being listed under
+[which hosts get the token](#which-hosts-get-the-token), which an Enterprise
+Server must be before Lumi sends it the token. Lumi uses Enterprise
+Server's API at `https://<host>/api/v3`; `GITHUB_API_URL` overrides it.
 
 The token is **Settings > Connections > API keys > GitHub token**, kept in the
 OS credential store. Otherwise `GITHUB_TOKEN` or `GH_TOKEN` is used; GitHub
@@ -33,13 +35,37 @@ repository:
 The token goes only into request headers. Nothing a tool returns contains it,
 and the secret scan removes its value from anything sent to a model.
 
+### Which hosts get the token
+
+Lumi sends the GitHub token only to github.com (and api.github.com) and to
+hosts you name:
+
+- **Settings > Issue trackers > Your code hosts > GitHub Enterprise Server
+  hosts** (`code_hosts.github_hosts` in settings.json), one host per line;
+- `LUMI_GITHUB_HOSTS`, separated by commas;
+- in GitHub Actions, the hosts in `GITHUB_SERVER_URL` and `GITHUB_API_URL`.
+
+An Enterprise Server found by its name alone (a host containing "github") is
+recognized, but its requests are refused until you list it, with a message
+saying where. That keeps an issue link, which can name any host, from
+sending your token to a server someone else chose. The GitLab token follows
+the same rule: gitlab.com, **GitLab hosts** under Your code hosts
+(`code_hosts.gitlab_hosts`), `LUMI_GITLAB_HOSTS`, and GitLab CI's
+`CI_SERVER_HOST` and `CI_API_V4_URL`.
+
+An organization's policy can set either list (`code_hosts.github_hosts`,
+`code_hosts.gitlab_hosts`; see [enterprise policy](enterprise-policy.md)).
+Then only github.com or gitlab.com and the policy's hosts get the token:
+Settings can't change the list, and the environment variables above don't
+add to it.
+
 ## Other hosts
 
 The host is chosen from the `origin` remote:
 
 | Host | Recognized by | Token (Settings > Connections > API keys, or the environment) |
 |---|---|---|
-| GitLab | gitlab.com, a host whose name contains "gitlab", the host GitLab CI runs on (`CI_SERVER_HOST`), or one listed in `LUMI_GITLAB_HOSTS` (comma-separated) | **GitLab token** or `GITLAB_TOKEN`: a personal, group or project access token with the `api` scope |
+| GitLab | gitlab.com, a host whose name contains "gitlab", the host GitLab CI runs on (`CI_SERVER_HOST`), or one listed under Your code hosts or in `LUMI_GITLAB_HOSTS` (comma-separated). A self-managed host must be listed (or be GitLab CI's) before it gets the token; see [which hosts get the token](#which-hosts-get-the-token) | **GitLab token** or `GITLAB_TOKEN`: a personal, group or project access token with the `api` scope |
 | Bitbucket Cloud | bitbucket.org | **Bitbucket token** or `BITBUCKET_TOKEN`: a repository or workspace access token (pull requests: write, pipelines: read), or `username:app-password` |
 | Azure DevOps | dev.azure.com, `*.visualstudio.com`, `ssh.dev.azure.com` | **Azure DevOps token** or `AZURE_DEVOPS_TOKEN`: a personal access token with Code (read & write) and Build (read); in Azure Pipelines, `SYSTEM_ACCESSTOKEN` |
 

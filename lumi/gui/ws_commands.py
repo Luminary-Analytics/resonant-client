@@ -4031,6 +4031,7 @@ _SOCKET_SETTING_KEYS: dict[str, frozenset[str]] = {
     "api_keys": frozenset({"sonn", "openrouter", "kimi", "anthropic", "openai", "otlp", "github", "gitlab", "bitbucket",
                            "azure_devops", "jira", "linear"}),
     "issue_trackers": frozenset({"jira_url", "jira_email"}),
+    "code_hosts": frozenset({"github_hosts", "gitlab_hosts"}),
     "review": frozenset({"agent_changes", "reviewers"}),
     "engram": frozenset({"enabled", "server_url"}),
     "cost_tracking": frozenset({"enabled", "budget_alert_usd", "daily_limit_usd", "turn_limit_usd",
@@ -4203,6 +4204,10 @@ def _socket_setting_value(section: Any, key: Any, value: Any) -> Any:
         from .. import voice
 
         return voice.validate(key, value)
+    elif section == "code_hosts":
+        from ..net import host_names
+
+        return host_names(value)
     return value
 
 

@@ -66,6 +66,26 @@ makes the manifest invalid, and the pack stays off. The schema
 (`sdk/schema/lumi-pack.schema.json`) describes panels, Settings > Capability
 packs lists them for review, and `lumi extension check` lists them.
 
+**Code host tokens go only to trusted hosts.** An issue link
+(`@issue:https://…/owner/repo/issues/1`, or the `issue_view` tool) could name
+any host, and Lumi sent the GitHub or GitLab token there. Now:
+- the GitHub token goes only to github.com, to hosts listed in Settings >
+  Issue trackers > **Your code hosts** (`code_hosts.github_hosts`) or
+  `LUMI_GITHUB_HOSTS`, and in GitHub Actions to the hosts of
+  `GITHUB_SERVER_URL` and `GITHUB_API_URL`;
+- the GitLab token goes only to gitlab.com, `code_hosts.gitlab_hosts`,
+  `LUMI_GITLAB_HOSTS` and GitLab CI's `CI_SERVER_HOST` (and
+  `CI_API_V4_URL`'s host);
+- a request to any other host is refused before it's made, with a message
+  saying where to list the host;
+- a policy can set either list; then the environment can't add to it;
+- a redirect away from a GitLab host no longer carries the token (httpx
+  keeps the `PRIVATE-TOKEN` header, unlike `Authorization`).
+
+A GitHub Enterprise or self-managed GitLab origin found by its name (a host
+containing "github" or "gitlab") now needs listing too. See
+[which hosts get the token](github.md#which-hosts-get-the-token).
+
 **Not covered.** Browsers don't apply the Content-Security-Policy to WebRTC
 (Edge ignores `webrtc 'block'`), so a panel's script can send what it sees
 (the project's name, the theme and what's typed into it) to a server of its

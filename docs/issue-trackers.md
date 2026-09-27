@@ -30,7 +30,12 @@ Open **Settings > Issue trackers**.
   token.
 - **Linear**: a personal API key from Linear's settings.
 - **GitHub and GitLab issues** use the tokens you set for pull requests
-  (Settings > Connections > API keys).
+  (Settings > Connections > API keys). Lumi sends them only to github.com,
+  gitlab.com and the hosts listed under **Your code hosts** on this page
+  (or in `LUMI_GITHUB_HOSTS` and `LUMI_GITLAB_HOSTS`). A link to an issue on
+  any other host is refused, with a message saying where to list the host
+  if it's your GitHub Enterprise Server or self-managed GitLab. See
+  [which hosts get the token](github.md#which-hosts-get-the-token).
 
 The environment variables `JIRA_URL`, `JIRA_EMAIL`, `JIRA_API_TOKEN` and
 `LINEAR_API_KEY` work too, for `lumi run` in CI. Tokens are kept in the

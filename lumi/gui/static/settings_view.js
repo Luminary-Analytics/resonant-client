@@ -1681,7 +1681,7 @@ class LumiSettingsView {
             {id:'voice', title:'Voice', group:'Personal', icon:'mic', description:'Dictate messages instead of typing them.', sections:['voice'], keywords:'dictation dictate speech microphone mic push-to-talk transcription transcribe whisper speech-to-text voice input'},
             {id:'sonn_account', title:'SONN account & credits', group:'Personal', icon:'person', description:'Your authenticated SONN identity and prepaid credit balance.', sections:['sonn_account'], keywords:'billing invitation balance'},
             {id:'cost_tracking', title:'Usage & cost', group:'Personal', icon:'chart', description:'Review tracked model usage and local spending alerts.', sections:['cost_tracking'], keywords:'tokens budget'},
-            {id:'issue_trackers', title:'Issue trackers', group:'Integrations', icon:'book', description:'Read Jira and Linear issues, and comment on them, from a conversation.', sections:['issue_trackers', 'issue_tracker_keys'], keywords:'jira linear atlassian issue ticket story bug github gitlab'},
+            {id:'issue_trackers', title:'Issue trackers', group:'Integrations', icon:'book', description:'Read Jira, Linear, GitHub and GitLab issues, and comment on them, from a conversation.', sections:['issue_trackers', 'code_hosts', 'issue_tracker_keys'], keywords:'jira linear atlassian issue ticket story bug github gitlab enterprise server self-managed hosts token'},
             {id:'provider_connections', title:'Connections', group:'Integrations', icon:'globe', description:'Connect model providers and manage their endpoints and API keys.', sections:['provider_connections','network','api_keys'], keywords:'ChatGPT Codex OpenRouter SONN login authentication proxy certificates TLS keychain'},
             {id:'code_editors', title:'Code editors', group:'Integrations', icon:'plug', description:'Use Lumi from VS Code and JetBrains IDEs: send the selection, see Lumi’s changes.', sections:['code_editors'], keywords:'vs code vscode cursor windsurf vscodium jetbrains intellij pycharm webstorm rider goland ide extension plugin selection diff'},
             {id:'creative_editors', title:'Creative editors', group:'Integrations', icon:'cube', description:'Work with Blender, Unity, and Unreal Engine 5.', sections:['creative_editors']},
@@ -1971,9 +1971,9 @@ class LumiSettingsView {
                     { key: 'kimi', label: 'Moonshot API key', type: 'password',
                       hint: 'MOONSHOT_API_KEY is also supported and takes effect when no stored key exists.' },
                     { key: 'github', label: 'GitHub token', type: 'password',
-                      hint: 'Lets the agent read pull request reviews and checks, and open, update and comment on pull requests. GITHUB_TOKEN or GH_TOKEN also work.' },
+                      hint: 'Lets the agent read pull request reviews and checks, and open, update and comment on pull requests. Sent only to github.com and the hosts under Issue trackers > Your code hosts. GITHUB_TOKEN or GH_TOKEN also work.' },
                     { key: 'gitlab', label: 'GitLab token', type: 'password',
-                      hint: 'The same for merge requests on GitLab (api scope). GITLAB_TOKEN also works.' },
+                      hint: 'The same for merge requests on GitLab (api scope), sent only to gitlab.com and the hosts under Issue trackers > Your code hosts. GITLAB_TOKEN also works.' },
                     { key: 'bitbucket', label: 'Bitbucket token', type: 'password',
                       hint: 'An access token, or username:app-password, for Bitbucket Cloud pull requests. BITBUCKET_TOKEN also works.' },
                     { key: 'azure_devops', label: 'Azure DevOps token', type: 'password',
@@ -2024,6 +2024,16 @@ class LumiSettingsView {
                       hint: 'JIRA_URL also works.' },
                     { key: 'jira_email', label: 'Jira email', type: 'text', placeholder: 'you@example.com',
                       hint: 'For Jira Cloud, the account the API token belongs to. Leave it empty for Jira Server or Data Center.' },
+                ]
+            },
+            {
+                id: 'code_hosts', title: 'Your code hosts',
+                note: 'Lumi sends your GitHub token only to github.com and your GitLab token only to gitlab.com, besides the hosts listed here. An issue link or pull request on any other host is refused, so a link can’t send your token to someone else’s server.',
+                fields: [
+                    { key: 'github_hosts', label: 'GitHub Enterprise Server hosts', type: 'lines', placeholder: 'github.example.com',
+                      hint: 'One host per line. LUMI_GITHUB_HOSTS also works, and in GitHub Actions the server it runs on is included.' },
+                    { key: 'gitlab_hosts', label: 'GitLab hosts', type: 'lines', placeholder: 'gitlab.example.com',
+                      hint: 'Self-managed GitLab, one host per line. LUMI_GITLAB_HOSTS also works, and in GitLab CI the server it runs on is included.' },
                 ]
             },
             {

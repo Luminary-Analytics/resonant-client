@@ -39,8 +39,11 @@ port:
   never use a `rg` from PATH).
 
 See [what the preview follows so far](swarming.md#organization-policy-excluded-files-and-current-limits).
-The browser, packaged-candidate and PostgreSQL checks described below ran on
-the pre-rename checkout; they haven't been repeated on the port.
+On the port, the nine source-mode browser tests (`tests/swarm_*.browser.cjs`
+other than the managed and packaged ones) pass in Edge; their fixtures now
+open the page through a one-time launch link. The packaged-candidate, managed
+and PostgreSQL checks described below ran on the pre-rename checkout and
+haven't been repeated.
 
 The new `engine/swarming/` storage foundation records scoped run/attempt identity,
 atomic assignment and request reservations, dispatch intent, durable messages,

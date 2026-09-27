@@ -15,6 +15,10 @@ packaging/ripgrep/
 # packaging/fetch_web_assets.ps1. Same reasoning as ripgrep above.
 lumi/gui/static/vendor/
 
+# Sparkle.framework for the macOS app's updates, fetched + SHA-256 verified
+# by packaging/fetch_sparkle.sh. Same reasoning again.
+packaging/sparkle/
+
 # Virtual environments
 .venv/
 venv/

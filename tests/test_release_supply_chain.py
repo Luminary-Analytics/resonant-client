@@ -106,12 +106,30 @@ class TestComponents:
         assert f"@fontsource/inter@{components['Inter']['version']}/" in web
         assert components["ripgrep"]["version"] in ripgrep
         assert f"WinSparkle-{components['WinSparkle']['version']}" in spec
+        sparkle = (PACKAGING / "fetch_sparkle.sh").read_text(encoding="utf-8")
+        mac = {item["name"]: item for item in notices.load_components(platform="darwin")}
+        assert f'SPARKLE_VERSION="{mac["Sparkle"]["version"]}"' in sparkle
+        assert mac["Sparkle"]["purl"].endswith("@" + mac["Sparkle"]["version"])
+        # Only the macOS build ships it, and only the Windows build WinSparkle.
+        assert "Sparkle" not in {item["name"] for item in notices.load_components(platform="win32")}
+        assert "WinSparkle" not in mac
+
+    def test_the_sparkle_download_is_pinned_by_hash(self):
+        script = (PACKAGING / "fetch_sparkle.sh").read_text(encoding="utf-8")
+        assert re.search(r'^SPARKLE_SHA256="[0-9a-f]{64}"$', script, re.M)
+        # Verified before extraction, and the build fails on a mismatch.
+        check = script.index('if [[ "$ACTUAL" != "$SPARKLE_SHA256" ]]')
+        assert script.index('ACTUAL="$(sha256 "$WORK/$ARCHIVE")"') < check < script.index("tar -xJf")
+        assert "exit 1" in script[check:script.index("tar -xJf")]
+        # Nothing from an earlier run is used unchecked (tests/test_sparkle.py runs it on macOS).
+        assert "exit 0" not in script
 
     def test_license_files_exist_or_are_fetched(self):
-        fetched = {"packaging/ripgrep/LICENSE-MIT", "packaging/ripgrep/UNLICENSE"}
-        for component in notices.load_components():
-            for relative in component.get("license_files", []):
-                assert relative in fetched or (ROOT / relative).is_file(), relative
+        fetched = {"packaging/ripgrep/LICENSE-MIT", "packaging/ripgrep/UNLICENSE", "packaging/sparkle/LICENSE"}
+        for platform in ("win32", "darwin", "linux"):
+            for component in notices.load_components(platform=platform):
+                for relative in component.get("license_files", []):
+                    assert relative in fetched or (ROOT / relative).is_file(), relative
 
     def test_ported_code_keeps_its_license(self):
         # lumi/engine/truncation.py is ported from pi-coding-agent's truncate.ts
@@ -218,3 +236,52 @@ def test_signing_without_credentials_warns_and_continues(tmp_path):
     assert result.returncode == 0, result.stderr
     assert "Not Authenticode-signed" in result.stdout
     assert target.read_bytes() == b"MZ"
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Authenticode signing runs on Windows")
+def test_signing_required_without_credentials_fails_the_release(tmp_path):
+    # Once a certificate exists, WINDOWS_SIGNING_REQUIRED turns losing it into a failed release.
+    target = tmp_path / "lumi.exe"
+    target.write_bytes(b"MZ")
+    env = {key: value for key, value in os.environ.items()
+           if key not in {"WINDOWS_SIGN_PFX_BASE64", "WINDOWS_SIGN_PFX_PASSWORD", "WINDOWS_SIGN_COMMAND"}}
+    env["WINDOWS_SIGNING_REQUIRED"] = "true"
+    result = subprocess.run(
+        ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
+         str(PACKAGING / "sign_windows.ps1"), "-Files", str(target)],
+        capture_output=True, text=True, timeout=120, env=env,
+    )
+    assert result.returncode != 0
+    assert "WINDOWS_SIGNING_REQUIRED" in result.stdout + result.stderr
+    assert target.read_bytes() == b"MZ"
+
+
+def _jobs(workflow: str) -> dict[str, str]:
+    """Each job's text in a workflow file, by name."""
+    text = (ROOT / ".github" / "workflows" / workflow).read_text(encoding="utf-8")
+    parts = re.split(r"^  ([a-z][\w-]*):\n", text.split("\njobs:\n", 1)[1], flags=re.M)
+    return dict(zip(parts[1::2], parts[2::2]))
+
+
+def test_gh_pages_is_published_byte_for_byte_and_checked_before_it_is_pushed():
+    # The macOS feeds are signed over their bytes. Git for Windows, where the
+    # release publishes, would convert line ends on checkout and commit unless
+    # told not to before the checkout, and only push_pages.py checks the
+    # staged blobs before pushing.
+    release = {name: job for name, job in _jobs("release.yml").items() if "ref: gh-pages" in job}
+    rehearsal = _jobs("build-macos.yml")["publish-dry-run"]
+    assert set(release) == {"release", "publish-macos"}
+    for name, job in [*release.items(), ("publish-dry-run", rehearsal)]:
+        setting = job.find("git config --global core.autocrlf false")
+        assert 0 <= setting < job.index("ref: gh-pages"), name
+    for name, job in release.items():
+        assert "python packaging/push_pages.py gh-pages-checkout" in job, name
+        assert "git push" not in job and "git add" not in job, name
+    assert "scripts/rehearse_pages_publish.py" in rehearsal
+
+
+def test_no_workflow_asks_for_an_oidc_token():
+    # A cloud role that trusts the release environment's identity is only as
+    # safe as that environment's tag rule (docs/release-pipeline.md).
+    for workflow in (ROOT / ".github" / "workflows").glob("*.yml"):
+        assert "id-token" not in workflow.read_text(encoding="utf-8"), workflow.name

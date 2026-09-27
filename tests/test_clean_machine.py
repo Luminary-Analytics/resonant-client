@@ -250,8 +250,14 @@ def test_a_missing_updater_says_reinstall(monkeypatch, capsys):
 
     monkeypatch.setattr(sys, "frozen", True, raising=False)
     monkeypatch.setattr(updater, "_find_dll", lambda: None)
+    monkeypatch.setattr(updater, "_dll", None)
+    monkeypatch.setattr(updater, "_sparkle", None)
+    monkeypatch.setattr(updater, "_stopped_for_offline", False)
     assert updater.component_missing()
-    message = _update_check_message({"mode": "automatic", "component_missing": True}, False)
+    # Settings > Updates and Help > Check for Updates show the status's reason.
+    reason = updater._unavailable_reason(update_channels.UpdatePreferences(platform="windows"))
+    assert reason == updater.MISSING_COMPONENT_MESSAGE
+    message = _update_check_message({"mode": "automatic", "unavailable": reason}, False)
     assert "Reinstall Lumi" in message and "source" not in message
     assert update_channels.main([]) == 0
     assert "reinstall" in json.loads(capsys.readouterr().out)["updater"]

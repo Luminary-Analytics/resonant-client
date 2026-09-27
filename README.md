@@ -123,7 +123,7 @@ for their context-handoff and verification boundaries.
 - Recommended decision prompts and a non-interrupting Check status control
 - Diagnostics export and cost tracking
 - Standard agentic workflow with tools, MCP integrations, and bounded task delegation
-- Signed Windows update feed with in-app update checks
+- Signed update feeds with in-app update checks (WinSparkle on Windows, Sparkle on macOS)
 
 ### Optional orchestration
 
@@ -149,8 +149,13 @@ IT departments can deploy the MSI package (`lumi-X.Y.Z.msi`) silently per
 machine through Intune, Configuration Manager or Group Policy; see
 [Deploying on Windows](docs/deploy-windows.md).
 
-A macOS build (`Lumi.app` in a DMG, Apple silicon) is built in CI but not yet
-released; see [Lumi on macOS](docs/macos.md).
+A macOS build (`Lumi.app` in a DMG, Apple silicon, macOS 12 or later) is built
+in CI, and the release workflow publishes it beside the Windows installer from
+the next release on. It updates itself with Sparkle from its own feeds, in
+the same format, and reads only a feed signed with the release key. Until
+it's notarized by Apple, macOS asks you to approve it once in
+System Settings › Privacy & Security › **Open Anyway**; see
+[Lumi on macOS](docs/macos.md).
 
 Windows SmartScreen may show "Unrecognized publisher" for the v0.x line. Code
 signing is planned for v1.0.

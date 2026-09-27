@@ -504,11 +504,7 @@ class LumiSettingsView {
         const hints = [
             status.offline ? `${status.offline} Install updates from a file below.` : '',
             status.restart_to_check ? 'Update checks start again after Lumi restarts.' : '',
-            status.mode !== 'off' && !status.available && !status.offline && !status.restart_to_check
-                ? (status.component_missing
-                    ? 'This installation is missing its update component (WinSparkle.dll). Reinstall Lumi to get updates.'
-                    : 'This copy of Lumi doesn’t update itself: it runs from source or outside Windows.')
-                : '',
+            status.mode !== 'off' && !status.available && !status.offline && !status.restart_to_check ? (status.unavailable || 'This copy of Lumi doesn’t update itself.') : '',
             ...(status.problems || []),
         ].filter(Boolean).map(text => `<div class="settings-row-hint">${esc(text)}</div>`).join('');
         const lastCheck = status.last_check ? new Date(status.last_check * 1000).toLocaleString() : 'Not yet';

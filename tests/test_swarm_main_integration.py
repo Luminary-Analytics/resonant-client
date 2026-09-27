@@ -132,9 +132,12 @@ def test_a_worker_cannot_read_a_file_the_project_excludes(reader):
     events = _run(reader, backend, ExclusionRules.for_project(str(reader[2]), settings_patterns=[".env"]))
     assert SECRET not in events
     assert all(SECRET not in request for request in backend.requests)
-    # A guarded worker fails closed on any boundary violation: the attempt ends
-    # with the refusal shown to the owner, and no further request is made.
-    assert "is excluded by" in events and len(backend.requests) == 1
+    # The read is refused before it runs and the model hears why, then carries
+    # on without the file (the refusal no longer ends the worker).
+    refusals = [event for event in json.loads(events) if event.get("event") == "tool.result"
+                and str(event.get("output", "")).startswith("Refused before running:")]
+    assert refusals and "exclu" in refusals[0]["output"].lower()
+    assert len(backend.requests) == 2 and "Could not read it." in events
 
 
 def test_a_worker_search_leaves_out_excluded_files(reader):

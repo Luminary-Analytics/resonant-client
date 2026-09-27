@@ -177,7 +177,9 @@ host enrollment and actual packaged/learned-benefit qualification remain open.
   (model, mode, shell, approval and sharing rules; hooks; other connections)
   before relaxing the refusal. A worker child keeps its host channel off
   standard input and output (`process_worker.stdio_pipes`), and code it runs
-  must not rely on an inherited stdin.
+  must not rely on an inherited stdin. CI runs `tests/test_swarm_*.py` in
+  `team-tests.yml` (path-filtered, and on every push to main), not in
+  `tests.yml`; a local `python -m pytest -q` still runs them.
 
 ## Working in the codebase
 

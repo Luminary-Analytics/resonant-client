@@ -1,0 +1,80 @@
+name: Team tests
+
+# The Team (swarming) preview's suite, tests/test_swarm_*.py.
+#
+# It starts real worker processes, git worktrees and SQLite stores and takes
+# about fifteen minutes serially, which pushed tests.yml past its 20-minute
+# limit. So it runs here, apart from the main suite: on pull requests that
+# change the Team code, the engine pieces it builds on or its tests, and on
+# every push to main, so a change elsewhere that breaks it still shows up
+# right after it merges.
+
+on:
+  pull_request:
+    paths:
+      - 'lumi/engine/swarming/**'
+      - 'lumi/engine/execution_guard.py'
+      - 'lumi/engine/session.py'
+      - 'lumi/engine/tools.py'
+      - 'lumi/engine/exclusions.py'
+      - 'lumi/engine/sandbox.py'
+      - 'lumi/engine/artifacts.py'
+      - 'lumi/backends.py'
+      - 'lumi/processes.py'
+      - 'lumi/policy.py'
+      - 'lumi/paths.py'
+      - 'lumi/handoff.py'
+      - 'lumi/__main__.py'
+      - 'lumi/gui/runtime.py'
+      - 'lumi/gui/swarming.py'
+      - 'lumi/gui/static/swarm_view.*'
+      - 'lumi/gui/static/*collaboration_view.*'
+      - 'services/governance/**'
+      - 'scripts/swarm_benchmark.py'
+      - 'tests/test_swarm_*.py'
+      - 'tests/fixtures/swarming*'
+      - 'tests/fixtures/swarming/**'
+      - 'tests/streaming_stub.py'
+      - 'packaging/fetch_ripgrep.ps1'
+      - '.github/workflows/team-tests.yml'
+  push:
+    branches:
+      - main
+
+concurrency:
+  group: team-tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  team-pytest:
+    # windows-latest, like tests.yml: the owned process trees, named job
+    # objects and path checks these tests exercise behave differently elsewhere.
+    runs-on: windows-latest
+    timeout-minutes: 40
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          cache: 'pip'
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[all,dev]"
+
+      - name: Fetch pinned ripgrep
+        # Managed team workers search only with the bundled, checksum-verified
+        # rg (never PATH), as a packaged install does. Fetch the same copy the
+        # release build ships (scripts/build_clean.ps1 runs this script too).
+        shell: pwsh
+        run: ./packaging/fetch_ripgrep.ps1
+
+      - name: Test
+        # Serial on purpose: several tests hold deadlines around real child
+        # processes. Collect only the Team files from tests/.
+        run: python -m pytest -q -o "python_files=test_swarm_*.py" tests

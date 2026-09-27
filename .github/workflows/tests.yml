@@ -54,13 +54,6 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e ".[all,dev]"
 
-      - name: Fetch pinned ripgrep
-        # Managed team workers search only with the bundled, checksum-verified
-        # rg (never PATH), as a packaged install does. Fetch the same copy the
-        # release build ships (scripts/build_clean.ps1 runs this script too).
-        shell: pwsh
-        run: ./packaging/fetch_ripgrep.ps1
-
       - name: Lint
         # `lumi/**` is held to ruff's full default rule set. Test and
         # support code carries narrow per-file exemptions declared in
@@ -70,7 +63,9 @@ jobs:
       - name: Test
         # -q overrides the `-v` in pyproject addopts (CLI args win) to keep the
         # CI log readable; failures still print with --tb=short.
-        run: python -m pytest -q
+        # The Team preview's suite (tests/test_swarm_*.py) runs in team-tests.yml:
+        # it starts real processes and git worktrees and takes ~15 minutes.
+        run: python -m pytest -q --ignore-glob="tests/test_swarm_*.py"
 
       - name: Set up Node for frontend regression checks
         uses: actions/setup-node@v4

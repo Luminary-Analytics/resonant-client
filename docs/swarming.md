@@ -121,7 +121,11 @@ team's orchestrator, and you don't approve each step:
   and may not start work; any work it proposes is rejected.
 
 The **Orchestrator** section shows the round, the current step and the final
-report. You can pause, steer or stop the team at any time. The orchestrator
+report. Under the report, **Recorded by Lumi** gives the team's own counts:
+tasks accepted, questions to the orchestrator and answers, and changes
+applied. The report is the model's own words. A live report once claimed a
+question nobody had asked, so the orchestrator's later turns get the same
+counts (`team_record`) to cite. You can pause, steer or stop the team at any time. The orchestrator
 loop runs in the app that owns the team. After a restart or a lost host,
 **Recover** and **Continue** the team as for any retained team: the loop then
 resumes from the retained plans. Each accepted plan that started work counts

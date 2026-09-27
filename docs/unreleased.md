@@ -23,6 +23,12 @@ and stays for the conversation like a hand-off (`ContextBroker.STICKY`). Only
 the conversation's own personal teams can be attached, and reading one creates
 no team state.
 
+**What Lumi recorded, beside the report.** A live closing report said both
+workers had asked the orchestrator a question when only one had. The Team
+panel and the `@team:` attachment now show the team's recorded counts next to
+the report, and the orchestrator's follow-up and closing turns receive them as
+`team_record` to cite.
+
 **Plans with near-miss JSON.** A live Nemotron orchestrator ended its round-2
 plan without the last `}`, and its retry added a stray `}` after it. The team
 was handed back even though its work was done and applied. The plan parser now

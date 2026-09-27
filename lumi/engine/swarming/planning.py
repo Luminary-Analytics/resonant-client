@@ -25,7 +25,7 @@ _TOP_FIELDS = {"summary", "use_team", "work_items"}
 # and are dropped. Any other extra field still refuses the plan.
 _INPUT_ECHOES = {"objective", "read_roots", "write_roots", "worker_slots", "coordinator_read_roots",
                  "proposed_work_namespace", "allowed_criteria", "existing_work", "recent_untrusted_findings",
-                 "graph_sha256", "untrusted_messages_to_orchestrator", "checked_changes"}
+                 "graph_sha256", "untrusted_messages_to_orchestrator", "checked_changes", "team_record"}
 _ITEM_FIELDS = {"id", "objective", "role", "dependencies", "read_roots", "write_roots", "criteria"}
 _LOGICAL_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,79}\Z")
 _FENCE = re.compile(r"```(?:json)?\r?\n(.*)\r?\n```\Z", re.DOTALL)

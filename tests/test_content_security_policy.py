@@ -57,6 +57,8 @@ def test_page_runs_only_this_servers_code_and_connects_only_to_it(gui_state, hos
         "img-src": ["'self'", "data:", "blob:"],
         # The app socket on this port, under either name the server accepts.
         "connect-src": ["'self'", "ws://127.0.0.1:48123", "ws://localhost:48123"],
+        # Capability-pack panels (gui/extension_panels.py), which can't navigate to another site.
+        "frame-src": ["'self'"],
         "object-src": ["'none'"],
         "base-uri": ["'none'"],
         "form-action": ["'none'"],

@@ -793,6 +793,49 @@ async def _capability_pack_remove(ctx: CommandContext) -> None:
     await ctx.send({"event": "ui_notice", "message": "Capability pack removed."})
 
 
+@command("extension_panels")
+async def _extension_panels(ctx: CommandContext) -> None:
+    """The open project's panels from approved packs (gui/extension_panels.py)."""
+    from . import extension_panels
+
+    try:
+        payload = await _in_executor(extension_panels.listing, ctx.state)
+    except Exception:  # panels are optional; listing them must never end the connection
+        logger.warning("Listing extension panels failed", exc_info=True)
+        payload = {"event": "extension_panels", "enabled": False, "panels": [],
+                   "reason": "Lumi couldn't read the capability packs' panels."}
+    await ctx.send(payload)
+
+
+@command("extension_panel_open")
+async def _extension_panel_open(ctx: CommandContext) -> None:
+    """Check the pack again and issue a token that reads only that panel's files."""
+    from . import extension_panels
+
+    request_id = str(ctx.msg.get("request_id") or "")[:64]
+    reply: dict[str, Any] = {"event": "extension_panel_opened", "request_id": request_id}
+    try:
+        reply.update(await _in_executor(lambda: extension_panels.open_panel(
+            ctx.state, str(ctx.msg.get("pack_id") or ""), str(ctx.msg.get("panel_id") or ""), owner=id(ctx.ws))))
+    except extension_panels.PanelError as exc:
+        reply["error"] = str(exc)
+    except Exception:
+        logger.warning("Opening an extension panel failed", exc_info=True)
+        reply["error"] = "Lumi couldn't open that panel."
+    await ctx.send(reply)
+
+
+@command("extension_panel_close")
+async def _extension_panel_close(ctx: CommandContext) -> None:
+    """Withdraw a closed panel's token, so its files can't be read again."""
+    from . import extension_panels
+
+    token = str(ctx.msg.get("token") or "")
+    grant = extension_panels.grants.get(token)
+    if grant is not None and grant.owner == id(ctx.ws):
+        extension_panels.grants.revoke(token)
+
+
 @command("audit_status")
 async def _audit_status(ctx: CommandContext) -> None:
     # Where the audit log is, whether its hash chain verifies, and export health.
@@ -3970,7 +4013,7 @@ _SOCKET_SETTING_KEYS: dict[str, frozenset[str]] = {
     }),
     "audit": frozenset({"otlp_endpoint", "otlp_auth_header"}),
     "security": frozenset({"cli_adapters", "computer_use", "chat_gateway", "shell_sandbox", "scheduled_tasks",
-                           "editor_bridge"}),
+                           "editor_bridge", "extension_panels"}),
     "updates": frozenset({"mode", "channel", "pin"}),
     "onboarding": frozenset({"dismissed"}),
     "model_favorites": frozenset({"models"}),

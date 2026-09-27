@@ -50,6 +50,12 @@ blocked stays out of later requests and isn't sent to the service again.
 A ``dlp`` section Lumi can't use refuses every model request
 (``policy.blocked_reason``) until it's fixed; the rest of the policy still
 applies. See docs/dlp.md.
+
+What Lumi sends its organization's Lumi Cloud about a turn (organization
+oversight, lumi/oversight.py and security_flags.py: messages, replies,
+titles, tool arguments, flag excerpts) passes ``shareable`` first, whole,
+before anything is cut from it, so it never carries text these rules or the
+service redacted or withheld.
 """
 
 from __future__ import annotations
@@ -1100,12 +1106,17 @@ def _post(service: Service, payload: dict) -> Any:
 
 
 _verdict_chars = 0
+_verdict_version = 0  # changes with every verdict kept or dropped (``_service_memory``)
+# Where a request the service blocked without naming its items keeps each of
+# them: not a kind, so requests never read it; only ``shareable`` does.
+_UNSHARED = "unshared"
 
 
 def _remember_verdict(key: tuple, verdict: Any) -> None:
     """Keep a verdict for a text, bounded by entries and characters."""
-    global _verdict_chars
+    global _verdict_chars, _verdict_version
     with _verdict_lock:
+        _verdict_version += 1
         if key in _verdicts:
             _verdicts[key] = verdict
             _verdicts.move_to_end(key)
@@ -1179,6 +1190,12 @@ def _ask_service(service: Service, fingerprint: str, organization: str, items: l
                 # the service hadn't allowed before, since one of those was it.
                 blocked = Counter({(rule, MIXED): 1})
                 groups = [indices for _key, indices in ordered]
+                # Nor may organization oversight share any of it (``shareable``),
+                # apart from instructions, which it never shares and whose many
+                # phrases would withhold ordinary messages.
+                for (kind, text), _indices in ordered:
+                    if kind != "instructions":
+                        _remember_verdict((service.url, fingerprint, _UNSHARED, text), _Refused(rule))
             _refuse(blocked, groups, items, audit_fields, context)
         for number, ((kind, text), indices) in enumerate(ordered):
             applicable = tuple((value, name) for value, name, item in redactions
@@ -1227,9 +1244,105 @@ def _apply_known(items: list, texts: dict, known: dict, dropped: set, new_redact
                 new_redactions[name] += count
 
 
+# ── Copies that aren't model requests ──────────────────────────────────────
+
+
+# A text shorter than this counts only when it is the whole of what the
+# service blocked, or all of what is shared: "ok" or a folder's name in a
+# blocked text mustn't withhold every text holding it.
+_SHARED_MATCH_CHARS = 8
+_shared_memory: tuple = ()  # (url, rules, _verdict_version, blocked texts, {redacted value: rule})
+
+
+def shareable(text: Any, kind: str = MIXED) -> str | None:
+    """``text`` as DLP lets it leave this computer other than in a model request; None to withhold it.
+
+    For organization oversight's copies (lumi/oversight.py, security_flags.py),
+    checked whole before anything is cut from them. The rules that check
+    ``kind`` (``mixed``: every rule) apply: a ``block`` match withholds the
+    text, and ``redact`` matches read ``[REDACTED:<rule>]``. With a service,
+    its remembered verdicts apply too: values it redacted are replaced
+    wherever they are, and a text it blocked, or that was in a request it
+    blocked without naming what, is withheld, as is a text holding it or
+    part of it. It never asks the service, so text the service hasn't judged
+    (Lumi's last reply) meets the rules alone. A dlp section Lumi can't use
+    withholds everything, as it refuses every request; so does a check that
+    fails. Records nothing.
+    """
+    value = str(text or "")
+    if not value:
+        return value
+    try:
+        from .policy import current
+
+        policy = current()
+        if policy is None:
+            return value
+        if policy.dlp_error:
+            return None
+        rules = policy.dlp
+        if rules is None or (not rules.rules and rules.service is None):
+            return value
+        matches, _ = _scan(rules, kind if kind in KINDS else MIXED, value)
+        if any(rules.rules[match.rule].action == "block" for match in matches):
+            return None
+        spans = [(match.start, match.end, rules.rules[match.rule].name) for match in matches
+                 if rules.rules[match.rule].action == "redact"]
+        result = _redact(value, spans) if spans else value
+        if rules.service is None:
+            return result
+        blocked, redacted = _service_memory(rules)
+        if blocked:
+            # Spacing collapsed, and without the "…" of an excerpt already cut (security_flags.clip).
+            forms = {" ".join(form.split()) for form in (value, result, value.rstrip("…"))}
+            if any(_overlaps(judged, form) for judged in blocked for form in forms):
+                return None
+        for found, name in redacted.items():
+            if found in result:
+                result = result.replace(found, f"[REDACTED:{name}]")
+        return result
+    except Exception:
+        logger.exception("The DLP check of a shared copy failed")
+        return None
+
+
+def _overlaps(judged: str, text: str) -> bool:
+    """Whether ``text`` is ``judged``, holds it or is part of it (``judged`` with its spacing collapsed)."""
+    if not judged or not text:
+        return False
+    if judged == text:
+        return True
+    shorter, longer = (judged, text) if len(judged) < len(text) else (text, judged)
+    return len(shorter) >= _SHARED_MATCH_CHARS and shorter in longer
+
+
+def _service_memory(rules: DlpPolicy) -> tuple[tuple[str, ...], dict[str, str]]:
+    """The texts the service blocked (spacing collapsed), and the values it redacted (longest first)."""
+    global _shared_memory
+    url = rules.service.url
+    with _verdict_lock:
+        if _shared_memory[:3] == (url, rules.fingerprint, _verdict_version):
+            return _shared_memory[3], _shared_memory[4]
+        blocked: dict[str, None] = {}
+        redacted: dict[str, str] = {}
+        for key, verdict in _verdicts.items():
+            if key[0] != url or key[1] != rules.fingerprint:
+                continue
+            if isinstance(verdict, _Refused):
+                blocked[" ".join(key[-1].split())] = None
+            else:
+                for found, name in verdict:
+                    if found:
+                        redacted.setdefault(found, name)
+        # Longest first, so a value holding another is replaced whole.
+        ordered = dict(sorted(redacted.items(), key=lambda pair: -len(pair[0])))
+        _shared_memory = (url, rules.fingerprint, _verdict_version, tuple(blocked), ordered)
+        return _shared_memory[3], _shared_memory[4]
+
+
 def reset_for_tests() -> None:
     """Forget cached scans, verdicts and recorded findings; use the network again."""
-    global _cache_chars, _json_chars, _verdict_chars
+    global _cache_chars, _json_chars, _verdict_chars, _shared_memory
     with _cache_lock:
         _cache.clear()
         _cache_chars = 0
@@ -1238,6 +1351,7 @@ def reset_for_tests() -> None:
     with _verdict_lock:
         _verdicts.clear()
         _verdict_chars = 0
+        _shared_memory = ()
     with _json_lock:
         _json_cache.clear()
         _json_chars = 0

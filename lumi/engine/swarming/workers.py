@@ -666,6 +666,8 @@ class SwarmWorkerRunner:
             worker.session.sandbox = PathSandbox(str(worker.workspace), enabled=True)
             worker.session.exclusions = ExclusionRules(
                 str(worker.workspace), rules=[tuple(rule) for rule in self._exclusion_rules()])
+            # Organization oversight (lumi/oversight.py) admits and records it as team work.
+            worker.session.oversight_trigger = "team"
             self._collect_messages(worker, mailbox)
             stream = worker.session.run(worker.prompt, input_origin="generated")
             for event in stream:

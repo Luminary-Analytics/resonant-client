@@ -2322,6 +2322,11 @@ class AppState:
     def _cloud_changed(self, status: dict) -> None:
         """Lumi Cloud's status changed (a sign-in, an enrollment, a check-in)."""
         self._push_ws_event({"event": "cloud_status", "data": status})
+        # Signing out or leaving forgets the oversight notice's confirmation
+        # (lumi/oversight.py): the page shows the notice, and locks, at once.
+        from .. import oversight
+
+        self._push_ws_event({"event": "oversight_status", "data": oversight.status()})
         marker = (status.get("policy_version"), status.get("policy_source"))
         if marker == getattr(self, "_cloud_policy_marker", None):
             return
@@ -2329,9 +2334,15 @@ class AppState:
         try:
             self.apply_policy_change()
             self._push_ws_event({"event": "settings", "data": self.settings.get_masked()})
+            # The init refresh carries the oversight notice for the new policy.
             self._push_ws_event(self.get_init_data(refresh_only=True))
         except Exception:
             logger.exception("Applying the new organization policy failed")
+        # Queued oversight records go now, or are deleted if the policy stopped
+        # asking, even while sending backs off after a failure.
+        from .. import oversight
+
+        oversight.wake(urgent=True)
 
     def apply_policy_change(self) -> None:
         """Apply a different organization policy (from Lumi Cloud) to the running app.
@@ -2546,7 +2557,17 @@ class AppState:
             # Includes running + complete + paused + failed, sorted
             # newest-first by autonomous_started_at.
             "autonomous_missions": _list_autonomous_missions(self),
+            # What the organization's oversight collects, for the notice
+            # beside the message box (lumi/oversight.py). The page shows
+            # it before anything is recorded.
+            "oversight": _oversight_status(),
         }
+
+
+def _oversight_status() -> dict:
+    from .. import oversight
+
+    return oversight.status()
 
 
 state = AppState()
@@ -2756,6 +2777,18 @@ async def _process_chat_message(ws: WebSocket, msg: dict[str, Any]) -> None:
     if swarm_busy(state):
         await ws.send_json({"event": "error", "message": "Finish or stop the active team before starting another operation."})
         return
+    # Organization oversight (lumi/oversight.py): nothing reaches a model, and
+    # nothing is saved or titled, before the person confirms the notice. Every
+    # queued or steered message (and employee task) passes here; Session.run
+    # refuses as well.
+    from .. import oversight
+
+    if msg.get('command') == 'employee_task' or str(msg.get("text") or "").strip():
+        refusal = await asyncio.to_thread(oversight.refusal, "app")
+        if refusal:
+            await ws.send_json({"event": "oversight_status", "data": await asyncio.to_thread(oversight.status)})
+            await ws.send_json({"event": "error", "message": refusal, "code": oversight.REFUSAL_CODE})
+            return
     if msg.get('command') == 'employee_task':
         from .employee_tasks import command as task_command
         await task_command(state, ws.send_json, msg)
@@ -3590,6 +3623,10 @@ async def _run_session_streaming(
     active_record = getattr(state.project, "current_session", None)
     # Audit records of this run name the saved conversation.
     session.audit_session_id = str(getattr(active_record, "id", "") or "")
+    # Organization oversight shares what the person typed, not a wrapper
+    # the model gets around it (lumi/oversight.py).
+    if event_source is None and display_user_msg and display_user_msg != user_msg:
+        session.display_prompt = display_user_msg
     # So do its checkpoints, which its Timeline lists.
     state.bind_conversation_checkpoints(session)
     if event_source is None:

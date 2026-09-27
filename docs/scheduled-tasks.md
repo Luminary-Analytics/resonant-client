@@ -36,6 +36,11 @@ applies to one applies here:
   commands they match. Your own `permission_request` hook can allow others.
   Other commands are refused.
 - Model requests are counted in **Usage & cost** like any other.
+- Under your organization's [oversight](organization-oversight.md), a run
+  has nobody to show the notice to: it runs as yours if you confirmed the
+  notice on this computer, and otherwise the policy decides (`record` runs
+  it with the notice in its result; `block` refuses it until someone
+  confirms the notice here as your computer user).
 
 A schedule never runs twice at once. If a run is still going when the next
 one is due, or when you click **Run now**, the new one doesn't start.

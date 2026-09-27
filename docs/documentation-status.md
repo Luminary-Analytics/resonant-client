@@ -77,6 +77,7 @@ guidance needs an explicit status notice and a current replacement.
 - [Team preview](swarming.md): current source behavior. Live NVIDIA NIM runs of
   orchestrated teams are recorded in the [benchmarks](swarming-benchmarks.md).
   Packaged qualification and a benefit claim are still pending.
+- [docs/organization-oversight.md](organization-oversight.md)
 - [docs/unreleased.md](unreleased.md)
 
 ## Planning proposals

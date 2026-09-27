@@ -870,6 +870,66 @@ async def _audit_status(ctx: CommandContext) -> None:
     await ctx.send(await _in_executor(ctx.state.audit_status))
 
 
+@command("oversight_status")
+async def _oversight_status(ctx: CommandContext) -> None:
+    """Settings > Privacy & security: what the organization's oversight collects, the queue and your flags."""
+    from .. import oversight
+
+    await ctx.send({"event": "oversight_status", "data": await asyncio.to_thread(oversight.status)})
+
+
+@command("oversight_notice_shown")
+async def _oversight_notice_shown(ctx: CommandContext) -> None:
+    """The person confirmed the oversight notice for this policy (its fingerprint): the message box unlocks.
+
+    The page sends it only from the notice's "I've read this" button (a
+    click the browser reports as the person's), with the notice's text as it
+    showed it. A fingerprint that isn't the policy in force, a missing text
+    or one that isn't that policy's notice, or a policy with nowhere to send
+    records confirms nothing: the page gets the current status back and
+    shows that notice instead. The confirmation is signed with this
+    computer's device key and sent to Lumi Cloud in the background; a
+    signature that can't be made is said, and confirms nothing.
+    """
+    from .. import oversight, voice
+
+    fingerprint = str(ctx.msg.get("fingerprint") or "")
+    shown = ctx.msg.get("notice")
+    signer = getattr(getattr(ctx.state, "cloud", None), "sign_as_device", None)
+    try:
+        await asyncio.to_thread(lambda: oversight.acknowledge(
+            fingerprint, "app", notice=shown if isinstance(shown, str) else None, signer=signer))
+    except oversight.ConfirmationError as exc:
+        await ctx.send({"event": "error", "message": str(exc), "code": oversight.REFUSAL_CODE})
+    await ctx.send({"event": "oversight_status", "data": await asyncio.to_thread(oversight.status)})
+    # Dictation follows the notice (voice.status): the page learns whether it may listen now.
+    settings = getattr(ctx.state, "settings", None)
+    if settings is not None:
+        await ctx.send({"event": "voice_status", "data": await asyncio.to_thread(voice.status, settings)})
+
+
+@command("voice_status")
+async def _voice_status(ctx: CommandContext) -> None:
+    """Which ways of dictating Settings, the policy and the oversight notice allow now (lumi/voice.py)."""
+    from .. import voice
+
+    await ctx.send({"event": "voice_status",
+                    "data": await asyncio.to_thread(voice.status, getattr(ctx.state, "settings", None))})
+
+
+async def _oversight_refusal(ctx: CommandContext, trigger: str = "app") -> str:
+    """Why nothing may reach a model now (the organization's notice isn't confirmed); '' when it may.
+
+    Also sends the page the current oversight status, so it shows the notice.
+    """
+    from .. import oversight
+
+    refusal = await asyncio.to_thread(oversight.refusal, trigger)
+    if refusal:
+        await ctx.send({"event": "oversight_status", "data": await asyncio.to_thread(oversight.status)})
+    return refusal
+
+
 def _code_editors_payload(settings: Any = None, **extra: Any) -> dict:
     """Settings > Code editors: the bridge, and the editors found on this computer."""
     from ..code_editors import jetbrains_config_dirs, lumi_command, vscode_editors
@@ -973,6 +1033,12 @@ async def _schedule_change(ctx: CommandContext) -> None:
         elif action in ("pause", "resume"):
             await _in_executor(lambda: schedules.set_enabled(schedule_id, action == "resume", settings=settings))
         elif action == "run":
+            # Run now is the person's own action in the app, not an unattended
+            # run: it waits for the organization's oversight notice to be
+            # confirmed like the message box does (lumi/oversight.py).
+            refusal = await _oversight_refusal(ctx)
+            if refusal:
+                raise schedules.ScheduleError(refusal)
             # Its own process, like a scheduled run, so a long task never
             # holds this connection and keeps going if the app closes.
             process = await _in_executor(lambda: schedules.start(schedule_id, settings=settings))
@@ -1133,6 +1199,10 @@ async def _evaluation_list(ctx: CommandContext) -> None:
 @command("evaluation_start")
 async def _evaluation_start(ctx: CommandContext) -> None:
     msg = ctx.msg
+    refusal = await _oversight_refusal(ctx)
+    if refusal:
+        await ctx.send_error(refusal)
+        return
     try:
         record = ctx.state.evaluations.start(
             model_label=str(msg.get("model") or "glm"),
@@ -2178,6 +2248,12 @@ async def _cmd_message(ctx: CommandContext) -> None:
     text = ctx.msg.get("text", "").strip()
     if not text:
         return
+    # Organization oversight: nothing reaches a model before its notice is
+    # confirmed (lumi/oversight.py); the page's message box is locked too.
+    refusal = await _oversight_refusal(ctx)
+    if refusal:
+        await ctx.send({"event": "error", "message": refusal, "code": "oversight_notice"})
+        return
     if not ctx.state.session:
         await ctx.send({
             "event": "error",
@@ -2215,6 +2291,14 @@ async def _employee_task(ctx: CommandContext) -> None:
         await ctx.send({'event': 'employee_task_state', 'project': ctx.project_path,
             'session_id': getattr(ctx.state.project.current_session, 'id', ''),
             'request_id': ctx.msg.get('request_id'), 'error': 'Finish or stop the active operation before changing the task.'})
+        return
+    # Advice and setup reach SONN: not before the organization's oversight
+    # notice is confirmed (lumi/oversight.py).
+    refusal = await _oversight_refusal(ctx)
+    if refusal:
+        await ctx.send({'event': 'employee_task_state', 'project': ctx.project_path,
+            'session_id': getattr(ctx.state.project.current_session, 'id', ''),
+            'request_id': ctx.msg.get('request_id'), 'error': refusal})
         return
     await ctx.runs.enqueue(dict(ctx.msg))
 
@@ -2495,7 +2579,7 @@ async def _cmd_mission_dispatch_roadmap(ctx: CommandContext) -> None:
     intent_service = ctx.state.get_intent_service(on_event=_emit_intent)
     try:
         # Followed in the Plan tab like a /plan (mission_phase_changed below).
-        intent_id = intent_service.start_intent(intent_text, viewer=_emit_intent)
+        intent_id = intent_service.start_intent(intent_text, viewer=_emit_intent, trigger="mission")
     except ValueError as exc:
         # Refused, for example by the organization's policy (lumi/policy.py):
         # nothing started and the mission stays in drafting.
@@ -3362,9 +3446,12 @@ async def _cmd_intent(ctx: CommandContext) -> None:
 
         if name == "intent_start":
             text = (ctx.msg.get("text") or "").strip()
+            refusal = await _oversight_refusal(ctx, "plan") if text else ""
             if not text:
                 await ctx.send({"event": "error",
                                     "message": "intent text is required"})
+            elif refusal:
+                await ctx.send({"event": "error", "message": refusal, "code": "oversight_notice"})
             else:
                 try:
                     # The page follows it in the Plan tab; its events go there.
@@ -4387,6 +4474,12 @@ async def _cmd_voice_transcribe(ctx: CommandContext) -> None:
 
     request_id = str(ctx.msg.get("request_id") or "")[:64]
     encoded = ctx.msg.get("audio")
+    # A transcription service is a model too: nothing goes to one before the
+    # organization's oversight notice is confirmed (lumi/oversight.py).
+    refusal = await _oversight_refusal(ctx)
+    if refusal:
+        await ctx.send({"event": "voice.error", "request_id": request_id, "message": refusal})
+        return
     try:
         if not isinstance(encoded, str) or len(encoded) > voice.MAX_AUDIO_BYTES * 4 // 3 + 4:
             raise voice.VoiceError("The recording is too long. Dictate in shorter parts.")

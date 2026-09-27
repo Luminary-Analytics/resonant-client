@@ -1,8 +1,8 @@
 """Lumi Cloud from the desktop app (lumi/cloud.py), against a fake Lumi Cloud.
 
 The fake implements the contract Lumi Cloud serves: OAuth for native apps,
-/api/v1/me, device enrollment, EdDSA device assertions, check-ins and signed
-policy.
+/api/v1/me, device enrollment, EdDSA device assertions, check-ins, signed
+policy and organization oversight's signed acknowledgments.
 """
 
 from __future__ import annotations
@@ -56,10 +56,58 @@ class FakeCloud:
         self.policy_document: dict = {}
         self.has_seat = True
         self.counter = 0
+        # Every policy document published, and the oversight acknowledgments received.
+        self.published: list[dict] = []
+        self.acknowledgments: list[dict] = []
+        # Answers given to acknowledgments before any is accepted (httpx.Response each).
+        self.acknowledgment_failures: list[httpx.Response] = []
 
     def publish(self, document: dict) -> None:
         self.policy_version = (self.policy_version or 0) + 1
         self.policy_document = document
+        self.published.append(document)
+
+    def _acknowledgment(self, device_id: str, device: dict, body: dict, account_token: str = "") -> httpx.Response:
+        """POST /api/v1/oversight/acknowledgments, as the contract with Lumi Cloud describes it."""
+        if self.acknowledgment_failures:
+            return self.acknowledgment_failures.pop(0)
+        record, signature = body.get("record"), str(body.get("signature") or "")
+        if not isinstance(record, dict):
+            return httpx.Response(400, json={"error": "invalid_request", "error_description": "Send a record."})
+        # The device's registered key over the canonical JSON of the record (sorted keys, no spaces, UTF-8).
+        key = Ed25519PublicKey.from_public_bytes(base64.b64decode(device["public_key"]))
+        try:
+            key.verify(_unb64url(signature.rstrip("=")), json.dumps(
+                record, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8"))
+        except Exception:
+            return httpx.Response(422, json={"error": "invalid_signature",
+                                             "error_description": "The signature doesn't verify."})
+        if record.get("device_id") != device_id or record.get("organization") != "org_acme":
+            return httpx.Response(403, json={"error": "device_mismatch",
+                                             "error_description": "Not this device's organization."})
+        # A notice one of the organization's policies produced for this device:
+        # The SHA-256 hex digest of {device, organization_id, oversight section as published}.
+        produced = {hashlib.sha256(json.dumps(
+            {"device": device_id, "organization_id": "org_acme", "oversight": document.get("oversight") or {}},
+            sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")).hexdigest()
+            for document in self.published}
+        if record.get("notice_fingerprint") not in produced:
+            return httpx.Response(409, json={"error": "notice_mismatch",
+                                             "error_description": "No policy of this organization shows that notice."})
+        # Whom it counts for: the member whose own computer it is, or on a managed computer
+        # (enrolled with a token) the member whose sign-in came with it; no account, the computer.
+        account = (record.get("person") or {}).get("account")
+        if not account:
+            attribution = "none"
+        elif record.get("surface") == "gateway":
+            attribution = "unverified"
+        elif device["owner"] is not None:
+            attribution = "person" if device["owner"] == account else "unverified"
+        else:
+            attribution = "signed_in" if account == "usr_1" and account_token in self.access_tokens else "unverified"
+        stored = {"id": self._token("ack"), "record": record, "signature": signature, "attribution": attribution}
+        self.acknowledgments.append(stored)
+        return httpx.Response(201, json={"id": stored["id"]})
 
     def _token(self, prefix: str) -> str:
         self.counter += 1
@@ -158,6 +206,9 @@ class FakeCloud:
         if path == "/api/v1/devices/unenroll":
             device["revoked"] = True
             return httpx.Response(200, json={"revoked": True})
+        if path == "/api/v1/oversight/acknowledgments" and request.method == "POST":
+            return self._acknowledgment(device_id, device, json.loads(request.content),
+                                        request.headers.get("lumi-account-token", ""))
         return httpx.Response(404, json={"error": "not_found"})
 
 
@@ -328,9 +379,25 @@ def test_no_seat_means_no_enrollment(fake):
     fake.has_seat = False
     client = _client(fake)
     _sign_in(client, fake)
-    with pytest.raises(cloud.CloudError, match="No seat"):
+    with pytest.raises(cloud.CloudError, match="No seat") as refused:
         client.enroll("org_acme")
+    assert (refused.value.code, refused.value.status) == ("no_seat", 403)
     assert client.device() == {}
+
+
+def test_the_device_key_signs_what_lumi_cloud_verifies(fake):
+    # Organization oversight signs a confirmation of its notice with it (lumi/oversight.py).
+    client = _client(fake)
+    with pytest.raises(cloud.CloudError) as refused:
+        client.sign_as_device(b"before enrolling")
+    assert refused.value.code == "not_enrolled"
+    _sign_in(client, fake)
+    device = client.enroll("org_acme")
+    signature = client.sign_as_device(b"canonical record")
+    # base64url with padding, verified with the public key the device enrolled with.
+    assert set(signature) <= set("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_=")
+    public = Ed25519PublicKey.from_public_bytes(base64.b64decode(fake.devices[device["id"]]["public_key"]))
+    public.verify(base64.urlsafe_b64decode(signature), b"canonical record")
 
 
 def test_a_tampered_download_is_not_applied(fake):

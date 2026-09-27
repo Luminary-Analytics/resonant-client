@@ -35,6 +35,9 @@ _FILE_READERS = FILE_TOOL_NAMES - {"artifact_read"}
 # One closing tag or special token at the end of a reply: chat-template residue
 # a live model appended after its JSON (a "}" followed by "</function>" and "</tool_call>").
 _TEMPLATE_TAIL = re.compile(r"(?:</[A-Za-z_][^<>\s]{0,40}>|<\|[^|<>\s]{1,40}\|>)\Z")
+# Stray closing brackets after a complete object: a live model ended a closing
+# turn's plan with a second "}". Anything else after the object still refuses it.
+_STRAY_CLOSERS = re.compile(r"[\s}\]]{1,16}\Z")
 
 
 class PlanRejected(ValueError):
@@ -162,6 +165,36 @@ def _scoped_id(run_id: str, logical_id: str, namespace: str | None = None) -> st
     return "work_" + hashlib.sha256(encoded).hexdigest()
 
 
+def _json_object(source: str) -> Any:
+    """The proposal's JSON, tolerating two near misses a live model made and nothing else.
+
+    A complete object followed only by stray closing brackets, or an object
+    whose last closing brace is missing (every value complete, so nothing was
+    cut short), parses as that object. Any other malformed text is refused.
+    """
+    def load(text):
+        return json.loads(text, object_pairs_hook=_object, parse_constant=_constant, parse_float=_float)
+    try:
+        return load(source)
+    except json.JSONDecodeError as exc:
+        if not source.startswith("{"):
+            raise
+        failure = exc
+    decoder = json.JSONDecoder(object_pairs_hook=_object, parse_constant=_constant, parse_float=_float)
+    try:
+        value, end = decoder.raw_decode(source)
+    except json.JSONDecodeError:
+        pass
+    else:
+        if _STRAY_CLOSERS.fullmatch(source[end:]):
+            return value
+        raise failure
+    try:
+        return load(source + "}")
+    except json.JSONDecodeError:
+        raise failure from None
+
+
 def parse_plan(
     text: str, *, run_id: str, policy: PolicyProfile, model: ModelSelection,
     allowed_criteria: frozenset[str], namespace: str | None = None, allow_no_work: bool = False,
@@ -212,7 +245,7 @@ def parse_plan(
         if len(fences) == 1:
             source = fences[0]
     try:
-        proposal = json.loads(source, object_pairs_hook=_object, parse_constant=_constant, parse_float=_float)
+        proposal = _json_object(source)
     except (json.JSONDecodeError, RecursionError, ValueError) as exc:
         # Do not echo a model response; rejected extras may contain credentials.
         raise PlanRejected("Coordinator output must be one strict JSON object") from exc

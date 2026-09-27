@@ -43,6 +43,18 @@ def discover(state) -> None:
         manager.watch_project(workspace, Scope.personal("local:" + getpass.getuser(), project_id, "discovery"))
 
 
+def chat_context(state, workspace: str, session_id: str, run_id: str) -> dict[str, str]:
+    """``@team:<run>`` in a saved conversation: one of its own personal teams (engine/context_broker.py)."""
+    if not is_valid_session_id(session_id):
+        raise ScopeDenied("Save this conversation before attaching one of its teams")
+    manager = getattr(state, "_swarm_desktop", None)
+    if manager is None:
+        manager = state._swarm_desktop = SwarmRuntime(state.settings, managed_desktop=getattr(state, "_swarm_managed", None))
+    project_id = hashlib.sha256(_path_key(workspace).encode()).hexdigest()
+    return manager.chat_context(str(Path(workspace).resolve()),
+                                Scope.personal("local:" + getpass.getuser(), project_id, session_id), run_id)
+
+
 def _capture(state, message, manager) -> CapturedSession:
     project = str(message.get("project") or "")
     session_id = str(message.get("session_id") or "")

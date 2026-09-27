@@ -314,13 +314,16 @@ Explicit attachments are inserted in chat with:
 @issue:ENG-12
 @handoff:hof_0123456789abcdef
 @handoff:.lumi/handoffs/api-rename-20260925-1509.json
+@team:swarm_0123456789abcdef…
 ```
 
 `#L10-24` (or `#L10`) attaches only those lines; the [code editor
 extensions](code-editors.md) send selections this way. Quote a path with
 spaces: `@file:"docs/my notes.md#L3-8"`. A `@handoff:` attachment ([hand-offs](hand-offs.md))
 stays for the rest of the conversation: later messages and a reopened
-conversation get it without mentioning it again. Every resolved item carries a
+conversation get it without mentioning it again. So does `@team:<run id>`:
+one of this conversation's own teams ([Team preview](swarming.md#use-a-teams-results-in-the-chat)),
+its report and accepted results as model-written context. Every resolved item carries a
 provider, label, provenance, freshness metadata, and estimated size. The Context cockpit lists available providers. Repository
 maps use Python ASTs and optional `tree-sitter-language-pack` grammars before
 falling back to conservative regex extraction.

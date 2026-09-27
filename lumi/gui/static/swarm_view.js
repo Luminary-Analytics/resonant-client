@@ -97,6 +97,7 @@ window.LumiSwarmView = class LumiSwarmView {
             <button type="button" data-swarm="stop" class="swarm-stop">Stop team</button><button type="button" data-swarm="recover">Take over expired team</button>
             <button type="button" data-swarm="complete">Complete team</button>
             <button type="button" data-swarm="export-report">Export run report</button>
+            <button type="button" data-swarm="use-in-chat" title="Add this team's report and accepted results to your message as context. Nothing is sent.">Use in chat</button>
             <button type="button" data-swarm="new-team">New team</button></div>
             <form data-swarm="concurrency-form" class="swarm-concurrency" hidden><label>Active worker limit<select data-swarm="worker-limit" aria-label="Active worker limit" required></select></label>
             <p data-swarm="worker-count" class="swarm-help" role="status"></p><p class="swarm-help">Existing workers finish; this limits new assignments. The coordinator is counted separately.</p>
@@ -158,8 +159,9 @@ window.LumiSwarmView = class LumiSwarmView {
                 this._swarmPoll = null;
                 this._swarmPending = null;
                 this._swarmDialog = null;
-                document.getElementById('swarm-team-button')?.focus();
+                (this._swarmReturnFocus || document.getElementById('swarm-team-button'))?.focus();
             }
+            this._swarmReturnFocus = null;
         });
         nodes.enabled.addEventListener('change', () => this.requestSwarm('configure', {enabled: nodes.enabled.checked}));
         nodes['execution-mode'].addEventListener('change', () => {
@@ -240,6 +242,7 @@ window.LumiSwarmView = class LumiSwarmView {
             nodes[action].addEventListener('click', () => this.requestSwarm(action));
         }
         nodes['export-report'].addEventListener('click', () => this.requestSwarm('export_report'));
+        nodes['use-in-chat'].addEventListener('click', () => this._swarmUseInChat());
         nodes['worker-limit'].addEventListener('input', () => {
             this._swarmConcurrencyDirty = true;
             this._renderSwarmControls();
@@ -1413,6 +1416,8 @@ window.LumiSwarmView = class LumiSwarmView {
         nodes['new-team'].hidden = !run || !['completed', 'cancelled', 'failed'].includes(run.state);
         nodes['export-report'].hidden = !run;
         nodes['export-report'].disabled = !online || busy;
+        // Only this conversation's own personal teams can be attached (gui/swarming.py).
+        nodes['use-in-chat'].hidden = !run || this._swarmExecutionMode === 'managed';
         const concurrencyDisabled = !online || busy || recoveryNeeded || !['running', 'pausing', 'paused'].includes(run?.state)
             || !this._swarmConcurrencyCap;
         nodes['worker-limit'].disabled = concurrencyDisabled;
@@ -1523,6 +1528,25 @@ window.LumiSwarmView = class LumiSwarmView {
         select.replaceChildren(new Option('Same as this session', ''),
             ...choices.map(choice => new Option(choice.label, JSON.stringify({provider: choice.provider, model: choice.model}))));
         select.value = [...select.options].some(option => option.value === kept) ? kept : '';
+    }
+
+    /** Add the selected team to the message as ``@team:<run>`` context (engine/context_broker.py); nothing is sent. */
+    _swarmUseInChat() {
+        const run = this._swarmState?.run?.run;
+        if (!run?.id || !this.userInput) return;
+        const mention = `@team:${run.id}`;
+        const current = this.userInput.value;
+        if (!current.split(/\s+/).includes(mention)) {
+            const joiner = current && !/\s$/.test(current) ? ' ' : '';
+            // The trailing space keeps the @-file picker from opening on the mention.
+            this.userInput.value = `${current}${joiner}${mention} `;
+            this.userInput.dispatchEvent(new Event('input', {bubbles: true}));
+        }
+        this._swarmReturnFocus = this.userInput;
+        this._swarmDialog?.close();
+        const end = this.userInput.value.length;
+        this.userInput.setSelectionRange(end, end);
+        this.showToastMessage?.('Added this team’s report and accepted results to your message. Send when you’re ready.');
     }
 
     /** What a coordinator attempt is for: an owner-reviewed proposal, an orchestrator's plan, or its answers. */

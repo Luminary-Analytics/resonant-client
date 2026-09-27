@@ -23,6 +23,7 @@ from .coordinator import ANSWER_WORKER_PREFIX, CoordinatorPlans, OrchestratorAns
 from . import collaboration_desktop, managed_collaboration_desktop
 from . import connections as team_connections
 from .autopilot import MAX_ROUNDS, TeamAutopilot
+from .chat_context import chat_context
 from .integration import CheckSpec, SwarmIntegration
 from .models import Conflict, IdempotencyConflict, RevisionConflict, ScopeDenied, SwarmError, require_id
 from .policy import PolicyProfile, normalize_scopes, team_provider
@@ -339,6 +340,22 @@ class SwarmRuntime:
         self._discovery_errors.discard(key)
         self._watch(self._stores[key], capture.scope)
         return self._stores[key]
+
+    def chat_context(self, workspace: str, scope: Scope, run_id: str) -> dict[str, str]:
+        """One of a conversation's retained teams, as that conversation's context (``@team:``).
+
+        Reads only: a project that never ran a team gets no team state from
+        this. The scope is the conversation's own, so another conversation's
+        team is refused like any run outside its scope (chat_context.py).
+        """
+        require_id(run_id)
+        store = self._stores.get(_path_key(workspace))
+        if store is None:
+            path = Path(self._state_root(workspace)) / "swarm" / "state.sqlite"
+            if not path.is_file():
+                raise ScopeDenied("Run is unavailable in this scope")
+            store = SwarmStore(path, read_only=True)
+        return chat_context(store.snapshot(scope, run_id))
 
     def captured_run(self, run_id: str, project: str, session_id: str) -> CapturedSession | None:
         """Resolve controls for a known run without consulting current selection."""

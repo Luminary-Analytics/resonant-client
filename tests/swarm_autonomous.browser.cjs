@@ -125,6 +125,26 @@ test('The orchestrator runs a team from the panel and reports back', {timeout: 9
         });
         assert.ok(overflow.scroll<=overflow.client+1,'Team panel scrolls sideways at phone width: '+JSON.stringify(overflow));
         await page.screenshot({path:path.join(output,'orchestrated-team.png'),fullPage:false});
+        // Use in chat adds the team to this conversation's message as context, closes
+        // the panel and leaves the message unsent, with focus in the composer.
+        await page.setViewportSize({width:1180,height:900});
+        const runId=await page.evaluate(()=>app._swarmState.run.run.id);
+        // A draft typed before opening the panel is kept.
+        await page.getByRole('button',{name:'Close team panel'}).click();
+        await page.locator('#user-input').fill('Fix what the team found');
+        await page.getByRole('button',{name:'Team',exact:true}).click();
+        await page.waitForFunction(id=>app._swarmState?.run?.run?.id===id,runId);
+        await page.getByRole('button',{name:'Use in chat',exact:true}).click();
+        // The panel's close handler (after the native dialog's own focus return) moves focus.
+        await page.waitForFunction(()=>!document.getElementById('swarm-team-dialog')&&document.activeElement?.id==='user-input');
+        assert.equal(await page.locator('#user-input').inputValue(),`Fix what the team found @team:${runId} `);
+        await page.getByText('Added this team’s report and accepted results to your message.',{exact:false}).waitFor();
+        // Twice adds it once.
+        await page.getByRole('button',{name:'Team',exact:true}).click();
+        await page.waitForFunction(id=>app._swarmState?.run?.run?.id===id,runId);
+        await page.getByRole('button',{name:'Use in chat',exact:true}).click();
+        await page.waitForFunction(()=>!document.getElementById('swarm-team-dialog')&&document.activeElement?.id==='user-input');
+        assert.equal(await page.locator('#user-input').inputValue(),`Fix what the team found @team:${runId} `);
         const evidence=await (await fetch(info.url+'/__fixture__/evidence')).json();
         const run=evidence.runs[0].run;
         assert.equal(run.run.state,'completed');

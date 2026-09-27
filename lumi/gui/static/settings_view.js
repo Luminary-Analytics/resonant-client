@@ -495,9 +495,12 @@ class LumiSettingsView {
         const managed = installer
             ? ` · installed from ${installer[0]}, so ${installer[1]} updates it`
             : status.managed_by ? ` · managed by ${esc(status.managed_by)}` : '';
-        const checking = status.mode !== 'off' && status.available;
+        // Offline mode keeps the updater from the update site unless it is allowed (lumi/offline.py).
+        const checking = status.mode !== 'off' && status.available && !status.offline;
         const hints = [
-            status.mode !== 'off' && !status.available ? 'This copy of Lumi doesn’t update itself: it runs from source or outside Windows.' : '',
+            status.offline ? `${status.offline} Install updates from a file below.` : '',
+            status.restart_to_check ? 'Update checks start again after Lumi restarts.' : '',
+            status.mode !== 'off' && !status.available && !status.offline && !status.restart_to_check ? 'This copy of Lumi doesn’t update itself: it runs from source or outside Windows.' : '',
             ...(status.problems || []),
         ].filter(Boolean).map(text => `<div class="settings-row-hint">${esc(text)}</div>`).join('');
         const lastCheck = status.last_check ? new Date(status.last_check * 1000).toLocaleString() : 'Not yet';
@@ -505,6 +508,103 @@ class LumiSettingsView {
                 <div class="settings-row-value"><button type="button" class="btn-sm" id="update-check"${checking ? '' : ' disabled'}>Check for updates</button></div></div>
             ${checking ? `<div class="settings-row"><div class="settings-row-copy"><span class="settings-row-label">Last checked</span><div class="settings-row-hint">${esc(lastCheck)}</div></div></div>` : ''}
             ${status.pending ? `<div class="settings-row"><div class="settings-row-copy"><span class="settings-row-label">After Lumi restarts</span><div class="settings-row-hint" role="status">${describe(status.pending)}</div></div></div>` : ''}`;
+    }
+
+    /** Settings > Updates > Install an update from a file (lumi/update_file.py). */
+    _renderUpdateFile() {
+        const esc = value => this.escapeHtml(String(value ?? ''));
+        const result = this.updateFileResult;
+        const path = this._updateFilePath ?? result?.path ?? '';
+        const native = typeof pywebview !== 'undefined' && Boolean(pywebview.api);
+        const busy = Boolean(this._updateFileBusy);
+        let outcome = '';
+        if (busy) {
+            outcome = '<div class="settings-row-hint" role="status">Checking…</div>';
+        } else if (result && !result.ok) {
+            outcome = `<p class="editor-error" role="alert">${esc(result.error)}</p>`;
+        } else if (result?.installing) {
+            outcome = `<div class="settings-row-hint" role="status">The installer for Lumi ${esc(result.version)} started. Lumi closes so it can replace its files; approve it when Windows asks.</div>`;
+        } else if (result?.ok) {
+            const size = `${(Number(result.size || 0) / 1048576).toFixed(1)} MB`;
+            const summary = `Lumi ${esc(result.version)} (this copy is ${esc(result.current)}) · signature verified with Lumi’s update key · ${esc(size)} · listed in ${esc(result.feed)}`;
+            outcome = `<div class="settings-row"><div class="settings-row-copy"><span class="settings-row-label">Ready to install</span><div class="settings-row-hint" role="status">${summary}</div>
+                    ${result.install_problem ? `<div class="settings-row-hint">${esc(result.install_problem)}</div>` : ''}</div>
+                    ${result.install_problem ? '' : '<div class="settings-row-value"><button type="button" class="btn-sm" id="update-file-install">Install and restart</button></div>'}</div>`;
+        }
+        return `<div class="settings-row"><div class="settings-row-copy"><label class="settings-row-label" for="update-file-path">Update file</label>
+                <div class="settings-row-hint">For computers without the internet: the installer (lumi-setup-X.Y.Z.exe) and the update feed (appcast.xml) from the update site, side by side in a folder or together in a .zip. Lumi checks the installer’s signature with the key it’s built with, as it does for a downloaded update, and installs only a newer release your update settings would take.</div></div>
+                <div class="settings-row-value settings-update-file"><input id="update-file-path" class="settings-input" type="text" spellcheck="false" autocomplete="off" value="${esc(path)}" placeholder="C:\\Updates\\lumi-setup-0.21.0.exe">
+                ${native ? '<button type="button" class="btn-sm" id="update-file-browse">Browse…</button>' : ''}
+                <button type="button" class="btn-sm" id="update-file-verify"${busy ? ' disabled' : ''}>Check</button></div></div>${outcome}`;
+    }
+
+    _bindUpdateFile() {
+        const field = document.getElementById('update-file-path');
+        if (!field) return;
+        const check = () => {
+            this._updateFilePath = field.value;
+            this._updateFileBusy = true;
+            this.updateFileResult = null;
+            this.send({command: 'update_file_verify', path: field.value});
+            this.refreshUpdateFile();
+        };
+        field.addEventListener('input', () => { this._updateFilePath = field.value; });
+        field.addEventListener('keydown', event => { if (event.key === 'Enter') { event.preventDefault(); check(); } });
+        document.getElementById('update-file-verify')?.addEventListener('click', check);
+        document.getElementById('update-file-browse')?.addEventListener('click', () => this.send({command: 'update_file_dialog'}));
+        document.getElementById('update-file-install')?.addEventListener('click', () => {
+            const result = this.updateFileResult;
+            if (!result?.ok) return;
+            if (!window.confirm(`Install Lumi ${result.version}? Lumi closes so the installer can replace it; your sessions are saved.`)) return;
+            this._updateFileBusy = true;
+            this.send({command: 'update_file_install', path: result.path, sha256: result.sha256});
+            this.refreshUpdateFile();
+        });
+    }
+
+    /** Redraw the update-file section in place, keeping focus in its field. */
+    refreshUpdateFile() {
+        const body = this.settingsBody?.querySelector('[data-settings-section="update_file"] .settings-section-body');
+        if (!body) return false;
+        const focused = document.activeElement?.id;
+        body.innerHTML = this._renderUpdateFile();
+        this._bindUpdateFile();
+        if (focused) document.getElementById(focused)?.focus({preventScroll: true});
+        return true;
+    }
+
+    /** Settings > Offline mode: what applies now (lumi/offline.py), what it hides, and the license. */
+    _renderOfflineStatus() {
+        const status = this.offlineStatus;
+        if (!status) return '<p class="editor-help">Loading…</p>';
+        const esc = value => this.escapeHtml(String(value ?? ''));
+        const row = (label, hint) => `<div class="settings-row"><div class="settings-row-copy"><span class="settings-row-label">${label}</span><div class="settings-row-hint">${hint}</div></div></div>`;
+        const hosts = status.allowed_hosts || [];
+        const state = status.enabled
+            ? `On${status.managed_by ? `, set by ${esc(status.managed_by)}’s policy` : ''}. Lumi reaches this computer${hosts.length ? ` and ${hosts.map(host => `<code>${esc(host)}</code>`).join(', ')}` : ' only'}.`
+            : `Off${status.managed_by ? `, set by ${esc(status.managed_by)}’s policy` : ''}. Lumi connects wherever its features need.`;
+        const parts = [`<div class="settings-row"><div class="settings-row-copy"><span class="settings-row-label">Now</span><div class="settings-row-hint" role="status">${state}</div></div></div>`];
+        for (const problem of status.problems || []) parts.push(`<p class="editor-error" role="alert">${esc(problem)}</p>`);
+        if (status.enabled) {
+            const hidden = status.hidden || [];
+            parts.push(row('Hidden from Models', hidden.length
+                ? `<ul class="settings-offline-list">${hidden.map(item => `<li><strong>${esc(item.label)}</strong>: ${esc(item.reason)}</li>`).join('')}</ul>`
+                : 'Nothing: every provider you’ve set up is on this computer or an allowed host.'));
+            parts.push(row('Updates', status.updates
+                ? `${esc(status.updates)} Install updates from a file under Updates.`
+                : 'The update site is an allowed host, so update checks continue.'));
+        }
+        const license = status.license || {};
+        parts.push(row('Offline license', `<span role="status">${esc(license.describe || '')}</span>${license.valid && license.source ? ` <code>${esc(license.source)}</code>` : ''}`));
+        return parts.join('');
+    }
+
+    /** Redraw the offline status in place; the fields above keep focus. */
+    refreshOfflineStatus() {
+        const body = this.settingsBody?.querySelector('[data-settings-section="offline_status"] .settings-section-body');
+        if (!body) return false;
+        body.innerHTML = this._renderOfflineStatus();
+        return true;
     }
 
     _renderOrgPolicy() {
@@ -1210,6 +1310,15 @@ class LumiSettingsView {
         const search = dialog.querySelector('input[type=search]');
         const list = dialog.querySelector('.provider-model-list');
         const labels = this._getBackendLabels();
+        // Offline mode hides providers this computer may not reach (lumi/offline.py): say which, and why.
+        const hidden = this.offlineInfo?.enabled ? (this.offlineInfo.hidden || []) : [];
+        if (hidden.length) {
+            const note = document.createElement('div');
+            note.className = 'provider-note provider-offline-note';
+            note.setAttribute('role', 'note');
+            note.innerHTML = `Offline mode hides: <ul>${hidden.map(item => `<li><strong>${this.escapeHtml(item.label)}</strong>: ${this.escapeHtml(item.reason)}</li>`).join('')}</ul>`;
+            list.after(note);
+        }
         const render = () => {
             const favorites = this.settings?.model_favorites?.models || [];
             const query = search.value.trim().toLowerCase();
@@ -1715,6 +1824,7 @@ class LumiSettingsView {
             {id:'capability_packs', title:'Capability packs', group:'Coding', icon:'cube', description:'Review what a pack would run, then approve or revoke it. Nothing in a pack runs until you approve it.', sections:['capability_packs'], keywords:'plugins extensions trust approve repository pack'},
             {id:'code_review', title:'Code review', group:'Coding', icon:'shield', description:'Have named people review the agent’s pull requests before they merge.', sections:['review'], keywords:'review reviewer approve approval pull request merge request push main master protected branch queue'},
             {id:'scheduled_tasks', title:'Scheduled tasks', group:'Coding', icon:'clock', description:'Run a saved task at set times, even when Lumi is closed.', sections:['scheduled_tasks'], keywords:'schedule cron nightly recurring automation task scheduler launchd unattended'},
+            {id:'offline', title:'Offline mode', group:'Security', icon:'globe', description:'Work without the internet: Lumi reaches only this computer and the hosts you allow.', sections:['offline','offline_status'], keywords:'offline air-gapped airgapped air gap disconnected no internet network egress outbound firewall allowlist allowed hosts local models on-premises inference server license seats'},
             {id:'privacy', title:'Privacy & security', group:'Security', icon:'shield', description:'Control what Lumi reads, keeps and sends, and which tools it may use.', sections:['org_policy','privacy','file_exclusions','transcripts','audit_log','audit','audit_status','security','shell_sandbox','project_trust'], keywords:'audit log opentelemetry otlp tamper evidence secrets redact scan credentials DLP exclude ignore lumiignore env retention delete trust AGENTS.md policy codex claude computer gateway organization managed group policy MDM sandbox seatbelt bubblewrap bwrap shell commands'},
             {id:'local_backends', title:'Ollama runtime', group:'Advanced', icon:'cube', description:'Tune your local model runtime.', sections:['local_backends']},
             {id:'prompt_inspector', title:'Prompt inspector', group:'Advanced', icon:'book', description:'Inspect the instructions used by the active model.', sections:['prompt_inspector']},
@@ -1722,7 +1832,7 @@ class LumiSettingsView {
             {id:'iteration_checkpoints', title:'Checkpoints & recovery', group:'Advanced', icon:'history', description:'Inspect saved iterations and recovery options.', sections:['iteration_checkpoints']},
             {id:'lumi_account', title:'Lumi account', group:'Personal', icon:'person', description:'Sign in to Lumi Cloud and use your organization’s policy on this computer.', sections:['lumi_account'], keywords:'lumi cloud organization team company sign in enroll device computer managed policy seat slack teams microsoft chat tasks remote requests'},
             {id:'about', title:'About Lumi', group:'Personal', icon:'book', description:'What Lumi is, what it costs and what it sends where.', sections:['about'], keywords:'version license free plan pricing account privacy telemetry notices MIT'},
-            {id:'updates', title:'Updates', group:'Advanced', icon:'history', description:'Choose how Lumi updates itself and which releases it takes.', sections:['updates','update_status'], keywords:'update upgrade version release beta channel pin stable automatic manual off'},
+            {id:'updates', title:'Updates', group:'Advanced', icon:'history', description:'Choose how Lumi updates itself and which releases it takes.', sections:['updates','update_status','update_file'], keywords:'update upgrade version release beta channel pin stable automatic manual off file offline installer bundle air-gapped'},
         ];
     }
 
@@ -1820,7 +1930,7 @@ class LumiSettingsView {
         if (page === 'scheduled_tasks') this.send({command: 'schedules_list'});
         if (page === 'code_editors') this.send({command: 'code_editors_list'});
         if (page === 'model_evaluations') this.send({command: 'model_evals_list'});
-        const command = {creative_editors:'editor_list', capability_packs:'capability_pack_list', cost_tracking:'get_costs', model_evaluations:'evaluation_list', iteration_checkpoints:'checkpoint_list', updates:'update_status', about:'about_info', lumi_account:'cloud_status'}[page];
+        const command = {creative_editors:'editor_list', capability_packs:'capability_pack_list', cost_tracking:'get_costs', model_evaluations:'evaluation_list', iteration_checkpoints:'checkpoint_list', updates:'update_status', about:'about_info', lumi_account:'cloud_status', offline:'offline_status'}[page];
         if (command) this.send({command});
     }
 
@@ -2139,6 +2249,18 @@ class LumiSettingsView {
                 ]
             },
             { id: 'update_status', title: 'This installation', custom: true },
+            { id: 'update_file', title: 'Install an update from a file', custom: true },
+            {
+                id: 'offline', title: 'Offline mode',
+                note: 'For air-gapped networks, and organizations that allow no traffic to the internet. Use models on this computer (Ollama, EXO) or your organization’s own inference server.',
+                fields: [
+                    { key: 'enabled', label: 'Offline mode', type: 'toggle', default: false,
+                      hint: 'Lumi connects only to this computer and the hosts below. Cloud models, Codex and Claude Code, Lumi Cloud, update checks and browsing other sites are refused, each with the reason, at once. Commands the agent runs aren’t limited: use your firewall for those.' },
+                    { key: 'allowed_hosts', label: 'Allowed hosts', type: 'lines', placeholder: 'llm.corp.example\n*.models.corp.example\n10.20.0.0/16',
+                      hint: 'One per line: a name, *.domain for every name under it, an address, or a network. This computer (localhost) is always allowed. If you reach them through a proxy, allow the proxy too.' },
+                ]
+            },
+            { id: 'offline_status', title: 'What offline mode does now', custom: true },
             { id: 'about', title: 'About Lumi', custom: true },
             {
                 id: 'engram', title: 'Memory (Engram)',
@@ -2214,6 +2336,10 @@ class LumiSettingsView {
                 bodyHtml = this._renderAuditStatus();
             } else if (section.id === 'update_status') {
                 bodyHtml = this._renderUpdateStatus();
+            } else if (section.id === 'update_file') {
+                bodyHtml = this._renderUpdateFile();
+            } else if (section.id === 'offline_status') {
+                bodyHtml = this._renderOfflineStatus();
             } else if (section.id === 'about') {
                 bodyHtml = this._renderAbout();
             } else if (section.id === 'lumi_account') {
@@ -2464,6 +2590,7 @@ class LumiSettingsView {
         });
         document.getElementById('audit-verify')?.addEventListener('click', () => this.send({command: 'audit_status'}));
         this._bindUpdateCheck();
+        this._bindUpdateFile();
         this._bindLumiAccount();
         this._bindScheduledTasks();
         this._bindCodeEditors();

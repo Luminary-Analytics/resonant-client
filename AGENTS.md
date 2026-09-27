@@ -133,6 +133,27 @@ host enrollment and actual packaged/learned-benefit qualification remain open.
   any machine policy (`policy.managed_preferences_policy`).
   Never change `packaging/lumi.wxs`'s UpgradeCode. Publishing a release or
   feed needs the user's go-ahead.
+- Offline mode (`offline.py`, docs/offline.md): every outbound connection Lumi
+  makes goes through the central check, and only this computer and
+  `offline.allowed_hosts` are reachable. Build HTTP clients with
+  `net.client_options(..., feature=...)`, which checks each request and
+  redirect before it connects; where an address leaves Lumi's process (Git,
+  Chrome, WinSparkle, a browser sign-in) call `offline.refusal` or
+  `check_url` first; a provider or tool that reaches the network is refused
+  with the reason (`backend_refusal`, `tool_refusal`), never silently
+  dropped. That refusal comes before DLP (`Session._model_stream`,
+  `should_plan`, `request_purpose`): a request that can't be sent is neither
+  DLP-checked nor recorded. Locality is decided from the name as written, never by resolving
+  it, and only plain host names match allowed hosts. Read the settings
+  through `SettingsManager.get`; when a policy turns it on, only the policy's
+  hosts apply, and a policy that can't be used keeps it on with no allowed
+  hosts. The audit-hook lookup check is a backstop, not the enforcement
+  point. Offline licenses (`license.py`) verify only against built-in or
+  machine-set keys (no key file on Windows) and lock nothing; an update from
+  a file (`update_file.py`) passes the same EdDSA check as WinSparkle's and
+  takes its version from the signed installer, never the unsigned feed.
+  Machine folders on Windows come from the OS (`policy._known_folder`), never
+  from environment variables a person can set.
 - Lumi Cloud (`cloud.py`): the sign-in's refresh token and the device's private
   key live in `api_keys` (`lumi_cloud_refresh`, `lumi_cloud_device_key`), in the
   credential store; status sent to the page never includes them. Check-ins

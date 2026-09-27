@@ -246,16 +246,24 @@ class CloudClient:
 
         from .net import client_options
 
-        return httpx.Client(**client_options(timeout=20.0, transport=self._transport),
+        # Check-ins, sign-in, sharing, the team library, hand-offs, reviews and
+        # tasks from chat all come through here, so offline mode refuses them
+        # all with one message (lumi/offline.py).
+        return httpx.Client(**client_options(timeout=20.0, transport=self._transport, feature="Lumi Cloud"),
                             headers={"User-Agent": f"Lumi/{_app_version()} ({platform.system()})"})
 
     def _call(self, method: str, url: str, **kwargs: Any) -> dict:
         import httpx
 
+        from . import offline
+
         try:
             with self._http() as http:
                 response = http.request(method, url, **kwargs)
         except httpx.HTTPError as exc:
+            reason = offline.message_for(exc)
+            if reason:
+                raise CloudError(reason, code="offline") from exc
             raise CloudError(f"Lumi Cloud couldn't be reached ({type(exc).__name__}).", code="unreachable") from exc
         try:
             data = response.json() if response.content else {}
@@ -271,10 +279,17 @@ class CloudClient:
     # ── Signing in ─────────────────────────────────────────────────────────
     def begin_sign_in(self, url: str = "") -> str:
         """Open the browser to sign in; finishes in the background. Returns the address opened."""
+        from . import offline
+
         with self._lock:
             target = normalize_url(url or self.url)
             if self.managed().get("url") and target != normalize_url(self.managed()["url"]):
                 raise CloudError("Your organization's policy sets which Lumi Cloud this computer uses.")
+            # Signing in happens in the browser, outside Lumi's own clients:
+            # say so now rather than open a page that can't load.
+            reason = offline.refusal(target, "Lumi Cloud")
+            if reason:
+                raise CloudError(reason, code="offline")
             self.cancel_sign_in()
             verifier, state = secrets.token_urlsafe(48), secrets.token_urlsafe(24)
             loopback = _Loopback(state)

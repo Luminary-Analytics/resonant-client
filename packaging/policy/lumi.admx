@@ -51,5 +51,14 @@
         <text id="PolicyKeys" valueName="PolicyKeys" required="true" maxLength="4096" />
       </elements>
     </policy>
+    <policy name="LicenseKeys" class="Machine" displayName="$(string.LicenseKeys)"
+            explainText="$(string.LicenseKeys_Help)" presentation="$(presentation.LicenseKeys)"
+            key="SOFTWARE\Policies\Luminary Analytics\Lumi">
+      <parentCategory ref="Lumi" />
+      <supportedOn ref="SUPPORTED_Lumi" />
+      <elements>
+        <text id="LicenseKeys" valueName="LicenseKeys" required="true" maxLength="4096" />
+      </elements>
+    </policy>
   </policies>
 </policyDefinitions>

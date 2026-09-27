@@ -8,6 +8,169 @@ The heartbeat remains paused. Documentation maintenance does not resume work,
 spending or grants, and changes no native implementation or installed bundle.
 The dated September 15/18 records below are historical.
 
+## September 27 offline and air-gapped operation, first pass (source only, not released)
+
+**Offline mode** (Settings > Offline mode, or the policy's `offline.enabled`
+and `offline.allowed_hosts`): Lumi reaches only this computer and the hosts
+you allow, and everything else is refused at once with
+`Offline mode: <feature> needs <host>; allow it or turn offline mode off.`
+See [Offline and air-gapped operation](offline.md).
+
+- **One check** (`lumi/offline.py`, host rules in `lumi/offline_rules.py`).
+  `net.client_options`, which Lumi's HTTP clients are built with, now takes
+  the feature's name and adds a request hook that checks each request and
+  redirect before it connects. The OpenAI-compatible stream (connections,
+  EXO, SONN, OpenRouter, Kimi), HTTP MCP servers and the SONN account now
+  use it too.
+- **Locality from the name as written.** `localhost`, loopback and unspecified
+  addresses (IPv4, IPv6 and IPv4-mapped) and this computer's name are local;
+  `localhost.evil.com`, `127.0.0.1.nip.io`, `127.1`, a user name in the URL or
+  a backslash never pass as local. Allowed hosts take names, `*.domain`,
+  addresses and networks; `*` and `0.0.0.0/0` are refused. Only plain host
+  names match: one with a control character, a space, `%`, `/` or `@` never
+  does, whatever domain it ends in.
+- **The policy wins** through `SettingsManager.get`. When it turns offline
+  mode on, only its own allowed hosts apply. A policy that exists but can't be
+  used (invalid, `*.com`, `"true"` as text, a bad signature) keeps offline mode
+  on with no allowed hosts until it's fixed, and the refusals say so.
+- **Covered:** provider discovery (unreachable providers aren't probed and are
+  hidden from Models with the reason, in the menu and the picker), model
+  requests (a turn, an auxiliary request or a fallback to an unreachable
+  provider, or one whose sign-in host is unreachable, is refused before
+  sending; Codex, Claude Code and extension providers always, since their own
+  processes can't be checked), Lumi Cloud (check-ins, sign-in before the
+  browser opens, sharing, the team library and everything else through
+  `CloudClient`), update checks and downloads (WinSparkle isn't loaded, and
+  turning offline mode on stops it at once), the agent's browser tools
+  (refused for other hosts and for `file:` addresses on other computers, which
+  Chrome on Windows opens as network shares; Lumi's Chrome starts with proxy
+  switches, `<-loopback>` included, that keep pages to reachable hosts, and is
+  closed at once when the rules change), `open_application` given an address,
+  pull request and issue tracker APIs and the push before a pull request
+  (every push address of the remote, network shares and `file://` remotes
+  included), the OpenTelemetry export, pack installs from Git and the registry
+  (the address as Git's `insteadOf` rewrites it too, and no redirects),
+  dictation (the webview's own recognizer is off; a service must be
+  reachable), Entra ID sign-in without a client ID (azure-identity and the
+  Azure CLI start only when `login.microsoftonline.com` is allowed) and
+  sign-in token endpoints. The Team preview refuses new work while offline
+  mode is on, and [panels from capability packs](extensions.md) stay closed
+  (`gui/extension_panels.enabled`): a panel's only network is WebRTC, which
+  offline mode can't check. Turning offline mode on closes an open panel.
+- **A backstop:** once offline mode has been on, an audit hook refuses host
+  name lookups through Python's socket module in Lumi's process
+  (`getaddrinfo`, `gethostbyname`, `gethostbyaddr`, `getnameinfo`) for
+  anything else, and connections or datagrams to a host given by name. The
+  clients not built with the factory (Ollama's own API, provider catalogs, the
+  chat gateway, Engram) meet it, with a generic message. It doesn't see native
+  code that resolves names by itself.
+- **With DLP** ([DLP](dlp.md)): offline mode refuses first, in
+  `Session._model_stream` (every request of a turn, and compression's),
+  `request_purpose.auxiliary_stream` and `send_checked`, and the terminal UI's
+  planning question (`Session.should_plan`, which for Codex or Claude Code
+  would start their programs). A request that can't be sent is neither
+  DLP-checked nor recorded; a reachable provider's request passes DLP and
+  `dlp.send` as before.
+
+**Updates from a file** (`lumi/update_file.py`). Settings > Updates > Install
+an update from a file, and `lumi updates verify <file>`, take the installer
+with the feed that lists it (a folder or a .zip). The file passes WinSparkle's
+check with the same built-in key: the installer's EdDSA signature over its
+bytes, the size in the feed, a newer version on the channel and release line
+in effect; updates off or an MSI, PKG, deb or rpm install refuse it. The
+version checked is the one inside the signed installer (its Windows version
+resource, which `packaging/installer.iss` now sets explicitly), and the feed
+must agree, since the feed isn't signed: an old signed installer listed as a
+new version is refused. The feed is parsed without a document type, in any
+encoding. Installing waits for the running turn, records `update.install` with
+the SHA-256, starts a copy of exactly the verified bytes, saved as
+`lumi-setup-<version>.exe` in a new private folder whatever the bundle called
+it, and closes Lumi, as a downloaded update does. macOS and Linux get
+instructions instead, since Lumi doesn't update itself there.
+
+**Offline license** (`lumi/license.py`, `lumi license status|verify|install`,
+Settings > Offline mode). A `lumi.license/v1` document signed with Ed25519
+over canonical JSON (organization, seats, expiry, `offline`). It verifies
+only against keys built into Lumi or set by an administrator: `LicenseKeys`
+(now in the ADMX template, and the macOS profile), or `license-keys.json`
+beside the machine policy on macOS and Linux. On Windows that file isn't read:
+any user can create `C:\ProgramData\Lumi` where no administrator did. It
+labels offline use and locks nothing. `scripts/sign_license.py` makes keys
+and licenses for Luminary's operations. No production key is built in yet.
+
+**Machine folders from Windows** (`lumi/policy.py`). The machine policy,
+policy keys and license beside it are found in the ProgramData folder Windows
+reports (`SHGetKnownFolderPath`), not the `ProgramData` environment variable,
+which a person could point at a folder of their own to escape a file-deployed
+policy or plant keys. A `PolicyFile` path expands only machine folders
+(`%ProgramData%`, `%ProgramFiles%`, `%SystemRoot%` and the like) from Windows;
+other variables stay as written, so such a path isn't found and the policy
+fails closed.
+
+**Not yet:** programs the agent runs (shell, jobs, previews, checks), MCP
+servers started as commands, hooks and language servers aren't limited; use a
+firewall. Computer use drives the desktop, whose apps connect by themselves.
+A streaming response and Team workers that started before offline mode was
+turned on run to their end. An organization's Chrome proxy policy outranks
+Lumi's switches, and a local page can still refer to a network share. Git
+uses its own proxy settings unchecked. The backstop sees name lookups, so an
+asynchronous connection straight to an IP address is checked only by Lumi's
+own clients. While a policy can't be used, the Settings switch and host list
+stay editable though they change nothing (the status says why). The macOS
+profile maker has no license-key option yet.
+
+**Validation.**
+- 203 new tests: 201 in `tests/test_offline.py`, `test_offline_features.py`,
+  `test_update_file.py` and `test_license.py`, and 2 in `test_policy.py`
+  (one Windows-only), with mock transports, fakes and keys they generate; no
+  test reaches another computer (the backstop's lookups are refused before
+  they leave, or its hook is called directly). Feeds for the update tests are
+  written by `packaging/update_appcast.py`, installers are minimal Windows
+  programs with a version resource laid out as Inno Setup writes it, and the
+  policy tests run the standard-library MDM profile maker without httpx.
+- The full suite on Windows, isolated home, `PYTHONPATH` set to the checkout
+  for child processes, with `main` at 6b00ca9 (DLP, panels) merged: 6,153
+  passed, 7 skipped, 6 failed, 11 errors. Five of the failures fail the same
+  way on unmodified `main` (6b00ca9) here: `test_swarm_main_integration.py`'s
+  two cases and
+  `test_swarm_process_workers.py::test_managed_reader_uses_owned_child_and_durable_primary_result`,
+  whose workers search with the pinned ripgrep that CI fetches, and two that
+  give a child process about a second under this machine's load
+  (`test_swarm_argv_process.py::test_timeout_and_stop_terminate_descendants_without_claiming_success[timeout]`,
+  `test_swarm_integration.py::test_check_timeout_stops_owned_process_and_retains_failed_candidate`).
+  The sixth (`test_swarm_integration.py::test_foreign_approval_scope_and_wrong_revision_are_rejected`:
+  Windows refused a job-object assignment) and the 11 errors
+  (`test_swarm_benchmark_runner.py`'s shared study reached its deadline) pass
+  when their files run on their own. Node UI tests: 147 passed; ruff clean.
+- The installer version reader matches Windows' own `FileVersionInfo` for
+  Lumi installers built locally with Inno Setup 6 from
+  `packaging/installer.iss` (0.21.0 and 0.22.0-beta.1, before and after the
+  explicit `VersionInfoProductTextVersion`, whose strings are identical),
+  python.exe, ISCC.exe and git.exe.
+- Real Edge (Playwright) against the source app in a throwaway home, with an
+  Ollama stub and offline mode seeded on, 18 of 18 checks: the model menu and
+  the Models picker list the hidden gateway with its reason; Ctrl+Shift+Space
+  says the window's speech recognition is off in offline mode; a model's
+  `browser_navigate` to example.com is refused and the model receives the
+  reason; Settings > Offline mode shows the hosts, hidden providers, updates
+  and license; Space on the focused switch turns it off and on again, a host
+  typed into Allowed hosts is saved normalized and its provider offered, and
+  `*` is refused; a conversation on a provider that stops being reachable is
+  refused before anything is sent; Settings > Updates refuses a changed
+  installer and an older signed installer listed as 0.21.0, verifies the
+  signed one and says a copy from source can't install; at 375 px nothing
+  scrolls sideways; no page errors and no request beyond 127.0.0.1. A second
+  run under a policy with `"*.com"`, 4 of 4: both connections hidden with the
+  policy note, the status "On, set by your organization's policy" with the
+  policy error, the switch turned off with Space leaves it on, no errors. A
+  third, with the repository's panels fixture, 7 of 7: an open panel closes
+  with the reason when offline mode turns on, the palette and View offer no
+  panel and opening one is refused, it's offered again once offline mode is
+  off, and nothing reached the fixture's canary.
+- Not exercised: an air-gapped computer, a real Chrome started with the
+  offline switches (including `<-loopback>`), installing a real signed
+  installer from a file, a frozen build, macOS and Linux.
+
 ## September 27 Team: steadier on a busy machine (source only, not released)
 
 The Team suite (`team-tests.yml`) failed now and then on CI, on different

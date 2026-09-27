@@ -22,6 +22,10 @@ Architecture
   a turn off; afterwards it asks Lumi to close so the installer can replace
   its files. What the updater finds and does goes to the audit log
   (``update.*`` records).
+- In offline mode (lumi/offline.py) WinSparkle isn't loaded unless the update
+  site is an allowed host, and turning offline mode on stops it at once
+  (``apply_offline_mode``). An update then comes from a file that
+  lumi/update_file.py verifies with ``EDDSA_PUBLIC_KEY``, as WinSparkle does.
 
 Usage
 -----
@@ -82,6 +86,8 @@ _dll: ctypes.CDLL | None = None
 _initialized = False
 # The update settings applied at startup; a change in Settings waits for a restart.
 _preferences: UpdatePreferences | None = None
+# Offline mode came on while WinSparkle ran, so it was stopped; it starts again after a restart.
+_stopped_for_offline = False
 
 # WinSparkle calls these from its own threads, never the main one.
 _CAN_SHUTDOWN = ctypes.CFUNCTYPE(ctypes.c_int)
@@ -198,6 +204,11 @@ def set_host(*, busy=None, shutdown=None) -> None:
     _host["shutdown"] = shutdown
 
 
+def host() -> tuple[object, object]:
+    """``(busy, shutdown)`` as the app set them; installing from a file (update_file.py) uses them too."""
+    return _host.get("busy"), _host.get("shutdown")
+
+
 def _record(event_type: str, **fields) -> None:
     try:
         from lumi import audit
@@ -284,6 +295,10 @@ def init_updater(preferences: UpdatePreferences | None = None) -> bool:
         _preferences = UpdatePreferences(mode="manual")
     if _preferences.mode == "off":
         logger.info("Updates are off%s", f" (managed by {_preferences.managed_by})" if _preferences.managed_by else "")
+        return False
+    if _preferences.offline:
+        # Not loaded at all: WinSparkle connects from native code, outside Lumi's own check.
+        logger.info("Not checking for updates: %s", _preferences.offline)
         return False
     _dll = _load_dll()
     if _dll is None:
@@ -373,14 +388,42 @@ def status() -> dict:
         return ("off",) if prefs.mode == "off" else (prefs.mode, prefs.feed_url)
 
     changed = effect(saved) != effect(active)
-    return {**active.as_dict(), "version": __version__, "available": _dll is not None,
-            "last_check": last_check, "pending": saved.as_dict() if changed else None}
+    # Offline mode applies now, not after a restart: it stops WinSparkle when it comes on.
+    return {**active.as_dict(), "offline": saved.offline, "version": __version__, "available": _dll is not None,
+            "last_check": last_check, "pending": saved.as_dict() if changed else None,
+            # Offline mode kept or stopped WinSparkle this run, and no longer does.
+            "restart_to_check": ((_stopped_for_offline or bool(active.offline)) and not saved.offline
+                                 and saved.mode != "off")}
+
+
+def apply_offline_mode() -> str:
+    """Stop WinSparkle at once if offline mode now keeps it from the update site; returns why, or "".
+
+    Called when Settings (or the policy) changes offline mode. Turning it off
+    again takes effect at the next start, like the other update settings.
+    """
+    global _dll, _stopped_for_offline
+    try:
+        reason = read_update_preferences().offline
+    except Exception:
+        logger.exception("Couldn't read the update settings")
+        return ""
+    if reason and _dll is not None:
+        try:
+            _dll.win_sparkle_cleanup()
+        except OSError:
+            pass
+        # _initialized stays set: WinSparkle isn't started twice in one run.
+        _dll = None
+        _stopped_for_offline = True
+        logger.info("Stopped checking for updates: %s", reason)
+    return reason
 
 
 def reset_for_tests() -> None:
     """Forget the startup state (tests only). From source WinSparkle never loads."""
-    global _dll, _initialized, _preferences
-    _dll, _initialized, _preferences = None, False, None
+    global _dll, _initialized, _preferences, _stopped_for_offline
+    _dll, _initialized, _preferences, _stopped_for_offline = None, False, None, False
     _callbacks.clear()
     set_host()
 

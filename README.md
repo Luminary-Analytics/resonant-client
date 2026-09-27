@@ -331,6 +331,12 @@ There is no automatic cross-provider fallback or role routing in this workflow.
   that bypass it under **Settings > Connections > Network**, or use
   `HTTPS_PROXY`/`NO_PROXY`. Local addresses always connect directly. Proxies that
   need a user name and password aren't supported yet.
+- **Offline mode:** under **Settings > Offline mode** (or your organization's
+  policy) Lumi reaches only this computer and the hosts you allow, such as an
+  on-premises inference server, and refuses everything else at once with the
+  reason. Updates can be installed from a verified file, and an offline
+  license shows under `lumi license status`. See
+  [Offline and air-gapped operation](docs/offline.md).
 - **Save diagnostics** removes your actual key values and masks secrets in the
   bundled `settings.json` before anything is written.
 - **Files Lumi never reads:** gitignore-style patterns under **Settings >

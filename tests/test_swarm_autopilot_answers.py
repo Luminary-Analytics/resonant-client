@@ -40,6 +40,7 @@ class Team:
     def __init__(self):
         self.backends = []
         self.answer_prompts = []
+        self.planning = []
 
     def factory(self, spec):
         backend = Participant(self)
@@ -56,6 +57,7 @@ class Team:
                                f"answer-{question['sequence']}") for question in questions] + [done()],
                     [text_delta(f"Answered {len(questions)} question."), done()]]
         if "Captured planning data:" in prompt:
+            self.planning.append(data(prompt, "Captured planning data:\n"))
             if data(prompt, "Captured planning data:\n")["proposed_work_namespace"] is None:
                 plan = {"summary": "Inspect the API and the UI.", "use_team": True, "work_items": [
                     {"id": name, "objective": f"Inspect the {name.upper()}", "role": "explore", "dependencies": [],
@@ -116,3 +118,7 @@ def test_a_running_worker_gets_the_orchestrators_answer_in_the_same_round(team):
     answer_requests = [row for row in run["model_requests"] if row["attempt_id"] == answers[0]["id"]]
     assert len(answer_requests) == 2
     assert json.loads(answers[0]["grant_json"])["tools"] == ["swarm_send"]
+    # The closing turn was given what the runtime recorded, to cite rather than recount.
+    assert "team_record" not in participants.planning[0]
+    assert participants.planning[-1]["team_record"] == {"accepted": 2, "tasks": 2, "questions": 1, "answers": 1,
+                                                        "applied": 0}

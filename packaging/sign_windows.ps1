@@ -24,7 +24,10 @@
           SSL.com eSigner, installed and authenticated by an earlier step.
 
     With neither set, the files are left unsigned and a warning says so; the
-    release continues. Signatures are verified after signing.
+    release continues, unless WINDOWS_SIGNING_REQUIRED is "true" (a repository
+    variable, set once a certificate exists): then missing credentials fail
+    the release instead of quietly shipping unsigned files. Signatures are
+    verified after signing.
 
     WINDOWS_SIGN_TIMESTAMP_URL overrides the timestamp server
     (default http://timestamp.digicert.com).
@@ -55,6 +58,9 @@ foreach ($file in $Files) {
 $pfx = $env:WINDOWS_SIGN_PFX_BASE64
 $command = $env:WINDOWS_SIGN_COMMAND
 if (-not $pfx -and -not $command) {
+    if ($env:WINDOWS_SIGNING_REQUIRED -eq "true") {
+        throw "WINDOWS_SIGNING_REQUIRED is true but no signing credentials are configured (WINDOWS_SIGN_PFX_BASE64 or WINDOWS_SIGN_COMMAND); refusing to release unsigned files."
+    }
     Write-Output "::warning::Not Authenticode-signed: no signing credentials are configured (see docs/release-pipeline.md)."
     return
 }

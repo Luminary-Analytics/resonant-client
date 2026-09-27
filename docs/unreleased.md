@@ -113,6 +113,13 @@ now.
     nobody signed in it counts for the computer. Settings says which, before
     and after confirming. The joined computer's member is kept with its
     enrollment (`cloud.device.user_id`).
+- **With offline mode (merged from main)**: while Lumi Cloud is out of
+  reach, confirmations (managed computers' sign-ins included) and records
+  wait in the queue and Settings shows offline mode's reason; they go once it
+  can be reached. A policy that can't be used (offline mode on with no hosts)
+  no longer reads as one that stopped asking for oversight: the queue is kept,
+  unsent, instead of deleted. `lumi extension check` refuses a pack's
+  provider under offline mode or an unusable policy before any other gate.
 - **Panels (merged from main)**: **I've read this** takes only a click or
   key press the browser reports as the person's (`isTrusted`); a click a
   script makes confirms nothing. A capability pack's panel can add text to

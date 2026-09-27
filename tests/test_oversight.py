@@ -1648,6 +1648,72 @@ def _records(count, *, days_ago=0):
              "ended_at": ended.replace("+00:00", "Z")} for n in range(count)]
 
 
+class TestOfflineMode:
+    """Offline mode refuses Lumi Cloud: confirmations and records wait, kept, and Settings says why."""
+
+    def test_confirmations_and_records_wait_while_lumi_cloud_is_out_of_reach(self, org, tmp_path):
+        from lumi import offline
+        from lumi.cloud import CloudError
+
+        org(EVERYTHING)
+        _shown()
+        list(_session(tmp_path, StreamingBackend(events=[text_delta("Hi."), done()])).run("hello"))
+        offline.set_for_tests(enabled=True)
+        refused = CloudError("Offline mode: Lumi Cloud needs cloud.example.test; allow it or turn offline mode off.",
+                             code="offline")
+        client = _AckClient(refused)
+
+        def records_refused(method, path, **kwargs):
+            raise refused
+
+        client_device_call = client.device_call
+        client.device_call = lambda method, path, **kwargs: (records_refused(method, path) if
+                                                             path == oversight.UPLOAD_PATH else
+                                                             client_device_call(method, path, **kwargs))
+        assert oversight.upload_pending(client) == "retry"
+        status = oversight.status()
+        upload = status["acknowledgment"]["upload"]
+        assert upload["state"] == "pending" and "Offline mode" in upload["error"]
+        assert status["queue"]["pending"] == 1 and status["queue"]["discarded"] == 0
+        assert "Offline mode" in status["queue"]["last_error"]
+        # Online again: both go.
+        offline.reset_for_tests()
+        client = _AckClient()
+        assert oversight.upload_pending(client) == "idle"
+        assert len(client.acknowledgments) == 1 and len(client.events) == 1
+        assert oversight.status()["acknowledgment"]["upload"]["state"] == "sent"
+
+    def test_a_policy_that_cant_be_used_keeps_the_queue_and_sends_nothing(self, org, tmp_path, monkeypatch):
+        org(EVERYTHING)
+        _shown()
+        list(_session(tmp_path, StreamingBackend(events=[text_delta("Hi."), done()])).run("hello"))
+        good = policy.load
+        broken = policy.PolicyState(error="The machine policy isn't valid JSON.")
+        monkeypatch.setattr(policy, "load", lambda force=False: broken)
+        client = _AckClient()
+        # Not a policy that stopped asking: nothing is discarded, and nothing goes.
+        assert oversight.upload_pending(client) == "retry"
+        assert client.acknowledgments == [] and client.events == []
+        assert oversight.queue_status()["pending"] == 1 and oversight.queue_status()["discarded"] == 0
+        assert "can be used" in oversight.queue_status()["last_error"]
+        assert oversight.acknowledgments_waiting() == 1
+        monkeypatch.setattr(policy, "load", good)
+        assert oversight.upload_pending(client) == "idle"
+        assert len(client.acknowledgments) == 1 and len(client.events) == 1
+
+    def test_an_extension_check_under_offline_mode_asks_nothing(self, org, tmp_path):
+        from lumi import offline
+        from lumi.extension_check import check
+        from tests.test_provider_extensions import _template
+
+        pack = _template(tmp_path / "acme")
+        org(EVERYTHING)
+        _shown()
+        offline.set_for_tests(enabled=True)
+        [note] = [text for kind, text in check(pack) if "answered" in text or "wasn't asked" in text]
+        assert "wasn't asked to answer: Offline mode: Acme models runs as a process from a capability pack" in note
+
+
 class TestSending:
     def test_the_queue_is_bounded_and_drops_are_counted(self, org, monkeypatch):
         monkeypatch.setattr(oversight, "MAX_RECORDS", 3)

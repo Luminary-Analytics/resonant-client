@@ -1610,6 +1610,8 @@ def _upload_acknowledgments(client: Any) -> str:
     from . import audit, policy
     from .cloud import CloudError
 
+    if _unusable_policy() and acknowledgments_waiting():
+        return "retry"  # kept, unsent, until the policy can be used
     outcome = "idle"
     for ack_id, raw in _claim_acknowledgments(ACKNOWLEDGMENTS_PER_STEP):
         try:
@@ -1723,6 +1725,15 @@ def _send(client: Any, batch: list[dict], version: Any) -> None:
     _remove({record["id"] for record in batch}, outcome="uploaded")
 
 
+def _unusable_policy() -> str:
+    """Why the policy in force can't be used, or ''. Not a policy that stopped asking for oversight:
+    queued records and confirmations wait, unsent and kept, until it can be (offline mode, which such a
+    policy keeps on with no hosts, refuses Lumi Cloud meanwhile; lumi/offline.py)."""
+    from . import policy
+
+    return str(policy.load().error or "")
+
+
 def _upload_records(client: Any, max_batches: int) -> str:
     from . import policy
     from .cloud import CloudError
@@ -1730,6 +1741,11 @@ def _upload_records(client: Any, max_batches: int) -> str:
     for _ in range(max_batches):
         if not queued_records(1):
             return "idle"
+        waiting = _unusable_policy()
+        if waiting:
+            with _lock, exclusive(_root() / ".lock"):
+                _count(last_error=f"Waiting until the organization's policy can be used: {waiting}"[:300])
+            return "retry"
         scope = Scope()
         if not scope.configured:
             discard("Your organization's policy no longer asks for oversight.")

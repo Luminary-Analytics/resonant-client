@@ -109,3 +109,12 @@
     .swarm-worker dl { grid-template-columns: 1fr; gap: 3px; }
     .swarm-worker dd { margin-bottom: 7px; }
 }
+.swarm-orchestrator { border: 1px solid var(--border-strong, #333); border-radius: 8px; padding: 12px; }
+.swarm-panel .swarm-orchestrator h4 { margin: 0 0 6px; }
+.swarm-panel .swarm-report { margin: 12px 0 0; }
+.swarm-panel .swarm-report h5 { font-size: 12px; margin: 0 0 6px; }
+.swarm-report-text, .swarm-message-body { white-space: pre-wrap; overflow-wrap: anywhere; }
+.swarm-messages ol { list-style: none; padding: 0; margin: 8px 0 0; display: grid; gap: 8px; }
+.swarm-messages li { border-left: 2px solid var(--brand2, #b4aaff); padding: 2px 0 2px 10px; }
+.swarm-panel .swarm-message-heading { color: var(--text-secondary, #aaa); font-size: 11px; margin: 0 0 2px; }
+.swarm-panel .swarm-message-body { margin: 0; }

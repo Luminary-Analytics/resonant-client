@@ -12,6 +12,7 @@ See the [evidence ledger](swarming-progress.md) and [live qualification plan](sw
 | Kimi native | Eligible with an explicit saved model and protected key source | Controlled HTTP failure checks retain one generation attempt | Pending |
 | OpenRouter native | Eligible with an explicit saved model and its separate API key | Controlled HTTP failure checks retain one generation attempt; existing adapter owns its wire format and reported costs | Pending |
 | SONN native | Eligible with an explicit saved model and project connection | Controlled HTTP failure checks retain one generation attempt; existing adapter preserves the complete project URL and text-only conversion | Pending |
+| OpenAI-compatible connection (NVIDIA NIM, vLLM, gateways) | Eligible with an explicit model on a connection of that type using a key or no authentication; the run reads the connection once | Controlled HTTP failure checks retain one generation attempt and its status code; a real worker process runs on a loopback Chat Completions server with the connection's key and headers, which stay out of events | NVIDIA NIM (`https://integrate.api.nvidia.com/v1`), `moonshotai/kimi-k3`: live benchmark runs in progress, see the [benchmarks](swarming-benchmarks.md#live-runs-on-nvidia-nim) |
 | Codex CLI / Claude Code CLI | Unavailable as Team workers | Their independent tool loops do not provide this native execution guard | Requires a separate qualified adapter |
 
 At least one local and one hosted native model must complete the declared live

@@ -143,6 +143,15 @@ no provider call. For example, from the source checkout in PowerShell:
 python scripts/swarm_benchmark.py --provider ollama --model your-explicit-model --endpoint http://127.0.0.1:11434 --request-limit 12 --wall-seconds 120 --resource-control equal_resource --modes single swarm current-batch --scenarios independent_investigation csv_export serial_control interruption_recovery --repetitions 3 --order-seed 37 --output "$env:TEMP/sonn-benchmark-protocol"
 ```
 
+`--provider openai-compatible` runs any Chat Completions endpoint as a Lumi
+connection (see [Team preview](swarming.md)); the records name that provider
+and the endpoint's origin. For NVIDIA NIM, with the key in an environment
+variable:
+
+```powershell
+python scripts/swarm_benchmark.py --provider openai-compatible --endpoint https://integrate.api.nvidia.com/v1 --api-key-env NVIDIA_API_KEY --model moonshotai/kimi-k3 --request-limit 12 --wall-seconds 180 --resource-control equal_resource --modes single --scenarios independent_investigation csv_export serial_control interruption_recovery --repetitions 3 --order-seed 37 --output "$env:TEMP/lumi-benchmark-nim" --execute-live
+```
+
 `--execute-live` invokes the selected provider and can incur its normal charges.
 No live run has been performed as part of these self-tests. A future authorized
 run must use a new output directory outside the repository; every invocation
@@ -181,6 +190,9 @@ The output contains:
 - Each case's `execution.json`, `run.json`, `runtime-report.json` and
   `observations.json`: assigned scopes, seed revision, request allowances,
   provider failures, typed errors, confirmed cleanup and interventions.
+- Each case's `worker-events.json`: the workers' own events (tool calls and
+  results, refusals, errors), with keys redacted and long text shortened. It can
+  contain fixture file contents and model text; it is for local diagnosis.
 - Each safely captured `candidate/`: actual resulting files, without Git state.
 - `comparison.json` and `comparison.md`: every planned group, failed/interrupted
   outcome, missing/invalid record, correctness result and observed elapsed time.
@@ -215,3 +227,31 @@ results, unsupported batch qualification and broader release gates remain open.
 ```sh
 python -m pytest -q tests/test_swarm_benchmark_fixtures.py tests/test_swarm_benchmark_runner.py
 ```
+
+## Live runs on NVIDIA NIM
+
+September 27, 2026: `moonshotai/kimi-k3` at `https://integrate.api.nvidia.com/v1`
+through `--provider openai-compatible`. Single-agent baseline protocol: 12
+requests and a 180-second deadline per case, equal-resource control, order
+seed 37, managed worker processes. These are the first live runs of the
+runner. No benefit threshold is declared, and none of this measures swarm
+benefit.
+
+- **Smoke.** One investigation case was accepted and independently verified:
+  2 requests, 4,032 input and 399 output tokens, 20.7 seconds, no provider
+  failures. The key appeared in no record.
+- **First baseline.** Each of the three cases dispatched failed before reading a
+  file. The model opened with `glob("*")`, which searches outside a narrow
+  assignment, and the guard ended the worker. Fixed: a call outside the
+  assignment is now refused and reported to the model, which then narrowed it.
+- **Second baseline, after that fix.** 2 of 4 dispatched cases were accepted
+  and independently verified: serial control (76 seconds) and processor repair
+  (156 seconds).
+  - One investigation failed on its own merits: its findings didn't match the
+    strict JSON contract.
+  - One processor repair ended when a provider response couldn't be fully
+    observed. That request stays uncertain, so the study stopped with 8 cases
+    undispatched, as the protocol requires.
+  - The ledger now keeps the provider's status code for such failures, and each
+    case keeps `worker-events.json`.
+- **Third baseline.** In progress.

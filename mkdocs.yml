@@ -85,6 +85,7 @@ nav:
   - For organizations:
       - Organization policy: enterprise-policy.md
       - Offline and air-gapped operation: offline.md
+      - Data loss prevention: dlp.md
       - Shell sandbox and command guardrails: shell-sandbox.md
       - Deploying on Windows: deploy-windows.md
       - Deploying on macOS: deploy-macos.md

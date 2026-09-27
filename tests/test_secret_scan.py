@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import json
+import time
 import zipfile
 from unittest.mock import patch
 
@@ -84,6 +85,48 @@ class TestRedactText:
         redacted, found = secret_scan.redact_text(text, patterns=False, known=[SAVED_KEY, "ollama"])
         assert redacted == "config says [REDACTED saved API key]; dummy key ollama"
         assert found == {"saved API key": 1}
+
+
+JWT = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U"
+
+
+class TestLinearPatterns:
+    """The patterns scan in linear time (each request runs them over whatever a tool
+    read) and still find what the earlier, backtracking ones did."""
+
+    @pytest.mark.parametrize("text, expected", [
+        (f"id-{JWT} end", "id-[REDACTED JSON web token] end"),
+        (f"--{JWT}", "--[REDACTED JSON web token]"),
+        ("-https://u:pass@host/x", "-https://u:[REDACTED password in a URL]@host/x"),
+        ("1.https://u:pass@host/x", "1.https://u:[REDACTED password in a URL]@host/x"),
+        ("+ftp://u:pass@host", "+ftp://u:[REDACTED password in a URL]@host"),
+        # A truncated key before a whole one: all of it, as before.
+        ("-----BEGIN PRIVATE KEY-----\ncut off\n" + PEM, "[REDACTED private key]"),
+        ("-----BEGIN PRIVATE KEY-----\na\n-----BEGIN CERTIFICATE-----\nb\n-----END PRIVATE KEY-----",
+         "[REDACTED private key]"),
+    ])
+    def test_matches_the_earlier_patterns_found(self, text, expected):
+        assert secret_scan.redact_text(text, patterns=True, known=())[0] == expected
+
+    def test_documented_limits(self):
+        # A token's first part can't contain "-eyJ", and a key's body can run over
+        # at most two further BEGIN lines: past that, only the whole key at its end.
+        odd = JWT.replace(".eyJ", "-eyJx.eyJ", 1)
+        assert secret_scan.redact_text(odd, patterns=True, known=())[1] == {}
+        text = "-----BEGIN PRIVATE KEY-----\na\n-----BEGIN X-----\nb\n-----BEGIN Y-----\nc\n" + PEM
+        redacted, found = secret_scan.redact_text(text, patterns=True, known=())
+        assert found == {"private key": 1} and redacted.endswith("-----BEGIN Y-----\nc\n[REDACTED private key]")
+
+    @pytest.mark.parametrize("text", [
+        "-eyJ" * 250_000, "eyJ" + "a-" * 499_999, "1." * 499_999 + "a://", "a." * 500_000,
+        "TOKEN" * 200_000, "-----BEGIN PRIVATE KEY-----\n" * 35_715, "-----BEGIN " * 90_910,
+        "-----BEGIN PRIVATE KEY-----\nAAAA\n-----BEGIN X\n" * 21_740,
+    ], ids=["jwt-like", "jwt first part", "url scheme", "dotted", "env names", "key headers", "begins",
+            "nested begins"])
+    def test_a_megabyte_of_adversarial_text_takes_well_under_a_second(self, text):
+        started = time.perf_counter()
+        secret_scan.redact_text(text, patterns=True, known=())
+        assert time.perf_counter() - started < 1.0
 
 
 class TestScrubHistory:

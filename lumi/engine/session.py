@@ -30,7 +30,7 @@ from ..backends import (
     EVENT_BACKEND_STATUS,
     EVENT_EXTERNAL_TOOL,
 )
-from .. import secret_scan
+from .. import dlp, secret_scan
 from ..events import EngineEvent, make_event
 from ..content import build_user_content
 from .tools import (
@@ -120,6 +120,17 @@ _CORE_TOOL_DESCRIPTIONS = {
     "search_tools": "Load a specialized tool by capability when the core tools are insufficient.",
     "await_user": "Ask one genuinely blocking question; include and recommend an option when possible.",
 }
+
+
+def _prefixed(stream, first: tuple[str, dict]):
+    """Yield ``first``, then ``stream``'s events; closing this closes ``stream``."""
+    try:
+        yield first
+        yield from stream
+    finally:
+        close = getattr(stream, "close", None)
+        if callable(close):
+            close()
 
 
 def _message_text(message: dict) -> str:
@@ -689,6 +700,10 @@ class Session:
         self._windowed_cycle_nudged: bool = False
         self._read_result_cache: dict[str, dict[str, object]] = {}
         self._last_checkpoint_tool_call: str = ""
+        # The kinds of content the turn's instructions are made of, in order
+        # ((kind, text) pairs, see _run_turn), so DLP rules scoped to
+        # attachments or instructions (lumi/dlp.py) apply to the right parts.
+        self._dlp_segments: Optional[list[tuple[str, str]]] = None
 
     @property
     def is_subagent(self) -> bool:
@@ -1035,11 +1050,18 @@ class Session:
             self._guarded_no_hooks()
             if not callable(getattr(self.backend, "classify", None)):
                 return False  # Unsupported classification does not reserve or start a request.
-            prompt = self._CLASSIFY_PROMPT.format(user_msg=user_msg)
-            result = (
-                self._execution_boundary.classify(self.backend, prompt, max_tokens=20)
-                if self._execution_boundary else self.backend.classify(prompt, max_tokens=20)
+            # The prompt carries the person's message, so DLP checks it like a turn;
+            # a block skips planning, and the turn's own request reports it.
+            prompt = dlp.check_text(
+                self._CLASSIFY_PROMPT.format(user_msg=user_msg), purpose="planning", kind="prompt",
+                provider=str(getattr(self.backend, "name", "") or ""),
+                model=str(getattr(self.backend, "model", "") or ""), audit_fields=self._audit_fields(),
             )
+            with dlp.permit():  # the prompt passed the check above
+                result = (
+                    self._execution_boundary.classify(self.backend, prompt, max_tokens=20)
+                    if self._execution_boundary else self.backend.classify(prompt, max_tokens=20)
+                )
             return "COMPLEX" in result.upper()
         except ExecutionGuardError:
             raise
@@ -1049,25 +1071,49 @@ class Session:
             return False  # On failure, skip planning
 
     def _model_stream(self, *, purpose="primary", backend=None, **kwargs):
-        """Account for native model input without changing provider identity."""
+        """Account for native model input without changing provider identity.
+
+        The organization's DLP rules (lumi/dlp.py) see the request exactly as
+        it will be sent and may redact a copy of it; ``dlp.Blocked`` means
+        nothing was sent (the history entries it came from are marked, so
+        later requests leave them out).
+        """
         backend = backend or self.backend
         if self._execution_boundary:
             self._guarded_no_hooks()
+        try:
+            checked = dlp.check_request(
+                kwargs, purpose=purpose, provider=str(getattr(backend, "name", "") or ""),
+                model=str(getattr(backend, "model", "") or ""), audit_fields=self._audit_fields(),
+                segments=self._dlp_segments if purpose == "primary" else None,
+            )
+        except dlp.Blocked as exc:
+            if kwargs.get("conversation_history") is self.conversation_history:
+                dlp.mark_withheld(self.conversation_history, exc.entries)
+            raise
+        kwargs = checked.request
+        if self._execution_boundary:
             # Providers consume the captured request, not the live history that
             # steering, GUI callbacks or another thread can modify after commit.
             captured = copy.deepcopy({key: value for key, value in kwargs.items() if key != "cancel_event"})
             kwargs = {**captured, **({"cancel_event": kwargs["cancel_event"]} if "cancel_event" in kwargs else {})}
         def invoke():
             if purpose == "primary":
-                return backend.stream(**kwargs)
-            from .request_purpose import auxiliary_stream
+                return dlp.send(backend.stream, **kwargs)
+            from .request_purpose import send_checked
             # A guarded request's usage is recorded by its execution guard's
             # owner (engine/swarming/organization.py), not a second time here.
-            return auxiliary_stream(backend, purpose, record=self._execution_boundary is None, **kwargs)
+            return send_checked(backend, purpose, record=self._execution_boundary is None, **kwargs)
         if self._execution_boundary is None:
-            return invoke()
-        inputs = {key: value for key, value in kwargs.items() if key != "cancel_event"}
-        return self._execution_boundary.stream(backend, purpose=purpose, inputs=inputs, invoke=invoke)
+            stream = invoke()
+        else:
+            inputs = {key: value for key, value in kwargs.items() if key != "cancel_event"}
+            stream = self._execution_boundary.stream(backend, purpose=purpose, inputs=inputs, invoke=invoke)
+        if checked.notice:
+            # A quiet marker: the person should know the model saw a changed copy.
+            return _prefixed(stream, (EVENT_BACKEND_STATUS, {
+                "kind": "dlp_redacted", "message": checked.notice, "rules": dict(checked.redacted)}))
+        return stream
 
     def _guarded_no_hooks(self) -> None:
         """Unqualified lifecycle hooks cannot create effects outside receipts."""
@@ -2477,12 +2523,18 @@ class Session:
         # prompt byte-stable across every tool step.
         turn_context = ""
         turn_sources: dict[str, str] = {}
+        # What each part of turn_context is, for DLP rules scoped by kind:
+        # notes and memory are instructions, indexed code is file contents
+        # (tool_result), @mentions are attachments.
+        context_segments: list[tuple[str, str]] = []
         if self.project_path and self.project_content_trusted:
             try:
                 from .project_memory import ProjectMemory
                 notes = ProjectMemory(self.project_path).context(user_msg)
                 if notes:
-                    turn_context += '\n\n--- PROJECT MEMORY ---\n' + notes + '\n--- END PROJECT MEMORY ---'
+                    block = '\n\n--- PROJECT MEMORY ---\n' + notes + '\n--- END PROJECT MEMORY ---'
+                    turn_context += block
+                    context_segments.append(("instructions", block))
                     turn_sources['project_memory'] = notes
             except (OSError, ValueError) as exc:
                 logger.warning('Project memory unavailable: %s', exc)
@@ -2493,7 +2545,9 @@ class Session:
                 from ..team_library import team_notes_context
                 team_notes = team_notes_context(self.project_path, user_msg)
                 if team_notes:
-                    turn_context += '\n\n--- TEAM PROJECT NOTES ---\n' + team_notes + '\n--- END TEAM PROJECT NOTES ---'
+                    block = '\n\n--- TEAM PROJECT NOTES ---\n' + team_notes + '\n--- END TEAM PROJECT NOTES ---'
+                    turn_context += block
+                    context_segments.append(("instructions", block))
                     turn_sources['team_notes'] = team_notes
             except (OSError, ValueError) as exc:
                 logger.warning('Team project notes unavailable: %s', exc)
@@ -2502,6 +2556,7 @@ class Session:
                 memory_context = self._engram.get_context_for_prompt(user_msg) or ""
                 turn_context += memory_context
                 if memory_context:
+                    context_segments.append(("instructions", memory_context))
                     turn_sources["memory"] = memory_context
             except Exception as e:
                 logger.warning(f"Engram recall failed: {e}")
@@ -2510,6 +2565,7 @@ class Session:
                 rag_context = self._codebase_index.get_context_for_prompt(user_msg) or ""
                 turn_context += rag_context
                 if rag_context:
+                    context_segments.append(("tool_result", rag_context))
                     turn_sources["rag"] = rag_context
             except Exception as e:
                 logger.warning(f"RAG context failed: {e}")
@@ -2519,6 +2575,7 @@ class Session:
                 skill_text = getattr(skill_context, "block", skill_context) or ""
                 turn_context += skill_text
                 if skill_text:
+                    context_segments.append(("instructions", skill_text))
                     turn_sources["skills"] = skill_text
             except Exception as e:
                 logger.warning(f"Interactive skill lookup failed: {e}")
@@ -2536,6 +2593,7 @@ class Session:
                 explicit_context = self.context_broker.render(explicit_items)
                 turn_context += explicit_context
                 if explicit_context:
+                    context_segments.append(("attachment", explicit_context))
                     turn_sources["explicit"] = explicit_context
                     for item in explicit_items:
                         turn_sources[f"attachment:{item.id}"] = item.content
@@ -2552,19 +2610,24 @@ class Session:
         # Freeze the provider prefix for the entire model/tool loop. Volatile
         # state belongs in append-only messages; rebuilding or reordering the
         # system/tool prefix forces local models to prefill it again.
-        base_instructions = get_system_instructions(
+        system_instructions = get_system_instructions(
             plan_mode=self.plan_mode,
             project_instructions=self.project_instructions,
             working_directory=self.project_path or os.getcwd(),
             model_name=backend_model,
             prompt_role=self.prompt_role,
             role_instructions=self.role_instructions,
-        ) + turn_context
+        )
+        base_instructions = system_instructions + turn_context
+        dlp_segments = [("instructions", system_instructions), *context_segments]
         from .editor_integrations import workflow_instructions
         editor_context = workflow_instructions(getattr(self, "_settings_ref", None))
         if editor_context:
-            base_instructions += "\n\n--- CREATIVE EDITORS ---\n" + editor_context + "\n--- END CREATIVE EDITORS ---"
+            block = "\n\n--- CREATIVE EDITORS ---\n" + editor_context + "\n--- END CREATIVE EDITORS ---"
+            base_instructions += block
+            dlp_segments.append(("instructions", block))
         self._active_instructions = base_instructions
+        self._dlp_segments = dlp_segments
 
         while True:
             if self.max_model_requests is not None and model_requests >= self.max_model_requests:
@@ -2886,6 +2949,18 @@ class Session:
             except KeyboardInterrupt:
                 self.cancel()
                 yield from self._cancelled_events(total_start, exec_step)
+                return
+            except dlp.Blocked as exc:
+                # Nothing was sent, and another model would get the same content:
+                # no fallback or retry. The message names rules, never content.
+                model_requests -= 1  # it never left, so it isn't a request made
+                terminal_error = exc.message
+                yield make_event(EngineEvent.ERROR, message=exc.message, code=exc.code)
+                elapsed = time.time() - total_start
+                yield make_event(EngineEvent.SESSION_END,
+                                total_elapsed=elapsed,
+                                total_steps=exec_step,
+                                **completion_payload(elapsed, exec_step))
                 return
             except Exception as e:
                 terminal_error = f"Stream error: {e}"

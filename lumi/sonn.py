@@ -12,12 +12,14 @@ from urllib.parse import urlsplit
 
 import httpx
 
+from . import dlp
 from .backends import EVENT_ERROR, ExoBackend, KimiBackend, _convert_tools_for_ollama
 from .capabilities import ModelCapabilities
 from .content import text_fallback
 from .network_defaults import resolve_sonn_url
 
 
+@dlp.guard_backend
 class SonnBackend(KimiBackend):
     """Use the standard OpenAI wire format without Moonshot/OpenRouter extensions."""
 

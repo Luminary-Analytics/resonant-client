@@ -23,7 +23,7 @@ from typing import Iterator, Tuple
 
 import httpx
 
-from . import net
+from . import dlp, net
 from .protocol import build_tool_system_prompt, parse_dsml_tool_calls, parse_tool_calls
 from .content import content_text, normalize_content, ollama_message_content, text_fallback
 from .capabilities import (
@@ -456,6 +456,7 @@ def _wait_with_cancel(seconds: float, cancel_event) -> bool:
     return False
 
 
+@dlp.guard_backend
 class OllamaBackend:
     """Direct connection to Ollama /api/chat with adaptive tool calling.
 
@@ -1920,6 +1921,7 @@ _CODEX_PERMISSION_PROFILES = {
 }
 
 
+@dlp.guard_backend
 class KimiBackend:
     """Kimi K3 through Moonshot's OpenAI-compatible streaming API."""
 
@@ -2864,6 +2866,7 @@ class KimiBackend:
             stream_watcher_done.set()
 
 
+@dlp.guard_backend
 class ExoBackend(KimiBackend):
     """EXO distributed inference through its OpenAI-compatible endpoint."""
 
@@ -3103,19 +3106,21 @@ class ExoBackend(KimiBackend):
             self._ensure_instance(self._warmup_cancel_event)
             if self._warmup_cancel_event.is_set():
                 return
-            for event_type, data in KimiBackend.stream(
-                self,
-                user_msg="Call resonant_warmup now.",
-                conversation_history=[],
-                instructions=(
-                    "This is a provider warmup. Call resonant_warmup exactly "
-                    "once and do not write prose."
-                ),
-                tools=[warmup_tool],
-                cancel_event=self._warmup_cancel_event,
-            ):
-                if event_type == EVENT_ERROR and not self._warmup_cancel_event.is_set():
-                    logger.debug("EXO warmup ended with provider error: %s", data)
+            # Fixed text, no conversation content: nothing for DLP rules to check.
+            with dlp.permit():
+                for event_type, data in KimiBackend.stream(
+                    self,
+                    user_msg="Call resonant_warmup now.",
+                    conversation_history=[],
+                    instructions=(
+                        "This is a provider warmup. Call resonant_warmup exactly "
+                        "once and do not write prose."
+                    ),
+                    tools=[warmup_tool],
+                    cancel_event=self._warmup_cancel_event,
+                ):
+                    if event_type == EVENT_ERROR and not self._warmup_cancel_event.is_set():
+                        logger.debug("EXO warmup ended with provider error: %s", data)
         except Exception:
             logger.debug("EXO warmup failed", exc_info=True)
 
@@ -3437,6 +3442,7 @@ class ExoBackend(KimiBackend):
         return f"EXO API request failed ({status_code}): {message}"
 
 
+@dlp.guard_backend
 class CodexCliBackend:
     """Subscription/API-auth backed Codex CLI execution."""
 
@@ -3752,6 +3758,7 @@ def claude_code_credentials_present() -> bool:
     return (Path.home() / ".claude" / ".credentials.json").is_file()
 
 
+@dlp.guard_backend
 class ClaudeCodeCliBackend:
     """Subscription-backed Claude Code CLI execution.
 

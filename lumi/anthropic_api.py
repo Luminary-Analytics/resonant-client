@@ -33,7 +33,7 @@ from typing import Any, Callable, Iterator, Tuple
 
 import httpx
 
-from . import net
+from . import dlp, net
 from .backends import (
     EVENT_BACKEND_STATUS,
     EVENT_DONE,
@@ -414,6 +414,7 @@ def google_access_token() -> str:
 # ── Backend ──────────────────────────────────────────────────────────────
 
 
+@dlp.guard_backend
 class AnthropicBackend(KimiBackend):
     """Claude via the Messages API, directly or through Bedrock or Vertex AI."""
 

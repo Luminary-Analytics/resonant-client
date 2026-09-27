@@ -39,6 +39,9 @@ orchestrator loop starts a short answer turn
   spent its request on `swarm_status`. In a second run, answer turns with
   read tools spent all their requests exploring the project and never
   answered. Hence these limits.
+- With them, a third run answered both workers' questions within about 34
+  seconds each, and both reports cite the answers
+  (`docs/swarming-benchmarks.md`).
 - The questions still reach the next round's planning input.
 
 ## September 27 Team: the orchestrator applies checked changes (source only, not released)

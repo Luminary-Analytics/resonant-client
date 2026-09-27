@@ -39,9 +39,17 @@ wording is a draft for counsel.
   superseded. Being free for individuals stays a product decision that the
   license text doesn't change. [Offline mode](offline.md) now says it works
   without an *offline* license.
-- **Unchanged:** `packaging/third-party-components.json` and the copyleft
-  gate. No installer shows a license page (Inno Setup, the MSI and the macOS
-  package have none), so none needed changing.
+- **Ported code is credited.** `lumi/engine/truncation.py` is a Python port
+  of `truncate.ts` from pi-coding-agent (`@mariozechner/pi-coding-agent`,
+  `packages/coding-agent/src/core/tools/truncate.ts` in the pi monorepo,
+  formerly `badlogic/pi-mono`), MIT License, "Copyright (c) 2025 Mario
+  Zechner". The file is the same in 0.70.6, the npm release current when it
+  was ported on April 30, 2026. The module now opens with that notice and the
+  full MIT text. `packaging/third-party-components.json` lists it (kind
+  "Ported source code") with `packaging/licenses/pi-coding-agent-LICENSE.txt`,
+  the upstream text, so `THIRD_PARTY_NOTICES.txt` and the SBOM include it.
+- **Unchanged:** the copyleft gate. No installer shows a license page (Inno
+  Setup, the MSI and the macOS package have none), so none needed changing.
 - **Before the next release,** the End User License Agreement has to exist
   and ship with the installers: `LICENSE` names an agreement "provided with
   the software".
@@ -58,8 +66,12 @@ Validation on September 27, 2026:
 - With an isolated home, `test_about.py`, `test_linux_packages.py`,
   `test_release_supply_chain.py`, `test_docs_links.py`,
   `test_code_editors.py`, `test_content_security_policy.py`,
-  `test_provider_extensions.py`, `test_extension_panels.py` and
-  `test_bundle_policy.py` pass (175 tests).
+  `test_provider_extensions.py`, `test_extension_panels.py`,
+  `test_bundle_policy.py` and `test_truncation.py` pass (197 tests).
+  `test_release_supply_chain.py` checks that the notices carry
+  pi-coding-agent's MIT text and that `truncation.py` keeps its copyright
+  line. The notice in the file and the copy in `packaging/licenses/` match
+  the text of the upstream `LICENSE` exactly.
 - setuptools 80.8, run on a copy of the tree, writes `License: Proprietary`,
   the proprietary classifier and `License-File: LICENSE`; the SDK's wheel
   holds `lumi_extension/LICENSE`.

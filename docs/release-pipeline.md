@@ -39,7 +39,10 @@ the release workflow's executable smoke test alone does not perform them.
   `THIRD_PARTY_NOTICES.txt` from the build environment's metadata and the
   license texts each package ships. It adds the non-Python parts listed in
   `packaging/third-party-components.json` (Python runtime, PyInstaller
-  bootloader, ripgrep, WinSparkle, web assets and fonts).
+  bootloader, ripgrep, WinSparkle, web assets and fonts), and code ported
+  into Lumi's own modules with its original license (pi-coding-agent's
+  `truncate.ts`, ported as `lumi/engine/truncation.py`; the text is in
+  `packaging/licenses/`).
   - The build fails if a shipped Python package is GPL, AGPL or LGPL without a
     recorded `license_reviews` entry.
   - Packages under `not_shipped` are excluded from the bundle by the spec and

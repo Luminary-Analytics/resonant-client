@@ -167,6 +167,8 @@ class ExecutionBoundary:
         saw_done = False
         usage = None
         status = None
+        produced = False
+        refused = False
         error = "Model stream closed before its complete response was observed"
         try:
             self._check_model_selection(backend, request_id)
@@ -174,10 +176,17 @@ class ExecutionBoundary:
             for event_type, data in iterator:
                 if event_type in {"error", "cancelled"}:
                     status = data.get("status_code")
+                    # A 4xx answer before any model output is the provider
+                    # refusing the request (rate limit, bad request, auth):
+                    # nothing was generated, so the outcome is known.
+                    refused = (event_type == "error" and not produced
+                               and type(status) is int and 400 <= status <= 499)
                     raise ExecutionGuardError(str(data.get("message") or "Provider failed or cancelled"))
                 if event_type == "done":
                     saw_done = True
                     usage = copy.deepcopy(data.get("stats"))
+                if event_type != "backend.status":
+                    produced = True
                 yield event_type, data
             if not saw_done:
                 raise ExecutionGuardError("Provider stream ended without a done observation")
@@ -196,6 +205,10 @@ class ExecutionBoundary:
                 error = f"Model response could not be fully observed ({type(exc).__name__})"
                 if type(status) is int and 100 <= status <= 599:
                     error += f"; provider status {status}"
+                if refused:
+                    self._persist("end_request", request_id, outcome="completed", usage=usage,
+                                  error=f"Provider refused the request before generating; provider status {status}")
+                    end_attempted = True
             raise
         finally:
             self._active_request = None

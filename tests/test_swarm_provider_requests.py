@@ -29,13 +29,13 @@ def _provider(name, transport):
     return backend
 
 
+@pytest.mark.parametrize("status", [503, 429])
 @pytest.mark.parametrize("provider", ["kimi", "sonn", "openrouter", "exo", "connection"])
-def test_guarded_http_rejection_is_one_generation_attempt(provider, monkeypatch):
+def test_guarded_http_rejection_is_one_generation_attempt(provider, status, monkeypatch):
     calls = []
     def respond(request):
         calls.append(request)
-        return httpx.Response(429 if provider == "sonn" else 503,
-            json={"error": {"type": "learning_queue_full", "message": "fixture unavailable"}})
+        return httpx.Response(status, json={"error": {"type": "learning_queue_full", "message": "fixture unavailable"}})
     backend = _provider(provider, httpx.MockTransport(respond))
     monkeypatch.setattr("lumi.backends._wait_with_cancel",
                         lambda *_: pytest.fail("A supervised request cannot enter retry backoff"))
@@ -47,9 +47,11 @@ def test_guarded_http_rejection_is_one_generation_attempt(provider, monkeypatch)
     assert len(calls) == 1
     assert calls[0].url.path.endswith("/chat/completions")
     ends = [record for record in guard.records if record["kind"] == "request.end"]
-    assert len(ends) == 1 and ends[0]["outcome"] == "uncertain"
+    # A 4xx refusal before any output generated nothing, so its outcome is
+    # known; a 5xx may have failed mid-generation and stays uncertain.
+    assert len(ends) == 1 and ends[0]["outcome"] == ("completed" if status == 429 else "uncertain")
     # The status is kept (a number, unlike the provider's text) for diagnosis.
-    assert ends[0]["error"].endswith(f"provider status {429 if provider == 'sonn' else 503}")
+    assert ends[0]["error"].endswith(f"provider status {status}")
     assert "fixture unavailable" not in ends[0]["error"]
 
 

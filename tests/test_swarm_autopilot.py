@@ -32,7 +32,11 @@ def team(tmp_path):
     outputs, backends = [], []
 
     def factory(spec):
-        backend = StreamingBackend(events=[text_delta(outputs[len(backends)]), done()])
+        output = outputs[len(backends)]
+        # ("refused", status): the provider refuses this participant's request before any output.
+        events = ([("error", {"message": "Too many requests", "status_code": output[1]})]
+                  if isinstance(output, tuple) else [text_delta(output), done()])
+        backend = StreamingBackend(events=events)
         backend.name, backend.model = spec.backend_type, spec.model
         backends.append(backend)
         return backend
@@ -166,3 +170,21 @@ def test_a_worker_can_wait_for_an_answer_and_pause_ends_the_wait(mailbox_setup):
     result = json.loads(tools.execute("swarm_receive", {"after": result["cursor"], "wait_seconds": 20}).output)
     assert result["messages"] == [] and time.monotonic() - began < 2
     assert tools.execute("swarm_receive", {"wait_seconds": 61}).is_error
+
+
+def test_a_refused_request_fails_its_task_cleanly_and_the_orchestrator_retries_it(team, monkeypatch):
+    # A rate-limited provider (429) generated nothing: the request's outcome is
+    # known, the worker fails, and the loop retries the task after a pause.
+    monkeypatch.setattr("lumi.engine.swarming.autopilot.RETRY_DELAY_SECONDS", .3)
+    service, capture, outputs, backends = team
+    outputs += [plan_response(), ("refused", 429), "The UI escapes output.", "The API validates input.",
+                json.dumps(FINAL)]
+    run_id = start(service, capture, rounds=2)
+    view = finished(service, capture, run_id)
+    run = view["run"]
+    assert run["run"]["state"] == "completed" and view["autonomy"]["final_report"] == FINAL["summary"]
+    assert all(row["state"] == "accepted" for row in run["work_items"])
+    refused = [row for row in run["model_requests"] if row["state"] != "completed"]
+    assert refused == []  # Settled as known, not held as uncertain.
+    assert [row["state"] for row in run["attempts"] if row["kind"] == "worker"].count("failed") == 1
+    assert any("provider status 429" in (row.get("observation_error") or "") for row in run["request_inputs"])

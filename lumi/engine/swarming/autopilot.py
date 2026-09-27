@@ -25,6 +25,7 @@ from __future__ import annotations
 import json
 import logging
 import threading
+import time
 from typing import Any
 
 from .models import AdmissionClosed, Conflict, RevisionConflict
@@ -40,6 +41,9 @@ CLOSING_EVIDENCE = "The team used its rounds; the orchestrator's closing turn ma
 RESULT_EVIDENCE = ("Accepted under the owner's autonomy grant so the orchestrator's next round can use it; "
                    "the owner has not reviewed it.")
 RETRY_EVIDENCE = "Retried once automatically under the owner's autonomy grant."
+# A failed task waits this long before its one retry: a provider that refused a
+# request for its rate limit usually needs a moment.
+RETRY_DELAY_SECONDS = 15.0
 
 
 class TeamAutopilot:
@@ -61,6 +65,7 @@ class TeamAutopilot:
         self.detail = "The orchestrator is planning the first round."
         self.final_report: str | None = None
         self._retried: set[str] = set()
+        self._failed_at: dict[str, float] = {}
         self._requests = 0
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
@@ -131,6 +136,11 @@ class TeamAutopilot:
         if any(row["state"] in _IN_FLIGHT for row in work):
             running = sum(row["state"] in {"leased", "running"} for row in work)
             self._set("working", f"Round {self.round}: {running} of {len(work)} tasks running.")
+            return True
+        if any(row["state"] == "uncertain" for row in work) or any(
+                row["kind"] == "worker" and row["state"] == "uncertain" for row in snapshot["attempts"]):
+            self._set("needs_owner", "A worker's model request ended without a known outcome (for example, the "
+                                     "connection dropped mid-answer). Reconcile it or stop the team.")
             return True
         if any(row["state"] != "accepted" for row in work):
             self._set("needs_owner", "A task failed after its automatic retry. Retry, change or stop the team.")
@@ -206,6 +216,10 @@ class TeamAutopilot:
                 continue
             if any(row["work_item_id"] == item["id"] and row["process_state"] != "stopped" for row in snapshot["attempts"]):
                 continue  # A retry needs every earlier attempt stopped and accounted for.
+            failed_at = self._failed_at.setdefault(item["id"], time.monotonic())
+            if time.monotonic() - failed_at < RETRY_DELAY_SECONDS:
+                self._set("working", f"Round {self.round}: a task failed; retrying it shortly.")
+                return True
             self._command(runner, "retry", {"work_item_id": item["id"], "evidence": RETRY_EVIDENCE})
             self._retried.add(item["id"])
             scheduler = self.runtime._schedulers.get(self.run_id)

@@ -4353,7 +4353,8 @@ async def _cmd_update_settings(ctx: CommandContext) -> None:
         ctx.state.sonn_account_revision = getattr(ctx.state, "sonn_account_revision", 0) + 1
         await ctx.send({"event": "sonn_account", "data": None})
     await ctx.send({"event": "settings", "data": data})
-    if section == "security" and any(k == "extension_panels" for k, _ in writes):
+    if (section == "security" and any(k == "extension_panels" for k, _ in writes)) or section == "offline":
+        # Offline mode keeps panels closed (gui/extension_panels.enabled): an open one closes now.
         await _send_extension_panels(ctx)
     if section in {"updates", "offline"}:
         # Settings > Updates says what changes after a restart, and what offline mode stops now.

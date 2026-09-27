@@ -895,6 +895,20 @@ def test_connection_checks_say_why_before_starting_anything(monkeypatch):
     assert sent[1]["data"]["error"] == "Offline mode: OpenAI needs api.openai.com" + MESSAGE
 
 
+def test_panels_from_capability_packs_stay_closed_offline():
+    # A panel's content security policy leaves it no network but WebRTC, which offline mode can't check.
+    from lumi.gui import extension_panels
+
+    settings = SimpleNamespace(get=lambda section, key=None, default=None: default)
+    assert extension_panels.enabled(settings) == (True, "")
+    _on("llm.corp.example")
+    allowed, reason = extension_panels.enabled(settings)
+    assert not allowed and reason == ("Offline mode: panels from capability packs can connect by WebRTC, which "
+                                      "offline mode can't check, so they stay closed while it's on.")
+    with pytest.raises(extension_panels.PanelError, match="WebRTC"):
+        extension_panels.open_panel(SimpleNamespace(settings=settings), "acme.board", "board", owner=1)
+
+
 def test_team_preview_refuses_new_work_offline():
     from lumi.engine.swarming.service import policy_refusal
 

@@ -127,12 +127,19 @@ def enabled(settings: Any) -> tuple[bool, str]:
     Only an explicit ``true`` turns panels on, so a policy that locks the
     switch to a value it can't be (``"no"``) leaves them off. A policy that
     can't be used, or has expired, turns them off too, as it stops requests.
+    So does offline mode (lumi/offline.py): a panel's content security policy
+    leaves it no network but WebRTC, which the browser doesn't let a policy
+    turn off and offline mode can't check.
     """
+    from .. import offline
     from ..policy import blocked_reason, current
 
     reason = blocked_reason()
     if reason:
         return False, reason
+    if offline.enabled():
+        return False, ("Offline mode: panels from capability packs can connect by WebRTC, which offline mode "
+                       "can't check, so they stay closed while it's on.")
     if settings.get("security", "extension_panels", True) is not True:
         policy = current()
         if policy and policy.locked("security", "extension_panels"):

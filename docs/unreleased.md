@@ -54,7 +54,9 @@ See [Offline and air-gapped operation](offline.md).
   reachable), Entra ID sign-in without a client ID (azure-identity and the
   Azure CLI start only when `login.microsoftonline.com` is allowed) and
   sign-in token endpoints. The Team preview refuses new work while offline
-  mode is on.
+  mode is on, and [panels from capability packs](extensions.md) stay closed
+  (`gui/extension_panels.enabled`): a panel's only network is WebRTC, which
+  offline mode can't check. Turning offline mode on closes an open panel.
 - **A backstop:** once offline mode has been on, an audit hook refuses host
   name lookups through Python's socket module in Lumi's process
   (`getaddrinfo`, `gethostbyname`, `gethostbyaddr`, `getnameinfo`) for
@@ -118,7 +120,7 @@ stay editable though they change nothing (the status says why). The macOS
 profile maker has no license-key option yet.
 
 **Validation.**
-- 202 new tests: 200 in `tests/test_offline.py`, `test_offline_features.py`,
+- 203 new tests: 201 in `tests/test_offline.py`, `test_offline_features.py`,
   `test_update_file.py` and `test_license.py`, and 2 in `test_policy.py`
   (one Windows-only), with mock transports, fakes and keys they generate; no
   test reaches another computer (the backstop's lookups are refused before

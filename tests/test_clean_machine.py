@@ -263,6 +263,73 @@ def test_a_missing_updater_says_reinstall(monkeypatch, capsys):
     assert "reinstall" in json.loads(capsys.readouterr().out)["updater"]
 
 
+# ── A double-clicked lumi.exe ──────────────────────────────────────────────
+
+
+class TestDoubleClickingLumiExe:
+    """The windowless lumi.exe opened from Explorer is the app; a command line stays a command line.
+
+    The Windows build has no console, so Explorer, a shortcut or the Start
+    menu start it without standard input, output or error. Without arguments
+    it used to start the terminal UI invisibly, waiting for input that never
+    came. The macOS side is tests/test_sparkle.py's TestOpeningTheApp.
+    """
+
+    EXE = [r"C:\Users\Jöhn Smith\Downloads\Lumi\lumi.exe"]
+    OPENED = {"platform": "win32", "frozen": True, "streams": (None, None, None)}
+
+    def facts(self, **changed):
+        return {**self.OPENED, **changed}
+
+    def test_a_double_click_opens_the_app(self):
+        from lumi import __main__ as entry
+
+        assert entry._started_without_streams(**self.OPENED)
+        assert entry._opened_as_windows_app(self.EXE, **self.OPENED)
+
+    def test_a_command_line_keeps_its_behavior(self):
+        from lumi import __main__ as entry
+
+        others = {
+            "a command": (self.EXE + ["run", "fix the test"], self.OPENED),
+            "the browser GUI": (self.EXE + ["gui", "--browser"], self.OPENED),
+            "--version": (self.EXE + ["--version"], self.OPENED),
+            # A script that sends output or input somewhere means the command line.
+            "redirected output": (self.EXE, self.facts(streams=(None, io.StringIO(), None))),
+            "redirected input": (self.EXE, self.facts(streams=(io.StringIO(), None, None))),
+            "redirected errors": (self.EXE, self.facts(streams=(None, None, io.StringIO()))),
+            "from source": (self.EXE, self.facts(frozen=False)),
+            "macOS": (self.EXE, self.facts(platform="darwin")),
+        }
+        for how, (argv, facts) in others.items():
+            assert not entry._opened_as_windows_app(argv, **facts), how
+
+    def _run_main(self, monkeypatch, argv, *, double_click):
+        """What main() starts for ``argv``, with the GUI, terminal UI and updater stubbed out."""
+        from lumi import __main__ as entry
+        from lumi import updater
+
+        started = []
+        monkeypatch.setattr(entry, "_STARTED_WITHOUT_STREAMS", double_click)
+        monkeypatch.setattr(entry, "_LAUNCHED_BY_LAUNCHSERVICES", False)
+        monkeypatch.setattr(updater, "init_updater", lambda *args, **kwargs: False)
+        monkeypatch.setitem(sys.modules, "lumi.gui.server",
+                            SimpleNamespace(main=lambda: started.append(("gui", sys.argv[1:]))))
+        monkeypatch.setitem(sys.modules, "lumi.tui", SimpleNamespace(main=lambda: started.append(("tui", sys.argv[1:]))))
+        monkeypatch.setattr(sys, "argv", list(argv))
+        entry.main()
+        return started
+
+    def test_main_opens_the_gui_for_a_double_click_and_the_terminal_ui_otherwise(self, monkeypatch):
+        assert self._run_main(monkeypatch, self.EXE, double_click=True) == [("gui", [])]
+        assert self._run_main(monkeypatch, self.EXE, double_click=False) == [("tui", [])]
+        assert self._run_main(monkeypatch, self.EXE + ["gui", "--browser"], double_click=True) == [("gui", ["--browser"])]
+
+    def test_main_runs_a_command_even_without_streams(self, monkeypatch, capsys):
+        assert self._run_main(monkeypatch, self.EXE + ["--version"], double_click=True) == []
+        assert capsys.readouterr().out.startswith("lumi ")
+
+
 # ── The shared startup log ─────────────────────────────────────────────────
 
 

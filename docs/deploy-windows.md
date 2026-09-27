@@ -84,8 +84,10 @@ upgrade, add the newer MSI as an upgrade of the package already assigned.
 pin, feed, who manages them, and `"installed_by": "msi"` for an MSI copy. It
 reads settings and policy only and never checks for updates.
 
-`lumi.exe` is a windowed program. To see its output from PowerShell, redirect
-it:
+`lumi.exe` is a windowed program. Opened from Explorer or a shortcut without
+arguments, it has no console, and opens the app as `lumi gui` does. With any
+argument, or with its input or output redirected, it runs the command. To see
+its output from PowerShell, redirect it:
 
 ```
 Start-Process "C:\Program Files\Lumi\lumi.exe" -ArgumentList updates -Wait `

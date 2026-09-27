@@ -76,11 +76,19 @@ first-run changes follow separately.
   it, or a folder containing it (Downloads, the drive root) as the project; a
   double-click started it there. System folders are also recognized where
   Windows says they are.
+- **A double-clicked `lumi.exe` opens the app.** The windowless build opened
+  from Explorer or a shortcut without arguments has no console, so it started
+  the terminal UI invisibly, waiting for input that never came. The launch
+  helper #100 added for Lumi.app now covers Windows too
+  (`_opened_as_windows_app` in `lumi/__main__.py`): no arguments and no
+  standard input, output or error open the app, as `lumi gui` does, and the
+  startup log tags that launch `[gui <pid>]`. Any argument, or any redirected
+  stream, keeps the command line's behavior.
 - **Command-line text.** `lumi --help` lists the commands and no longer says
   "Ollama-only since v0.4.0". An installed copy without `WinSparkle.dll` says
-  its update component is missing and to reinstall, in Settings > Updates, in
-  Help > Check for Updates and in `lumi updates` (`"updater": "missing: ..."`),
-  instead of "it runs from source or outside Windows".
+  its update component is missing and to reinstall, in Settings > Updates and
+  Help > Check for Updates (the updater's `unavailable` reason, which said the
+  updater didn't start) and in `lumi updates` (`"updater": "missing: ..."`).
 - **The shared startup log.** Every process appends to
   `~/.lumi/logs/lumi-startup.log`; each line now starts with its role and
   process id (`[gui 4242] `), so a terminal UI, `lumi run` and the app are
@@ -92,13 +100,12 @@ first-run changes follow separately.
 - **Tests:** `tests/test_clean_machine.py` (Git absent through a patched
   `shutil.which` and a `subprocess.run` that raises `FileNotFoundError`, cmd.exe
   output with "Jürgen Müller" and "Jöhn", searches, prompt hints, the app's
-  own folder, help text, the updater message, the tagged log) and
+  own folder, help text, the updater message, a double-click and a command
+  line on Windows, the tagged log) and
   `tests/test_swarm_clean_machine.py` (writer teams without Git, the panel's
   reason, Git's error line, the conversation-scoped gate and its refusal, and
   cleanup of real worktrees and both branch prefixes).
-- **Deferred:** the double-click without arguments (which starts an invisible
-  terminal UI in the windowless build) waits for the macOS launch helper in
-  PR #100; the page's first-run changes are a separate pull request.
+- **Deferred:** the page's first-run changes are a separate pull request.
 
 ## September 27 macOS alpha: Sparkle updates and release publishing (source only, not released)
 

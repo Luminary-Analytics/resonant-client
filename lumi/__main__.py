@@ -146,6 +146,65 @@ def _discarded(stream, launched_by_launchservices: bool) -> bool:
 
 _LAUNCHED_BY_LAUNCHSERVICES = _launched_by_launchservices()
 
+
+def _started_without_streams(*, platform=None, frozen=None, streams=None) -> bool:
+    """The windowless lumi.exe started with no standard input, output or error.
+
+    The Windows build has no console (PyInstaller ``console=False``), so
+    Explorer, a shortcut or the Start menu start it without any of the three.
+    A script that redirects one of them (``lumi.exe run … > out.txt``) gets
+    that one, and keeps the command line's behavior. Read at import, before
+    the startup log takes the missing streams' place. The keyword arguments
+    stand in for this process's own facts in tests.
+    """
+    if (sys.platform if platform is None else platform) != "win32":
+        return False
+    if not (getattr(sys, "frozen", False) if frozen is None else frozen):
+        return False
+    streams = (sys.stdin, sys.stdout, sys.stderr) if streams is None else streams
+    return all(stream is None for stream in streams)
+
+
+_STARTED_WITHOUT_STREAMS = _started_without_streams()
+
+
+def _opened_as_mac_app(argv=None, **facts) -> bool:
+    """Lumi.app opened from Finder, the Dock, `open` or Sparkle's relaunch: the GUI, not the terminal UI.
+
+    Such a launch passes no arguments of its own. The same executable run
+    from a terminal or a script without arguments is the terminal UI.
+    ``facts`` stand in for this process's own in tests (see
+    ``_launched_by_launchservices``).
+    """
+    if argv is None and not facts:
+        launched, argv = _LAUNCHED_BY_LAUNCHSERVICES, sys.argv
+    else:
+        argv = sys.argv if argv is None else argv
+        launched = _launched_by_launchservices(argv, **facts)
+    return launched and not [argument for argument in argv[1:] if not argument.startswith("-psn_")]
+
+
+def _opened_as_windows_app(argv=None, **facts) -> bool:
+    """lumi.exe double-clicked, or opened from a shortcut without arguments: the GUI, not the terminal UI.
+
+    The windowless build started that way has no console, so the terminal UI
+    used to start invisibly and wait for input that never came. Any argument,
+    or any redirected stream, keeps the command line's behavior. ``facts``
+    stand in for this process's own in tests (see ``_started_without_streams``).
+    """
+    if argv is None and not facts:
+        started, argv = _STARTED_WITHOUT_STREAMS, sys.argv
+    else:
+        argv = sys.argv if argv is None else argv
+        started = _started_without_streams(**facts)
+    return started and len(argv) <= 1
+
+
+def _opened_as_app() -> bool:
+    """Opened as the desktop app rather than run as a command, on macOS or Windows."""
+    return _opened_as_mac_app() or _opened_as_windows_app()
+
+
 if getattr(sys, "frozen", False) and (
     _discarded(sys.stdout, _LAUNCHED_BY_LAUNCHSERVICES) or _discarded(sys.stderr, _LAUNCHED_BY_LAUNCHSERVICES)
     or sys.stdin is None
@@ -166,7 +225,7 @@ if getattr(sys, "frozen", False) and (
     # tag each line with this process's role and id (lumi/startup_log.py).
     from lumi.startup_log import TaggedLog, process_role
 
-    _log_file = TaggedLog(_log_file, process_role(sys.argv))
+    _log_file = TaggedLog(_log_file, process_role([sys.argv[0], "gui"] if _opened_as_app() else sys.argv))
     if _discarded(sys.stdout, _LAUNCHED_BY_LAUNCHSERVICES):
         sys.stdout = _log_file
     if _discarded(sys.stderr, _LAUNCHED_BY_LAUNCHSERVICES):
@@ -175,24 +234,8 @@ if getattr(sys, "frozen", False) and (
         sys.stdin = open(os.devnull, "r", encoding="utf-8")
 
 
-def _opened_as_mac_app(argv=None, **facts) -> bool:
-    """Lumi.app opened from Finder, the Dock, `open` or Sparkle's relaunch: the GUI, not the terminal UI.
-
-    Such a launch passes no arguments of its own. The same executable run
-    from a terminal or a script without arguments is the terminal UI, as
-    ``lumi.exe`` is. ``facts`` stand in for this process's own in tests
-    (see ``_launched_by_launchservices``).
-    """
-    if argv is None and not facts:
-        launched, argv = _LAUNCHED_BY_LAUNCHSERVICES, sys.argv
-    else:
-        argv = sys.argv if argv is None else argv
-        launched = _launched_by_launchservices(argv, **facts)
-    return launched and not [argument for argument in argv[1:] if not argument.startswith("-psn_")]
-
-
 def main():
-    if _opened_as_mac_app():
+    if _opened_as_app():
         sys.argv = [sys.argv[0], "gui"]
 
     # Surface --version / -V before any other dispatch so it works without

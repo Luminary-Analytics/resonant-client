@@ -1,4 +1,5 @@
 """Teams on a new computer: no Git, a conversation's own team, cleanup after a team ends."""
+# ruff: noqa: F811 -- the imported `setup` fixture is intentionally used by name.
 
 from __future__ import annotations
 

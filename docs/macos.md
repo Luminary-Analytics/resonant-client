@@ -185,8 +185,10 @@ missing fails instead of shipping an ad hoc build.
   `__CFBundleIdentifier` set to Lumi's identifier), which opens the app, and
   Lumi writes its startup messages to `~/.lumi/logs/lumi-startup.log`.
   Anything else keeps the command line's behavior: `lumi` without arguments
-  from Terminal or a script is the terminal UI, as on Windows, and output a
-  script sends to `/dev/null` stays there.
+  from Terminal or a script is the terminal UI, and output a script sends to
+  `/dev/null` stays there. On Windows, `lumi.exe` opened from Explorer or a
+  shortcut without arguments opens the app the same way
+  ([Checking a computer](deploy-windows.md#checking-a-computer)).
 
 ## What has been verified
 

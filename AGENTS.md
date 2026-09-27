@@ -341,6 +341,17 @@ host enrollment and actual packaged/learned-benefit qualification remain open.
   Keep the SDK (`sdk/python/lumi_extension`) standard-library only and the
   protocol backward compatible; a breaking change needs a new
   `manifest_version`. Tests start real providers with `sys.executable`.
+- Capability-pack panels (`gui/extension_panels.py`, `static/panels_view.js`,
+  docs/extensions.md#panels) never run in the app's origin: an `<iframe
+  sandbox="allow-scripts">`, never `allow-same-origin`, whose files come only
+  from `/panels/<panel token>/` with their own Content-Security-Policy
+  (`connect-src 'none'`, `sandbox allow-scripts`). Each request checks the
+  pack again and serves only files the approval covered, as approved. The
+  bridge answers only that frame (`event.source`, origin `"null"`): context,
+  composer text that is never sent, a named notice, close on Escape. Widening
+  it needs a security review. The desktop window refuses bridge calls that
+  aren't plain identifiers (`webview_bridge.checked_bridge_call`); WebKit
+  windows open no panels.
 - Pack signatures (`engine/pack_signing.py`, `lumi-pack.sig`) are checked
   whenever a pack loads. They name a pack's publisher and never approve it.
   An invalid signature makes the pack unverifiable. Only the organization's
@@ -382,7 +393,7 @@ python -m ruff check .
 python -m pytest -q
 node --check lumi/gui/static/app.js
 node --check lumi/gui/static/settings_view.js
-node --test tests/ui_recovery.test.cjs tests/appearance.test.cjs tests/autonomous_view.test.cjs tests/vscode_extension.test.cjs tests/voice_input.test.cjs
+node --test tests/ui_recovery.test.cjs tests/appearance.test.cjs tests/autonomous_view.test.cjs tests/vscode_extension.test.cjs tests/voice_input.test.cjs tests/extension_panels.test.cjs
 git diff --check
 ```
 

@@ -1,10 +1,11 @@
 # Writing a capability pack
 
 A capability pack bundles things Lumi can use: agents, skills, lifecycle hooks,
-MCP servers and model providers, plus metadata. It is a folder with a
+MCP servers, model providers and panels, plus metadata. It is a folder with a
 `lumi-pack.json` manifest. Code: `lumi/engine/capability_packs.py`. To add a
 model provider, start from [Extensions](extensions.md), which has a
-template, an SDK and a checker.
+template, an SDK and a checker; [Panels](extensions.md#panels) are described
+there too.
 
 Nothing in a pack runs until a person approves it, and a manifest can't
 approve itself. See [how trust works](#trust) below.
@@ -47,7 +48,8 @@ approve itself. See [how trust works](#trust) below.
 | `skills` | Paths to skill files. Skills that match the conversation are offered to the model, which loads them with `skill_view`. |
 | `hooks` | Commands run at lifecycle events, described below. |
 | `mcp_servers` | Named MCP servers, `{"command", "args", "env"}` or `{"url"}`. They are registered as `<pack id>-<name>`. |
-| `permissions`, `commands`, `recipes`, `ui_panels`, `metadata` | Shown for review and listed in the pack catalog. They grant nothing by themselves. |
+| `ui_panels` | Pages the pack adds under View > Panels, each shown in a sandboxed frame with no network access. See [Panels](extensions.md#panels). |
+| `permissions`, `commands`, `recipes`, `metadata` | Shown for review and listed in the pack catalog. They grant nothing by themselves. |
 | `manifest_version`, `lumi` | The Extension SDK's manifest version (1) and the Lumi versions the pack works with. A pack without `manifest_version` is read as version 0. See [Extensions](extensions.md#the-manifest). |
 | `providers` | Model providers Lumi starts for requests to their models. Only personal packs provide them. See [Extensions](extensions.md). |
 
@@ -137,13 +139,13 @@ hook then blocks it. A `json` hook reads the arguments from standard input, and
 ## Trust
 
 - **Approval pins content.** Settings > Capability packs shows what a pack would
-  run: its hooks, its MCP servers, its model providers, and repository files
-  its commands name.
+  run: its hooks, its MCP servers, its model providers, its panels, and
+  repository files its commands name.
   Approving it records a digest of every file in the pack plus those files.
 - **Any change turns it off.** Before each hook runs, before each request to
-  one of its model providers, and before the pack contributes skills, agents
-  or servers, Lumi checks the digest again. A changed pack stays off until it
-  is reviewed again.
+  one of its model providers, before each file a panel loads, and before the
+  pack contributes skills, agents or servers, Lumi checks the digest again. A
+  changed pack stays off until it is reviewed again.
 - **Location-bound.** An approval covers the pack at that folder only. Copying a
   pack elsewhere needs a new approval.
 - **Signatures say who made it.** A publisher can sign a pack

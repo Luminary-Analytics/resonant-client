@@ -40,6 +40,17 @@
   tabs, while a Mission's plan ran. They were used with real key presses in
   both themes and at 375 px wide, and their names and states were read from
   Chrome's accessibility tree.
+- **Added September 27**: the dialog a capability pack's panel opens in
+  ([Panels](extensions.md#panels)), with real key presses in headless Edge
+  (tests/extension_panels.browser.cjs), in both themes and at 390 px wide.
+  - It is named by the panel's title. Focus starts on its close button, Tab
+    goes into the panel and, past the panel's last control, back to the close
+    button, and Shift+Tab goes the other way.
+  - Escape closes it from the close button or from inside the panel, and
+    focus returns to what opened it, or to the message box.
+  - Panels are listed under View, which is used with the pointer, and in the
+    command palette for the keyboard. Contrast inside a panel is the pack's
+    own, not measured here.
 
 ## Fixed during this review
 

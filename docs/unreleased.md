@@ -8,6 +8,57 @@ The heartbeat remains paused. Documentation maintenance does not resume work,
 spending or grants, and changes no native implementation or installed bundle.
 The dated September 15/18 records below are historical.
 
+## September 27 Panels from capability packs (source only, not released)
+
+**Capability packs can add panels.** A pack's `ui_panels` (an id, a title and
+an entry HTML file) are pages the person opens under **View > Panels** or
+from the command palette ("Open panel: …"). A panel opens in a dialog and
+talks to Lumi through a bridge: it reads the project's name, the
+conversation's title and the theme, adds text to the message box without
+sending it, and shows a notice that names it. See
+[Panels](extensions.md#panels).
+
+**How a panel is kept apart.**
+- It runs in `<iframe sandbox="allow-scripts">`: an opaque origin with no
+  access to Lumi's page, its storage (which holds the launch token) or its
+  socket.
+- Its files come from `/panels/<panel token>/`. The token is made when the
+  panel opens and withdrawn when it closes or its page goes; it isn't the
+  launch token. Each response has a Content-Security-Policy of its own: no
+  network, only the panel's own files, `sandbox allow-scripts`. Fetch
+  Metadata refuses a panel URL opened as a top-level page.
+- Every file is checked as it's served: panels allowed; the pack approved,
+  enabled, allowed by policy and unchanged; the file one the approval covered
+  and its bytes the approved ones. A revoked, disabled or changed pack's open
+  panel stops loading at once and closes the next time panels are listed.
+- The page takes bridge messages only from that frame, with origin `"null"`,
+  limited in size and rate. Inserted text loses invisible characters. Notices
+  name their panel, and approvals show above panels.
+- The app page's policy now names `frame-src 'self'`, which also keeps a
+  panel from navigating itself to another site.
+- The desktop window refuses pywebview bridge calls whose name or id isn't a
+  plain identifier. pywebview writes both into script it runs in the page,
+  and WebKit (macOS, Linux) gives the bridge to every frame, so WebKit windows
+  don't open panels yet. On Windows, a sandboxed frame's messages didn't reach
+  pywebview in a WebView2 probe.
+
+**Settings and policy.** Settings > Privacy & security > **Panels from
+capability packs** (`security.extension_panels`, on by default); a policy
+can lock it off. Packs a policy refuses have no panels, and a policy that
+can't be used turns panels off.
+
+**The manifest.** `ui_panels` used to be shown for review and do nothing.
+Lumi now checks it when a pack loads: a panel with a bad id, title or entry
+makes the manifest invalid, and the pack stays off. The schema
+(`sdk/schema/lumi-pack.schema.json`) describes panels, Settings > Capability
+packs lists them for review, and `lumi extension check` lists them.
+
+**Not covered.** Browsers don't apply the Content-Security-Policy to WebRTC
+(Edge ignores `webrtc 'block'`), so a panel's script can send what it sees
+(the project's name, the conversation's title, the theme and what's typed
+into it) to a server of its choosing. Panels don't open in the macOS and
+Linux desktop window, and one opens at a time.
+
 ## September 27 Team: the orchestrator applies checked changes (source only, not released)
 
 **Applying checked changes.** A team the orchestrator runs can also **Apply

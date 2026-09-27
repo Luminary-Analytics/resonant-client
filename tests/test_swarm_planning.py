@@ -118,7 +118,8 @@ def test_model_cannot_supply_authority_or_change_tool_model_or_budget(location, 
     assert extra not in str(caught.value)
 
 
-@pytest.mark.parametrize("residue", ["\n</function>\n</tool_call>", "<|im_end|>", " </tool_call> <|eot_id|>\n"])
+@pytest.mark.parametrize("residue", ["\n</function>\n</tool_call>", "<|im_end|>", " </tool_call> <|eot_id|>\n",
+                                     "\n\n</function=bash>\n</function>\n</tool_call>"])
 def test_chat_template_residue_after_the_json_is_dropped(residue):
     # A live model ended its final report with "</function></tool_call>".
     assert len(parse(json.dumps(proposal()) + residue).work_items) == 1

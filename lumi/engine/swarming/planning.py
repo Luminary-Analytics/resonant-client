@@ -25,7 +25,7 @@ _TOP_FIELDS = {"summary", "use_team", "work_items"}
 # and are dropped. Any other extra field still refuses the plan.
 _INPUT_ECHOES = {"objective", "read_roots", "write_roots", "worker_slots", "coordinator_read_roots",
                  "proposed_work_namespace", "allowed_criteria", "existing_work", "recent_untrusted_findings",
-                 "graph_sha256", "untrusted_messages_to_orchestrator"}
+                 "graph_sha256", "untrusted_messages_to_orchestrator", "checked_changes"}
 _ITEM_FIELDS = {"id", "objective", "role", "dependencies", "read_roots", "write_roots", "criteria"}
 _LOGICAL_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,79}\Z")
 _FENCE = re.compile(r"```(?:json)?\r?\n(.*)\r?\n```\Z", re.DOTALL)
@@ -34,7 +34,7 @@ _EMBEDDED_FENCE = re.compile(r"```(?:json)?[ \t]*\r?\n(.*?)\r?\n[ \t]*```", re.D
 _FILE_READERS = FILE_TOOL_NAMES - {"artifact_read"}
 # One closing tag or special token at the end of a reply: chat-template residue
 # a live model appended after its JSON (a "}" followed by "</function>" and "</tool_call>").
-_TEMPLATE_TAIL = re.compile(r"(?:</[A-Za-z_][\w:.-]{0,40}>|<\|[^|<>\s]{1,40}\|>)\Z")
+_TEMPLATE_TAIL = re.compile(r"(?:</[A-Za-z_][^<>\s]{0,40}>|<\|[^|<>\s]{1,40}\|>)\Z")
 
 
 class PlanRejected(ValueError):

@@ -9,6 +9,10 @@ orchestrator (the team's coordinator model) would otherwise wait on:
 - it accepts each read result under the grant (``accept_under_grant``), so the
   next round can use it. The receipt says so and never claims owner review;
 - it retries a failed task, or an orchestrator turn without a usable plan, once;
+- when a running worker asks the orchestrator a question (or reports a
+  blocker) mid-round, it starts a short answer turn
+  (``coordinator.OrchestratorAnswers``) that replies with ``swarm_send``, so a
+  worker waiting in ``swarm_receive`` gets its answer in the same round;
 - with ``apply`` in the grant, once a round's writers have finished it combines
   their changes, runs every declared check on the combined result, applies it
   to the project when all of them pass, and accepts the writers under the grant
@@ -34,6 +38,7 @@ import threading
 import time
 from typing import Any
 
+from .coordinator import ANSWER_WORKER_PREFIX
 from .models import AdmissionClosed, Conflict, RevisionConflict
 
 logger = logging.getLogger(__name__)
@@ -79,6 +84,8 @@ class TeamAutopilot:
     TICK = 0.4
     # Consecutive refused steps (about ten seconds) before the owner is told.
     REFUSALS = 25
+    # An answer turn's request allowance, from the team's unallocated requests.
+    ANSWER_REQUESTS = 2
 
     def __init__(self, runtime: Any, run_id: str, *, rounds: int, apply: bool = False) -> None:
         if type(rounds) is not int or not 1 <= rounds <= MAX_ROUNDS:
@@ -94,6 +101,7 @@ class TeamAutopilot:
         self._retried: set[str] = set()
         self._failed_at: dict[str, float] = {}
         self._operations: dict[tuple, int] = {}
+        self._answered: set[int] = set()
         self._requests = 0
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
@@ -172,12 +180,17 @@ class TeamAutopilot:
         if error:
             # Nothing would start the tasks it was about to dispatch.
             return self._hand_back(f"The team stopped starting workers ({error}). Inspect it and continue it yourself.")
-        if any(row["kind"] == "coordinator" and (row["state"] in {"leased", "running", "uncertain"}
-               or row["process_state"] != "stopped") for row in snapshot["attempts"]):
+        active = [row for row in snapshot["attempts"] if row["kind"] == "coordinator"
+                  and (row["state"] in {"leased", "running", "uncertain"} or row["process_state"] != "stopped")]
+        if active and active[-1]["worker_id"].startswith(ANSWER_WORKER_PREFIX):
+            self._set("answering", f"Round {self.round}: the orchestrator is answering a worker's question.")
+            return True
+        if active:
             self._set("planning", "The orchestrator is writing its final report." if self.closing
                       else f"Round {self.round}: the orchestrator is planning.")
             return True
-        for handled in (self._decide, self._failed_orchestrator, self._accept_results, self._retry_failed):
+        for handled in (self._decide, self._failed_orchestrator, self._answer_workers, self._accept_results,
+                        self._retry_failed):
             if handled(capture, runner, snapshot):
                 return True
         work = snapshot["work_items"]
@@ -234,7 +247,9 @@ class TeamAutopilot:
 
     def _failed_orchestrator(self, capture, runner, snapshot) -> bool:
         """An orchestrator turn that ended without a usable plan gets one more try."""
-        coordinators = [row for row in snapshot["attempts"] if row["kind"] == "coordinator"]
+        # Answer turns propose nothing; only planning turns can fail to plan.
+        coordinators = [row for row in snapshot["attempts"] if row["kind"] == "coordinator"
+                        and not row["worker_id"].startswith(ANSWER_WORKER_PREFIX)]
         latest = coordinators[-1] if coordinators else None
         if (latest is None or latest["state"] not in {"failed", "cancelled"}
                 or any(row["attempt_id"] == latest["id"] for row in snapshot["coordinator_proposals"])):
@@ -260,6 +275,35 @@ class TeamAutopilot:
                               retry_reason=reason):
             # The next turn is this one's retry.
             self._retried.add(latest["id"])
+        return True
+
+    def _answer_workers(self, capture, runner, snapshot) -> bool:
+        """A running worker asked the orchestrator something: answer it now, not in the next round."""
+        running = {row["id"]: row for row in snapshot["attempts"]
+                   if row["kind"] == "worker" and row["state"] in {"leased", "running"}}
+        coordinators = {row["id"] for row in snapshot["attempts"] if row["kind"] == "coordinator"}
+        questions = [row["sequence"] for row in snapshot["messages"]
+                     if row["recipient_attempt_id"] in coordinators and row["kind"] in {"question", "blocker"}
+                     and row["sender_attempt_id"] in running and row["sequence"] not in self._answered]
+        if not questions or self.final_report is not None:
+            return False
+        planning = self.runtime._planning_view(runner.store, self.run_id, snapshot)
+        if planning["remaining_requests"] < 1:
+            # No allowance to answer now: the next round's planning reads them.
+            self._answered.update(questions)
+            return False
+        # The orchestrator may read while no writer runs: its read scope would
+        # overlap a running writer's (supervisor._start_coordinator refuses that).
+        writing = any(json.loads(row["grant_json"])["write_roots"] for row in running.values())
+        self._refusal("request_plan")
+        self._requests += 1
+        self.runtime._answer_workers(capture, run_id=self.run_id, questions=questions,
+                                     request_id=f"autopilot_{self.run_id}_{self._requests}",
+                                     expected_revision=snapshot["run"]["revision"],
+                                     requests=min(self.ANSWER_REQUESTS, planning["remaining_requests"]),
+                                     read_roots=[] if writing else planning["read_roots"])
+        self._answered.update(questions)
+        self._set("answering", f"Round {self.round}: the orchestrator is answering a worker's question.")
         return True
 
     def _accept_results(self, capture, runner, snapshot) -> bool:

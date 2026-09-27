@@ -18,7 +18,7 @@ from ...policy import blocked_reason, current as current_policy
 from ..artifacts import project_state_dir
 from ..exclusions import ExclusionRules
 from . import AttemptContext, Command, Scope, SwarmStore, SwarmSupervisor
-from .coordinator import CoordinatorPlans
+from .coordinator import ANSWER_WORKER_PREFIX, CoordinatorPlans, OrchestratorAnswers
 from . import collaboration_desktop, managed_collaboration_desktop
 from . import connections as team_connections
 from .autopilot import MAX_ROUNDS, TeamAutopilot
@@ -539,6 +539,49 @@ class SwarmRuntime:
         runner.start_coordinator(context, spec, plans)
         with self._lock:
             return self._view(capture, store, run_id)
+
+    def _answer_workers(self, capture, *, run_id: str, questions: list[int], request_id: str,
+                        expected_revision: int, requests: int, read_roots: list[str]):
+        """Admit one short orchestrator turn that answers workers mid-round (autopilot.py).
+
+        Only the orchestrator loop starts it, for a team whose owner let the
+        orchestrator run it. It spends unallocated team requests, gets read
+        tools only for ``read_roots`` ([] while writers run) and proposes no
+        work (coordinator.OrchestratorAnswers).
+        """
+        with self._lock:
+            require_id(request_id)
+            if self._closed:
+                raise Conflict("This desktop runtime has closed; reopen the retained team")
+            pair = self._runners.get(run_id)
+            if pair is None:
+                raise Conflict("Answering workers requires this team's current execution host")
+            if pair[0].scope != capture.scope:
+                raise ScopeDenied("Team scope differs from its captured owner")
+            store, runner = pair[1].store, pair[1]
+            if not self._setup(store, run_id, required=True)[0].get("autonomy"):
+                raise Conflict("Only an orchestrator the owner let run the team answers its workers")
+            if type(requests) is not int or not 1 <= requests <= 1000:
+                raise ValueError("Choose an explicit answer request allowance from 1 to 1000")
+            roots = list(normalize_scopes(tuple(read_roots)))
+            tools = _READ_TOOLS - {"swarm_submit"}
+            if not roots:
+                tools -= {"file_read", "glob", "grep"}
+            payload = {"worker_id": ANSWER_WORKER_PREFIX + hashlib.sha256(request_id.encode()).hexdigest()[:32],
+                       "requests": requests, "model": {"provider": pair[0].backend_spec.backend_type,
+                                                        "model": pair[0].backend_spec.model},
+                       "tools": sorted(tools), "read_roots": roots}
+            receipt, fresh = runner.supervisor.handle_once(Command(request_id, run_id, expected_revision,
+                runner.authority.epoch, "start_coordinator", payload), runner.authority)
+            if not fresh:
+                return
+            context = AttemptContext(capture.scope, run_id, receipt.result["attempt_id"],
+                                     receipt.result["worker_id"], runner.authority.epoch)
+            answers = OrchestratorAnswers(runner.supervisor, runner.authority, questions=tuple(questions))
+            spec = copy.deepcopy(pair[0].backend_spec)
+        # As for planning: launch outside the control lock; a committed turn
+        # whose launch is ambiguous stays visible, never replayed.
+        runner.start_coordinator(context, spec, answers)
 
     def _start(self, capture, store, message):
         if self.settings.get("swarming", "version", 1) != 1 or self.settings.get("swarming", "enabled", False) is not True:

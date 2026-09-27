@@ -204,7 +204,7 @@ def test_recovered_writer_git_discovery_cannot_block_stop(desktop, monkeypatch):
     real_integration = service_module.SwarmIntegration
     def slow_git(*args, **kwargs):
         entered.set()
-        assert release.wait(5)
+        assert release.wait(60)
         return real_integration(*args, **kwargs)
     outcome = []
     thread = None
@@ -219,18 +219,18 @@ def test_recovered_writer_git_discovery_cannot_block_stop(desktop, monkeypatch):
                 outcome.append(type(exc).__name__)
         thread = threading.Thread(target=resume)
         thread.start()
-        assert entered.wait(3)
+        assert entered.wait(60)  # the resumed run reaches its Git discovery
         started = time.monotonic()
         stopped = operate(captured, run_id, "stop", "stop-during-git")
         assert time.monotonic() - started < 1
         assert stopped["run"]["stop_requested"] == 1
         assert stopped["run"]["state"] == "recovery_required"  # Stop does not bypass explicit recovery settlement.
         release.set()
-        thread.join(timeout=5)
+        thread.join(timeout=60)
         assert not thread.is_alive() and outcome == ["RevisionConflict"]
         assert not reopened._runners
     finally:
         release.set()
         if thread:
-            thread.join(timeout=5)
+            thread.join(timeout=60)
         reopened.close()

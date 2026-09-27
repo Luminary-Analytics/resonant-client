@@ -138,8 +138,8 @@ class ManagedWorkerProcess:
     """
 
     # Wall-clock allowances that bound a stuck child, not a slow one. Starting
-    # Python and importing the engine took over 10 s with the CPU shared four
-    # ways, and a child that has sent its closing message still has to finish
+    # Python and importing the engine took over 10 s with every core busy, and
+    # a child that has sent its closing message still has to finish
     # interpreter shutdown before its exit status exists. Stop never waits on
     # these: cancellation terminates the tree after ``cancel_grace``.
     STARTUP_SECONDS = 60.0

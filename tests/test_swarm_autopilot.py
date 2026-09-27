@@ -6,7 +6,7 @@ import time
 
 import pytest
 
-from lumi.engine.swarming import Scope
+from lumi.engine.swarming import AttemptContext, Scope
 from lumi.engine.swarming.autopilot import CLOSING_EVIDENCE, PLAN_EVIDENCE
 from lumi.engine.swarming.mailbox import SwarmMailbox
 from lumi.engine.swarming.models import ScopeDenied
@@ -155,6 +155,24 @@ def test_workers_can_mail_the_orchestrator_between_its_turns(mailbox_setup):
         rows = connection.execute("SELECT body FROM messages WHERE recipient_attempt_id=?",
                                   (started["attempt_id"],)).fetchall()
     assert [row[0] for row in rows] == ["Should I also check the CLI?"]
+
+
+def test_the_orchestrator_does_not_mail_its_own_earlier_turns(mailbox_setup):
+    # A live closing turn mailed its report to an earlier orchestrator turn.
+    store, supervisor, authority, _ = mailbox_setup
+    model = {"provider": "ollama", "model": "fixture"}
+    first = mailbox_command(supervisor, authority, "start_coordinator", worker_id="orchestrator-1", requests=1,
+                            model=model, tools=["file_read"], read_roots=["."]).result
+    mailbox_command(supervisor, authority, "worker_started", attempt_id=first["attempt_id"], attempt_epoch=authority.epoch)
+    mailbox_command(supervisor, authority, "worker_stopped", attempt_id=first["attempt_id"],
+                    attempt_epoch=authority.epoch, outcome="completed", evidence="Turn ended")
+    second = mailbox_command(supervisor, authority, "start_coordinator", worker_id="orchestrator-2", requests=1,
+                             model=model, tools=["file_read"], read_roots=["."]).result
+    mailbox_command(supervisor, authority, "worker_started", attempt_id=second["attempt_id"], attempt_epoch=authority.epoch)
+    context = AttemptContext(authority.scope, authority.run_id, second["attempt_id"], "orchestrator-2", authority.epoch)
+    with pytest.raises(ScopeDenied, match="own turns"):
+        SwarmMailbox(store, context).send(recipient_attempt_id="orchestrator", kind="finding",
+                                          body="Final report", command_id="report")
 
 
 def test_a_worker_can_wait_for_an_answer_and_pause_ends_the_wait(mailbox_setup):

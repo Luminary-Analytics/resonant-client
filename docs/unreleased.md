@@ -178,6 +178,69 @@ Python 3.13 venv, `PYTHONNOUSERSITE=1`):
 - Not run: a full local `pytest` (CI runs it), a packaged build, the
   terminal UI and a real Telegram or Slack chat.
 
+## September 27 Team: the orchestrator, NVIDIA NIM and the first live runs (source only, not released)
+
+**An orchestrator can run a team.** With a coordinator plan, the owner can
+**Let the orchestrator run the team** for one to eight rounds:
+
+- The loop (`engine/swarming/autopilot.py`) takes the owner's steps. It accepts
+  plans the runtime has validated, accepts read results under the owner's grant
+  and retries a failure once.
+- After each round it asks the orchestrator to plan again from the findings and
+  from workers' messages. A closing turn writes the final report.
+- Results accepted this way are recorded as accepted under the grant
+  (`accept_under_grant`, executor `autonomy:<owner>`), never as the owner's
+  review. The command is refused without the grant.
+- File changes still wait for the owner.
+- The panel shows the round, current step and report, plus a **Team messages**
+  list.
+
+**Workers talk to each other and the orchestrator.**
+- `swarm_receive` can wait up to 60 seconds for an answer.
+- `orchestrator` names the team's orchestrator. A finished turn keeps its mail,
+  and the next round reads it.
+- Workers' instructions describe their peers.
+
+**NVIDIA NIM and other OpenAI-compatible connections back Team workers.**
+- A connection of that type, with a key or no authentication, is read once per
+  run and carried to worker processes.
+- `scripts/swarm_benchmark.py --provider openai-compatible` records such a run
+  under that name.
+
+**Fixes found by the live runs.**
+- A worker's call outside its assignment is refused and reported to its model,
+  instead of ending the worker (`ToolScopeRefused`).
+- An orchestrator may answer directly with no workers, and prose around one
+  fenced JSON plan is read.
+- A supervised request waits out a 429, and an overload reported before any
+  output.
+- A reply of only template tokens and punctuation is asked again.
+- A Team participant is told when it reaches its last request.
+- A refusal names the worker's paths.
+- The guarded ledger keeps a provider's status code.
+- The benchmark keeps each case's worker events.
+- Worker processes start before `lumi/__main__.py` moves `~/.resonant`, so a
+  worker never moves the user's state folder.
+- Artifact containment resolves the shard directory, not a blob another worker
+  is linking.
+- The Team suite's waits allow slow CI runners.
+
+**Validation.**
+- New tests for connections, refusals, the orchestrator loop and messaging.
+  These include real worker processes and a loopback Chat Completions server.
+- `tests/swarm_autonomous.browser.cjs` passes in Edge against the source app
+  with scripted inference. The six existing Team browser tests pass;
+  `swarm_followup_stop` failed once in five runs and its output wasn't kept.
+- Live NVIDIA NIM runs are recorded in the
+  [benchmarks](swarming-benchmarks.md#live-runs-on-nvidia-nim):
+  - Kimi K3's orchestrator answered a small investigation directly.
+  - Nemotron 3 Super ran a five-worker review through two rounds to its final
+    report, in 303 seconds.
+  - Started from the Team panel in the source app, the same review completed
+    in about 8 minutes: 12 workers, 70 requests, none uncertain.
+  - Finding quality depends on the model, and no benefit over a single agent is
+    claimed.
+
 ## September 26–27 the Team (swarming) preview — source only, not released
 
 **Where it came from.** Codex sessions built this on September 26 in the

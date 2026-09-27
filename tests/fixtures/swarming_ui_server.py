@@ -102,7 +102,34 @@ def main() -> None:
                     [tool_call("file_write", {"path": f"src/{part}.txt", "content": f"verified {part}\n"}), done(model=self.model)],
                     [text_delta(f"Changed isolated {part} file. The combined check and owner review are still required."), done(model=self.model)],
                 ]
-            if not self.stream_count and "Captured planning data:" in json.dumps(kwargs.get("conversation_history", [])):
+            autonomous = "--autonomous" in sys.argv[2:]
+            if autonomous and not self.stream_count and "Inspect CSV fixture concern 1" in json.dumps(history):
+                # The first worker asks the orchestrator a question on its way.
+                self._scripts = [
+                    [tool_call("file_read", {"path": "fact.txt"}), done(model=self.model)],
+                    [tool_call("swarm_send", {"recipient_attempt_id": "orchestrator", "kind": "question",
+                                              "body": "Should the CSV export also be checked for semicolons?",
+                                              "command_id": "fixture-question"}), done(model=self.model)],
+                    [text_delta("Scripted reader finding: quoted CSV fields preserve commas."), done(model=self.model)],
+                ]
+            if autonomous and not self.stream_count and "Captured planning data:" in json.dumps(history):
+                planning = next(row.get("content", "") for row in history if row.get("role") == "user"
+                                and "Captured planning data:" in str(row.get("content", "")))
+                data = json.loads(planning.split("Captured planning data:\n", 1)[1].split("\n</runtime_message>", 1)[0])
+                followup_inputs.append(data)
+                if data["proposed_work_namespace"] is None:
+                    proposal = {"summary": "Two CSV investigations, then a report.", "use_team": True,
+                        "work_items": [{"id": f"csv-{index}", "objective": f"Inspect CSV fixture concern {index}",
+                            "role": "explore", "dependencies": [], "read_roots": ["."], "write_roots": [],
+                            "criteria": ["owner_review"]} for index in (1, 2)]}
+                else:
+                    messages = data.get("untrusted_messages_to_orchestrator", [])
+                    proposal = {"summary": f"Final report: quoted CSV fields preserve commas. The orchestrator read "
+                                           f"{len(data['recent_untrusted_findings'])} findings and {len(messages)} worker "
+                                           "question, and semicolons need no separate check.",
+                                "use_team": False, "work_items": []}
+                self._scripts = [[text_delta(json.dumps(proposal)), done(model=self.model)]]
+            elif not self.stream_count and "Captured planning data:" in json.dumps(kwargs.get("conversation_history", [])):
                 proposal = {"summary": "Three independent CSV investigations share two worker slots.", "use_team": True,
                     "work_items": [{"id": f"csv-{index}", "objective": f"Inspect CSV fixture concern {index}",
                         "role": "explore", "dependencies": [], "read_roots": ["."], "write_roots": [],

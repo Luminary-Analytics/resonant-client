@@ -9,6 +9,16 @@ import sys
 from lumi import __version__
 from lumi.paths import migrate_legacy_home, state_home
 
+# A private worker must dispatch before the state migration below, windowless
+# stream logging, updater or UI initialization. Its inherited pipes carry the
+# bounded host protocol, and it never moves or opens the user's state folder.
+if __name__ == "__main__" and len(sys.argv) == 2 and sys.argv[1] == "--swarm-worker":
+    from lumi.engine.swarming.worker_child import main as swarm_worker_main
+    raise SystemExit(swarm_worker_main())
+if __name__ == "__main__" and len(sys.argv) == 2 and sys.argv[1] == "--swarm-effect":
+    from lumi.engine.swarming.effect_child import main as swarm_effect_main
+    raise SystemExit(swarm_effect_main())
+
 # Move pre-rebrand state (~/.resonant -> ~/.lumi) before anything below opens
 # a file in it; on Windows an open log makes the rename fail.
 migrate_legacy_home()
@@ -55,15 +65,6 @@ def _managed_startup_arguments(arguments):
     if path is not None and (len(remaining) < 2 or remaining[1] != "gui"):
         raise ValueError("Managed configuration is supported by the GUI launcher")
     return remaining, path
-
-# A private worker must dispatch before windowless stream logging, updater or
-# UI initialization. Its inherited pipes carry the bounded host protocol.
-if __name__ == "__main__" and len(sys.argv) == 2 and sys.argv[1] == "--swarm-worker":
-    from lumi.engine.swarming.worker_child import main as swarm_worker_main
-    raise SystemExit(swarm_worker_main())
-if __name__ == "__main__" and len(sys.argv) == 2 and sys.argv[1] == "--swarm-effect":
-    from lumi.engine.swarming.effect_child import main as swarm_effect_main
-    raise SystemExit(swarm_effect_main())
 
 # Bug #19 + #20 fix — frozen-no-console std-stream redirect to log file.
 #

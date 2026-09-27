@@ -143,6 +143,15 @@ no provider call. For example, from the source checkout in PowerShell:
 python scripts/swarm_benchmark.py --provider ollama --model your-explicit-model --endpoint http://127.0.0.1:11434 --request-limit 12 --wall-seconds 120 --resource-control equal_resource --modes single swarm current-batch --scenarios independent_investigation csv_export serial_control interruption_recovery --repetitions 3 --order-seed 37 --output "$env:TEMP/sonn-benchmark-protocol"
 ```
 
+`--provider openai-compatible` runs any Chat Completions endpoint as a Lumi
+connection (see [Team preview](swarming.md)); the records name that provider
+and the endpoint's origin. For NVIDIA NIM, with the key in an environment
+variable:
+
+```powershell
+python scripts/swarm_benchmark.py --provider openai-compatible --endpoint https://integrate.api.nvidia.com/v1 --api-key-env NVIDIA_API_KEY --model moonshotai/kimi-k3 --request-limit 12 --wall-seconds 180 --resource-control equal_resource --modes single --scenarios independent_investigation csv_export serial_control interruption_recovery --repetitions 3 --order-seed 37 --output "$env:TEMP/lumi-benchmark-nim" --execute-live
+```
+
 `--execute-live` invokes the selected provider and can incur its normal charges.
 No live run has been performed as part of these self-tests. A future authorized
 run must use a new output directory outside the repository; every invocation
@@ -181,6 +190,9 @@ The output contains:
 - Each case's `execution.json`, `run.json`, `runtime-report.json` and
   `observations.json`: assigned scopes, seed revision, request allowances,
   provider failures, typed errors, confirmed cleanup and interventions.
+- Each case's `worker-events.json`: the workers' own events (tool calls and
+  results, refusals, errors), with keys redacted and long text shortened. It can
+  contain fixture file contents and model text; it is for local diagnosis.
 - Each safely captured `candidate/`: actual resulting files, without Git state.
 - `comparison.json` and `comparison.md`: every planned group, failed/interrupted
   outcome, missing/invalid record, correctness result and observed elapsed time.
@@ -215,3 +227,79 @@ results, unsupported batch qualification and broader release gates remain open.
 ```sh
 python -m pytest -q tests/test_swarm_benchmark_fixtures.py tests/test_swarm_benchmark_runner.py
 ```
+
+## Live runs on NVIDIA NIM
+
+September 27, 2026: `moonshotai/kimi-k3` at `https://integrate.api.nvidia.com/v1`
+through `--provider openai-compatible`. Single-agent baseline protocol: 12
+requests and a 180-second deadline per case, equal-resource control, order
+seed 37, managed worker processes. These are the first live runs of the
+runner. No benefit threshold is declared, and none of this measures swarm
+benefit.
+
+- **Smoke.** One investigation case was accepted and independently verified:
+  2 requests, 4,032 input and 399 output tokens, 20.7 seconds, no provider
+  failures. The key appeared in no record.
+- **First baseline.** Each of the three cases dispatched failed before reading a
+  file. The model opened with `glob("*")`, which searches outside a narrow
+  assignment, and the guard ended the worker. Fixed: a call outside the
+  assignment is now refused and reported to the model, which then narrowed it.
+- **Second baseline, after that fix.** 2 of 4 dispatched cases were accepted
+  and independently verified: serial control (76 seconds) and processor repair
+  (156 seconds).
+  - One investigation failed on its own merits: its findings didn't match the
+    strict JSON contract.
+  - One processor repair ended when a provider response couldn't be fully
+    observed. That request stays uncertain, so the study stopped with 8 cases
+    undispatched, as the protocol requires.
+  - The ledger now keeps the provider's status code for such failures, and each
+    case keeps `worker-events.json`.
+- **Third baseline.** Processor repair was accepted and independently verified
+  (93 seconds).
+  - The investigation failed on the contract again. The findings were right,
+    but the cache values were the strings `"False"`/`"True"`, not JSON
+    booleans.
+  - Serial control was interrupted by `429 Too Many Requests`. That was
+    self-inflicted: a live team ran on the same key at the same time. A
+    supervised request now waits out a 429, which generated nothing.
+
+### Orchestrated teams, live
+
+September 27, 2026, `engine/swarming/autopilot.py`, headless, with real worker
+processes and 2 rounds:
+
+- **Kimi K3, the two-defect investigation.** The orchestrator read both files
+  and answered directly (work items `[]`, the answer in its summary). The team
+  completed in 24 seconds with 2 requests, and the report was correct. Before
+  the fixes this run found, the same answer was rejected: a first plan had to
+  propose work, and prose before the JSON wasn't accepted.
+- **Kimi K3, a five-module review** (cache.py, urls.py, ledger.py, processor.py,
+  backend.py). Both orchestrator turns failed:
+  - one on a 429;
+  - one ended with `<|close|>!!!!...` instead of its plan;
+  - after a retry, three empty replies.
+
+  The loop retried once and then handed the team back, as designed. Such
+  replies are now asked again.
+- **Nemotron 3 Super (`nvidia/nemotron-3-super-120b-a12b`), the same review.**
+  Completed in 303 seconds with 32 requests, all settled.
+  - The orchestrator planned five tasks, four ran at once, and one failed task
+    was retried once.
+  - Round 2 read the findings and wrote the combined report.
+  - The findings were uneven: it found cache.py's unit bug but reported no
+    defect in urls.py (it missed `doseq`), and ledger.py's findings were
+    generic. The workers exchanged no messages; the modules are independent.
+- **The same review in the app, with Nemotron 3 Super.** The source app
+  ran in a throwaway home with an NVIDIA NIM connection. The team was
+  started from the Team panel with real clicks and typing: 2 rounds, 4
+  worker slots, 12 requests per worker. It completed in about 8 minutes.
+  - The orchestrator planned 6 tasks. After they were accepted it planned 6
+    more from the findings, then its closing turn wrote the report that the
+    panel's Orchestrator section shows.
+  - 12 workers ran, and each was accepted under the grant (`autonomy:<owner>`).
+  - 70 model requests, all settled, none uncertain.
+  - The round-2 work caught urls.py's list handling.
+  - An earlier in-app attempt, before the overload wait and the last-request
+    notice, had 3 of 4 workers end uncertain on "Service temporarily
+    overloaded". Another attempt had 2 workers use all 8 requests without
+    submitting.

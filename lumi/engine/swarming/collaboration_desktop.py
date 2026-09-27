@@ -54,8 +54,7 @@ def prepare(runtime, capture, store, message, *, managed=False):
     if runtime.settings.get("swarming", "version", 1) != 1 or runtime.settings.get("swarming", "enabled", False) is not True:
         raise Conflict("Enable the team preview before preparing collaboration")
     spec = capture.backend_spec
-    if spec.backend_type not in {"ollama", "exo", "kimi", "openrouter", "sonn"} or not spec.model:
-        raise Conflict("Choose an explicit native model for this conversation")
+    connections = runtime.team_model(spec)
     objective, allowance = message.get("objective"), message.get("request_limit")
     if type(objective) is not str or not objective.strip() or len(objective.encode()) > 8192:
         raise ValueError("Describe a collaboration objective of at most 8 KiB")
@@ -100,7 +99,7 @@ def prepare(runtime, capture, store, message, *, managed=False):
             attachment.effects(store)
         runner = SwarmWorkerRunner(supervisor, authority, capture.workspace, backend_factory=runtime._factory,
             project_instructions=capture.instructions, managed_readers=runtime._managed_readers,
-            exclusions=runtime.exclusions_for(capture.workspace),
+            exclusions=runtime.exclusions_for(capture.workspace), connections=connections,
             managed_runtime=attachment.runtime if attachment is not None else None)
         runtime._runners[run_id] = (capture, runner)
         if attachment is not None:

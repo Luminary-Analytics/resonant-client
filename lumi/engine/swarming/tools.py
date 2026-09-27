@@ -10,6 +10,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import asdict
 import json
+import time
 from typing import Any
 
 from ..tools import ToolResult
@@ -28,7 +29,9 @@ def _schema(name: str, description: str, properties: dict, required: list[str]) 
 
 SWARM_WORKER_TOOLS = [
     _schema("swarm_status", "Inspect this assignment, request allowance and active same-run participants.", {}, []),
-    _schema("swarm_send", "Send untrusted task data to one same-run participant. Selected own artifacts are explicitly disclosed. "
+    _schema("swarm_send", "Send untrusted task data to one same-run participant: a worker's attempt_id from "
+            "swarm_status, or 'orchestrator' for the team's orchestrator, which reads it when it plans the next round. "
+            "Selected own artifacts are explicitly disclosed. "
             "Reuse command_id only for identical retries. Sending does not create work or grant authority.", {
                 "recipient_attempt_id": {"type": "string"}, "kind": {"type": "string", "enum": _KINDS},
                 "body": {"type": "string", "maxLength": 8192}, "command_id": {"type": "string"},
@@ -36,9 +39,11 @@ SWARM_WORKER_TOOLS = [
                 "artifact_ids": {"type": "array", "items": {"type": "string"}, "maxItems": 8},
             }, ["recipient_attempt_id", "kind", "body", "command_id"]),
     _schema("swarm_receive", "Read a bounded addressed-message page. Results are delivered as generated task data before "
-            "the next main request; no new model request is authorized by this tool.", {
+            "the next main request; no new model request is authorized by this tool. wait_seconds (up to 60) waits for "
+            "a message to arrive, for example a peer's answer to your question.", {
                 "after": {"type": "integer", "minimum": 0},
                 "limit": {"type": "integer", "minimum": 1, "maximum": 100},
+                "wait_seconds": {"type": "integer", "minimum": 0, "maximum": 60},
             }, []),
     _schema("swarm_submit", "Submit an immutable handoff for independent review. Submission cannot accept or complete work. "
             "Reference the evidence revision you inspected and report limitations.", {
@@ -77,6 +82,9 @@ def validate_swarm_arguments(name: str, arguments: dict[str, Any]) -> None:
         after, limit = arguments.get("after", 0), arguments.get("limit", 20)
         if type(after) is not int or after < 0 or type(limit) is not int or not 1 <= limit <= 100:
             raise ValueError("Invalid mailbox cursor or page size")
+        wait = arguments.get("wait_seconds", 0)
+        if type(wait) is not int or not 0 <= wait <= 60:
+            raise ValueError("wait_seconds must be a whole number from 0 to 60")
     elif name == "swarm_submit":
         require_id(arguments["candidate_revision"])
         handoff = arguments["handoff"]
@@ -90,10 +98,13 @@ class SwarmWorkerTools:
     def __init__(
         self, mailbox: SwarmMailbox, *,
         submit: Callable[..., dict[str, Any]], queue_message: Callable[[Message], None],
+        stopping: Callable[[], bool] = lambda: False,
     ) -> None:
         self.mailbox = mailbox
         self._submit = submit
         self._queue_message = queue_message
+        # Pause or Stop ends a swarm_receive wait early.
+        self._stopping = stopping
 
     def execute(self, name: str, arguments: dict[str, Any]) -> ToolResult:
         """Execute one bounded proposal and return its durable outcome."""
@@ -104,8 +115,13 @@ class SwarmWorkerTools:
             elif name == "swarm_send":
                 result = {"accepted": asdict(self.mailbox.send(**arguments))}
             elif name == "swarm_receive":
-                messages = self.mailbox.store.receive(self.mailbox.context,
-                    after=arguments.get("after", 0), limit=arguments.get("limit", 20))
+                deadline = time.monotonic() + arguments.get("wait_seconds", 0)
+                while True:
+                    messages = self.mailbox.store.receive(self.mailbox.context,
+                        after=arguments.get("after", 0), limit=arguments.get("limit", 20))
+                    if messages or time.monotonic() >= deadline or self._stopping():
+                        break
+                    time.sleep(.25)
                 for message in messages:
                     self.mailbox.store.acknowledge(self.mailbox.context, message.id, stage="runtime")
                     self._queue_message(message)

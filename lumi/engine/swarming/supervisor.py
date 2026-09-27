@@ -164,6 +164,7 @@ class SwarmSupervisor:
             "submit": self._submit, "record_check": self._record_check,
             "accept": self._accept, "complete": self._complete,
             "review_read_result": self._review_read_result,
+            "accept_under_grant": self._accept_under_grant,
             "accept_writer": self._accept_writer,
             "pause": self._pause, "resume": self._resume, "stop": self._stop,
             "recover": self._recover,
@@ -507,7 +508,8 @@ class SwarmSupervisor:
             if set(proposed_ids) & set(merged):
                 raise Conflict("Additional proposals cannot replace historical work identities")
             merged.update({item["id"]: item for item in plan["work_items"]})
-            self._plan(connection, run, work_items=list(merged.values()))
+            if merged:  # An orchestrator that answered directly adds no work at all.
+                self._plan(connection, run, work_items=list(merged.values()))
         state = "accepted" if accept else "rejected"
         connection.execute("UPDATE coordinator_proposals SET state=?,decision_evidence=? WHERE id=?", (state, evidence, proposal_id))
         return {"proposal_id": proposal_id, "sha256": digest, "state": state}
@@ -791,6 +793,47 @@ class SwarmSupervisor:
         if unresolved:
             raise Conflict("Acceptance requires resolved process, request and action observations")
 
+    @staticmethod
+    def _autonomy_grant(connection: sqlite3.Connection, run: sqlite3.Row) -> dict[str, Any]:
+        """The owner's start-time autonomy grant, from the team's captured setup."""
+        record = connection.execute("SELECT payload FROM commands WHERE run_id=? AND actor='desktop-setup' "
+                                    "ORDER BY rowid LIMIT 1", (run["id"],)).fetchone()
+        grant = json.loads(record["payload"]).get("autonomy") if record is not None else None
+        if not isinstance(grant, dict) or type(grant.get("rounds")) is not int:
+            raise ScopeDenied("The owner did not let this team's orchestrator run it")
+        return grant
+
+    def _accept_under_grant(
+        self, connection: sqlite3.Connection, run: sqlite3.Row, *, attempt_id: str,
+        attempt_epoch: int, candidate_revision: str, evidence: str,
+    ) -> dict[str, Any]:
+        """Accept a read result under the owner's autonomy grant, so later rounds can use it.
+
+        The owner chose, when starting the team, to let its orchestrator run
+        without reviewing each result. The receipt records exactly that, with
+        executor ``autonomy:<owner>``: never an owner review or a named check.
+        """
+        self.store._admitting(run)
+        self._decision_evidence(evidence)
+        self._autonomy_grant(connection, run)
+        attempt = self._attempt(connection, run, attempt_id, attempt_epoch)
+        if attempt["kind"] != "worker":
+            raise Conflict("Coordinators do not represent accepted work")
+        work = connection.execute("SELECT * FROM work_items WHERE id=?", (attempt["work_item_id"],)).fetchone()
+        specification = json.loads(work["specification"])
+        if work["state"] != "submitted" or specification["write_roots"] or specification["criteria"] != ["owner_review"]:
+            raise Conflict("Only a submitted read result awaiting review can be accepted under the grant")
+        submission = connection.execute("SELECT * FROM submissions WHERE attempt_id=?", (attempt_id,)).fetchone()
+        if submission is None or submission["candidate_revision"] != candidate_revision:
+            raise Conflict("Acceptance must identify the exact submitted result")
+        self._resolved_attempt(connection, attempt_id)
+        check_id = _id()
+        connection.execute("INSERT INTO check_receipts VALUES(?,?,?,?,?,?,?,?)",
+                           (check_id, attempt_id, "owner_review", candidate_revision, f"autonomy:{run['owner_id']}",
+                            "Accepted under the owner's autonomy grant, not reviewed", 0, evidence))
+        result = self._accept_read_submission(connection, run, attempt)
+        return {**result, "check_id": check_id, "review_source": "autonomy"}
+
     def _review_read_result(
         self, connection: sqlite3.Connection, run: sqlite3.Row, *, attempt_id: str,
         attempt_epoch: int, candidate_revision: str, evidence: str,
@@ -939,7 +982,10 @@ class SwarmSupervisor:
     def _complete(self, connection: sqlite3.Connection, run: sqlite3.Row) -> dict[str, Any]:
         self.store._admitting(run)
         states = [row[0] for row in connection.execute("SELECT state FROM work_items WHERE run_id=?", (run["id"],))]
-        if not states or any(state != "accepted" for state in states) or self._unresolved(connection, run["id"]):
+        # A team without work completes only on an accepted orchestrator answer.
+        answered = connection.execute("SELECT 1 FROM coordinator_proposals WHERE run_id=? AND state='accepted'",
+                                      (run["id"],)).fetchone() is not None
+        if (not states and not answered) or any(state != "accepted" for state in states) or self._unresolved(connection, run["id"]):
             raise Conflict("Completion requires all work accepted and all effects/accounting resolved")
         for work in connection.execute("SELECT * FROM work_items WHERE run_id=?", (run["id"],)):
             if not json.loads(work["specification"])["write_roots"]:

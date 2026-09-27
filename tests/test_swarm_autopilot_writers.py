@@ -36,6 +36,21 @@ def writer(content, path="src/value.txt"):
             [text_delta(f"Wrote {path}."), done()]]
 
 
+class TaskWriter(StreamingBackend):
+    """A writer that writes whichever of ``files`` its assignment names, whatever order writers start in."""
+
+    def __init__(self, files, **kwargs):
+        super().__init__(**kwargs)
+        self.files = files
+
+    def stream(self, **kwargs):
+        if not self.stream_count:
+            history = json.dumps(kwargs.get("conversation_history", []))
+            path = next(path for path in self.files if f"Update {path}" in history)
+            self._scripts = writer(self.files[path], path)
+        yield from super().stream(**kwargs)
+
+
 @pytest.fixture
 def team(tmp_path):
     project = tmp_path / "project"
@@ -48,9 +63,11 @@ def team(tmp_path):
     outputs, backends = [], []
 
     def factory(spec):
-        # Each new participant gets the next output: a list of turns for a writer, else one reply.
+        # Each new participant gets the next output: a list of turns for a writer,
+        # files for a TaskWriter, else one reply.
         output = outputs[len(backends)]
         backend = (StreamingBackend(scripts=output) if isinstance(output, list)
+                   else TaskWriter(output, scripts=[]) if isinstance(output, dict)
                    else StreamingBackend(events=[text_delta(output), done()]))
         backend.name, backend.model = spec.backend_type, spec.model
         backends.append(backend)
@@ -112,6 +129,29 @@ def test_the_orchestrator_applies_writers_changes_that_pass_every_check(team):
     # The orchestrator was told its writers' checked changes get applied.
     assert "applied to the project when every check passes" in backends[0].stream_calls[0]["user_msg"]
     assert APPLY_EVIDENCE
+
+
+def test_two_writers_in_a_round_are_combined_applied_and_accepted_once(team):
+    service, capture, project, outputs, backends = team
+    both = {"key": "both-check", "timeout_seconds": 30, "argv": [sys.executable, "-c",
+            "from pathlib import Path; assert Path('src/value.txt').read_text() == 'verified change\\n'; "
+            "assert Path('src/other.txt').read_text() == 'second\\n'"]}
+    plan = json.dumps({"summary": "Two writers update two files.", "use_team": True, "work_items": [
+        {"id": identity, "objective": f"Update {path}", "role": "implement", "dependencies": [],
+         "read_roots": ["src"], "write_roots": [path], "criteria": ["both-check"]}
+        for identity, path in (("value", "src/value.txt"), ("other", "src/other.txt"))]})
+    files = {"src/value.txt": "verified change\n", "src/other.txt": "second\n"}
+    outputs += [plan, files, files, json.dumps(FINAL)]
+    run_id = start(service, capture, check=both, request_limit=24)
+    run = finished(service, capture, run_id)["run"]
+    assert run["run"]["state"] == "completed"
+    # One combined change for both writers: never a second change for the one not yet accepted.
+    assert [row["kind"] for row in run["integration_operations"]] == ["prepare_candidate", "run_check", "apply"]
+    candidate, = run["integration_candidates"]
+    assert candidate["state"] == "applied" and len(json.loads(candidate["manifest_json"])["writers"]) == 2
+    assert {row["candidate_id"] for row in run["writer_acceptances"]} == {candidate["id"]}
+    assert len(run["writer_acceptances"]) == 2
+    assert (project / "src" / "other.txt").read_text() == "second\n"
 
 
 def test_a_failing_check_sends_the_writer_back_once_with_the_checks_output(team):

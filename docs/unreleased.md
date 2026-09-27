@@ -8,6 +8,32 @@ The heartbeat remains paused. Documentation maintenance does not resume work,
 spending or grants, and changes no native implementation or installed bundle.
 The dated September 15/18 records below are historical.
 
+## September 27 Team: the orchestrator applies checked changes (source only, not released)
+
+**Applying checked changes.** A team the orchestrator runs can also **Apply
+changes that pass every check**, if it has writable folders and checks.
+
+- After a round's writers finish, the loop combines their changes and runs
+  every declared check on the combined change. When all pass, it applies the
+  change as a fast-forward and accepts the writers under the grant
+  (`accept_writer_under_grant`, recorded as `autonomy:<owner>`). The command is
+  refused unless the owner granted applying.
+- A failing check sends the writers back once with its output. A conflict, a
+  step without a known outcome or a changed checkout hands the team back. An
+  application is never retried.
+- Later writers start from the team's latest applied change (the owner's own
+  applications included), so later rounds build on earlier ones.
+
+**Also.**
+- A Team participant's last model request offers no tools, so it answers. A
+  live NIM worker had spent its last request on one more refused read.
+- Exported reports mark results and changes accepted under the grant as
+  `autonomy_grant`. They were reported as `trusted_check`.
+- The orchestrator loop hands the team back when dispatch stops. Before, it
+  waited with nothing left to start the tasks.
+- Up to eight worker slots.
+- The orchestrator's final report is rendered as sanitized Markdown.
+
 ## September 27 Team: the orchestrator, NVIDIA NIM and the first live runs (source only, not released)
 
 **An orchestrator can run a team.** With a coordinator plan, the owner can

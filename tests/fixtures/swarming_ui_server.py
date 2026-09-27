@@ -117,7 +117,18 @@ def main() -> None:
                                 and "Captured planning data:" in str(row.get("content", "")))
                 data = json.loads(planning.split("Captured planning data:\n", 1)[1].split("\n</runtime_message>", 1)[0])
                 followup_inputs.append(data)
-                if data["proposed_work_namespace"] is None:
+                if writer_fixture and data["proposed_work_namespace"] is None:
+                    # Two writers the orchestrator may apply once the owner's check passes.
+                    check = next(name for name in data["allowed_criteria"] if name != "owner_review")
+                    proposal = {"summary": "Two writers update the backend and frontend files.", "use_team": True,
+                        "work_items": [{"id": part, "objective": f"Update src/{part}.txt", "role": "implement",
+                            "dependencies": [], "read_roots": ["src"], "write_roots": [f"src/{part}.txt"],
+                            "criteria": [check]} for part in ("backend", "frontend")]}
+                elif writer_fixture:
+                    proposal = {"summary": "**Final report:** both files hold their verified values.\n\n"
+                                           "- `src/backend.txt`: verified\n- `src/frontend.txt`: verified",
+                                "use_team": False, "work_items": []}
+                elif data["proposed_work_namespace"] is None:
                     proposal = {"summary": "Two CSV investigations, then a report.", "use_team": True,
                         "work_items": [{"id": f"csv-{index}", "objective": f"Inspect CSV fixture concern {index}",
                             "role": "explore", "dependencies": [], "read_roots": ["."], "write_roots": [],

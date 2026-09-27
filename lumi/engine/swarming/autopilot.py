@@ -77,6 +77,8 @@ class TeamAutopilot:
     """
 
     TICK = 0.4
+    # Consecutive refused steps (about ten seconds) before the owner is told.
+    REFUSALS = 25
 
     def __init__(self, runtime: Any, run_id: str, *, rounds: int, apply: bool = False) -> None:
         if type(rounds) is not int or not 1 <= rounds <= MAX_ROUNDS:
@@ -121,12 +123,20 @@ class TeamAutopilot:
         return True
 
     def _loop(self) -> None:
+        refused = 0
         while not self._stop.wait(self.TICK):
             try:
                 if not self.step():
                     return
-            except (Conflict, RevisionConflict, AdmissionClosed):
-                continue  # The owner or a worker changed the team; look again.
+                refused = 0
+            except (Conflict, RevisionConflict, AdmissionClosed) as exc:
+                # The owner or a worker changed the team; look again. A step
+                # the runtime keeps refusing is the owner's to resolve.
+                refused += 1
+                if refused >= self.REFUSALS:
+                    self._set("needs_owner", f"The team keeps refusing the orchestrator's next step ({exc}). "
+                                             "Review the team and continue it yourself.")
+                continue
             except Exception as exc:  # noqa: BLE001 - the owner must see that the loop ended
                 logger.exception("Team orchestrator loop stopped")
                 self._set("needs_owner", f"The orchestrator loop stopped ({type(exc).__name__}). "
@@ -309,16 +319,21 @@ class TeamAutopilot:
             self._set("integrating", "Waiting for the writers to finish.")
             return True
         ids = sorted(worktrees[row["id"]]["id"] for row in attempts)
-        candidate = next((row for row in reversed(snapshot["integration_candidates"]) if row["state"] != "superseded"
-                          and sorted(item["id"] for item in json.loads(row["manifest_json"])["writers"]) == ids), None)
+        def members(row):
+            return {item["id"] for item in json.loads(row["manifest_json"])["writers"]}
+        live = [row for row in snapshot["integration_candidates"] if row["state"] != "superseded"]
+        # Writers already in an applied change are accepted under it: after the
+        # first of them is accepted, the rest are no longer the whole change.
+        applied = next((row for row in reversed(live) if row["state"] == "applied" and members(row) & set(ids)), None)
+        if applied is not None:
+            return self._accept_writers(runner, snapshot, applied)
+        candidate = next((row for row in reversed(live) if sorted(members(row)) == ids), None)
         if candidate is None:
             return self._operate(capture, snapshot, "prepare_candidate", tuple(ids),
                                  "Combining the writers' changes.", writer_ids=ids)
         if candidate["state"] == "conflict":
             return self._hand_back("The writers' changes conflict with each other, so they can't be combined. "
                                    "Send one back to redo its change, or stop the team.")
-        if candidate["state"] == "applied":
-            return self._accept_writers(runner, snapshot, candidate)
         if candidate["state"] not in {"ready", "failed", "verified"}:
             return self._hand_back(f"The combined changes need your inspection (state: {candidate['state']}).")
         checks = json.loads(candidate["manifest_json"])["checks"]

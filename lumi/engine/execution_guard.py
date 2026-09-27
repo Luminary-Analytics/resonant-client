@@ -35,6 +35,15 @@ class ToolScopeRefused(ExecutionGuardError):
     """
 
 
+class RequestRefused(ExecutionGuardError):
+    """A model request refused before admission: nothing was reserved or sent.
+
+    An organization rule or a budget refused it (engine/swarming/organization.py),
+    so its outcome is known. The participant stops, and the message is Lumi's
+    own reason, never provider text, so the model and the owner can be told.
+    """
+
+
 class ExecutionGuard(Protocol):
     """Trusted, attempt-bound persistence interface; never model-supplied."""
 
@@ -123,6 +132,11 @@ class ExecutionBoundary:
             return getattr(self.guard, method)(*args, **kwargs)
         except ToolScopeRefused:
             raise  # Refused before admission: nothing ran, so nothing to reconcile.
+        except RequestRefused:
+            # Nothing was reserved or sent either, but the participant stops:
+            # the reason (a policy or budget) holds for its next request too.
+            self.closed = True
+            raise
         except Exception as exc:
             self.closed = True
             raise ExecutionGuardError(f"Execution guard {method} failed: {exc}") from exc

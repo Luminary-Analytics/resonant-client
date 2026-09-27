@@ -22,7 +22,7 @@ import psutil
 
 from ...processes import background_process_kwargs, close_windows_job, windows_kill_job
 from ...events import EngineEvent
-from ..execution_guard import ExecutionGuardError, ToolScopeRefused
+from ..execution_guard import ExecutionGuardError, RequestRefused, ToolScopeRefused
 from .processes import job_name
 
 PROTOCOL_VERSION = 1
@@ -368,6 +368,10 @@ class ManagedWorkerProcess:
                                 # The guard's own scope text, so the worker's
                                 # model hears why its call was refused.
                                 response["refused"] = str(exc)[:500]
+                            elif isinstance(exc, RequestRefused):
+                                # Lumi's own policy or budget reason, never
+                                # provider text: the worker stops saying why.
+                                response["refused_request"] = str(exc)[:500]
                         responses.put(response)
                     threading.Thread(target=invoke, daemon=True, name="swarm-process-rpc").start()
                 elif value == {"version": PROTOCOL_VERSION, "kind": "closed"} and not pending_rpc:

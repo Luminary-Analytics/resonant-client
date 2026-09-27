@@ -30,6 +30,11 @@ The orchestrator can also finish early by proposing no more work. Without
 ``apply``, writers' changes wait for the owner to check and apply them. Every
 step goes through the durable commands and integration operations the owner's
 own controls use, so the owner can pause, steer or stop the team at any time.
+
+Under an organization policy the loop takes a step only while the team keeps
+to the policy's rules and the budgets (organization.py): a policy or spend
+that arrives mid-run hands the team back with the reason. Its decisions go to
+the audit log as the orchestrator's, never the owner's.
 """
 
 from __future__ import annotations
@@ -206,8 +211,23 @@ class TeamAutopilot:
         self.phase, self.detail = phase, detail
 
     def _hand_back(self, detail: str) -> bool:
+        if (self.phase, self.detail) != ("needs_owner", detail):
+            self._audit("hand_back", reason=detail)
         self._set("needs_owner", detail)
         return True
+
+    def _audit(self, decision: str, *, reason: str = "", **data: Any) -> None:
+        """One of the orchestrator's decisions in the audit log (organization.py)."""
+        try:
+            governance = self.runtime.team_governance(self.run_id)
+            if governance is not None:
+                from ... import audit
+                extra = {"reason": audit.content(reason)} if reason else {}
+                if data.get("check"):
+                    data["check"] = audit.name(data["check"])
+                governance.decision(decision, by="orchestrator", round=self.round, **extra, **data)
+        except Exception:  # noqa: BLE001 - the audit log never stops the loop
+            logger.debug("Team orchestrator audit record failed", exc_info=True)
 
     def _loop(self) -> None:
         refused = 0
@@ -259,6 +279,11 @@ class TeamAutopilot:
                 "recovery_required": "The team needs recovery. Recover and continue it to let the orchestrator go on.",
             }.get(state, f"The team is {state.replace('_', ' ')}."))
             return True
+        # A policy or spend that arrived mid-run: no more steps until the team
+        # keeps to the rules again (organization.py). The owner sees why.
+        refusal = self.runtime.team_dispatch_refusal(self.run_id)
+        if refusal:
+            raise _Refused(refusal)
         scheduler = self.runtime._schedulers.get(self.run_id)
         error = scheduler.inspect()["error"] if scheduler is not None else ""
         if error:
@@ -321,17 +346,19 @@ class TeamAutopilot:
                                    "stop the team.")
         return self._settle(capture, runner, snapshot)
 
-    @staticmethod
-    def _refusal(action: str) -> None:
-        from .service import policy_refusal  # service.py imports this module
-        refusal = policy_refusal(action)
+    def _refusal(self, action: str) -> None:
+        refusal = self.runtime.team_policy_refusal(self.run_id, action)
         if refusal:
             raise _Refused(refusal)
 
     def _command(self, runner, kind: str, payload: dict[str, Any]):
         self._refusal(kind)
         with self.runtime._lock:
-            return self.runtime._command(runner.supervisor, runner.authority, kind, payload)
+            receipt = self.runtime._command(runner.supervisor, runner.authority, kind, payload)
+        self._audit(kind, evidence=payload.get("evidence"), attempt=payload.get("attempt_id"),
+                    proposal=payload.get("proposal_id"), accept=payload.get("accept"),
+                    work_item=payload.get("work_item_id"), candidate=payload.get("candidate_id"))
+        return receipt
 
     def _decide(self, capture, runner, snapshot) -> bool:
         pending = [row for row in snapshot["coordinator_proposals"] if row["state"] == "pending"]
@@ -430,6 +457,7 @@ class TeamAutopilot:
                                      request_id=f"autopilot_{self.run_id}_{self._requests}",
                                      expected_revision=snapshot["run"]["revision"],
                                      requests=min(self.ANSWER_REQUESTS, spare))
+        self._audit("answer_workers", questions=len(questions))
         self._answered.update(questions)
         self._set("answering", f"Round {self.round}: the orchestrator is answering a worker's question.")
         return True
@@ -556,6 +584,8 @@ class TeamAutopilot:
                                        "run_id": self.run_id, "expected_revision": snapshot["run"]["revision"],
                                        **payload})
         self._operations[key] = self._operations.get(key, 0) + 1
+        # Its outcome follows as a team.integration record (organization.py).
+        self._audit(action, candidate=payload.get("candidate_id"), check=payload.get("check_key"))
         self._set("integrating", note)
         return True
 
@@ -628,5 +658,6 @@ class TeamAutopilot:
                    "expected_revision": snapshot["run"]["revision"],
                    "coordinator_requests": planning["default_requests"], "read_roots": planning["read_roots"]}
         self.runtime._request_plan(capture, message, closing=self.closing, retry_reason=retry_reason)
+        self._audit("request_plan", closing=self.closing, retry=bool(retry_reason) or None)
         self._set("planning", note)
         return True

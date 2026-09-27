@@ -10,10 +10,11 @@ import sys
 import threading
 from typing import Any
 
+from ... import secret_scan
 from ...gui.runtime import BackendSpec, bind_sonn_conversation
 from ..exclusions import ExclusionRules
-from ..execution_guard import (ExecutionGuardError, FILE_TOOL_NAMES, SWARM_TOOL_NAMES, ToolScopeRefused,
-                               WRITE_TOOL_NAMES)
+from ..execution_guard import (ExecutionGuardError, FILE_TOOL_NAMES, SWARM_TOOL_NAMES, RequestRefused,
+                               ToolScopeRefused, WRITE_TOOL_NAMES)
 from ..sandbox import PathSandbox
 from ..session import Session
 from ..tools import AGENT_TOOLS, ToolResult
@@ -87,6 +88,9 @@ class _Channel:
                 if response["ok"] is not True:
                     if type(response.get("refused")) is str and response["refused"]:
                         raise ToolScopeRefused(response["refused"][:500])
+                    if type(response.get("refused_request")) is str and response["refused_request"]:
+                        # A policy or budget refused the request before anything was reserved.
+                        raise RequestRefused(response["refused_request"][:500])
                     raise ExecutionGuardError(str(response.get("error") or "Worker operation denied"))
                 return response.get("result")
             raise ExecutionGuardError("Worker host response was not observed")
@@ -135,9 +139,39 @@ class _RemoteGuard:
         return ToolResult(**result)
 
 
+class _ScanSwitch:
+    """The app's secret-scan switch and this worker's own credentials, as settings for ``secret_scan.configure``.
+
+    The app's other saved keys stay in the app (its guard refuses any tool
+    observation carrying a key the team's workers hold, workers.py). The scan
+    here knows this worker's model key, its connection's header values and the
+    provider keys in this process's environment (secret_scan.secret_values).
+    """
+
+    def __init__(self, enabled: bool, known: list[str]) -> None:
+        self.enabled = enabled
+        self.known = {f"team-worker-{index}": value for index, value in enumerate(known)}
+
+    def get(self, section: str, key: str | None = None, default: Any = None) -> Any:
+        if (section, key) == ("privacy", "secret_scan"):
+            return self.enabled
+        if section == "api_keys":
+            return dict(self.known) if key is None else self.known.get(key, default)
+        return default
+
+
+def _configure_scan(initial: dict[str, Any]) -> None:
+    """Scan this process's own requests as the app scans its own (Settings > Privacy, which a policy can lock)."""
+    known = [initial["backend"].get("api_key")]
+    connection = initial["connection"] or {}
+    known += list((connection.get("headers") or {}).values())
+    secret_scan.configure(_ScanSwitch(initial["secret_scan"],
+                                      [value for value in known if isinstance(value, str) and value]))
+
+
 def _validate_initial(value: Any) -> dict[str, Any]:
     expected = {"backend", "workspace", "conversation_key", "prompt", "instructions", "role",
-                "request_limit", "tools", "write_tools", "exclusions", "connection"}
+                "request_limit", "tools", "write_tools", "exclusions", "connection", "secret_scan"}
     if type(value) is not dict or set(value) != expected:
         raise ValueError("Invalid worker initialization fields")
     if type(value["backend"]) is not dict or set(value["backend"]) - {field.name for field in fields(BackendSpec)}:
@@ -179,6 +213,8 @@ def _validate_initial(value: Any) -> dict[str, Any]:
                    or any(type(part) is not str or not part or len(part) > 4096 for part in rule)
                    for rule in rules)):
         raise ValueError("Worker file exclusions are invalid")
+    if type(value["secret_scan"]) is not bool:
+        raise ValueError("Worker secret scan setting is invalid")
     return value
 
 
@@ -197,6 +233,8 @@ def main(*, backend_factory=None) -> int:
         if first is None or set(first) != {"version", "kind", "payload"} or first["kind"] != "init":
             raise ValueError("Worker initialization was not received")
         initial = _validate_initial(first["payload"])
+        # This process sends its own requests, so it scans them itself.
+        _configure_scan(initial)
         threading.Thread(target=channel.receive, daemon=True, name="swarm-host-control").start()
         spec = BackendSpec.from_dict(initial["backend"])
         if backend_factory:

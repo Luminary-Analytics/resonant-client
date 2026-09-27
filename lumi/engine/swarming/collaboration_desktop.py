@@ -100,7 +100,9 @@ def prepare(runtime, capture, store, message, *, managed=False):
         runner = SwarmWorkerRunner(supervisor, authority, capture.workspace, backend_factory=runtime._factory,
             project_instructions=capture.instructions, managed_readers=runtime._managed_readers,
             exclusions=runtime.exclusions_for(capture.workspace), connections=connections,
-            managed_runtime=attachment.runtime if attachment is not None else None)
+            managed_runtime=attachment.runtime if attachment is not None else None,
+            # Budgets, usage and audit (organization.py); a policy refuses shared work.
+            governance=runtime._governance(capture, run_id, setup))
         runtime._runners[run_id] = (capture, runner)
         if attachment is not None:
             from .managed_collaboration_desktop import ManagedSharing
@@ -165,6 +167,11 @@ def operate(runtime, capture, store, message):
         runtime._refresh_ownership()
         if (runtime._active - runtime._collaboration_idle) - {run_id}:
             raise Conflict("Another team owns active work; wait before accepting this assignment")
+        # It starts a participant: the organization's rules and the budgets
+        # decide first, before the claim is committed (organization.py).
+        refusal = runtime.team_dispatch_refusal(run_id)
+        if refusal:
+            raise Conflict(refusal)
         result = core.accept_work(runner.authority, **args, message_id=message.get("message_id"), work_item=work,
             model={"provider": pair[0].backend_spec.backend_type, "model": pair[0].backend_spec.model},
             requests=message.get("requests"), worker_id="collab_worker_" + key, evidence=message.get("evidence")).result

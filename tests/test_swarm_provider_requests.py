@@ -6,6 +6,7 @@ import httpx
 import pytest
 
 from lumi.backends import ExoBackend, KimiBackend, OllamaBackend
+from lumi.connections import create_connection_backend
 from lumi.engine.execution_guard import ExecutionBoundary, ExecutionGuardError
 from lumi.openrouter import OpenRouterBackend
 from lumi.sonn import SonnBackend
@@ -19,12 +20,16 @@ def _provider(name, transport):
         return SonnBackend("fixture-key", base_url="https://sonn.example/project/openai/v1", transport=transport)
     if name == "openrouter":
         return OpenRouterBackend("fixture-key", "fixture/model", transport=transport)
+    if name == "connection":
+        return create_connection_backend({"id": "nim", "name": "NVIDIA NIM", "type": "openai-compatible",
+            "base_url": "https://integrate.api.nvidia.com/v1", "auth": "bearer", "headers": {}, "client_cert": ""},
+            "fixture/model", "fixture-key", transport=transport)
     backend = ExoBackend(model="fixture/model", base_url="http://127.0.0.1:59999/v1", transport=transport)
     backend._ensure_instance = lambda cancel_event=None: False
     return backend
 
 
-@pytest.mark.parametrize("provider", ["kimi", "sonn", "openrouter", "exo"])
+@pytest.mark.parametrize("provider", ["kimi", "sonn", "openrouter", "exo", "connection"])
 def test_guarded_http_rejection_is_one_generation_attempt(provider, monkeypatch):
     calls = []
     def respond(request):

@@ -20,9 +20,10 @@ from ..exclusions import ExclusionRules
 from . import AttemptContext, Command, Scope, SwarmStore, SwarmSupervisor
 from .coordinator import CoordinatorPlans
 from . import collaboration_desktop, managed_collaboration_desktop
+from . import connections as team_connections
 from .integration import CheckSpec, SwarmIntegration
 from .models import Conflict, IdempotencyConflict, RevisionConflict, ScopeDenied, SwarmError, require_id
-from .policy import PolicyProfile, normalize_scopes
+from .policy import PolicyProfile, normalize_scopes, team_provider
 from .recovery import SwarmRecovery, record_run_host
 from .scheduler import SwarmScheduler
 from .tools import SWARM_TOOL_NAMES
@@ -30,7 +31,6 @@ from .workers import SwarmWorkerRunner
 
 _READ_TOOLS = frozenset({"file_read", "glob", "grep", "artifact_read"}) | SWARM_TOOL_NAMES
 _WRITE_TOOLS = frozenset({"file_write", "file_edit"})
-_NATIVE = frozenset({"ollama", "exo", "kimi", "openrouter", "sonn"})
 _TERMINAL = frozenset({"completed", "cancelled", "failed"})
 _FIELDS = {"command", "action", "project", "session_id", "run_id", "request_id", "expected_revision",
            "enabled", "objective", "tasks", "request_limit", "max_workers", "after",
@@ -226,6 +226,28 @@ class SwarmRuntime:
             policy_patterns=lambda: current_policy().exclude if current_policy() else (),
         )
 
+    def team_model(self, spec: BackendSpec) -> dict[str, dict[str, Any]]:
+        """The connections a team on this captured model needs; Conflict says why it can't run.
+
+        A native provider needs none. A connection (``conn-<id>``) must still
+        exist and be OpenAI-compatible (swarming/connections.py). It is read
+        once here, so a run keeps its endpoint and headers while Settings change.
+        """
+        if not spec.model or not team_provider(spec.backend_type):
+            raise Conflict("Choose a native provider or an OpenAI-compatible connection, and a model, before starting a team")
+        try:
+            connection = team_connections.resolve(self.settings, spec.backend_type)
+        except ValueError as exc:
+            raise Conflict(str(exc)) from None
+        return {spec.backend_type: connection} if connection else {}
+
+    def _team_unavailable(self, spec: BackendSpec) -> str:
+        try:
+            self.team_model(spec)
+        except Conflict as exc:
+            return str(exc)
+        return ""
+
     def execution_capture(self, capture: CapturedSession, mode: str) -> CapturedSession:
         """Resolve a new explicit scope without changing a saved personal run."""
         if mode == "personal":
@@ -394,7 +416,8 @@ class SwarmRuntime:
                     snapshot["integration_operations"] = [IntegrationWorkflow.inspect_row(row)
                                                           for row in snapshot["integration_operations"]]
             snapshot["candidate_details"] = [value for (owner, _), value in self._candidate_details.items() if owner == run_id]
-        return {"available": capture.backend_spec.backend_type in _NATIVE and bool(capture.backend_spec.model),
+        unavailable = self._team_unavailable(capture.backend_spec)
+        return {"available": not unavailable,
                 "enabled": self.settings.get("swarming", "enabled", False) is True,
                 "storage_attention": bool(self._storage_uncertain or self._discovery_errors),
                 "model": {"provider": capture.backend_spec.backend_type, "model": capture.backend_spec.model},
@@ -404,7 +427,7 @@ class SwarmRuntime:
                 "collaboration": collaboration_desktop.view(store, capture.scope, run_id) if run_id and capture.scope.tenant_id == f"personal:{capture.scope.owner_id}" else None,
                 "managed_collaboration": self._managed_sharing[run_id].view() if run_id in self._managed_sharing else managed_collaboration_desktop.historical_view(store, capture.scope, run_id),
                 "events": [asdict(event) for event in store.events(capture.scope, run_id, after=after)] if run_id else [],
-                "message": "Workers share scoped findings and isolated changes. Submitted results await independent review."}
+                "message": unavailable or "Workers share scoped findings and isolated changes. Submitted results await independent review."}
 
     def _planning_view(self, store, run_id, snapshot):
         setup, _ = self._setup(store, run_id)
@@ -489,8 +512,7 @@ class SwarmRuntime:
     def _start(self, capture, store, message):
         if self.settings.get("swarming", "version", 1) != 1 or self.settings.get("swarming", "enabled", False) is not True:
             raise Conflict("Enable the swarming preview before starting a team")
-        if capture.backend_spec.backend_type not in _NATIVE or not capture.backend_spec.model:
-            raise Conflict("Choose an explicit native provider and model before starting a team")
+        connections = self.team_model(capture.backend_spec)
         objective = message.get("objective")
         tasks = message.get("tasks")
         plan_mode = message.get("plan_mode", "manual")
@@ -606,7 +628,7 @@ class SwarmRuntime:
                         root=Path(self._state_root(capture.workspace)) / "swarm" / "worktrees", managed_effects=effects)
             runner = SwarmWorkerRunner(supervisor, authority, capture.workspace,
                                        backend_factory=self._factory, project_instructions=capture.instructions,
-                                       exclusions=self.exclusions_for(capture.workspace),
+                                       exclusions=self.exclusions_for(capture.workspace), connections=connections,
                                        managed_readers=self._managed_readers, integration=integration,
                                        managed_runtime=attachment.runtime if attachment is not None else None,
                                        **({"writer_process_factory": None} if not self._managed_readers else {}))
@@ -1082,7 +1104,8 @@ class SwarmRuntime:
             raise Conflict("Writer recovery requires the original captured Git base")
         runner = SwarmWorkerRunner(recovery.supervisor, authority, capture.workspace,
                                    backend_factory=self._factory, project_instructions=capture.instructions,
-                                       exclusions=self.exclusions_for(capture.workspace),
+                                   exclusions=self.exclusions_for(capture.workspace),
+                                   connections=self.team_model(capture.backend_spec),
                                    managed_readers=self._managed_readers, integration=integration,
                                    managed_runtime=attachment.runtime if attachment else None,
                                    **({"writer_process_factory": None} if not self._managed_readers else {}))

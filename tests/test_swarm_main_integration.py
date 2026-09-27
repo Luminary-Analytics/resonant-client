@@ -156,7 +156,7 @@ def test_the_child_contract_carries_bounded_rule_pairs(tmp_path):
     base = {"backend": BackendSpec("ollama", "chosen").to_dict(include_sensitive=True),
             "workspace": str(tmp_path), "conversation_key": "swarm:run:attempt", "prompt": "Inspect",
             "instructions": "", "role": "", "request_limit": 3, "tools": ["file_read"],
-            "write_tools": [], "exclusions": [[".env", "Settings"], ["*.pem", ".lumiignore"]]}
+            "write_tools": [], "exclusions": [[".env", "Settings"], ["*.pem", ".lumiignore"]], "connection": None}
     assert _validate_initial(dict(base))["exclusions"] == [[".env", "Settings"], ["*.pem", ".lumiignore"]]
     for bad in ([".env"], [[".env"]], [[".env", ""]], [[".env", 3]], "*.pem", [["x" * 5000, "Settings"]]):
         with pytest.raises(ValueError, match="exclusions"):

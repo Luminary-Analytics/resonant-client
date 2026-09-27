@@ -941,8 +941,8 @@ def run_worker(runtime, context):
 
 
 def test_the_team_runtimes_own_worker_sends_only_checked_requests(tmp_path):
-    """engine/swarming/workers.py's in-process worker. The Team preview refuses new work
-    while a policy applies (service.policy_refusal); the check holds when that relaxes."""
+    """engine/swarming/workers.py's in-process worker: a personal team runs under an
+    organization policy (engine/swarming/organization.py), and its requests pass DLP."""
     from lumi.engine.swarming.workers import SwarmWorkerRunner
 
     install(rules(credit_card="redact"))

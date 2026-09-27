@@ -296,5 +296,3 @@ request that couldn't be checked: too large, the service failed (with
 - Detection is pattern-based: there's no named-entity or document
   classification yet beyond what an external service provides.
 - The service can't be given a credential in the policy yet.
-- The [Team](swarming.md) preview doesn't start work while an organization
-  policy applies; its workers already check their requests for when it does.

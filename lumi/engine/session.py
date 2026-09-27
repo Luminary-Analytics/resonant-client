@@ -11,6 +11,7 @@ import copy
 import json
 import os
 import re
+import string
 import sys
 import time
 import logging
@@ -44,7 +45,7 @@ from .tools import (
 from .agents import get_agent_type
 from .agent_runtime import AgentHandoff, AgentRegistry, AgentStatus
 from .artifacts import ArtifactKind, ArtifactStore
-from .execution_guard import ExecutionBoundary, ExecutionGuard, ExecutionGuardError
+from .execution_guard import ExecutionBoundary, ExecutionGuard, ExecutionGuardError, ToolScopeRefused
 from .repair_progress import RepairProgress, recovery_guidance
 from .compression import (
     CONTEXT_HEADROOM_RATIO,
@@ -1093,9 +1094,22 @@ class Session:
         try:
             arguments = self._prepare_workspace_tool_args(name, arguments)
         except (SandboxViolation, ToolBoundaryViolation) as exc:
-            boundary.reject(f"Guarded tool boundary rejected arguments: {exc}")
+            boundary.refuse(f"Guarded tool boundary rejected arguments: {exc}")
         boundary.check_tool(name, arguments, allowed_names=allowed)
         return arguments
+
+    def _refused_tool_call(self, name: str, arguments_text: str, call_id: str, reason: Exception):
+        """Report a call the guard refused before running it, like any denied tool.
+
+        The model sees why (a path outside its assignment, a tool it wasn't
+        given) and can narrow the call; the rest of the turn continues.
+        """
+        output = f"Refused before running: {reason}"
+        yield make_event(EngineEvent.TOOL_RESULT, name=name, call_id=call_id,
+                         output=output, is_error=True, denied=True, elapsed=0.0)
+        self.conversation_history.append({"role": "tool_call", "name": name, "arguments": arguments_text,
+                                          "call_id": call_id, "content": f"Called {name}"})
+        self.conversation_history.append({"role": "tool_result", "call_id": call_id, "content": output})
 
     def _execute_guarded_tool(self, name: str, arguments: dict, call_id: str):
         """Observe native file, scoped artifact and runtime data-tool results."""
@@ -2870,6 +2884,12 @@ class Session:
             # ── Process collected text ──
             full_text = "".join(collected_text).strip()
             full_text = strip_tool_call_tags(full_text)
+            # A reply that is only template tokens and punctuation says nothing
+            # (Kimi K3 on NVIDIA NIM once answered "<|close|>!!!!…"): treat it as
+            # empty so the empty-response recovery below asks again.
+            if full_text and all(character in string.punctuation or character.isspace()
+                                 for character in re.sub(r"<\|[A-Za-z_]{1,32}\|>", "", full_text)):
+                full_text = ""
             if self.hook_runner:
                 after_model = self.hook_runner.emit(
                     HookType.AFTER_MODEL,
@@ -3033,6 +3053,10 @@ class Session:
                 if self._execution_boundary:
                     try:
                         fn_args = self._guarded_tool_args(fn_name, fn_args)
+                    except ToolScopeRefused as exc:
+                        turn_failed_tools.append(fn_name)
+                        yield from self._refused_tool_call(fn_name, fn_args_str, call_id, exc)
+                        continue
                     except ExecutionGuardError as exc:
                         yield make_event(EngineEvent.ERROR, message=str(exc), code="execution_guard_blocked")
                         return
@@ -3219,6 +3243,10 @@ class Session:
                     try:
                         fn_args = self._guarded_tool_args(fn_name, fn_args)
                         fn_args_str = json.dumps(fn_args, ensure_ascii=False, sort_keys=True)
+                    except ToolScopeRefused as exc:
+                        turn_failed_tools.append(fn_name)
+                        yield from self._refused_tool_call(fn_name, fn_args_str, call_id, exc)
+                        continue
                     except ExecutionGuardError as exc:
                         yield make_event(EngineEvent.ERROR, message=str(exc), code="execution_guard_blocked")
                         return
@@ -3577,6 +3605,9 @@ class Session:
                     if self._execution_boundary:
                         try:
                             result = self._execute_guarded_tool(fn_name, fn_args, call_id)
+                        except ToolScopeRefused as exc:
+                            from .tools import ToolResult
+                            result = ToolResult(output=f"Refused before running: {exc}", is_error=True)
                         except Exception as exc:
                             yield make_event(EngineEvent.ERROR, message=str(exc), code="execution_guard_unresolved")
                             return
@@ -3934,6 +3965,14 @@ class Session:
                     # Do not append a synthetic "continue" user turn: keeping
                     # history append-only and sparse improves KV-prefix reuse.
                     current_msg = ""
+                # A Team participant about to spend its last request answers now,
+                # rather than stopping mid-exploration with nothing submitted (live
+                # workers hit their allowance while still reading files).
+                if (self._execution_boundary is not None and self.max_model_requests is not None
+                        and model_requests == self.max_model_requests - 1):
+                    current_msg = (f"{current_msg}\n\n" if current_msg else "") + (
+                        "This is your last model request for this assignment. Stop exploring and give "
+                        "your final answer now from what you have found, saying what you could not check.")
                 continue
             else:
                 if self.hook_runner:

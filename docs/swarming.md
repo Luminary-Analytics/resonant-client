@@ -20,13 +20,21 @@ of them so far (September 27, 2026 port onto the `lumi` package):
 - **Excluded files.** Every worker gets the project's exclusions when it
   starts: Settings' excluded paths, the project's `.lumiignore` and, when one
   applies, the organization's `files.exclude`. A writer anchors them at its
-  isolated worktree. Searches leave excluded files out. A worker that tries to
-  read one stops, with the refusal shown here; the model never receives the
-  file.
+  isolated worktree. Searches leave excluded files out. A worker's read of one
+  is refused; the model never receives the file.
+- **Calls outside an assignment.** A worker's file call outside its granted
+  paths, or to a tool it wasn't given, is refused before it runs. The model
+  hears "Refused before running" with the reason as that call's result and can
+  narrow it; the run keeps a `tool_refused` event. Other guard failures (lost
+  admission, an unobservable response) still stop the worker.
 - **Hooks.** Workers don't run your Settings or capability-pack hooks; a
   guarded worker refuses them, unlike chats and plan specialists.
 - **Providers.** Workers use native Ollama, EXO, Kimi, OpenRouter or SONN
-  connections, not Anthropic, OpenAI or custom connections yet.
+  connections, or a custom connection of type **OpenAI-compatible** (Chat
+  Completions: NVIDIA NIM, vLLM, a gateway) that authenticates with a key or
+  none. A run reads the connection once when it starts. Anthropic, OpenAI
+  Responses, Azure, Bedrock and Vertex connections, OAuth or Entra sign-in and
+  client certificates aren't available to workers yet.
 - **Usage and budgets.** Worker turns run through the same session path as a
   chat, so their requests are recorded in usage and the audit log and checked
   against spending limits before each turn. A writer's records carry its
@@ -38,7 +46,8 @@ Open a saved conversation in the intended project, then choose **Team** and
 enable **team preview**. The panel displays that conversation's saved provider
 and model. It preserves the explicit choice; it does not select a different
 model for you. The source preview accepts native Ollama, EXO, Kimi, OpenRouter and
-SONN sessions; live provider qualification remains pending.
+SONN sessions, and OpenAI-compatible connections such as NVIDIA NIM; live
+provider qualification remains pending.
 Codex and Claude Code CLI sessions are not team worker providers.
 The [provider matrix](swarming-provider-matrix.md) distinguishes source eligibility
 and execution checks from live qualification.
@@ -58,6 +67,30 @@ Choose one of two planning approaches:
 - **Ask a coordinator to propose a plan:** enter an objective, coordinator
   allowance and allowance per worker. The coordinator reads within its scope
   and submits a proposal. It does not approve its own plan or task results.
+
+### Let the orchestrator run the team
+
+With a coordinator plan, **Let the orchestrator run the team** and choose
+**Orchestrator rounds** (one to eight). The coordinator becomes the team's
+orchestrator, and you don't approve each step:
+
+- Its plans run once the runtime has validated them against the team's
+  scopes, criteria and request allowance, as it would for your approval.
+- Workers' findings are accepted **under your grant**, so later tasks and the
+  next round can use them. The record says so: executor `autonomy:<owner>`,
+  "Accepted under the owner's autonomy grant, not reviewed". It never claims
+  your review.
+- A failed task, or an orchestrator turn without a usable plan, is retried once.
+- When a round's work is accepted, the orchestrator plans again from the
+  findings and from workers' messages to it. It can finish early by proposing
+  no more work. After the last round, a closing turn writes the final report
+  and may not start work; any work it proposes is rejected.
+
+The **Orchestrator** section shows the round, the current step and the final
+report. File changes still wait for you to check, apply and accept them, and
+you can pause, steer or stop the team at any time. The orchestrator loop runs
+in the app that started the team; after a restart, continue the team yourself.
+See `engine/swarming/autopilot.py`.
 
 Paths are relative to the project. Separate roots with commas; `.` means the
 project and its descendants. A file can also be a scope root. Absolute paths,
@@ -129,6 +162,16 @@ exact proposal separately; a changing graph may require another explicit plan.
 Requesting a plan never accepts existing findings, cancels peers, or automatically
 replays interrupted work. The panel explains when the current coordinator,
 remaining allowance or missing execution host prevents another request.
+
+## Team messages
+
+Workers running at the same time can share findings and ask each other
+questions with `swarm_send`, and wait up to 60 seconds for an answer with
+`swarm_receive` (Pause or Stop ends the wait). A worker can also write to
+`orchestrator`: the orchestrator's turn may have ended, so its next round
+reads the message as planning input. Messages are untrusted data. They never
+widen a worker's paths, tools or allowance, and a reply doesn't prove the
+recipient followed it. **Team messages** in the panel lists who told whom what.
 
 ## Review findings
 

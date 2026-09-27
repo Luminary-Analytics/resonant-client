@@ -2405,9 +2405,25 @@ class KimiBackend:
         """Return whether an in-stream provider error is safe to replay."""
         return False
 
+    @staticmethod
+    def _is_transient_overload(message: str) -> bool:
+        """An in-stream error saying the service is busy (NVIDIA NIM: "Service temporarily overloaded")."""
+        normalized = str(message or "").casefold()
+        return any(marker in normalized for marker in (
+            "overload", "temporarily unavailable", "too many requests", "rate limit", "try again later"))
+
     def _http_retry_delay(self, response: httpx.Response, attempt: int) -> float | None:
         """Delay for an already classified HTTP rejection; None stops retrying."""
         return 1.5 * (2 ** attempt)
+
+    @staticmethod
+    def _rate_limit_delay(response: httpx.Response, attempt: int) -> float:
+        """How long a supervised request waits out a 429: Retry-After, else 5, 10, 20 s (1-30 s)."""
+        try:
+            wanted = float(response.headers.get("retry-after", ""))
+        except ValueError:
+            wanted = 5.0 * (2 ** attempt)
+        return max(1.0, min(30.0, wanted))
 
     def stream(
         self,
@@ -2487,8 +2503,11 @@ class KimiBackend:
         try:
             with httpx.Client(timeout=self._timeout, transport=self._transport, **self._tls_options()) as client:
                 # This inherited stream also serves SONN/OpenRouter/EXO. A
-                # guarded invocation cannot silently start another generation.
-                attempts = 1 if getattr(self, "_supervised_single_request", False) else 3
+                # guarded invocation cannot silently start another generation,
+                # but a rate limit (429) refused the request before generating
+                # anything, so only that is waited out and sent again.
+                supervised = getattr(self, "_supervised_single_request", False)
+                attempts = 4 if supervised else 3
                 for attempt in range(attempts):
                     restart_stream = False
                     if cancel_event is not None and cancel_event.is_set():
@@ -2505,7 +2524,7 @@ class KimiBackend:
                             error_type, message = self._error_details(response)
                             retryable = self._is_retryable_error(
                                 response.status_code, error_type, message
-                            )
+                            ) and (not supervised or response.status_code == 429)
                             logger.warning(
                                 "%s API request failed: status=%d type=%s retryable=%s model=%s",
                                 self.PROVIDER_LABEL,
@@ -2514,7 +2533,9 @@ class KimiBackend:
                                 retryable,
                                 self.model,
                             )
-                            delay = self._http_retry_delay(response, attempt) if retryable and attempt < attempts - 1 else None
+                            delay = ((self._rate_limit_delay(response, attempt) if supervised
+                                      else self._http_retry_delay(response, attempt))
+                                     if retryable and attempt < attempts - 1 else None)
                             if delay is not None:
                                 yield (EVENT_BACKEND_STATUS, {
                                     "kind": self.RETRY_EVENT_KIND,
@@ -2531,7 +2552,10 @@ class KimiBackend:
                             yield (EVENT_ERROR, {
                                 "message": self._user_error_message(
                                     response.status_code, error_type, message
-                                )
+                                ),
+                                # A number, safe to keep where provider text isn't
+                                # (the guarded ledger, benchmark records).
+                                "status_code": response.status_code,
                             })
                             return
 
@@ -2592,11 +2616,15 @@ class KimiBackend:
                                     if isinstance(error, dict)
                                     else str(error)
                                 )
-                                if (
-                                    self._is_retryable_stream_error(message)
-                                    and attempt < attempts - 1
+                                # Before any model output, a supervised request
+                                # may wait out a busy service: nothing was
+                                # generated, so resending is still one generation.
+                                before_output = not (content_parts or reasoning_parts or tool_calls)
+                                if attempt < attempts - 1 and (
+                                    (self._is_retryable_stream_error(message) and not supervised)
+                                    or (supervised and before_output and self._is_transient_overload(message))
                                 ):
-                                    delay = 1.5 * (2 ** attempt)
+                                    delay = min(30.0, 5.0 * (2 ** attempt)) if supervised else 1.5 * (2 ** attempt)
                                     yield (EVENT_BACKEND_STATUS, {
                                         "kind": self.RETRY_EVENT_KIND,
                                         "status_code": 0,
@@ -2640,6 +2668,9 @@ class KimiBackend:
                                         self._is_retryable_stream_error(message)
                                         and (content_parts or reasoning_parts)
                                     ),
+                                    # The guarded ledger settles this as known:
+                                    # the provider failed before any output.
+                                    "before_output": before_output,
                                 })
                                 return
                             if isinstance(event.get("usage"), dict):

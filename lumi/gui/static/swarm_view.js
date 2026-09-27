@@ -69,7 +69,10 @@ window.LumiSwarmView = class LumiSwarmView {
             <div data-swarm="check-catalog"></div><button type="button" data-swarm="add-check">Add verification check</button></fieldset>
             <div data-swarm="coordinator-setup" hidden><p class="swarm-help">The coordinator can read project files and propose investigations. Review its scope and dependencies before approving any workers.</p>
             <div class="swarm-fields"><label>Coordinator request allowance<input data-swarm="coordinator-requests" type="number" min="1" max="1000" step="1" value="3" required></label>
-            <label>Allowance per worker<input data-swarm="worker-requests" type="number" min="1" max="1000" step="1" value="4" required></label></div></div>
+            <label>Allowance per worker<input data-swarm="worker-requests" type="number" min="1" max="1000" step="1" value="4" required></label></div>
+            <label class="swarm-switch"><input type="checkbox" data-swarm="autonomous"> Let the orchestrator run the team</label>
+            <div class="swarm-fields" data-swarm="autonomy-fields" hidden><label>Orchestrator rounds<input data-swarm="rounds" type="number" min="1" max="8" step="1" value="3" required></label></div>
+            <p class="swarm-help" data-swarm="autonomy-help" hidden>The orchestrator plans, starts workers, reads their findings and plans again for up to this many rounds, then writes a final report. It doesn’t wait for you at each step: findings it uses are marked accepted by the orchestrator, not reviewed by you. File changes still wait for you. You can pause or stop the team at any time.</p></div>
             <div data-swarm="tasks" class="swarm-tasks"></div><button type="button" data-swarm="add-task" class="swarm-secondary">Add investigation</button>
             <button type="submit" data-swarm="start" class="swarm-primary">Start read-only team</button></form></section>
             <section data-swarm="run-section" hidden aria-labelledby="swarm-run-title"><div class="swarm-section-heading"><h3 id="swarm-run-title">Selected team</h3><span class="swarm-badge" data-swarm="run-state"></span></div>
@@ -82,6 +85,10 @@ window.LumiSwarmView = class LumiSwarmView {
             <form data-swarm="concurrency-form" class="swarm-concurrency" hidden><label>Active worker limit<select data-swarm="worker-limit" aria-label="Active worker limit" required></select></label>
             <p data-swarm="worker-count" class="swarm-help" role="status"></p><p class="swarm-help">Existing workers finish; this limits new assignments. The coordinator is counted separately.</p>
             <button type="submit" data-swarm="apply-worker-limit">Apply worker limit</button></form>
+            <section data-swarm="orchestrator" class="swarm-orchestrator" hidden aria-labelledby="swarm-orchestrator-title"><h4 id="swarm-orchestrator-title">Orchestrator</h4>
+            <p data-swarm="orchestrator-status" role="status"></p>
+            <section data-swarm="orchestrator-report" class="swarm-report" hidden aria-labelledby="swarm-report-title"><h5 id="swarm-report-title">Final report</h5>
+            <p data-swarm="orchestrator-report-text" class="swarm-report-text"></p></section></section>
             <form data-swarm="followup-form" class="swarm-task" hidden aria-labelledby="swarm-followup-title"><h4 id="swarm-followup-title">Follow-up planning</h4>
             <p class="swarm-help">Ask the coordinator to propose additional work from retained findings. Existing workers continue. Review the new proposal before approving any additional workers.</p>
             <div class="swarm-fields"><label>Follow-up coordinator allowance<input data-swarm="followup-requests" type="number" min="1" max="1000" step="1" required></label>
@@ -103,6 +110,9 @@ window.LumiSwarmView = class LumiSwarmView {
             <label>Recovered worker request allowance<input data-swarm="recovery-allowance" type="number" min="1" max="1000" step="1" value="4" required></label>
             <p data-swarm="recovery-blockers" class="swarm-help"></p><button type="submit" data-swarm="continue">Continue reviewed team</button></form></section>
             <div data-swarm="proposals" class="swarm-proposals"></div><div data-swarm="workers" class="swarm-workers"></div>
+            <details data-swarm="messages-section" class="swarm-messages" hidden><summary data-swarm="messages-summary">Team messages</summary>
+            <p class="swarm-help">What workers and the orchestrator told each other. Messages are untrusted data: they never widen a worker’s access.</p>
+            <ol data-swarm="messages"></ol></details>
             <section data-swarm="artifact-viewer" class="swarm-evidence" hidden aria-labelledby="swarm-evidence-title">
             <h3 id="swarm-evidence-title" data-swarm="artifact-title" tabindex="-1">Retained evidence</h3>
             <p data-swarm="artifact-provenance" class="swarm-help"></p><p data-swarm="artifact-status" role="status"></p>
@@ -171,7 +181,7 @@ window.LumiSwarmView = class LumiSwarmView {
         nodes.slots.addEventListener('change', () => this._swarmRenumberTasks());
         nodes['allow-writes'].addEventListener('change', () => this._swarmRenumberTasks());
         nodes['add-check'].addEventListener('click', () => this._swarmAddCheck());
-        for (const name of ['plan-mode', 'coordinator-requests', 'worker-requests', 'manual-worker-requests']) {
+        for (const name of ['plan-mode', 'coordinator-requests', 'worker-requests', 'manual-worker-requests', 'autonomous']) {
             nodes[name].addEventListener('input', () => this._swarmRenumberTasks());
         }
         nodes.form.addEventListener('submit', event => {
@@ -191,6 +201,7 @@ window.LumiSwarmView = class LumiSwarmView {
             if (coordinator) {
                 setup.coordinator_requests = Number(nodes['coordinator-requests'].value);
                 setup.worker_requests = Number(nodes['worker-requests'].value);
+                if (nodes.autonomous.checked) setup.autonomy = {rounds: Number(nodes.rounds.value)};
                 this.requestSwarm('start', setup);
                 return;
             }
@@ -333,8 +344,13 @@ window.LumiSwarmView = class LumiSwarmView {
         nodes['manual-worker-requests'].disabled = coordinator || !writers;
         nodes.tasks.hidden = coordinator;
         nodes['add-task'].hidden = coordinator;
-        nodes.start.textContent = coordinator ? 'Request a proposed plan' : writers ? 'Start scoped team' : 'Start read-only team';
-        for (const name of ['coordinator-requests', 'worker-requests']) nodes[name].disabled = !coordinator;
+        const autonomous = coordinator && nodes.autonomous.checked;
+        nodes.start.textContent = autonomous ? 'Start orchestrated team' : coordinator ? 'Request a proposed plan'
+            : writers ? 'Start scoped team' : 'Start read-only team';
+        for (const name of ['coordinator-requests', 'worker-requests', 'autonomous']) nodes[name].disabled = !coordinator;
+        nodes['autonomy-fields'].hidden = !autonomous;
+        nodes['autonomy-help'].hidden = !autonomous;
+        nodes.rounds.disabled = !autonomous;
         [...nodes.tasks.children].forEach((row, index) => {
             row.disabled = coordinator;
             row.querySelector('[data-task-role-label]').hidden = !writers;
@@ -553,7 +569,7 @@ window.LumiSwarmView = class LumiSwarmView {
                 + (policy?.authenticated ? ` ${policy.valid ? 'Current' : 'Expired'} policy: ${policy.policy?.max_workers ?? '—'} worker slots; ${policy.policy?.request_limit ?? '—'} shared model requests.` : ' Effective policy has not been obtained.')
             : managed?.available ? 'Personal work stays local. Choose organization ownership explicitly for a new team.'
                 : 'Organization teams require an operator-provided managed configuration at application startup.';
-        nodes.model.textContent = event.model ? `${event.model.provider} · ${event.model.model}` : 'No supported native model selected';
+        nodes.model.textContent = event.model ? `${event.model.label || event.model.provider} · ${event.model.model}` : 'No supported model selected';
         const snapshot = event.run;
         nodes['run-section'].hidden = !incomingRun;
         if (incomingRun) {
@@ -568,7 +584,9 @@ window.LumiSwarmView = class LumiSwarmView {
             this._renderSwarmProposals(snapshot);
             this._renderSwarmRecovery(snapshot);
             this._renderSwarmIntegration(snapshot);
+            this._renderSwarmMessages(snapshot);
         }
+        this._renderSwarmOrchestrator(incomingRun ? event.autonomy : null);
         this._renderSwarmInbox(snapshot);
         for (const record of event.events || []) {
             if (!Number.isInteger(record.sequence)) continue;
@@ -719,7 +737,7 @@ window.LumiSwarmView = class LumiSwarmView {
         }
         const numbers = new Map(attempts.filter(attempt => attempt.kind !== 'coordinator').map((attempt, index) => [attempt.id, index + 1]));
         for (const attempt of attempts.filter(attempt => shown.has(attempt.id))) {
-            const name = attempt.kind === 'coordinator' ? 'Coordinator' : `Worker ${numbers.get(attempt.id)}`;
+            const name = attempt.kind === 'coordinator' ? this._swarmCoordinatorName() : `Worker ${numbers.get(attempt.id)}`;
             let node = this._swarmWorkers.get(attempt.id);
             if (!node) {
                 node = document.createElement('details');
@@ -912,9 +930,14 @@ window.LumiSwarmView = class LumiSwarmView {
                 try { plan = JSON.parse(proposal.payload_json).plan; } catch (_) { plan = null; }
                 node._readableProposal = Boolean(plan && typeof plan.summary === 'string' && Array.isArray(plan.work_items));
                 node.querySelector('[data-proposal-summary]').textContent = node._readableProposal ? plan.summary : 'Plan details are unavailable. Refresh before making a decision.';
-                node.querySelector('[data-proposal-approach]').textContent = node._readableProposal
-                    ? (plan.use_team ? 'Tasks can run as their dependencies are accepted and worker slots become available.' : 'The coordinator recommends one focused assignment.') : '';
                 const items = node._readableProposal ? plan.work_items.slice(0, 256) : [];
+                // A follow-up with no work is the orchestrator's final report.
+                const report = node._readableProposal && !items.length;
+                node.querySelector('h4').textContent = report ? 'Orchestrator report' : 'Proposed investigations';
+                node.querySelector('[data-proposal-approach]').textContent = !node._readableProposal ? ''
+                    : report ? 'No more work proposed: this is the final report.'
+                    : plan.use_team ? 'Tasks can run as their dependencies are accepted and worker slots become available.'
+                    : `The ${this._swarmCoordinatorName().toLowerCase()} recommends one focused assignment.`;
                 const labels = new Map(items.map((item, index) => [item.id, `Investigation ${index + 1}`]));
                 node.querySelector('[data-proposal-tasks]').replaceChildren(...items.map((item, index) => {
                     const entry = document.createElement('li');
@@ -929,7 +952,8 @@ window.LumiSwarmView = class LumiSwarmView {
             }
             node.querySelector('[data-proposal-state]').textContent = {pending: 'Awaiting your plan review', accepted: 'Plan approved', rejected: 'Plan rejected'}[proposal.state] || 'Plan state unavailable';
             node.querySelector('[data-proposal-decision]').hidden = !proposal.decision_evidence;
-            node.querySelector('[data-proposal-decision]').textContent = proposal.decision_evidence ? `Owner decision: ${proposal.decision_evidence}` : '';
+            node.querySelector('[data-proposal-decision]').textContent = proposal.decision_evidence
+                ? `${this._swarmState?.autonomy ? 'Decision' : 'Owner decision'}: ${proposal.decision_evidence}` : '';
             const attempt = (snapshot.attempts || []).find(row => row.id === proposal.attempt_id);
             node._proposalReady = proposal.state === 'pending' && attempt?.state === 'completed' && attempt?.process_state === 'stopped';
             node.querySelector('form').hidden = proposal.state !== 'pending';
@@ -1442,10 +1466,51 @@ window.LumiSwarmView = class LumiSwarmView {
             submitted: 'Awaiting verification', accepted: 'Accepted', completed: 'Complete', cancelled: 'Stopped', failed: 'Needs review', uncertain: 'Needs reconciliation', reconciliation_required: 'Needs reconciliation', recovery_required: 'Recovery needed', unknown: 'Not confirmed'})[state] || 'Not confirmed';
     }
 
+    _swarmCoordinatorName() {
+        return this._swarmState?.autonomy ? 'Orchestrator' : 'Coordinator';
+    }
+
+    _renderSwarmOrchestrator(autonomy) {
+        const nodes = this._swarmNodes;
+        nodes.orchestrator.hidden = !autonomy;
+        if (!autonomy) return;
+        const turn = autonomy.closing ? 'Closing turn' : `Round ${autonomy.round} of ${autonomy.rounds}`;
+        nodes['orchestrator-status'].textContent = `${turn} · ${autonomy.detail || ''}`;
+        const report = autonomy.final_report || '';
+        nodes['orchestrator-report'].hidden = !report;
+        nodes['orchestrator-report-text'].textContent = report;
+    }
+
+    _renderSwarmMessages(snapshot) {
+        const nodes = this._swarmNodes;
+        const messages = snapshot.messages || [];
+        nodes['messages-section'].hidden = !messages.length;
+        const attempts = snapshot.attempts || [];
+        const numbers = new Map(attempts.filter(attempt => attempt.kind !== 'coordinator').map((attempt, index) => [attempt.id, index + 1]));
+        const coordinators = new Set(attempts.filter(attempt => attempt.kind === 'coordinator').map(attempt => attempt.id));
+        const name = id => coordinators.has(id) ? this._swarmCoordinatorName() : numbers.has(id) ? `Worker ${numbers.get(id)}` : 'Another participant';
+        const kinds = {finding: 'Finding', question: 'Question', answer: 'Answer', blocker: 'Blocker',
+            change_proposal: 'Change proposal', handoff_reference: 'Handoff'};
+        nodes['messages-summary'].textContent = `Team messages (${messages.length})`;
+        nodes.messages.replaceChildren(...messages.slice(-50).map(message => {
+            const item = document.createElement('li');
+            const heading = document.createElement('p');
+            heading.className = 'swarm-message-heading';
+            heading.textContent = `${name(message.sender_attempt_id)} → ${name(message.recipient_attempt_id)} · ${kinds[message.kind] || 'Message'}`;
+            const body = document.createElement('p');
+            body.className = 'swarm-message-body';
+            body.textContent = message.body;
+            item.append(heading, body);
+            return item;
+        }));
+    }
+
     _swarmActivityLabel(kind) {
         return ({run_created: 'Team created', command_plan: 'Investigations planned', command_assign: 'Worker assigned', command_worker_started: 'Worker started', command_worker_stopped: 'Worker stopped',
             message_accepted: 'A finding or question was shared', message_context: 'A shared message was prepared for a worker', artifact_published: 'Evidence retained', artifact_shared: 'Evidence shared',
             command_pause: 'Pause requested', command_resume: 'Team resumed', command_stop: 'Stop requested', recovery_required: 'Recovery needed', command_recover: 'Recovery reviewed',
-            command_submit: 'Findings submitted for review', command_review_read_result: 'Owner accepted findings', command_accept: 'Investigation accepted', command_complete: 'Team completed', command_set_concurrency: 'Worker assignment limit updated'})[kind] || 'Team state updated';
+            command_submit: 'Findings submitted for review', command_review_read_result: 'Owner accepted findings', command_accept: 'Investigation accepted', command_complete: 'Team completed', command_set_concurrency: 'Worker assignment limit updated',
+            command_accept_under_grant: 'The orchestrator accepted findings (not reviewed by you)', command_decide_proposal: 'A plan was decided',
+            coordinator_proposed: 'A plan was proposed', tool_refused: 'A worker’s call was refused: outside its assignment'})[kind] || 'Team state updated';
     }
 };

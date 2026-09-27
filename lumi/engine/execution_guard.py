@@ -25,6 +25,16 @@ class ExecutionGuardError(RuntimeError):
     """Admission is closed or its durable outcome cannot be established."""
 
 
+class ToolScopeRefused(ExecutionGuardError):
+    """One tool call was refused before admission; admission stays open.
+
+    Nothing ran and no receipt exists, so the model hears the reason as the
+    call's error result and may narrow it, as with an ordinary sandbox denial.
+    Only lexical scope, sandbox and allowlist checks raise it: lost admission,
+    integrity and persistence failures still close the boundary.
+    """
+
+
 class ExecutionGuard(Protocol):
     """Trusted, attempt-bound persistence interface; never model-supplied."""
 
@@ -86,6 +96,10 @@ class ExecutionBoundary:
         self.closed = True
         raise ExecutionGuardError(message)
 
+    def refuse(self, message: str) -> None:
+        """Refuse one tool call before admission, leaving the boundary open."""
+        raise ToolScopeRefused(message)
+
     def ensure_open(self) -> None:
         """Prevent later work after denial, uncertainty or failed persistence."""
         if self.closed:
@@ -107,6 +121,8 @@ class ExecutionBoundary:
         # retry a callback: its commit may have succeeded before an I/O failure.
         try:
             return getattr(self.guard, method)(*args, **kwargs)
+        except ToolScopeRefused:
+            raise  # Refused before admission: nothing ran, so nothing to reconcile.
         except Exception as exc:
             self.closed = True
             raise ExecutionGuardError(f"Execution guard {method} failed: {exc}") from exc
@@ -150,16 +166,28 @@ class ExecutionBoundary:
         end_attempted = False
         saw_done = False
         usage = None
+        status = None
+        produced = False
+        refused = False
         error = "Model stream closed before its complete response was observed"
         try:
             self._check_model_selection(backend, request_id)
             iterator = iter(invoke())
             for event_type, data in iterator:
                 if event_type in {"error", "cancelled"}:
+                    status = data.get("status_code")
+                    # A 4xx answer before any model output is the provider
+                    # refusing the request (rate limit, bad request, auth):
+                    # nothing was generated, so the outcome is known.
+                    refused = (event_type == "error" and not produced
+                               and ((type(status) is int and 400 <= status <= 499)
+                                    or data.get("before_output") is True))
                     raise ExecutionGuardError(str(data.get("message") or "Provider failed or cancelled"))
                 if event_type == "done":
                     saw_done = True
                     usage = copy.deepcopy(data.get("stats"))
+                if event_type != "backend.status":
+                    produced = True
                 yield event_type, data
             if not saw_done:
                 raise ExecutionGuardError("Provider stream ended without a done observation")
@@ -176,6 +204,13 @@ class ExecutionBoundary:
                 # Provider exception strings can include credential-bearing
                 # URLs. The ledger records failure class, not raw diagnostics.
                 error = f"Model response could not be fully observed ({type(exc).__name__})"
+                if type(status) is int and 100 <= status <= 599:
+                    error += f"; provider status {status}"
+                if refused:
+                    self._persist("end_request", request_id, outcome="completed", usage=usage,
+                                  error="Provider refused the request before generating"
+                                        + (f"; provider status {status}" if type(status) is int and status else ""))
+                    end_attempted = True
             raise
         finally:
             self._active_request = None
@@ -218,7 +253,7 @@ class ExecutionBoundary:
         """Check all names before hooks and special handlers can execute."""
         self.ensure_open()
         if name not in self.file_tools | self.runtime_tools or (allowed_names is not None and name not in allowed_names):
-            self.reject(f"Tool '{name}' is outside this guarded session's explicit allowlist")
+            self.refuse(f"Tool '{name}' is outside this guarded session's explicit allowlist")
         if self.request_id not in self._completed_requests:
             self.reject("Tools require a durably completed originating model request")
         self._persist("check_tool", self.request_id, name, copy.deepcopy(arguments))

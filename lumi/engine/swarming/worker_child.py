@@ -12,10 +12,14 @@ from typing import Any
 
 from ...gui.runtime import BackendSpec, bind_sonn_conversation
 from ..exclusions import ExclusionRules
-from ..execution_guard import ExecutionGuardError, FILE_TOOL_NAMES, SWARM_TOOL_NAMES, WRITE_TOOL_NAMES
+from ..execution_guard import (ExecutionGuardError, FILE_TOOL_NAMES, SWARM_TOOL_NAMES, ToolScopeRefused,
+                               WRITE_TOOL_NAMES)
 from ..sandbox import PathSandbox
 from ..session import Session
 from ..tools import AGENT_TOOLS, ToolResult
+from ...connections import backend_key
+from . import connections as team_connections
+from .policy import NATIVE_PROVIDERS, is_connection_provider
 from .process_worker import PROTOCOL_VERSION, encode_frame, read_frame, stdio_pipes as _stdio
 from .tools import SWARM_WORKER_TOOLS
 
@@ -81,6 +85,8 @@ class _Channel:
                 if response["id"] != identity:
                     raise ExecutionGuardError("Worker host response identity does not match")
                 if response["ok"] is not True:
+                    if type(response.get("refused")) is str and response["refused"]:
+                        raise ToolScopeRefused(response["refused"][:500])
                     raise ExecutionGuardError(str(response.get("error") or "Worker operation denied"))
                 return response.get("result")
             raise ExecutionGuardError("Worker host response was not observed")
@@ -131,13 +137,25 @@ class _RemoteGuard:
 
 def _validate_initial(value: Any) -> dict[str, Any]:
     expected = {"backend", "workspace", "conversation_key", "prompt", "instructions", "role",
-                "request_limit", "tools", "write_tools", "exclusions"}
+                "request_limit", "tools", "write_tools", "exclusions", "connection"}
     if type(value) is not dict or set(value) != expected:
         raise ValueError("Invalid worker initialization fields")
     if type(value["backend"]) is not dict or set(value["backend"]) - {field.name for field in fields(BackendSpec)}:
         raise ValueError("Invalid private backend fields")
-    if value["backend"].get("backend_type") not in {"ollama", "kimi", "openrouter", "exo", "sonn"}:
-        raise ValueError("Worker requires an explicitly selected native provider")
+    provider = value["backend"].get("backend_type")
+    if provider in NATIVE_PROVIDERS:
+        if value["connection"] is not None:
+            raise ValueError("A native provider takes no connection")
+    elif is_connection_provider(provider):
+        # The host captured and checked it (workers.py); check it again here,
+        # since this process builds the backend from it.
+        if type(value["connection"]) is not dict:
+            raise ValueError("Worker requires its captured connection")
+        value["connection"] = team_connections.team_connection(value["connection"])
+        if backend_key(value["connection"]["id"]) != provider:
+            raise ValueError("Connection differs from the captured provider")
+    else:
+        raise ValueError("Worker requires an explicitly selected native provider or connection")
     if not value["backend"].get("model"):
         raise ValueError("Worker requires an explicit model")
     for key in ("workspace", "conversation_key", "prompt", "instructions", "role"):
@@ -181,7 +199,12 @@ def main(*, backend_factory=None) -> int:
         initial = _validate_initial(first["payload"])
         threading.Thread(target=channel.receive, daemon=True, name="swarm-host-control").start()
         spec = BackendSpec.from_dict(initial["backend"])
-        backend = backend_factory(spec) if backend_factory else spec.create_backend()
+        if backend_factory:
+            backend = backend_factory(spec)
+        elif initial["connection"] is not None:
+            backend = team_connections.create_backend(initial["connection"], spec)
+        else:
+            backend = spec.create_backend()
         if (getattr(backend, "name", None), getattr(backend, "model", None)) != (spec.backend_type, spec.model):
             raise ValueError("Constructed provider differs from the captured model")
         backend._supervised_single_request = True

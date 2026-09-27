@@ -23,6 +23,8 @@ _TOP_FIELDS = {"summary", "use_team", "work_items"}
 _ITEM_FIELDS = {"id", "objective", "role", "dependencies", "read_roots", "write_roots", "criteria"}
 _LOGICAL_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,79}\Z")
 _FENCE = re.compile(r"```(?:json)?\r?\n(.*)\r?\n```\Z", re.DOTALL)
+# One fenced JSON block inside prose ("I found both defects... ```json {...} ```").
+_EMBEDDED_FENCE = re.compile(r"```(?:json)?[ \t]*\r?\n(.*?)\r?\n[ \t]*```", re.DOTALL)
 _FILE_READERS = FILE_TOOL_NAMES - {"artifact_read"}
 
 
@@ -153,7 +155,7 @@ def _scoped_id(run_id: str, logical_id: str, namespace: str | None = None) -> st
 
 def parse_plan(
     text: str, *, run_id: str, policy: PolicyProfile, model: ModelSelection,
-    allowed_criteria: frozenset[str], namespace: str | None = None,
+    allowed_criteria: frozenset[str], namespace: str | None = None, allow_no_work: bool = False,
 ) -> CoordinatorPlan:
     """Parse one strict JSON proposal and admit its complete requested scopes.
 
@@ -189,6 +191,12 @@ def parse_plan(
         if fence is None:
             raise PlanRejected("Only one complete JSON fence is permitted")
         source = fence.group(1)
+    elif not source.startswith("{"):
+        # Prose around exactly one fenced block is still unambiguous; two
+        # blocks, or none, leave the whole text to be the JSON object.
+        fences = _EMBEDDED_FENCE.findall(source)
+        if len(fences) == 1:
+            source = fences[0]
     try:
         proposal = json.loads(source, object_pairs_hook=_object, parse_constant=_constant, parse_float=_float)
     except (json.JSONDecodeError, RecursionError, ValueError) as exc:
@@ -201,9 +209,12 @@ def parse_plan(
     raw_items = proposal["work_items"]
     if type(use_team) is not bool:
         raise PlanRejected("The team choice must be an explicit boolean")
-    if type(raw_items) is not list or not 1 <= len(raw_items) <= 256:
+    # A follow-up (namespace) may propose no more work: the objective is met,
+    # and its summary is the final report. So may an orchestrator that owns
+    # its team (allow_no_work) and could answer without workers.
+    if type(raw_items) is not list or len(raw_items) > 256 or (not raw_items and namespace is None and not allow_no_work):
         raise PlanRejected("A coordinator plan must contain 1 to 256 work items")
-    if not use_team and len(raw_items) != 1:
+    if raw_items and not use_team and len(raw_items) != 1:
         raise PlanRejected("A serial recommendation requires exactly one work item")
     specifications: dict[str, tuple[dict[str, Any], AssignmentGrant]] = {}
     for item in raw_items:

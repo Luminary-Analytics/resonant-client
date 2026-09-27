@@ -261,7 +261,7 @@ def test_saved_conversation_captured_before_async_work_and_foreign_target_reject
     assert not (tmp_path / "state").exists()
     asyncio.run(swarming.command(state, send, {"request_id": "view", "project": str(workspace), "session_id": session_id}))
     assert "error" not in replies[-1]
-    assert replies[-1]["model"] == {"provider": "ollama", "model": "chosen"}
+    assert replies[-1]["model"] == {"provider": "ollama", "model": "chosen", "label": "ollama"}
 
 
 def test_chat_and_model_controls_do_not_replace_active_swarm():

@@ -19,12 +19,26 @@ from .models import SwarmError
 
 
 NATIVE_PROVIDERS = frozenset({"ollama", "exo", "kimi", "openrouter", "sonn"})
+# A Lumi connection's backend name (lumi/connections.py). The name alone
+# grants nothing: swarming/connections.py admits only OpenAI-compatible
+# connections, which run through the same guarded Chat Completions adapter.
+_CONNECTION_PROVIDER = re.compile(r"conn-[a-z0-9][a-z0-9-]{0,39}")
 _DEVICE = re.compile(r"(?:con|prn|aux|nul|com[0-9¹²³]+|lpt[0-9¹²³]+)(?:\..*)?", re.I)
 _DIGEST = re.compile(r"[0-9a-f]{64}")
 
 
 class PolicyDenied(SwarmError):
     """A requested model, tool, or lexical scope exceeds effective policy."""
+
+
+def is_connection_provider(name: Any) -> bool:
+    """Whether ``name`` is a connection's backend name, ``conn-<id>``."""
+    return type(name) is str and _CONNECTION_PROVIDER.fullmatch(name) is not None
+
+
+def team_provider(name: Any) -> bool:
+    """A native provider protocol or a connection; never a CLI tool loop."""
+    return name in NATIVE_PROVIDERS or is_connection_provider(name)
 
 
 def _positive_version(value: int) -> None:
@@ -143,8 +157,8 @@ class ModelSelection:
     def __post_init__(self) -> None:
         _identifier(self.provider)
         _identifier(self.model)
-        if self.provider not in NATIVE_PROVIDERS:
-            raise PolicyDenied("Only native provider protocols are eligible; CLI workers are unavailable")
+        if not team_provider(self.provider):
+            raise PolicyDenied("Only native provider protocols and connections are eligible; CLI workers are unavailable")
 
     def to_dict(self) -> dict[str, Any]:
         """Return only the explicit non-secret model identity."""
@@ -172,8 +186,8 @@ class PolicyProfile:
         _positive_version(self.version)
         _names(self.allowed_tools)
         _names(self.allowed_providers)
-        if not self.allowed_providers <= NATIVE_PROVIDERS:
-            raise ValueError("Policy profiles support native provider protocols only")
+        if not all(team_provider(provider) for provider in self.allowed_providers):
+            raise ValueError("Policy profiles support native provider protocols and connections only")
         if type(self.max_workers) is not int or not 1 <= self.max_workers <= 4:
             raise ValueError("Visible worker slots must be between 1 and 4")
         object.__setattr__(self, "read_roots", normalize_scopes(self.read_roots))

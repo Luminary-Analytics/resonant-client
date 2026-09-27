@@ -33,6 +33,9 @@ SCENARIOS = ("csv_export", "serial_control", "independent_investigation", "inter
 MODES = {"single": "single_agent", "current-batch": "batch_delegation", "swarm": "swarm"}
 TOOLS = ("file_read", "file_write", "file_edit", "glob", "grep", "artifact_read", "swarm_status", "swarm_send", "swarm_receive")
 READ_TOOLS = tuple(tool for tool in TOOLS if tool not in {"file_write", "file_edit"})
+# Native adapters, plus any OpenAI-compatible Chat Completions endpoint (NVIDIA
+# NIM, vLLM, a gateway), run as a Lumi connection (engine/swarming/connections.py).
+PROVIDERS = ("ollama", "exo", "kimi", "openrouter", "sonn", "openai-compatible")
 UNSUPPORTED_BATCH = "Native task_batch exists, but this harness has no equivalent bounded accounting/integration adapter; no batch execution is emulated."
 
 
@@ -74,8 +77,8 @@ def prepare_protocol(*, provider, model, endpoint, request_limit, wall_seconds, 
     """Validate predeclared inputs; does not construct a backend or call a model."""
     pack = fixture_pack()
     fixtures = pack.verify_pack()
-    if provider not in {"ollama", "exo", "kimi", "openrouter", "sonn"} or not isinstance(model, str) or not model.strip():
-        raise ValueError("Select an explicit supported native provider and model")
+    if provider not in PROVIDERS or not isinstance(model, str) or not model.strip():
+        raise ValueError("Select an explicit supported provider and model")
     url = urlsplit(endpoint)
     if url.scheme not in {"http", "https"} or not url.hostname or url.username or url.password or url.query or url.fragment:
         raise ValueError("An explicit HTTP endpoint without embedded credentials/query/fragment is required")
@@ -263,6 +266,39 @@ def _unresolved_effects(report):
                for row in report[category])
 
 
+def _backend(protocol, endpoint, api_key):
+    """The captured spec and any connection; an OpenAI-compatible endpoint runs as a connection."""
+    from lumi.connections import backend_key
+    from lumi.engine.swarming.connections import team_connection
+    from lumi.gui.runtime import BackendSpec
+
+    provider = protocol["provider"]
+    if provider == "openai-compatible":
+        connection = team_connection({"id": "benchmark", "name": "Benchmark endpoint", "type": "openai-compatible",
+                                      "base_url": endpoint, "auth": "bearer" if api_key else "none"})
+        name = backend_key(connection["id"])
+        return (BackendSpec(name, protocol["model"], api_key=api_key, thinking_mode=protocol["thinking_mode"]),
+                {name: connection})
+    return (BackendSpec(provider, protocol["model"], url=endpoint if provider == "ollama" else "",
+                        base_url=endpoint if provider != "ollama" else "", api_key=api_key,
+                        thinking_mode=protocol["thinking_mode"]), {})
+
+
+def _event_log(events, api_key):
+    """Worker events for diagnosis: long text shortened, and the key never kept."""
+    def clip(value):
+        if isinstance(value, str):
+            value = value.replace(api_key, "[redacted]") if api_key else value
+            return value if len(value) <= 2000 else value[:2000] + f"... [{len(value) - 2000} more characters]"
+        if isinstance(value, dict):
+            return {key: clip(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [clip(item) for item in value]
+        return value
+    kept = [event for event in events if event.get("event") not in {"text.delta", "thinking.delta", "context.state"}]
+    return {"note": "Local diagnosis only: may contain fixture file contents and model text", "events": clip(kept)}
+
+
 def _configuration(protocol, plan):
     """The exact comparable configuration; platform observations are additional."""
     return {"actors": [{"role": f"guarded_{'writer' if item['write_roots'] else 'reader'}_{index + 1}", "provider": protocol["provider"],
@@ -287,7 +323,6 @@ def execute_case(protocol, case, output, *, endpoint, api_key="", backend_factor
     from lumi.engine.swarming.store import SwarmStore
     from lumi.engine.swarming.supervisor import SwarmSupervisor
     from lumi.engine.swarming.workers import SwarmWorkerRunner
-    from lumi.gui.runtime import BackendSpec
 
     pack = fixture_pack()
     scenario_id, mode, run_id = case["scenario"], case["mode"], case["run_id"]
@@ -309,24 +344,21 @@ def execute_case(protocol, case, output, *, endpoint, api_key="", backend_factor
     read_only = scenario_id == "independent_investigation"
     tools = READ_TOOLS if read_only else TOOLS
     ceiling = 1 if protocol["resource_control"] == "equal_resource" else count
-    spec = BackendSpec(protocol["provider"], protocol["model"],
-        url=endpoint if protocol["provider"] == "ollama" else "",
-        base_url=endpoint if protocol["provider"] != "ollama" else "",
-        api_key=api_key, thinking_mode=protocol["thinking_mode"])
+    spec, connections = _backend(protocol, endpoint, api_key)
     store = SwarmStore(temporary / "state" / "swarm.sqlite3")
     supervisor = SwarmSupervisor(store)
     scope = Scope.personal("benchmark-owner", "fixture-project", run_id)
     started, started_clock = _now(), time.monotonic()
     authority = supervisor.create(scope, supervisor_id=uuid.uuid4().hex, objective=pack.verify_pack()[scenario_id]["prompt"],
         request_limit=protocol["request_limit"], run_id=run_id, lease_seconds=60,
-        policy=PolicyProfile(1, frozenset(tools), frozenset({protocol["provider"]}), max_workers=count,
+        policy=PolicyProfile(1, frozenset(tools), frozenset({spec.backend_type}), max_workers=count,
                              write_roots=() if read_only else tuple(pack.verify_pack()[scenario_id]["editable"])))
     integration = SwarmIntegration(store, project, root=temporary / "worktrees")
     arguments = ({"writer_process_factory": process_factory} if process_factory is not None else
                  {"writer_process_factory": None} if backend_factory is not None else {})
     runner = SwarmWorkerRunner(supervisor, authority, project,
         backend_factory=backend_factory or (lambda selected: selected.create_backend()), integration=integration,
-        managed_readers=process_factory is not None or backend_factory is None,
+        managed_readers=process_factory is not None or backend_factory is None, connections=connections,
         project_instructions="Controlled benchmark project. Implement the assignment only; do not claim verification or acceptance.", **arguments)
     each, extra = divmod(protocol["request_limit"], count)
     allowances = {item["id"]: each + (index < extra) for index, item in enumerate(plan)}
@@ -423,6 +455,9 @@ def execute_case(protocol, case, output, *, endpoint, api_key="", backend_factor
     finally:
         timer.cancel()
         scheduler.close()
+        # The workers' own event stream (keys already redacted by the runner):
+        # the only place a live failure's tool calls and error text survive.
+        events = runner.poll(limit=1000)["events"]
         controls = runner.close(timeout=3)
         timer.join(timeout=3)
 
@@ -461,6 +496,7 @@ def execute_case(protocol, case, output, *, endpoint, api_key="", backend_factor
         "outcome": outcome, "verification": verification}
     pack.validate_run_record(record)
     _write(directory / "runtime-report.json", report)
+    _write(directory / "worker-events.json", _event_log(events, api_key))
     _write(directory / "run.json", record)
     _write(directory / "observations.json", {"error_type": error, "stop_errors": stop_errors,
         "runtime_state": snapshot["run"]["state"],
@@ -598,7 +634,8 @@ def main(argv=None):
         print(_json(result))
         return 0 if result["accepted"] else 1
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--provider", required=True)
+    parser.add_argument("--provider", choices=PROVIDERS, required=True,
+                        help="openai-compatible: any Chat Completions endpoint, such as NVIDIA NIM")
     parser.add_argument("--model", required=True)
     parser.add_argument("--endpoint", required=True)
     parser.add_argument("--request-limit", type=int, required=True)

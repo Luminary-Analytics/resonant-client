@@ -1,0 +1,120 @@
+/* An orchestrated team in the full source app: real WebSocket, runtime and store; inference scripted.
+ * node tests/swarm_autonomous.browser.cjs [absolute-path-to-playwright-module]
+ * Optional SWARM_PYTHON and SWARM_BROWSER_EXECUTABLE select local runtimes.
+ */
+// The app page needs a one-time launch code (lumi/gui/local_access.py); the
+// fixture server mints one per page load.
+const fixtureLaunch=async info=>(await (await fetch(info.url+'/__fixture__/launch')).json()).url;
+const {test} = require('node:test');
+const assert = require('node:assert/strict');
+const {spawn} = require('node:child_process');
+const fs = require('node:fs');
+const path = require('node:path');
+const os = require('node:os');
+const {chromium} = require(process.argv[2] || 'playwright');
+
+test('The orchestrator runs a team from the panel and reports back', {timeout: 90000}, async () => {
+    const output = fs.mkdtempSync(path.join(os.tmpdir(), 'lumi-swarm-autonomous-browser-'));
+    const server = spawn(process.env.SWARM_PYTHON || 'python', [path.join(__dirname,'fixtures/swarming_ui_server.py'), output, '--autonomous'],
+        {cwd:output, windowsHide:true, stdio:['ignore','pipe','pipe']});
+    let stdout='', stderr='', info, browser, page;
+    server.stdout.on('data', chunk=>{stdout+=chunk;});
+    server.stderr.on('data', chunk=>{stderr+=chunk;});
+    const exited = new Promise(resolve=>server.once('exit',(code,signal)=>resolve({code,signal})));
+    try {
+        for (let i=0;i<150;i++) {
+            const line=stdout.split(/\r?\n/).find(line=>line.startsWith('{"url":'));
+            if(line){info=JSON.parse(line);break;}
+            if(server.exitCode!==null)throw Error('Fixture server failed: '+stderr);
+            await new Promise(resolve=>setTimeout(resolve,100));
+        }
+        assert.ok(info,'Fixture server ready metadata missing: '+stderr);
+        browser=await chromium.launch(process.env.SWARM_BROWSER_EXECUTABLE
+            ? {headless:true,executablePath:process.env.SWARM_BROWSER_EXECUTABLE} : {headless:true,channel:'msedge'});
+        page=await browser.newPage({viewport:{width:1180,height:900}});
+        page.setDefaultTimeout(20000);
+        const errors=[];
+        const starts=[];
+        page.on('pageerror',error=>errors.push(error.message));
+        page.on('websocket',socket=>socket.on('framesent',frame=>{
+            const data=JSON.parse(frame.payload);
+            if(data.command==='swarm'&&data.action==='start')starts.push(data);
+        }));
+        await page.route('**/*',route=>new URL(route.request().url()).hostname==='127.0.0.1'?route.continue():route.abort());
+        await page.goto(await fixtureLaunch(info));
+        await page.waitForFunction(session=>window.app?.currentSessionId===session,info.session_id);
+        await page.getByRole('button',{name:'Team',exact:true}).click();
+        await page.getByText('ollama · fixture-native',{exact:true}).waitFor();
+        await page.getByLabel('Enable team preview').check();
+        await page.waitForFunction(()=>app._swarmState?.enabled===true);
+        await page.getByLabel('Planning approach').selectOption('coordinator');
+        const autonomy=page.getByLabel('Let the orchestrator run the team');
+        // Off until chosen; the rounds field appears only with it.
+        assert.equal(await autonomy.isChecked(),false);
+        assert.equal(await page.getByLabel('Orchestrator rounds').isVisible(),false);
+        await autonomy.focus();
+        await page.keyboard.press('Space');
+        assert.equal(await autonomy.isChecked(),true);
+        await page.getByLabel('Orchestrator rounds').fill('2');
+        await page.getByText('findings it uses are marked accepted by the orchestrator, not reviewed by you',{exact:false}).waitFor();
+        await page.getByLabel('Team objective').fill('Check how the CSV export handles delimiters');
+        await page.getByLabel('Total model requests').fill('20');
+        await page.getByRole('button',{name:'Start orchestrated team'}).click();
+        const report=page.locator('[data-swarm="orchestrator-report-text"]');
+        await report.waitFor({state:'visible',timeout:45000});
+        const text=await report.innerText();
+        assert.match(text,/^Final report: quoted CSV fields preserve commas\. The orchestrator read 2 findings and 1 worker question/);
+        await page.waitForFunction(()=>app._swarmState?.run?.run?.state==='completed');
+        assert.equal(starts.length,1);
+        assert.deepEqual(starts[0].autonomy,{rounds:2});
+        assert.equal(starts[0].plan_mode,'coordinator');
+        // The team's own messages, readable in the panel.
+        const summary=page.locator('[data-swarm="messages-summary"]');
+        assert.equal(await summary.innerText(),'Team messages (1)');
+        await summary.click();
+        await page.getByText('Worker 1 → Orchestrator · Question',{exact:true}).waitFor();
+        await page.getByText('Should the CSV export also be checked for semicolons?',{exact:true}).waitFor();
+        const status=await page.locator('[data-swarm="orchestrator-status"]').innerText();
+        assert.match(status,/The orchestrator finished the objective\./);
+        // The last orchestrator turn reads as its report, and decisions aren't attributed to the owner.
+        await page.getByRole('heading',{name:'Orchestrator report'}).waitFor();
+        await page.getByText('No more work proposed: this is the final report.',{exact:true}).waitFor();
+        assert.equal(await page.getByText(/^Owner decision:/).count(),0);
+        assert.equal(await page.getByText(/^Decision: Accepted by the team.s orchestrator/).count(),2);
+        // Worker cards name the coordinator as the orchestrator in this team.
+        await page.locator('.swarm-worker summary').filter({hasText:'Orchestrator'}).first().waitFor();
+        // Phone width: the report and messages wrap inside the panel.
+        await page.setViewportSize({width:390,height:844});
+        const overflow=await page.evaluate(()=>{
+            const body=document.querySelector('.swarm-body');
+            return {scroll:body.scrollWidth,client:body.clientWidth};
+        });
+        assert.ok(overflow.scroll<=overflow.client+1,'Team panel scrolls sideways at phone width: '+JSON.stringify(overflow));
+        await page.screenshot({path:path.join(output,'orchestrated-team.png'),fullPage:false});
+        const evidence=await (await fetch(info.url+'/__fixture__/evidence')).json();
+        const run=evidence.runs[0].run;
+        assert.equal(run.run.state,'completed');
+        assert.deepEqual(run.coordinator_proposals.map(row=>row.state),['accepted','accepted']);
+        assert.ok(run.check_receipts.length===2&&run.check_receipts.every(row=>row.executor_id.startsWith('autonomy:')));
+        assert.equal(evidence.followup_inputs.length,2);
+        assert.equal(evidence.followup_inputs[1].untrusted_messages_to_orchestrator.length,1);
+        assert.deepEqual(errors,[]);
+        fs.writeFileSync(path.join(output,'evidence.json'),JSON.stringify(evidence,null,2));
+        console.log('Orchestrated team browser evidence:',output);
+    } catch(error) {
+        if(page) {
+            await page.screenshot({path:path.join(output,'failure.png')}).catch(()=>{});
+            fs.writeFileSync(path.join(output,'failure.txt'),await page.locator('body').innerText().catch(()=>''));
+        }
+        console.error('Browser failure evidence:',output);
+        throw error;
+    } finally {
+        if(browser)await browser.close();
+        if(info)await fetch(info.url+'/__fixture__/shutdown',{method:'POST'}).catch(()=>{});
+        let cleanupTimer;
+        const result=await Promise.race([exited,new Promise(resolve=>{cleanupTimer=setTimeout(()=>resolve(null),5000);})]);
+        clearTimeout(cleanupTimer);
+        if(!result)server.kill();
+        fs.writeFileSync(path.join(output,'server.log'),stdout+'\n'+stderr);
+    }
+});

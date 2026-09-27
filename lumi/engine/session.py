@@ -44,6 +44,7 @@ from .tools import (
 from .agents import get_agent_type
 from .agent_runtime import AgentHandoff, AgentRegistry, AgentStatus
 from .artifacts import ArtifactKind, ArtifactStore
+from .execution_guard import ExecutionBoundary, ExecutionGuard, ExecutionGuardError
 from .repair_progress import RepairProgress, recovery_guidance
 from .compression import (
     CONTEXT_HEADROOM_RATIO,
@@ -579,9 +580,26 @@ class Session:
         pause_event: Optional[threading.Event] = None,
         max_model_requests: Optional[int] = None,
         action_guard=None,
+        execution_guard: ExecutionGuard | None = None,
+        guarded_tool_handlers: dict[str, Callable] | None = None,
     ):
         self.backend = backend
         self.action_guard = action_guard
+        if execution_guard is not None and action_guard is not None:
+            raise ValueError("Combining supervised execution with employee action authority is unsupported")
+        self._guarded_tool_handlers = dict(guarded_tool_handlers or {})
+        if self._guarded_tool_handlers and execution_guard is None:
+            raise ValueError("Scoped runtime tools require an execution guard")
+        if self._guarded_tool_handlers and (
+            allowed_tools is None or not set(self._guarded_tool_handlers) <= {
+                _tool_definition_name(tool) for tool in allowed_tools
+            } or not all(callable(handler) for handler in self._guarded_tool_handlers.values())
+        ):
+            raise ValueError("Every scoped runtime handler requires an explicit tool schema")
+        self._execution_boundary = (
+            ExecutionBoundary(execution_guard, runtime_tools=set(self._guarded_tool_handlers))
+            if execution_guard is not None else None
+        )
         try:
             parsed_max_steps = int(max_steps) if max_steps is not None else 0
         except (TypeError, ValueError):
@@ -815,6 +833,10 @@ class Session:
     @property
     def tools(self) -> list[dict]:
         """Get the tools available for this session."""
+        if self._execution_boundary:
+            source = AGENT_TOOLS if self._allowed_tools is None else self._allowed_tools
+            names = self._execution_boundary.file_tools | self._execution_boundary.runtime_tools
+            return [tool for tool in source if _tool_definition_name(tool) in names]
         if self._allowed_tools is not None:
             return self._allowed_tools
         base = AGENT_TOOLS
@@ -1009,11 +1031,105 @@ class Session:
     def should_plan(self, user_msg: str) -> bool:
         """Use a quick LLM classification to decide if this request needs planning."""
         try:
+            self._guarded_no_hooks()
+            if not callable(getattr(self.backend, "classify", None)):
+                return False  # Unsupported classification does not reserve or start a request.
             prompt = self._CLASSIFY_PROMPT.format(user_msg=user_msg)
-            result = self.backend.classify(prompt, max_tokens=20)
+            result = (
+                self._execution_boundary.classify(self.backend, prompt, max_tokens=20)
+                if self._execution_boundary else self.backend.classify(prompt, max_tokens=20)
+            )
             return "COMPLEX" in result.upper()
+        except ExecutionGuardError:
+            raise
         except Exception:
+            if self._execution_boundary:
+                self._execution_boundary.ensure_open()
             return False  # On failure, skip planning
+
+    def _model_stream(self, *, purpose="primary", backend=None, **kwargs):
+        """Account for native model input without changing provider identity."""
+        backend = backend or self.backend
+        if self._execution_boundary:
+            self._guarded_no_hooks()
+            # Providers consume the captured request, not the live history that
+            # steering, GUI callbacks or another thread can modify after commit.
+            captured = copy.deepcopy({key: value for key, value in kwargs.items() if key != "cancel_event"})
+            kwargs = {**captured, **({"cancel_event": kwargs["cancel_event"]} if "cancel_event" in kwargs else {})}
+        def invoke():
+            if purpose == "primary":
+                return backend.stream(**kwargs)
+            from .request_purpose import auxiliary_stream
+            return auxiliary_stream(backend, purpose, **kwargs)
+        if self._execution_boundary is None:
+            return invoke()
+        inputs = {key: value for key, value in kwargs.items() if key != "cancel_event"}
+        return self._execution_boundary.stream(backend, purpose=purpose, inputs=inputs, invoke=invoke)
+
+    def _guarded_no_hooks(self) -> None:
+        """Unqualified lifecycle hooks cannot create effects outside receipts."""
+        if self._execution_boundary and self.hook_runner is not None:
+            self._execution_boundary.reject("Lifecycle hooks are unsupported in guarded execution")
+        if self._execution_boundary and (
+            self.checkpoint_store is not None or self.auto_lint_enabled or self.auto_test_enabled
+        ):
+            self._execution_boundary.reject("Unbound checkpoints and automatic check sidecars are unsupported in guarded execution")
+
+    def _guarded_tool_args(self, name: str, arguments: dict) -> dict:
+        """Check the file-only boundary before hooks and after argument changes."""
+        from .sandbox import SandboxViolation
+
+        boundary = self._execution_boundary
+        self._guarded_no_hooks()
+        allowed = None if self._allowed_tools is None else {
+            tool.get("function", {}).get("name", "") for tool in self._allowed_tools
+        }
+        # Name validation precedes normalization and every special dispatcher.
+        boundary.check_tool(name, arguments, allowed_names=allowed)
+        if name in {"file_read", "glob", "grep", "file_write", "file_edit"} and (
+            self.sandbox is None or not self.sandbox.enabled or not self.project_path
+        ):
+            boundary.reject("Guarded file tools require a captured workspace and enabled sandbox")
+        try:
+            arguments = self._prepare_workspace_tool_args(name, arguments)
+        except (SandboxViolation, ToolBoundaryViolation) as exc:
+            boundary.reject(f"Guarded tool boundary rejected arguments: {exc}")
+        boundary.check_tool(name, arguments, allowed_names=allowed)
+        return arguments
+
+    def _execute_guarded_tool(self, name: str, arguments: dict, call_id: str):
+        """Observe native file, scoped artifact and runtime data-tool results."""
+        from .tools import ToolResult
+
+        def invoke():
+            if name in self._guarded_tool_handlers:
+                return self._guarded_tool_handlers[name](copy.deepcopy(arguments))
+            if name == "artifact_read":
+                try:
+                    reader = getattr(self._execution_boundary.guard, "artifact_reader", None)
+                    if reader is None:
+                        self._execution_boundary.reject("Guarded artifact reads require an attempt-bound reader")
+                    return ToolResult(output=reader.read_text_page(**arguments))
+                except (ValueError, OSError) as exc:
+                    return ToolResult(output=str(exc), is_error=True)
+            # The same boundaries as an ordinary tool call (see _execute_tools):
+            # searches leave out excluded files, sandbox roots and project trust apply.
+            return execute_tool(
+                name, arguments, cancel_event=self._cancel_event,
+                project_path=self.project_path or "", settings=getattr(self, "_settings_ref", None),
+                session_name=self.browser_session_name,
+                exclusions=self.exclusions,
+                sandbox_roots=self._sandbox_roots(),
+                project_trusted=self.project_content_trusted,
+                owned_process_group=getattr(self._execution_boundary.guard, "owns_process_group", False) is True,
+            )
+
+        allowed = None if self._allowed_tools is None else {
+            tool.get("function", {}).get("name", "") for tool in self._allowed_tools
+        }
+        return self._execution_boundary.execute_tool(
+            name, call_id, arguments, allowed_names=allowed, invoke=invoke,
+        )
 
     def clear(self):
         """Clear conversation history."""
@@ -1068,7 +1184,7 @@ class Session:
         """Clear any pending cancellation request before starting a new run."""
         self._cancel_event.clear()
 
-    def steer(self, text: str, *, message_id: str = "") -> bool:
+    def steer(self, text: str, *, message_id: str = "", input_origin: str = "human") -> bool:
         """Queue live user direction for the current agentic run.
 
         Steering is deliberately independent from cancellation. A backend
@@ -1079,11 +1195,16 @@ class Session:
         direction = str(text or "").strip()
         if not direction:
             return False
+        if input_origin not in {"human", "generated"}:
+            raise ValueError("Input origin must be human or generated")
         with self._steering_lock:
-            self._steering_queue.put({
+            item = {
                 "message_id": str(message_id or ""),
                 "text": direction,
-            })
+            }
+            if input_origin == "generated":
+                item["input_origin"] = "generated"
+            self._steering_queue.put(item)
         return True
 
     def _drain_steering(self) -> list[dict[str, str]]:
@@ -1686,6 +1807,7 @@ class Session:
         on_choice: Optional[Callable] = None,
         on_user_input: Optional[Callable] = None,
         images: Optional[list[tuple[bytes, str]]] = None,
+        input_origin: str = "human",
     ) -> Iterator[dict]:
         """Run one turn (see ``_run_turn``), recording its usage and audit trail.
 
@@ -1717,7 +1839,8 @@ class Session:
         outcome = "completed"
         written_paths: dict[str, str] = {}
         trace = self._begin_trace_turn()
-        turn = self._run_turn(user_msg, on_permission, on_choice, on_user_input, images)
+        turn = self._run_turn(user_msg, on_permission, on_choice, on_user_input, images,
+                              input_origin=input_origin)
         try:
             for event in turn:
                 # A delegated worker's events, passed on for display, were
@@ -1962,6 +2085,7 @@ class Session:
         on_choice: Optional[Callable] = None,
         on_user_input: Optional[Callable] = None,
         images: Optional[list[tuple[bytes, str]]] = None,
+        input_origin: str = "human",
     ) -> Iterator[dict]:
         """
         Run the agentic loop for a user message.
@@ -1981,9 +2105,15 @@ class Session:
                           on a threading.Event until the GUI replies.
                           If None, await_user returns "(no user available)".
             images: Optional list of (image_bytes, media_type) for multimodal input
+            input_origin: Human input by default; runtime assignments use generated.
         """
         # Delegated workers ask through this turn's prompt (see _execute_task).
         self._permission_prompt = on_permission
+        if input_origin not in {"human", "generated"}:
+            raise ValueError("Input origin must be human or generated")
+        if self._execution_boundary:
+            self._execution_boundary.check_backend(self.backend)
+            self._guarded_no_hooks()
         turn_text_blocks: list[str] = []
         turn_tool_names: list[str] = []
         turn_successful_tools: list[str] = []
@@ -2086,6 +2216,8 @@ class Session:
             "role": "user",
             "content": build_user_content(user_msg, images),
         }
+        if input_origin == "generated":
+            user_entry["input_origin"] = "generated"
         if input_artifacts:
             user_entry["artifacts"] = [artifact.to_dict() for artifact in input_artifacts]
         self.conversation_history.append(user_entry)
@@ -2129,6 +2261,13 @@ class Session:
             directions = []
             for item in messages:
                 direction = item["text"]
+                if item.get("input_origin") == "generated":
+                    self.conversation_history.append({
+                        "role": "user", "input_origin": "generated",
+                        **({"message_id": item["message_id"]} if item["message_id"] else {}),
+                        "content": f"<runtime_message>\n{direction}\n</runtime_message>",
+                    })
+                    continue
                 directions.append(direction)
                 self.conversation_history.append({
                     "role": "user",
@@ -2139,9 +2278,10 @@ class Session:
                     ),
                 })
             combined = "\n\n".join(directions)
-            active_goal = (
-                f"{active_goal}\n\nAdditional live user direction:\n{combined}"
-            )
+            if directions:
+                active_goal = (
+                    f"{active_goal}\n\nAdditional live user direction:\n{combined}"
+                )
             # The steer is already in conversation_history. An empty current
             # message tells provider adapters to continue directly from that
             # appended state instead of duplicating the direction and goal.
@@ -2471,6 +2611,9 @@ class Session:
                                     "summary": summary,
                                 },
                             )
+                except ExecutionGuardError as exc:
+                    yield make_event(EngineEvent.ERROR, message=str(exc), code="execution_guard_blocked")
+                    return
                 except Exception as e:
                     logger.warning(f"Context compression failed: {e}")
             if self.cancel_requested:
@@ -2542,17 +2685,22 @@ class Session:
             # hashes the name and arguments), so the same write in a later
             # response or turn must still get its own checkpoint.
             self._last_checkpoint_tool_call = ""
+            model_stream = None
             try:
                 model_requests += 1
-                for event_type, data in self.backend.stream(
+                model_stream = self._model_stream(
                     user_msg=current_msg,
                     conversation_history=self.conversation_history,
                     instructions=instructions,
                     tools=[] if is_planning else self.provider_tools,
                     max_tokens=self.max_tokens,
                     cancel_event=self._cancel_event,
-                ):
+                )
+                for event_type, data in model_stream:
                     if self.cancel_requested:
+                        if self._execution_boundary:
+                            model_stream.close()
+                            model_stream = None
                         yield from self._cancelled_events(total_start, exec_step)
                         return
                     if event_type == EVENT_TEXT_DELTA:
@@ -2700,12 +2848,24 @@ class Session:
                                     total_steps=exec_step,
                                     **completion_payload(elapsed, exec_step))
                     return
+            finally:
+                if self._execution_boundary and model_stream is not None:
+                    close_stream = getattr(model_stream, "close", None)
+                    if callable(close_stream):
+                        close_stream()
 
             if fallback_retry:
                 # The same step again, now with the fallback model.
                 continue
 
             step_elapsed = time.time() - step_start
+
+            if self._execution_boundary:
+                try:
+                    self._guarded_no_hooks()
+                except ExecutionGuardError as exc:
+                    yield make_event(EngineEvent.ERROR, message=str(exc), code="execution_guard_blocked")
+                    return
 
             # ── Process collected text ──
             full_text = "".join(collected_text).strip()
@@ -2805,7 +2965,10 @@ class Session:
                         selected = choices[0]
 
                     self.conversation_history.append({"role": "assistant", "content": full_text})
-                    self.conversation_history.append({"role": "user", "content": selected})
+                    choice_entry = {"role": "user", "content": selected}
+                    if self._execution_boundary and on_choice is None:
+                        choice_entry["input_origin"] = "generated"
+                    self.conversation_history.append(choice_entry)
                     current_msg = selected
                     tool_calls = []
 
@@ -2867,6 +3030,12 @@ class Session:
                 call_id = item.get("call_id", "")
                 fn_args = item.get("_normalized_arguments", {})
                 argument_error = item.get("_argument_error", "")
+                if self._execution_boundary:
+                    try:
+                        fn_args = self._guarded_tool_args(fn_name, fn_args)
+                    except ExecutionGuardError as exc:
+                        yield make_event(EngineEvent.ERROR, message=str(exc), code="execution_guard_blocked")
+                        return
                 if self.action_guard is not None:
                     try:
                         self.action_guard.validate_tool(fn_name)
@@ -3045,6 +3214,14 @@ class Session:
                         "content": result_output,
                     })
                     continue
+
+                if self._execution_boundary:
+                    try:
+                        fn_args = self._guarded_tool_args(fn_name, fn_args)
+                        fn_args_str = json.dumps(fn_args, ensure_ascii=False, sort_keys=True)
+                    except ExecutionGuardError as exc:
+                        yield make_event(EngineEvent.ERROR, message=str(exc), code="execution_guard_blocked")
+                        return
 
                 # Commands the organization's policy lists also need a second
                 # person's approval in Lumi Cloud (engine/second_approval.py).
@@ -3397,7 +3574,13 @@ class Session:
                         })
                         continue
 
-                    if fn_name == "artifact_read":
+                    if self._execution_boundary:
+                        try:
+                            result = self._execute_guarded_tool(fn_name, fn_args, call_id)
+                        except Exception as exc:
+                            yield make_event(EngineEvent.ERROR, message=str(exc), code="execution_guard_unresolved")
+                            return
+                    elif fn_name == "artifact_read":
                         from .tools import ToolResult
                         try:
                             if self.artifact_store is None:

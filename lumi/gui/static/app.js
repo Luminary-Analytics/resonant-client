@@ -462,6 +462,7 @@ class LumiApp {
         }
 
         this.bindEvents();
+        this.bindSwarmPanel();
         this._bindMenuBar();
         this.showSessionSkeletons();
         this.connect();
@@ -493,6 +494,7 @@ class LumiApp {
             this.reconnectAttempts = 0;
             this._setSystemStatus('connected', 'Connected');
             this.ws.send(JSON.stringify({ command: 'init' }));
+            this.swarmConnectionChanged(true);
         };
 
         this.ws.onmessage = (e) => {
@@ -504,6 +506,7 @@ class LumiApp {
         };
 
         this.ws.onclose = () => {
+            this.swarmConnectionChanged(false);
             this.sonnAccount = null;
             this._sonnAccountPending = false;
             this._renderAccountMenu();
@@ -3572,6 +3575,9 @@ class LumiApp {
         }
 
         switch (type) {
+            case 'swarm_state':
+                this.receiveSwarmState(event);
+                break;
             case 'employee_task_state':
                 this.receiveEmployeeTaskState(event);
                 break;
@@ -13731,6 +13737,9 @@ applyMixin(LumiApp.prototype, window.LumiAutonomousView, 'autonomous-view');
 applyMixin(LumiApp.prototype, window.LumiSettingsView, 'settings-view');
 applyMixin(LumiApp.prototype, window.LumiRunCards, 'run-cards');
 applyMixin(LumiApp.prototype, window.LumiEmployeeTasks, 'employee-tasks');
+    applyMixin(LumiApp.prototype, window.LumiSwarmView, 'swarm-view');
+    applyMixin(LumiApp.prototype, window.LumiCollaborationView, 'collaboration-view');
+    applyMixin(LumiApp.prototype, window.LumiManagedCollaborationView, 'managed-collaboration-view');
 
 
 // ═══════════════════════════════════════════════════════════════════

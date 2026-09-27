@@ -168,6 +168,17 @@ host enrollment and actual packaged/learned-benefit qualification remain open.
   runner built without it loads `HookRunner(settings)`. A new place that
   builds a Session for the person must attach their hooks too.
 
+- The Team preview (`engine/swarming/`, `gui/swarming.py`, `services/governance/`,
+  docs/swarming.md) is off by default and predates the organization controls
+  above. `service.policy_refusal` allows only reading, stopping, revoking and
+  recovery while a policy applies; workers get the project's file exclusions
+  (`SwarmRuntime.exclusions_for`), in-process and through the child contract.
+  Guarded workers refuse hooks and use only native providers. Close those gaps
+  (model, mode, shell, approval and sharing rules; hooks; other connections)
+  before relaxing the refusal. A worker child keeps its host channel off
+  standard input and output (`process_worker.stdio_pipes`), and code it runs
+  must not rely on an inherited stdin.
+
 ## Working in the codebase
 
 - Python 3.11+; follow existing type hints, public docstrings, and module style.

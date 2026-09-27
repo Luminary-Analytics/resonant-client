@@ -42,6 +42,11 @@ guidance needs an explicit status notice and a current replacement.
 
 - [Creative editor integrations](creative-editors.md): setup,
   ownership, permission boundaries, and explicitly scoped validation.
+- [Managed swarming setup](swarming-managed-setup.md), [personal collaboration](swarming-collaboration.md)
+  and [managed collaboration](swarming-managed-collaboration.md): active source
+  configuration and behavior contracts. The [live qualification plan](swarming-live-qualification.md)
+  records required external inputs and proposed limits, without authorizing calls
+  or implying completion of the [delivery gates](swarming-progress.md).
 
 - [AGENTS.md](../AGENTS.md)
 - [ARCHITECTURE.md](../ARCHITECTURE.md)
@@ -67,7 +72,25 @@ guidance needs an explicit status notice and a current replacement.
 - [docs/index.md](index.md): the documentation site's home page
 - [docs/packs.md](packs.md)
 - [docs/lumi-cloud.md](lumi-cloud.md)
+- [Team preview](swarming.md): current source behavior, with packaged and provider qualification still pending.
 - [docs/unreleased.md](unreleased.md)
+
+## Planning proposals
+
+- [Swarming plan](swarming-plan.md): September 26, 2026 proposal. The user selected
+  local swarming and within-session collaboration first, with enterprise controls
+  designed in and cross-session collaboration later. The feature is now tracked
+  in the [roadmap](../ROADMAP.md#planned-feature-swarming-2026-09-26). The user
+  authorized autonomous implementation through P7; P0/P1 source foundations are
+  checked and P2–P4 are in progress. Source
+  inspection informs the plan; it does not establish runtime qualification or release.
+- [Swarming implementation contracts](swarming-contracts.md) records the P0
+  ownership/protocol/storage decisions. [Delivery/evidence](swarming-progress.md)
+  tracks measured validation separately from remaining MVP gates.
+- [Swarming benchmarks](swarming-benchmarks.md): reproducible evaluation inputs,
+  external checks and comparison records; fixture self-tests are not pilot results.
+- [Swarming glossary](../CONTEXT.md): proposed domain language. These documents do
+  not resume the paused AI Employee work, learning, spending, or heartbeat.
 
 ## Historical plans and subsystem records
 

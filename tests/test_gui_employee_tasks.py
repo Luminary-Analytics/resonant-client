@@ -104,9 +104,14 @@ def test_missing_accounting_does_not_mean_zero_and_root_recovery_includes_worker
 def test_actual_app_websocket_dispatches_task_controls_through_chat_queue(gui_task, monkeypatch):
     from tests.gui_access import LocalClient
     from lumi.gui import app as gui_app
+    from lumi.gui.settings import SettingsManager
     state, _, requests, _ = gui_task
     state.available_backends = {'sonn': {}}
     state.codebase_index = object()
+    # Startup ownership discovery requires the same isolated project/settings
+    # interface as the full desktop state; no personal projects are discovered.
+    state.settings = SettingsManager(str(state.project.project_path) + '/settings.json')
+    state.project.get_recent_projects = lambda **_: []
     monkeypatch.setattr(gui_app, 'state', state)
     with LocalClient(gui_app.app) as client:
         with client.websocket_connect('/ws') as socket:

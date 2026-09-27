@@ -175,7 +175,9 @@ async def _in_executor(func, *args):
 
 async def _block_active_navigation(ctx: CommandContext) -> bool:
     """The native chat loop owns one active workspace until its turn ends."""
-    if ctx.runs is None or not ctx.runs.busy:
+    from .swarming import navigation_busy as swarm_busy
+    runs = getattr(ctx, "runs", None)
+    if not swarm_busy(ctx.state) and (runs is None or not runs.busy):
         return False
     await ctx.send({"event": "ui_notice", "message":
                     "Finish or stop the current run before changing projects or sessions. Your work is retained."})
@@ -2027,6 +2029,8 @@ async def _cmd_set_evaluator_verdict(ctx: CommandContext) -> None:
 
 @command("select_backend")
 async def _cmd_select_backend(ctx: CommandContext) -> None:
+    if await _block_active_navigation(ctx):
+        return
     backend_type = ctx.msg.get("backend", "")
     model = ctx.msg.get("model", "")
     session_mode = ctx.msg.get("session_mode", "code")
@@ -2096,6 +2100,10 @@ async def _cmd_select_backend(ctx: CommandContext) -> None:
 
 @command("message")
 async def _cmd_message(ctx: CommandContext) -> None:
+    from .swarming import busy as swarm_busy
+    if swarm_busy(ctx.state):
+        await ctx.send_error("Finish or stop the active team before starting an ordinary chat turn.")
+        return
     text = ctx.msg.get("text", "").strip()
     if not text:
         return
@@ -2107,6 +2115,13 @@ async def _cmd_message(ctx: CommandContext) -> None:
         return
     await ctx.runs.enqueue(ctx.msg)
     return
+
+
+@command("swarm")
+async def _swarm(ctx: CommandContext) -> None:
+    """Keep viewer commands bound to their captured saved conversation and run."""
+    from .swarming import command as execute
+    await execute(ctx.state, ctx.send, ctx.msg, chat_busy=bool(ctx.runs and ctx.runs.busy))
 
 
 @command('employee_task')
@@ -2376,6 +2391,10 @@ async def _cmd_mission_dispatch_roadmap(ctx: CommandContext) -> None:
         # dispatched when it was clicked (autonomous_view.js).
         await ctx.send({"event": "error", "message": message, "source": "mission_dispatch"})
 
+    from .swarming import busy as swarm_busy
+    if swarm_busy(ctx.state):
+        await refuse("Finish or reconcile the current team before dispatching a roadmap.")
+        return
     if not ctx.state.project.current_session:
         await refuse("No active mission to dispatch")
         return
@@ -2805,7 +2824,8 @@ async def _cmd_clear(ctx: CommandContext) -> None:
 
 @command("switch_model")
 async def _cmd_switch_model(ctx: CommandContext) -> None:
-    if ctx.runs.busy:
+    from .swarming import busy as swarm_busy
+    if ctx.runs.busy or swarm_busy(ctx.state):
         await ctx.send({"event": "model_switch_blocked", "message": "Finish or stop the current run before changing models."})
         await ctx.send(ctx.state.get_init_data(refresh_only=True))
         return
@@ -2872,6 +2892,8 @@ async def _cmd_switch_model(ctx: CommandContext) -> None:
 
 @command("set_thinking_mode")
 async def _cmd_set_thinking_mode(ctx: CommandContext) -> None:
+    if await _block_active_navigation(ctx):
+        return
     # Per-session thinking-mode toggle (deepseek-v* etc.).
     # Forces a backend rebuild because Ollama options must be stable
     # for the lifetime of an OllamaBackend instance.
@@ -3162,6 +3184,9 @@ async def _cmd_switch_session(ctx: CommandContext) -> None:
 @command("delete_session")
 async def _cmd_delete_session(ctx: CommandContext) -> None:
     session_id = ctx.msg.get("session_id", "")
+    current = ctx.state.project.current_session
+    if current is not None and current.id == session_id and await _block_active_navigation(ctx):
+        return
     ctx.state.project.delete_session(session_id)
     await ctx.send({
         "event": "sessions_updated",

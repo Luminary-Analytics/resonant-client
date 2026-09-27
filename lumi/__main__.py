@@ -13,6 +13,58 @@ from lumi.paths import migrate_legacy_home, state_home
 # a file in it; on Windows an open log makes the rename fail.
 migrate_legacy_home()
 
+
+def _redacted_startup_arguments(arguments):
+    """Keep operator configuration paths out of the windowless startup log."""
+    result, redact_next = [], False
+    for argument in arguments:
+        if redact_next:
+            result.append("<protected-managed-config>")
+            redact_next = False
+        elif argument == "--swarm-managed-config":
+            result.append(argument)
+            redact_next = True
+        elif argument.startswith("--swarm-managed-config="):
+            result.append("--swarm-managed-config=<protected-managed-config>")
+        else:
+            result.append(argument)
+    return result
+
+
+def _managed_startup_arguments(arguments):
+    """Extract the single explicit host-only option before GUI argument parsing."""
+    remaining, path = [], None
+    index = 0
+    while index < len(arguments):
+        argument = arguments[index]
+        if argument == "--swarm-managed-config" or argument.startswith("--swarm-managed-config="):
+            if path is not None:
+                raise ValueError("Managed configuration must be selected once")
+            if "=" in argument:
+                path = argument.split("=", 1)[1]
+            else:
+                index += 1
+                if index >= len(arguments):
+                    raise ValueError("Managed configuration requires an absolute file")
+                path = arguments[index]
+            if not path or not os.path.isabs(path):
+                raise ValueError("Managed configuration requires an absolute file")
+        else:
+            remaining.append(argument)
+        index += 1
+    if path is not None and (len(remaining) < 2 or remaining[1] != "gui"):
+        raise ValueError("Managed configuration is supported by the GUI launcher")
+    return remaining, path
+
+# A private worker must dispatch before windowless stream logging, updater or
+# UI initialization. Its inherited pipes carry the bounded host protocol.
+if __name__ == "__main__" and len(sys.argv) == 2 and sys.argv[1] == "--swarm-worker":
+    from lumi.engine.swarming.worker_child import main as swarm_worker_main
+    raise SystemExit(swarm_worker_main())
+if __name__ == "__main__" and len(sys.argv) == 2 and sys.argv[1] == "--swarm-effect":
+    from lumi.engine.swarming.effect_child import main as swarm_effect_main
+    raise SystemExit(swarm_effect_main())
+
 # Bug #19 + #20 fix — frozen-no-console std-stream redirect to log file.
 #
 # When PyInstaller's `console=False` bundles run, the OS doesn't attach a
@@ -39,7 +91,7 @@ if getattr(sys, "frozen", False) and (
         _log_path = os.path.join(_log_dir, "lumi-startup.log")
         _log_file = open(_log_path, "a", encoding="utf-8", buffering=1)
         # Marker so we can find the start of each session in the log.
-        _log_file.write(f"\n{'=' * 60}\n=== lumi {sys.argv} pid={os.getpid()}\n")
+        _log_file.write(f"\n{'=' * 60}\n=== lumi {_redacted_startup_arguments(sys.argv)} pid={os.getpid()}\n")
         _log_file.flush()
     except OSError:
         # If we can't open the log file (read-only home, weird perms),
@@ -89,6 +141,21 @@ def main():
     if len(sys.argv) > 1 and sys.argv[1] == "extension":
         from lumi.extension_check import main as extension_main
         raise SystemExit(extension_main(sys.argv[2:]))
+
+    # This is an operator startup option, never browser state or a discovered
+    # credential. Reject invalid setup before updater/UI startup; do not quietly
+    # fall back to a personal run after an explicit managed configuration fails.
+    try:
+        arguments, managed_path = _managed_startup_arguments(sys.argv)
+        if managed_path is not None:
+            from lumi.engine.swarming.managed_desktop import ManagedDesktop, load_configuration
+            managed_desktop = ManagedDesktop(load_configuration(managed_path))
+            from lumi.gui.app import configure_managed_startup
+            configure_managed_startup(managed_desktop)
+        sys.argv = arguments
+    except Exception:
+        print("Managed setup failed. Verify the protected configuration and certificate files.", file=sys.stderr)
+        raise SystemExit(2) from None
 
     # Kick off the WinSparkle background updater. No-op on non-Windows or
     # when the DLL isn't bundled (dev runs from source). Fire-and-forget;

@@ -783,6 +783,12 @@ class OllamaBackend:
         except Exception as e:
             logger.debug(f"Could not check model info for {self.model}: {e}")
 
+        if getattr(self, "_supervised_single_request", False):
+            # A guarded invocation owns exactly one generation request. A hidden
+            # capability probe would spend outside its immutable request input.
+            # Metadata and the explicit model catalog above remain usable.
+            raise ValueError("Supervised Ollama workers require declared tool capability; generation probes are disabled")
+
         # Probe: send a minimal request with a simple tool and check response format
         try:
             opts = dict(self._ollama_options)
@@ -1036,6 +1042,10 @@ class OllamaBackend:
         handled by this context manager — the caller doesn't need
         to wrap in additional `with` blocks.
         """
+        # Supervised swarms reserve one generation request before invocation.
+        # Retrying a rejected/ambiguous transport here would bypass that ledger;
+        # explicit supervisor reconciliation owns any subsequent request.
+        max_retries = 0 if getattr(self, "_supervised_single_request", False) else _OLLAMA_MAX_RETRIES
         attempt = 0
         while True:
             client = httpx.Client(timeout=stream_timeout)
@@ -1051,7 +1061,7 @@ class OllamaBackend:
                     "POST", f"{self.base_url}/api/chat", json=payload,
                 ) as resp:
                     if (resp.status_code in _OLLAMA_RETRYABLE_STATUS
-                            and attempt < _OLLAMA_MAX_RETRIES):
+                            and attempt < max_retries):
                         try:
                             body_preview = resp.read().decode(
                                 "utf-8", errors="replace",
@@ -1105,7 +1115,7 @@ class OllamaBackend:
                 # the read ceiling. Retry it on the same backoff
                 # curve. A timeout AFTER we yielded is the caller's
                 # mid-stream consumption — we're committed; re-raise.
-                if opened_and_yielded or attempt >= _OLLAMA_MAX_RETRIES:
+                if opened_and_yielded or attempt >= max_retries:
                     raise
                 backoff = _OLLAMA_BASE_BACKOFF * (2 ** attempt)
                 logger.warning(
@@ -1462,7 +1472,7 @@ class OllamaBackend:
                             "kind": "ollama_exhausted",
                             "status_code": resp.status_code,
                             "model": self.model,
-                            "attempts": _OLLAMA_MAX_RETRIES + 1,
+                            "attempts": 1 if getattr(self, "_supervised_single_request", False) else _OLLAMA_MAX_RETRIES + 1,
                             "body_preview": err_body[:200],
                         })
                         # v0.6.5 — a transient-5xx exhaustion counts toward
@@ -1676,7 +1686,7 @@ class OllamaBackend:
                 "status_code": 0,
                 "reason": "timeout",
                 "model": self.model,
-                "attempts": _OLLAMA_MAX_RETRIES + 1,
+                "attempts": 1 if getattr(self, "_supervised_single_request", False) else _OLLAMA_MAX_RETRIES + 1,
                 "body_preview": type(e).__name__,
             })
             # v0.6.5 — repeated open-phase timeouts count toward the breaker.
@@ -2476,7 +2486,10 @@ class KimiBackend:
 
         try:
             with httpx.Client(timeout=self._timeout, transport=self._transport, **self._tls_options()) as client:
-                for attempt in range(3):
+                # This inherited stream also serves SONN/OpenRouter/EXO. A
+                # guarded invocation cannot silently start another generation.
+                attempts = 1 if getattr(self, "_supervised_single_request", False) else 3
+                for attempt in range(attempts):
                     restart_stream = False
                     if cancel_event is not None and cancel_event.is_set():
                         self._cancel_remote_generation(response_id)
@@ -2501,7 +2514,7 @@ class KimiBackend:
                                 retryable,
                                 self.model,
                             )
-                            delay = self._http_retry_delay(response, attempt) if retryable and attempt < 2 else None
+                            delay = self._http_retry_delay(response, attempt) if retryable and attempt < attempts - 1 else None
                             if delay is not None:
                                 yield (EVENT_BACKEND_STATUS, {
                                     "kind": self.RETRY_EVENT_KIND,
@@ -2581,7 +2594,7 @@ class KimiBackend:
                                 )
                                 if (
                                     self._is_retryable_stream_error(message)
-                                    and attempt < 2
+                                    and attempt < attempts - 1
                                 ):
                                     delay = 1.5 * (2 ** attempt)
                                     yield (EVENT_BACKEND_STATUS, {

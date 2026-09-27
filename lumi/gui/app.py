@@ -2480,6 +2480,18 @@ class AppState:
 state = AppState()
 
 
+def configure_managed_startup(managed_desktop) -> None:
+    """Inject an operator-validated parent helper before GUI ownership discovery.
+
+    There is deliberately no WebSocket/configuration endpoint for this function.
+    The startup caller owns the private helper; browser responses use its safe
+    projection and cannot replace identities or switch existing personal runs.
+    """
+    if getattr(state, "_swarm_desktop", None) is not None or getattr(state, "_swarm_managed", None) is not None:
+        raise ValueError("Managed configuration must be supplied before GUI startup")
+    state._swarm_managed = managed_desktop
+
+
 async def _discover_for_navigation(target_state):
     """Discover providers without blocking saved-project navigation.
 
@@ -2668,6 +2680,10 @@ def _make_autonomous_event_forwarder(
 
 async def _process_chat_message(ws: WebSocket, msg: dict[str, Any]) -> None:
     """Run one serialized chat turn without blocking the WS receive loop."""
+    from .swarming import busy as swarm_busy
+    if swarm_busy(state):
+        await ws.send_json({"event": "error", "message": "Finish or stop the active team before starting another operation."})
+        return
     if msg.get('command') == 'employee_task':
         from .employee_tasks import command as task_command
         await task_command(state, ws.send_json, msg)
@@ -2851,7 +2867,8 @@ async def websocket_endpoint(ws: WebSocket):
                         "message": state.runtime_unavailable_reason(),
                     })
                     continue
-                if runs.busy:
+                from .swarming import busy as swarm_busy
+                if runs.busy or swarm_busy(state):
                     await ws.send_json({
                         "event": "error",
                         "message": "Finish or stop the active run before restarting an agent.",
@@ -2912,6 +2929,11 @@ async def websocket_endpoint(ws: WebSocket):
                 # session is flagged with mission_state, which gates the
                 # spec-extraction scan and drives the header badge.
                 # See docs/long-running-agents.md (Phase 1).
+                from .swarming import busy as swarm_busy
+                if swarm_busy(state):
+                    await ws.send_json({"event": "error", "message":
+                                        "Finish or reconcile the current team before starting a mission."})
+                    continue
                 feature = (msg.get("feature") or "").strip()
                 if not feature:
                     await ws.send_json({"event": "error",
@@ -3947,8 +3969,23 @@ async def ui_state_endpoint(request):
 @asynccontextmanager
 async def _app_lifespan(app):
     try:
+        from .swarming import discover as discover_swarm_ownership
+        try:
+            await asyncio.to_thread(discover_swarm_ownership, state)
+        except Exception:
+            # The Team preview is optional: its discovery must never keep the
+            # app from starting. Without it, new team work stays refused
+            # (gui/swarming.py) until a restart discovers ownership again.
+            logger.exception("Team ownership discovery failed at startup")
+            state._swarm_discovery_failed = True
         yield
     finally:
+        swarm_desktop = getattr(state, "_swarm_desktop", None)
+        if swarm_desktop is not None:
+            await asyncio.to_thread(swarm_desktop.close)
+        swarm_managed = getattr(state, "_swarm_managed", None)
+        if swarm_managed is not None:
+            await asyncio.to_thread(swarm_managed.close)
         from ..engine.previews import previews
         from ..codex_account import codex_account
         await asyncio.to_thread(codex_account.close)

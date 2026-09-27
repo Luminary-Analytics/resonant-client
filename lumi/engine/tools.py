@@ -1534,6 +1534,7 @@ def execute_tool(
     exclusions=None,
     sandbox_roots: Sequence[str] = (),
     project_trusted: bool = False,
+    owned_process_group: bool = False,
 ) -> ToolResult:
     """
     Execute a tool and return structured result.
@@ -1689,7 +1690,8 @@ def execute_tool(
         elif name == "glob":
             return _exec_glob(arguments, start, exclusions=exclusions)
         elif name == "grep":
-            return _exec_grep(arguments, start, cancel_event=cancel_event, exclusions=exclusions)
+            return _exec_grep(arguments, start, cancel_event=cancel_event, exclusions=exclusions,
+                              owned_process_group=owned_process_group)
         elif name == "skill_view":
             if str(arguments.get('skill_id', '')).startswith('team:'):
                 from .. import team_library
@@ -1885,6 +1887,7 @@ def _run_subprocess_with_cancel(
     cwd: str,
     stdin=None,
     cancel_event: Optional[threading.Event] = None,
+    owned_process_group: bool = False,
 ):
     def _create_windows_kill_job(process):
         if sys.platform != "win32":
@@ -1952,12 +1955,17 @@ def _run_subprocess_with_cancel(
         except Exception:
             pass
 
-    process_group_args = background_process_kwargs(new_process_group=True)
+    # A managed native worker already owns its process group. Its file-search
+    # child must stay in that group so app restart/Stop can observe and clean
+    # the entire tree. Ordinary tools still get their independent group.
+    process_group_args = background_process_kwargs(new_process_group=not owned_process_group)
     proc = subprocess.Popen(
         cmd,
         shell=shell,
         cwd=cwd,
-        stdin=stdin,
+        # Search children need no input and must never inherit the managed
+        # worker's private host-control pipe (or compete with its reader).
+        stdin=subprocess.DEVNULL if owned_process_group and stdin is None else stdin,
         # The agent's shell runs model-written commands: keep Lumi's own
         # model keys out of its reach (secrets_store.PROVIDER_KEY_ENV).
         env=child_env(),
@@ -1989,11 +1997,17 @@ def _run_subprocess_with_cancel(
                     **background_process_kwargs(),
                 )
             else:
-                os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+                if owned_process_group:
+                    proc.terminate()  # Never signal the shared worker group here.
+                else:
+                    os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
                 try:
                     proc.wait(timeout=0.75)
                 except subprocess.TimeoutExpired:
-                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                    if owned_process_group:
+                        proc.kill()
+                    else:
+                        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
         except Exception:
             try:
                 proc.kill()
@@ -2370,8 +2384,8 @@ def _exec_glob(args: dict, start: float, *, exclusions=None) -> ToolResult:
 _VENDORED_RIPGREP_DIR = Path(__file__).resolve().parent.parent.parent / "packaging" / "ripgrep"
 
 
-@lru_cache(maxsize=1)
-def _ripgrep_executable() -> Optional[str]:
+@lru_cache(maxsize=2)
+def _ripgrep_executable(*, trusted_only: bool = False) -> Optional[str]:
     """Locate ripgrep once per process. None when it isn't available.
 
     The bundled copy wins over PATH. A packaged install ships a pinned,
@@ -2399,14 +2413,18 @@ def _ripgrep_executable() -> Optional[str]:
 
     for candidate in candidates:
         if candidate.exists():
+            if trusted_only and (not candidate.is_file() or candidate.resolve() != candidate.absolute()):
+                continue
             return str(candidate)
+    if trusted_only:
+        return None
     return shutil.which("rg")
 
 
 _GREP_LINE_PATH = re.compile(r"^((?:[A-Za-z]:)?[^:]*):\d+:")
 
 
-def _build_grep_command(pattern: str, path: str, file_glob: str) -> list[str]:
+def _build_grep_command(pattern: str, path: str, file_glob: str, *, trusted_only: bool = False) -> list[str]:
     """Argv for a recursive content search, best available tool first.
 
     ripgrep is strongly preferred. The fallbacks are correct but weak: Windows
@@ -2420,7 +2438,9 @@ def _build_grep_command(pattern: str, path: str, file_glob: str) -> list[str]:
     security boundary, and a pattern containing a quote would turn this
     read-only tool into arbitrary shell execution.
     """
-    ripgrep = _ripgrep_executable()
+    ripgrep = _ripgrep_executable(trusted_only=True) if trusted_only else _ripgrep_executable()
+    if trusted_only and not ripgrep:
+        raise FileNotFoundError("Managed search requires the bundled ripgrep binary; PATH executables are not permitted")
     if ripgrep:
         cmd = [
             ripgrep,
@@ -2461,6 +2481,7 @@ def _exec_grep(
     cancel_event: Optional[threading.Event] = None,
     *,
     exclusions=None,
+    owned_process_group: bool = False,
 ) -> ToolResult:
     pattern = args.get("pattern", "")
     path = args.get("path", ".")
@@ -2468,7 +2489,8 @@ def _exec_grep(
     offset = max(0, int(args.get("offset", 0) or 0))
     limit = min(200, max(1, int(args.get("limit", 50) or 50)))
 
-    cmd = _build_grep_command(pattern, path, file_glob)
+    cmd = (_build_grep_command(pattern, path, file_glob, trusted_only=True) if owned_process_group
+           else _build_grep_command(pattern, path, file_glob))
 
     returncode, stdout, _stderr, timed_out = _run_subprocess_with_cancel(
         cmd,
@@ -2477,6 +2499,7 @@ def _exec_grep(
         timeout=30,
         cwd=os.getcwd(),
         cancel_event=cancel_event,
+        owned_process_group=owned_process_group,
     )
 
     if cancel_event is not None and cancel_event.is_set():

@@ -1,4 +1,4 @@
-# Resonant — Roadmap
+# Lumi — Roadmap
 
 The current roadmap is governed by the
 [agentic harness north star](docs/agentic-harness-north-star.md). The highest
@@ -8,7 +8,100 @@ maintainability, and wall-clock performance rank above token or compute
 efficiency. The dated release and cluster histories below remain useful records
 but do not override that direction.
 
-## Current delivery status (2026-09-12)
+## Planned feature: Swarming (2026-09-26)
+
+**Status: source and packaged reference scenarios are verified with scripted providers; live-model and deployment-specific P5–P7 qualification remain. All-phase MVP is not complete.** The user
+selected local swarming first, with enterprise controls designed in from the
+start, and collaboration within one session before collaboration between sessions.
+On September 26 the user authorized autonomous implementation through **all
+P0–P7 phases**. Release versions and delivery dates are not yet assigned.
+See the [delivery/evidence ledger](docs/swarming-progress.md) and
+[implementation contracts](docs/swarming-contracts.md) for current work.
+
+The [swarming plan](docs/swarming-plan.md) owns the detailed product, architecture,
+tool, governance, and validation proposals; the [glossary](CONTEXT.md) defines
+the terms. This roadmap tracks delivery order and completion gates. `P0`–`P7`
+are phases within this feature, not changes to other workstreams' priorities;
+`SW-*` identifiers are planning references, not created issue-tracker tickets.
+
+### Intended user outcome
+
+A developer enables a supervised team in a session, delegates useful independent
+work, inspects messages and evidence, and can steer, pause, stop, and recover the
+run. A coordinator model proposes plans and decisions; a deterministic supervisor
+enforces assignment ownership, permissions, allowances, and acceptance. Workers
+communicate through scoped durable mailboxes and submit attributable results.
+
+The local release includes the session work board, worker inspector, messages,
+decision inbox, and combined changes/evidence view. Writers use isolated
+worktrees and a verified integration candidate. Later enterprise phases add
+organization policy, host enrollment, budgets, operational monitoring, and audit
+with separate permissions for metadata, content, approvals, and run controls.
+Monitoring local activity and enforcing managed execution remain distinct claims.
+
+### Delivery milestones
+
+P0–P4 have source/browser evidence for durable supervision, native readers,
+coordinator planning, isolated writers, reviewed integration and explicit recovery.
+Separate packaged candidates have exercised scripted reference scenarios; the
+latest integrated candidate passed its frozen reference scenarios. P5 has a predeclared
+comparative runner, with live local/hosted models and the outcome pilot pending.
+P6 has real local PostgreSQL, TLS, identity/provisioning, quota, audit and managed
+desktop writer/recovery evidence. P7 has personal and managed browser, server and
+native collaboration evidence, including packaged bilateral retention and recovery.
+External IdP, independent-host operations and live provider gates remain open.
+The [evidence ledger](docs/swarming-progress.md) records the scope of those results.
+Their gates require observed behavior;
+existing runtime classes or historical test results do not complete them.
+
+| Phase | Backlog | Deliverable | Depends on | Completion gate |
+| --- | --- | --- | --- | --- |
+| P0 — Contracts and baseline | SW-001..003 | Run ownership, command/state contracts, fixture design, storage/protocol spike | Planning review | Reviewable contracts and a predeclared single-agent comparison baseline |
+| P1 — Durable supervision | SW-004..008 | Transactional state, attempts/epochs, policy admission, allowance reservations, recovery | P0 | Concurrent admission, crash recovery, stale authority, and uncertain accounting fixtures pass |
+| P2 — Read-only swarming | SW-009..012 | Durable messaging tools, delivery receipts, asynchronous native workers | P1 | Two read workers exchange an artifact reference; coordinator handles partial results; stop/recovery and scope denial work |
+| P3 — Controlled writers | SW-013..017 | Worktree isolation, narrow grants, process/job ownership, check receipts, candidate integration | P2 | Overlap, failed checks, repair, combined verification, dirty checkout, and confirmed stop pass end to end |
+| P4 — Session controls | SW-018..021 | Setup, work board, inspectors, decision inbox, event replay, recovery UI | P2; writer controls require P3 | Real browser and packaged-client exercises pass, including keyboard and compact layouts |
+| P5 — Local release | SW-022..024 | Provider qualification, controlled pilot, outcome comparison, release/support documentation | P3 + P4 | Verified local release gates pass; supported providers, measured results, and limitations are published |
+| P6 — Enterprise governance | SW-025..029 | Tenant identity/policy, enrolled hosts, quota allocations, fleet monitoring, protected audit | Stable local release | Two-member/two-host isolation, revocation, offline leases, content access, and audit checks pass |
+| P7 — Cross-session collaboration | SW-030..032 | Explicit collaboration grants and requests between independently owned runs | P6 + independent run ownership | Disclosure, cancellation, billing, and cyclic-dependency cases pass across sessions |
+
+P4 can develop against simulated events while runtime work proceeds. P6 contracts
+inform the local design, but hosted infrastructure does not block the local pilot.
+Implementation starts with P0; the first usable milestone is P2's durable,
+read-only swarm with working messaging, stop, and recovery. Controlled writers
+follow before a supported local release.
+
+### Release scope and gates
+
+- Initial execution stays within one project and one active session swarm, using
+  explicitly selected native providers/models. CLI workers require separate
+  qualification of their tool-loop and enforcement limitations.
+- Swarming uses a new versioned configuration and defaults off. Reuse suitable
+  Director internals without restoring retired Director flags or saved runs.
+- Local messaging uses an embedded transactional store. A hosted control module
+  and any broker are later deployment decisions; no separate messaging server is
+  required for the first local release.
+- Completion requires attributable evidence and any requested integration.
+  Isolation failure blocks a writer; dirty user work is preserved. Model claims,
+  delivered messages, and requested cancellation are not proof of completed work.
+- Release gates cover enforced permissions/allowances, durable delivery, fault
+  recovery, confirmed process cleanup, actual browser controls, and packaged
+  Windows behavior. Compare verified outcomes against single-agent baselines;
+  no swarming speedup or learning benefit has been established.
+- Cross-session and remote execution wait for their milestones. Nested teams,
+  persistent employee learning, unattended scheduling, and autonomous deployment
+  remain outside the initial swarming release.
+
+The [AI Employee initiative](docs/ai-employees-handoff.md) remains paused. Adding
+swarming to the roadmap resumes no AI Employee implementation, experiments,
+spending, grants, or heartbeat. A future integration needs its own qualification.
+
+## Delivery snapshot (2026-09-12)
+
+This dated snapshot and the earlier sections below retain their historical
+observations. Consult [architecture](ARCHITECTURE.md),
+[documentation status](docs/documentation-status.md), and
+[Unreleased](docs/unreleased.md) for current implementation guidance.
 
 [0.17.0](docs/v0.17.0-release-notes.md) shipped the unified project/session
 sidebar, ChatGPT/Codex connections, OpenRouter, searchable models, favorites,
@@ -275,7 +368,13 @@ The clusters are independent. If you needed to rebuild the whole feature surface
 
 Within a cluster, tasks can typically be done in any order. Hard dependencies are called out per-task.
 
-## Out of scope (deferred or rejected)
+## Historical scope exclusions (deferred or rejected)
+
+These exclusions record the earlier roadmap. The planned swarming P6/P7
+milestones above supersede the single-user and no-remote-execution exclusions
+only for their explicitly governed scope. Broader collaboration and whole-session
+cloud sync remain deferred; the historical folder-sync suggestion below is not
+a backup or synchronization design for the proposed transactional swarm store.
 
 - **Mobile app** — not a target. Desktop / browser only.
 - **Multi-user collaboration** — single-user IDE.

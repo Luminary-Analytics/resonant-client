@@ -9,6 +9,7 @@ import json
 import logging
 
 from ..capabilities import infer_model_capabilities
+from .execution_guard import ExecutionGuardError
 
 logger = logging.getLogger(__name__)
 
@@ -371,6 +372,8 @@ def compress(
         ])
         if len(summary_prompt) // CHARS_PER_TOKEN > model_context_budget(model_name, context_window=context_window):
             return history, (f"Evicted {evicted} stale tool output(s)." if evicted else "")
+    guarded = getattr(session, "_execution_boundary", None) is not None
+    summary_stream = None
     try:
         summary = ""
         stream_options = {}
@@ -381,25 +384,37 @@ def compress(
             usage_context = session._audit_fields()
         except AttributeError:
             usage_context = {}
-        for event_type, data in auxiliary_stream(backend, "compression", usage_context=usage_context,
+        request_args = dict(
             user_msg=summary_prompt,
             conversation_history=[],
             instructions="You are a conversation summarizer. Be concise and factual.",
             tools=[],
             max_tokens=1024,
             **stream_options,
-        ):
+        )
+        summary_stream = (
+            session._model_stream(purpose="compression", backend=backend, **request_args)
+            if guarded else auxiliary_stream(backend, "compression", usage_context=usage_context, **request_args)
+        )
+        for event_type, data in summary_stream:
             if event_type == "text.delta":
                 summary += data.get("delta", "")
             elif event_type in {"error", "cancelled"}:
                 # Format recovery must not turn an uncertain provider failure
                 # or cancellation into another automatic paid dispatch.
                 return history, ""
-            elif event_type == "done":
+            elif event_type == "done" and not guarded:
                 break
+    except ExecutionGuardError:
+        raise
     except Exception as e:
         logger.error(f"Compression failed: {e}")
         return history, ""
+    finally:
+        if guarded and summary_stream is not None:
+            close_stream = getattr(summary_stream, "close", None)
+            if callable(close_stream):
+                close_stream()
 
     structured_summary = _validated_summary(summary)
     if structured_summary is None:

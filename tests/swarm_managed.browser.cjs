@@ -1,4 +1,7 @@
 /* Real source GUI, encrypted host channel, PostgreSQL and guarded native reader. */
+// The app page needs a one-time launch code (lumi/gui/local_access.py); the
+// fixture server mints one per page load.
+const fixtureLaunch=async info=>(await (await fetch(info.url+'/__fixture__/launch')).json()).url;
 const test=require('node:test');
 const assert=require('node:assert/strict');
 const {spawn}=require('node:child_process');
@@ -36,7 +39,7 @@ async function runCase(hold){
             socket.on('framereceived',frame=>{const value=JSON.parse(frame.payload);if(value.event==='swarm_state')responses.push(value);});
         });
         await page.route('**/*',route=>new URL(route.request().url()).hostname==='127.0.0.1'?route.continue():route.abort());
-        await page.goto(info.url);await page.waitForFunction(id=>window.app?.currentSessionId===id,info.session_id);
+        await page.goto(await fixtureLaunch(info));await page.waitForFunction(id=>window.app?.currentSessionId===id,info.session_id);
         await page.locator('#user-input').fill('Keep this private ordinary conversation draft');
         await page.getByRole('button',{name:'Team',exact:true}).click();await ready();
         assert.equal(await page.getByLabel('Execution ownership').inputValue(),'personal');

@@ -1,4 +1,7 @@
 /* Real source GUI/WS/native Session with a scripted provider; no live account. */
+// The app page needs a one-time launch code (lumi/gui/local_access.py); the
+// fixture server mints one per page load.
+const fixtureLaunch=async info=>(await (await fetch(info.url+'/__fixture__/launch')).json()).url;
 const test=require('node:test');
 const assert=require('node:assert/strict');
 const {spawn}=require('node:child_process');
@@ -46,7 +49,7 @@ test('Explicit bilateral personal collaboration through two captured conversatio
             });
         });
         await context.route('**/*',route=>new URL(route.request().url()).hostname==='127.0.0.1'?route.continue():route.abort());
-        a=await context.newPage();a.setDefaultTimeout(12000);await a.goto(info.url);
+        a=await context.newPage();a.setDefaultTimeout(12000);await a.goto(await fixtureLaunch(info));
         await a.waitForFunction(id=>window.app?.currentSessionId===id,info.session_id);
         await a.locator('#user-input').fill('Preserve ordinary origin draft');await open(a);
         await a.getByLabel('Enable team preview').check();await ready(a);
@@ -69,7 +72,7 @@ test('Explicit bilateral personal collaboration through two captured conversatio
         await a.getByLabel('Work proposals',{exact:true}).check();
         await a.getByRole('button',{name:'Offer sharing agreement',exact:true}).click();await ready(a);await inspect(a);
         assert.equal(await a.getByRole('button',{name:'Accept sharing agreement',exact:true}).count(),0);
-        b=await context.newPage();b.setDefaultTimeout(12000);await b.goto(info.url);
+        b=await context.newPage();b.setDefaultTimeout(12000);await b.goto(await fixtureLaunch(info));
         await b.waitForFunction(()=>window.app?.currentSessionId);
         await switchSession(b,'Other fixture conversation',info.other_session_id);await open(b);await inspect(b);
         await b.getByRole('button',{name:'Accept sharing agreement',exact:true}).focus();await b.keyboard.press('Enter');await ready(b);

@@ -1,6 +1,9 @@
 /* Actual source UI/WebSocket routes, retained owner history and immutable text.
  * Inference is scripted; older retained fixtures are explicitly seeded history.
  */
+// The app page needs a one-time launch code (lumi/gui/local_access.py); the
+// fixture server mints one per page load.
+const fixtureLaunch=async info=>(await (await fetch(info.url+'/__fixture__/launch')).json()).url;
 const {test}=require('node:test');
 const assert=require('node:assert/strict');
 const {spawn}=require('node:child_process');
@@ -31,7 +34,7 @@ test('Retained teams and verified text pages use scoped owner routes', {timeout:
         page.on('pageerror',error=>{errors.push(error.message);console.error(error.message);});
         page.on('websocket',socket=>socket.on('framesent',frame=>{const data=JSON.parse(frame.payload);if(data.command==='swarm')commands.push(data);}));
         await page.route('**/*',route=>new URL(route.request().url()).hostname==='127.0.0.1'?route.continue():route.abort());
-        await page.goto(info.url);await page.waitForFunction(id=>window.app?.currentSessionId===id,info.session_id);
+        await page.goto(await fixtureLaunch(info));await page.waitForFunction(id=>window.app?.currentSessionId===id,info.session_id);
         await page.locator('#user-input').fill('Keep my ordinary conversation draft');
         await page.getByRole('button',{name:'Team',exact:true}).click();
         await page.waitForFunction(()=>app._swarmHistory?.items.length===20&&!app._swarmPending);

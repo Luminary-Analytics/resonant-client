@@ -1,5 +1,8 @@
 /* Actual desktop recovery: killed native host, mTLS service and PostgreSQL.
  * Inference is scripted; no external provider or user state is used. */
+// The app page needs a one-time launch code (lumi/gui/local_access.py); the
+// fixture server mints one per page load.
+const fixtureLaunch=async info=>(await (await fetch(info.url+'/__fixture__/launch')).json()).url;
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const {spawn} = require('node:child_process');
@@ -36,7 +39,7 @@ async function runRecovery(missingAdmission = false) {
             const message = JSON.parse(frame.payload); if (message.command === 'swarm') commands.push(message);
         }));
         await page.route('**/*', route => new URL(route.request().url()).hostname === '127.0.0.1' ? route.continue() : route.abort());
-        await page.goto(info.url);
+        await page.goto(await fixtureLaunch(info));
         await page.waitForFunction(id => window.app?.currentSessionId === id, info.session_id);
         await page.locator('#user-input').fill('Preserve my draft during managed recovery');
         await page.getByRole('button', {name: 'Team', exact: true}).click();

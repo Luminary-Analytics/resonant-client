@@ -1,5 +1,8 @@
 /* Actual source GUI, WebSocket, coordinator inputs and native file reads.
  * Only inference is scripted. No paid provider or installed bundle is used. */
+// The app page needs a one-time launch code (lumi/gui/local_access.py); the
+// fixture server mints one per page load.
+const fixtureLaunch=async info=>(await (await fetch(info.url+'/__fixture__/launch')).json()).url;
 const {test} = require('node:test');
 const assert = require('node:assert/strict');
 const {spawn} = require('node:child_process');
@@ -64,7 +67,7 @@ test('Owner requests a findings-only follow-up while another worker continues', 
             }
         }
         await page.route('**/*', route=>new URL(route.request().url()).hostname==='127.0.0.1'?route.continue():route.abort());
-        await page.goto(info.url);
+        await page.goto(await fixtureLaunch(info));
         if(candidate){
             await page.waitForFunction(()=>window.app?.backends?.ollama?.models?.length);
             await page.locator(`.agent-row[data-session-id="${info.session_id}"] .session-title-text`).click();

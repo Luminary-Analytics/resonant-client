@@ -1,4 +1,7 @@
 /* Source UI + real TLS/PostgreSQL + owned scripted worker/Git/check processes. */
+// The app page needs a one-time launch code (lumi/gui/local_access.py); the
+// fixture server mints one per page load.
+const fixtureLaunch=async info=>(await (await fetch(info.url+'/__fixture__/launch')).json()).url;
 const test=require('node:test');
 const assert=require('node:assert/strict');
 const {spawn}=require('node:child_process');
@@ -59,7 +62,7 @@ test('Managed writer UI applies exact checked changes and requires separate acce
             }
         }
         await page.route('**/*',route=>new URL(route.request().url()).hostname==='127.0.0.1'?route.continue():route.abort());
-        await page.goto(info.url);
+        await page.goto(await fixtureLaunch(info));
         if(candidate){
             await page.waitForFunction(()=>window.app?.backends?.ollama?.models?.length);
             await page.locator(`.agent-row[data-session-id="${info.session_id}"] .session-title-text`).click();

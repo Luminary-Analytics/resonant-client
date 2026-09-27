@@ -245,6 +245,12 @@ def main():
             server.should_exit = True
             return JSONResponse({"stopping": True})
 
+        async def fixture_launch(request):
+            # The app page redeems a one-time launch code for this process's
+            # access token (lumi/gui/local_access.py); every page load needs one.
+            from lumi.gui.local_access import access
+            return JSONResponse({"url": access.launch_url(str(request.base_url))})
+        gui.app.routes.append(Route("/__fixture__/launch", fixture_launch))
         gui.app.routes.extend([Route("/__fixture__/evidence", evidence), Route("/__fixture__/remote-stop", remote_stop, methods=["POST"]),
             Route("/__fixture__/offline", disconnect, methods=["POST"]), Route("/__fixture__/release", release, methods=["POST"]),
             Route("/__fixture__/shutdown", shutdown, methods=["POST"])])

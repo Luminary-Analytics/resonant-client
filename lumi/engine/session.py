@@ -2933,6 +2933,7 @@ class Session:
             except dlp.Blocked as exc:
                 # Nothing was sent, and another model would get the same content:
                 # no fallback or retry. The message names rules, never content.
+                model_requests -= 1  # it never left, so it isn't a request made
                 terminal_error = exc.message
                 yield make_event(EngineEvent.ERROR, message=exc.message, code=exc.code)
                 elapsed = time.time() - total_start

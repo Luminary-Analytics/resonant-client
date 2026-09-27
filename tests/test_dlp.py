@@ -526,7 +526,8 @@ def test_a_blocked_turn_sends_nothing_and_later_turns_leave_the_content_out(audi
     error = next(e for e in events if e.get("event") == "error")
     assert error["code"] == "dlp_blocked" and "us_ssn in your message" in error["message"]
     assert SSN not in error["message"] and "6789" not in error["message"]
-    assert any(e.get("event") == "session.end" for e in events)
+    end = next(e for e in events if e.get("event") == "session.end")
+    assert end["evidence"]["model_requests"] == 0  # nothing left, so no request was made
     # The next turn goes out without it; this computer keeps the original.
     list(session.run("Never mind. What's 2 + 2?"))
     assert len(backend.requests) == 1 and SSN not in backend.sent()

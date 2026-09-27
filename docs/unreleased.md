@@ -8,6 +8,102 @@ The heartbeat remains paused. Documentation maintenance does not resume work,
 spending or grants, and changes no native implementation or installed bundle.
 The dated September 15/18 records below are historical.
 
+## September 27 Team: review fixes for the orchestrator loop (source only, not released)
+
+A review of the orchestrated team found steps that could hang, spend
+requests twice or read as the owner's decision.
+
+- **Hand-backs instead of waiting forever.** The loop hands the team back when
+  an orchestrator turn's request ended without a known outcome, when dispatch
+  keeps refusing the planned tasks with nothing running (for example, the
+  request allowance can't fund them), and when a read-only task declared checks
+  nothing runs.
+- **Your stops stand.** A task or orchestrator turn you stopped isn't retried.
+- **Out-of-date plans are declined with the reason.** The orchestrator plans
+  again from the current work.
+- **A failed check sends every writer in the change back at once**, each with
+  the check's output, since which change broke it isn't known.
+- **Answer turns spend only spare requests.** Planned tasks keep theirs, an
+  answer turn needs at least two, and a question an answer turn already saw
+  isn't answered twice.
+- **A turn the host never launched is settled** as cancelled, so it doesn't
+  hold the team.
+- **Checks.** Each declared check starts from the candidate's exact revision:
+  files an earlier check left are removed first. Checks run without Lumi's
+  provider keys (`secrets_store.child_env()`).
+- **Repair context.** Check output given to a retried writer has secret
+  patterns removed as well as saved keys. Its decision notes no longer claim
+  to be the owner's.
+- **Plans.** Read-only work items declare exactly `owner_review`. The docs now
+  say what a plan's acceptance checks and what each task's start checks
+  (scopes and the remaining request allowance).
+- **Team panel.** While the orchestrator runs the team, Needs attention doesn't
+  list its pending plans, findings or retries as your decisions, and says when
+  it hands the team back. Follow-up planning is hidden while the loop runs.
+  Orchestrator turns say whether they plan or answer, and the active-worker
+  limit works for all eight slots.
+
+## September 27 Team: workers on their own model (source only, not released)
+
+**Worker model.** The orchestrator plans, answers and reports with the
+session's model, and a team's workers can now run on another model (any native
+provider or OpenAI-compatible connection).
+
+- The choice is set in the Team panel (`worker_model` on start), kept in the
+  team's setup and used again when the team is continued after recovery.
+- It is validated like `lumi run`'s backends (`headless.build_spec`), and its
+  key is read once per run.
+
+## September 27 Team: start an orchestrated team from the chat (source only, not released)
+
+`/team <objective>` in the composer opens the session's Team panel with the
+objective filled in and **Let the orchestrator run the team** chosen, with
+focus on the rounds. The person checks the limits and presses Start; nothing
+starts on its own. It works while a chat turn runs.
+
+## September 27 Team: the orchestrator loop resumes when the owner continues a team (source only, not released)
+
+**The loop resumes after a continue.** A team its owner let the orchestrator
+run lost that loop with its host: after a restart the owner had to finish the
+team by hand. Now **Continue** on a recovered team resumes the loop
+(`TeamAutopilot.resumed`).
+
+- Its state comes from the retained plans. Each accepted plan that started
+  work was a round, and a report already written finishes the team.
+- A pending plan is decided as the loop would have decided it.
+- What the owner chose at Continue stands: a failed task they didn't select
+  stays failed, and a task retried before the restart isn't retried again.
+  Failed steps on writers' changes count, so a failed application isn't
+  tried again. An orchestrator turn retried before the restart may be
+  retried once more.
+- A result submitted before the restart is accepted under the grant from its
+  own epoch, as an owner review could; its old worker gets nothing.
+- The Team panel shows a finished orchestrated team's report and round after
+  a restart, rebuilt from the retained plans.
+
+## September 27 Team: the orchestrator answers workers mid-round (source only, not released)
+
+**Answers in the same round.** Workers could message the orchestrator, but it
+read their questions only when it next planned, after the round. Now, when a
+running worker asks the orchestrator a question or reports a blocker, the
+orchestrator loop starts a short answer turn
+(`coordinator.OrchestratorAnswers`).
+
+- The answer turn replies to each sender with `swarm_send`, so a worker
+  waiting in `swarm_receive` gets its answer while it still runs.
+- It uses up to 3 of the team's unallocated requests. Its only tool is
+  `swarm_send`, and its input carries the team's recent findings. It proposes
+  no work.
+- In a first live NIM run, one worker's question was answered in the same
+  round, and that worker's report cited the answer. The other answer turn
+  spent its request on `swarm_status`. In a second run, answer turns with
+  read tools spent all their requests exploring the project and never
+  answered. Hence these limits.
+- With them, a third run answered both workers' questions within about 34
+  seconds each, and both reports cite the answers
+  (`docs/swarming-benchmarks.md`).
+- The questions still reach the next round's planning input.
+
 ## September 27 Team: the orchestrator applies checked changes (source only, not released)
 
 **Applying checked changes.** A team the orchestrator runs can also **Apply

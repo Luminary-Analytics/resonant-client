@@ -59,8 +59,17 @@ def study(tmp_path_factory):
     declared = protocol()
     make, created = factory()
     result = pilot.run_study(declared, destination, endpoint=ENDPOINT, backend_factory=make)
-    assert result["complete_records"], (result, (destination / "study-interruption.json").read_text() if (destination / "study-interruption.json").exists() else "")
+    assert result["complete_records"], stopped(destination)
     return destination, declared, result, created
+
+
+def stopped(destination):
+    """Why a study stopped, compactly: each run's error type and state (a CI log cuts long reprs)."""
+    interruption = destination / "study-interruption.json"
+    runs = {path.parent.name[:24]: {key: value for key, value in json.loads(path.read_text(encoding="utf-8")).items()
+                                    if key in ("error_type", "stop_errors", "runtime_state", "deadline_reached")}
+            for path in sorted(destination.glob("*/observations.json"))}
+    return f"{interruption.read_text() if interruption.exists() else 'no interruption file'}; runs: {runs}"
 
 
 def test_scripted_single_and_swarm_complete_real_git_verification_without_benefit_claim(study):
@@ -170,7 +179,7 @@ def test_operational_csv_actually_admits_both_writers_concurrently(tmp_path):
     make, created = factory(first_request_barrier=barrier)
     declared = protocol(modes=("swarm",), scenarios=("csv_export",), resource_control="operational")
     result = pilot.run_study(declared, tmp_path / "concurrent", endpoint=ENDPOINT, backend_factory=make)
-    assert result["complete_records"] and result["runs"][0]["verified_completed"]
+    assert result["complete_records"] and result["runs"][0]["verified_completed"], stopped(tmp_path / "concurrent")
     assert len(created) == 2 and not barrier.broken
     case = declared["schedule"][0]
     execution = json.loads((tmp_path / "concurrent" / case["run_id"] / "execution.json").read_text())

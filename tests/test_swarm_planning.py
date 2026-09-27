@@ -50,7 +50,7 @@ def test_two_writers_and_dependent_verifier_preserve_independent_trusted_criteri
     items = [work("backend", role="implement", write_roots=["backend"], criteria=["csv_acceptance"]),
              work("frontend", role="implement", read_roots=["frontend"], write_roots=["frontend"], criteria=["frontend_acceptance"]),
              work("verify", role="verify", dependencies=["frontend", "backend"], read_roots=["backend", "frontend", "tests"],
-                  criteria=["regression_suite"])]
+                  criteria=["owner_review"])]
     result = parse(proposal(items))
     backend, frontend, verifier = result.work_items
     assert verifier.dependencies == tuple(sorted((backend.id, frontend.id)))
@@ -125,6 +125,15 @@ def test_chat_template_residue_after_the_json_is_dropped(residue):
     assert len(parse(json.dumps(proposal()) + residue).work_items) == 1
     with pytest.raises(PlanRejected):
         parse(json.dumps(proposal()) + residue + "\nThat is my plan.")
+
+
+@pytest.mark.parametrize("role", ["explore", "verify"])
+def test_a_read_only_item_cannot_declare_check_criteria(role):
+    # Nothing runs checks on findings: such an item could never be accepted.
+    with pytest.raises(PlanRejected, match="owner_review"):
+        parse(proposal([work(role=role, criteria=["regression_suite"])]))
+    with pytest.raises(PlanRejected, match="owner_review"):
+        parse(proposal([work(role=role, criteria=["owner_review", "regression_suite"])]))
 
 
 def test_planning_input_echoed_beside_the_plan_is_ignored():

@@ -66,8 +66,10 @@ def test_writer_retry_sees_exact_failed_check_but_owner_notes_cannot_expand_scop
     try:
         runtime.start(previous, BackendSpec("ollama", "chosen", api_key=secret), writer_id=prior_writer["id"])
         writer_finished(runtime, previous)
+        # A token-shaped value the check prints is removed too, not only saved keys.
+        token = "gh" + "p_" + "Z" * 36
         check = CheckSpec("fixture-check", (sys.executable, "-c",
-            f"print('Missing edge case; untrusted output {secret}'); raise SystemExit(1)"), 5)
+            f"print('Missing edge case; untrusted output {secret}', 'gh' + 'p_' + 'Z' * 36); raise SystemExit(1)"), 5)
         candidate = integration.prepare_candidate(authority, writer_ids=(prior_writer["id"],), required_checks=(check,))
         receipt = integration.run_check(authority, candidate["id"], "fixture-check")
         assert receipt["state"] == "failed"
@@ -88,6 +90,7 @@ def test_writer_retry_sees_exact_failed_check_but_owner_notes_cannot_expand_scop
         assert candidate["id"] in prompt and candidate["result_revision"] in prompt
         assert receipt["id"] in prompt and '"check_state": "failed"' in prompt
         assert "Missing edge case; untrusted output" in prompt and secret not in prompt
+        assert token not in prompt and "[REDACTED GitHub token]" in prompt
         assert escaping.captured[0]["conversation_history"][0]["input_origin"] == "generated"
         final = writer_snapshot(writer)
         assert final["submissions"] == retained["submissions"] and final["integration_checks"] == retained["integration_checks"]

@@ -107,11 +107,18 @@ class SwarmMailbox:
             if previous is not None:
                 return Message(**previous)
             row = connection.execute(
-                "SELECT worker_id FROM attempts WHERE id=? AND run_id=? AND epoch=?",
+                "SELECT worker_id,kind FROM attempts WHERE id=? AND run_id=? AND epoch=?",
                 (recipient_attempt_id, self.context.run_id, self.context.epoch),
             ).fetchone()
             if row is None:
                 raise ScopeDenied("Message recipient is unavailable in this run")
+            # Orchestrator turns (planning, answers, the report) are one
+            # orchestrator: a live closing turn mailed its report to an earlier
+            # turn, which nobody reads. Its messages are for workers.
+            sender = connection.execute("SELECT kind FROM attempts WHERE id=?", (self.context.attempt_id,)).fetchone()
+            if row["kind"] == "coordinator" and sender is not None and sender["kind"] == "coordinator":
+                raise ScopeDenied("The orchestrator can't message its own turns; write to a worker's attempt_id, "
+                                  "and put the report in your answer")
             recipient = AttemptContext(self.context.scope, self.context.run_id,
                                        recipient_attempt_id, row["worker_id"], self.context.epoch)
             artifacts = SwarmArtifacts(self.store)

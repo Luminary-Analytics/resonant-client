@@ -23,6 +23,7 @@ from typing import Any
 import uuid
 from urllib.parse import urlsplit, urlunsplit
 
+from ... import secret_scan
 from ...gui.runtime import BackendSpec, bind_sonn_conversation
 from ..exclusions import ExclusionRules
 from ..execution_guard import ExecutionGuardError
@@ -148,6 +149,8 @@ class SwarmWorkerRunner:
     ``backend_factory`` must return a fresh mutable backend for each invocation.
     Credential-bearing BackendSpec values stay in memory; status/events contain
     only provider/model identity. The runner never chooses or changes a model.
+    ``governance`` (organization.TeamGovernance) holds the run's organization
+    rules, budgets, usage and audit trail; the desktop runtime always gives one.
     """
 
     def __init__(
@@ -159,6 +162,7 @@ class SwarmWorkerRunner:
         managed_readers: bool = False, managed_runtime: Any = None,
         exclusions: ExclusionRules | None = None,
         connections: dict[str, dict[str, Any]] | None = None,
+        governance: Any = None,
     ) -> None:
         root = Path(workspace)
         if not root.is_absolute() or not root.is_dir():
@@ -176,6 +180,9 @@ class SwarmWorkerRunner:
         # The project's file exclusions (SwarmRuntime.exclusions_for); None only
         # for runners built without a desktop, such as isolated tests.
         self._exclusions = exclusions
+        # The run's organization rules, budgets, usage and audit trail
+        # (organization.py); None, like exclusions, only without a desktop.
+        self.governance = governance
         # Connections captured when the run started (SwarmRuntime.team_model),
         # keyed by backend name: a worker's endpoint never follows later edits.
         self._connections: dict[str, dict[str, Any]] = {}
@@ -465,6 +472,27 @@ class SwarmWorkerRunner:
         return worker.plans is not None and getattr(worker.plans, "proposes", True)
 
     @classmethod
+    def _kind(cls, worker: _Worker) -> str:
+        """The participant's kind in the audit log."""
+        if worker.plans is not None:
+            return "coordinator" if cls._proposes(worker) else "answer"
+        return "writer" if worker.writer_id else "reader"
+
+    def _audit_participant(self, worker: _Worker, event: str) -> None:
+        """A participant's start or end in the audit log (organization.py); never decides its outcome."""
+        if self.governance is None:
+            return
+        try:
+            if event == "start":
+                self.governance.participant_started(worker.context, kind=self._kind(worker))
+            else:
+                self.governance.participant_ended(
+                    worker.context, kind=self._kind(worker), error=worker.error,
+                    outcome=worker.phase if worker.termination_recorded else "reconciliation_required")
+        except Exception:  # noqa: BLE001 - the audit log never stops a worker
+            pass
+
+    @classmethod
     def _role(cls, worker: _Worker) -> str:
         if worker.plans is not None and not cls._proposes(worker):
             return ("Answer the workers' questions in your generated assignment with swarm_send, then reply with "
@@ -487,7 +515,7 @@ class SwarmWorkerRunner:
             worker.workspace, worker.grant, mailbox=mailbox,
             integration=self.integration if worker.writer_id else None, writer_id=worker.writer_id,
             input_observer=self._input_observer(worker), wait_for_admission=lambda: self._wait_boundary(worker),
-            managed=self._managed_runtime)
+            managed=self._managed_runtime, governance=self.governance)
         controlled = _ControlledGuard(self, worker, guard)
         tools = SwarmWorkerTools(mailbox, submit=lambda **args: self._submit(worker, **args), queue_message=lambda _: None,
                                  stopping=lambda: worker.cancel.is_set() or worker.pause.is_set())
@@ -525,7 +553,10 @@ class SwarmWorkerRunner:
             "prompt": worker.prompt, "instructions": self._instructions, "role": self._role(worker),
             "request_limit": worker.allowance, "tools": sorted(effective_tools),
             "write_tools": sorted(guard.write_tools), "exclusions": self._exclusion_rules(),
-            "connection": self._connections.get(worker.spec.backend_type)}
+            "connection": self._connections.get(worker.spec.backend_type),
+            # The app's secret scan (Settings, or a policy's lock) for the
+            # child's own requests; in-process workers share this process's.
+            "secret_scan": secret_scan.patterns_enabled()}
         observations = self._process_observations or ProcessObservations(self.store)
         worker.process = self._writer_process_factory()
         recorded = False
@@ -578,6 +609,7 @@ class SwarmWorkerRunner:
                         self._wait_boundary(worker)
             worker.phase = "running"
             self._emit(worker, {"event": "worker.started"})
+            self._audit_participant(worker, "start")
             if self._managed_readers or (worker.writer_id and self._writer_process_factory is not None):
                 stream = self._process_stream(worker)
                 for event in stream:
@@ -615,7 +647,7 @@ class SwarmWorkerRunner:
                                        writer_id=worker.writer_id,
                                        input_observer=self._input_observer(worker),
                                        wait_for_admission=lambda: self._wait_boundary(worker),
-                                       managed=self._managed_runtime)
+                                       managed=self._managed_runtime, governance=self.governance)
             tools = SwarmWorkerTools(mailbox, submit=lambda **args: self._submit(worker, **args),
                                      queue_message=lambda message: self._queue_message(worker, message),
                                      stopping=lambda: worker.cancel.is_set() or worker.pause.is_set())
@@ -769,6 +801,7 @@ class SwarmWorkerRunner:
             if not worker.termination_recorded:
                 worker.phase = "reconciliation_required"
                 self._emit(worker, {"event": "worker.stop_unconfirmed", "error": worker.error})
+            self._audit_participant(worker, "end")
             if self._managed_runtime is not None:
                 try:
                     # Remote cleanup observation follows actual generator,

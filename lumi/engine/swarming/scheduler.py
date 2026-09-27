@@ -76,8 +76,18 @@ class SwarmScheduler:
                 return []
             launched: list[str] = []
             self._blocked = {}
+            refusal = None
             for item in snapshot["work_items"]:
                 if item["state"] != "ready" or self._stop.is_set():
+                    continue
+                if refusal is None:
+                    # The organization's rules and the budgets in force now
+                    # (organization.py): a policy or spend that arrived mid-run
+                    # stops new dispatch, and each blocked task says why.
+                    governance = getattr(self.runner, "governance", None)
+                    refusal = governance.dispatch_refusal() if governance is not None else ""
+                if refusal:
+                    self._blocked = {**self._blocked, item["id"]: refusal}
                     continue
                 spec = json.loads(item["specification"])
                 if spec["write_roots"] and (self.runner.integration is None or self.base_revision is None):

@@ -14,16 +14,19 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import sqlite3
 import threading
+import time
 from typing import Any
 import uuid
 
 from ..execution_guard import (
     FILE_TOOL_NAMES, SWARM_TOOL_NAMES, WRITE_TOOL_NAMES, ExecutionGuardError, ObservationOutcome, RequestPurpose,
-    ToolScopeRefused,
+    RequestRefused, ToolScopeRefused,
 )
 from .artifacts import SwarmArtifacts
-from .models import AdmissionClosed, AttemptContext, Command, Conflict, RevisionConflict, RunAuthority, ScopeDenied, require_id
+from .models import (AdmissionClosed, AttemptContext, Command, Conflict, RevisionConflict, RunAuthority, ScopeDenied,
+                     SwarmError, require_id)
 from .policy import AssignmentGrant, ModelSelection, PolicyProfile, SwarmPolicy, normalize_scope
 from .supervisor import SwarmSupervisor
 from .tools import validate_swarm_arguments
@@ -58,6 +61,11 @@ class SwarmExecutionGuard:
     dispatch, attach ``artifact_reader`` to Session, and keep the supervisor lease
     live independently. A guard that encounters ambiguous persistence closes;
     explicit supervisor reconciliation owns any subsequent recovery.
+
+    ``governance`` (organization.TeamGovernance) checks each request against
+    the organization's rules and the budgets before its allowance is reserved,
+    and records its usage and audit entries. The guard runs in the host for
+    in-process and process participants alike, so both go through it.
     """
 
     def __init__(
@@ -66,6 +74,7 @@ class SwarmExecutionGuard:
         artifacts: SwarmArtifacts | None = None, retain_inputs: bool = False,
         mailbox: Any = None, integration: Any = None, writer_id: str | None = None,
         input_observer: Any = None, wait_for_admission: Any = None, managed: Any = None,
+        governance: Any = None,
     ) -> None:
         if type(retain_inputs) is not bool:
             raise ValueError("Input retention must be explicitly enabled or disabled")
@@ -98,6 +107,9 @@ class SwarmExecutionGuard:
         self._input_observer = input_observer
         self._wait_for_admission = wait_for_admission
         self._managed = managed
+        self._governance = governance
+        # Each started request's purpose and start time, for its usage record.
+        self._requests: dict[str, tuple[str, float]] = {}
         if managed is not None:
             managed._context(context)
         self.artifact_reader = _ArtifactReader(self)
@@ -229,6 +241,13 @@ class SwarmExecutionGuard:
                         ).fetchone():
                             raise Conflict("Unresolved execution prevents another request")
                 self._admission(preflight)
+                if self._governance is not None:
+                    # The organization's rules and the budgets, before any
+                    # allowance is reserved: a refusal leaves nothing uncertain.
+                    reason = self._governance.request_refusal(self.context, purpose)
+                    if reason:
+                        self._request_refused(purpose, reason)
+                        raise RequestRefused(reason)
                 request_id = "sreq_" + uuid.uuid4().hex
                 self._admission(lambda: self._command("reserve_request", {"attempt_id": self.context.attempt_id,
                     "attempt_epoch": self.context.epoch, "request_id": request_id,
@@ -268,12 +287,23 @@ class SwarmExecutionGuard:
                 self._admission(lambda: self._command("start_request", {"request_id": request_id, "attempt_epoch": self.context.epoch}))
                 if self._managed is not None:
                     self._admission(lambda: self._claim_managed("claim_request", request_id))
+                self._requests[request_id] = (purpose, time.monotonic())
                 return request_id
             except BaseException:
                 self.closed = True
                 if self._managed is not None and request_id is not None:
                     self._managed.abandon_request(self.context, request_id)
                 raise
+
+    def _request_refused(self, purpose: str, reason: str) -> None:
+        """Keep a refused request visible in the run's history; it has no request record."""
+        try:
+            with self.store._connection(write=True) as connection:
+                self._live(connection, admission=False)
+                self.store._event(connection, self.context.run_id, "request_refused", {
+                    "attempt_id": self.context.attempt_id, "purpose": purpose, "reason": reason[:500]})
+        except (OSError, sqlite3.Error, SwarmError):
+            pass  # The refusal stands; the audit log already records it.
 
     def _claim_managed(self, method, identity):
         # No network: synchronize the last local admission check with the
@@ -307,6 +337,15 @@ class SwarmExecutionGuard:
                         raise Conflict("Request observation is absent or already recorded")
                     self.store._event(connection, self.context.run_id, "request_observed", {
                         "request_id": request_id, "outcome": outcome, "usage": usage, "error": error})
+                purpose, started = self._requests.pop(request_id, ("primary", None))
+                if self._governance is not None:
+                    try:
+                        # Once per request, whatever settles next: the provider
+                        # has answered, so its usage is real.
+                        self._governance.record_request(self.context, purpose, stats=usage,
+                            elapsed=time.monotonic() - started if started is not None else 0.0)
+                    except Exception:  # noqa: BLE001 - usage records never decide a request's outcome
+                        pass
                 self._command("settle_request", {"request_id": request_id, "attempt_epoch": self.context.epoch,
                               "outcome": outcome, "used": 1 if outcome == "completed" else None})
                 if self._managed is not None:

@@ -1061,7 +1061,9 @@ class Session:
             if purpose == "primary":
                 return backend.stream(**kwargs)
             from .request_purpose import auxiliary_stream
-            return auxiliary_stream(backend, purpose, **kwargs)
+            # A guarded request's usage is recorded by its execution guard's
+            # owner (engine/swarming/organization.py), not a second time here.
+            return auxiliary_stream(backend, purpose, record=self._execution_boundary is None, **kwargs)
         if self._execution_boundary is None:
             return invoke()
         inputs = {key: value for key, value in kwargs.items() if key != "cancel_event"}
@@ -2063,6 +2065,11 @@ class Session:
             stats = event["stats"]
             if stats.get("_usage_id"):
                 return  # the same call, seen again
+            if self._execution_boundary is not None:
+                # A Team participant's requests are recorded by the host that
+                # admits them (engine/swarming/organization.py), with the team's
+                # purpose, project and conversation; here they would count twice.
+                return
             provider = str(getattr(self.backend, "name", "") or "")
             model = str(event.get("model") or getattr(self.backend, "model", "") or "")
             try:

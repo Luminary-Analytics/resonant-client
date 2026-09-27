@@ -19,7 +19,10 @@ count, never the matched text), ``settings.change``, ``trust.decision``,
 ``budget.warning``, ``budget.approval``, ``budget.block``, ``model.fallback``,
 ``feedback.sent``, ``feedback.queued``, ``feedback.refused`` and
 ``feedback.dropped`` (lumi/feedback.py: kind and size, never the text) and
-``error``; for the Team preview (engine/swarming/organization.py)
+``error``; for organization oversight (lumi/oversight.py)
+``oversight.notice_shown``, ``oversight.notice_forgotten``,
+``oversight.unattended_run``, ``oversight.acknowledgment_refused`` and
+``oversight.discarded``; for the Team preview (engine/swarming/organization.py)
 ``team.start``, ``team.stop``, ``team.complete``, ``team.participant.start``,
 ``team.participant.end``, ``team.decision``, ``team.integration``,
 ``team.refusal`` and ``team.request_refused``.

@@ -1336,6 +1336,7 @@ class LumiApp {
             this.openCommandPalette();
         });
         this._initAccountMenu();
+        this._initOversightNotice?.();
         document.getElementById('settings-back')?.addEventListener('click', () => {
             this.switchView('agents');
             if (this.userInput?.getClientRects().length) this.userInput.focus();
@@ -1911,6 +1912,13 @@ class LumiApp {
     }
 
     sendMessage(options = {}) {
+        if (this._oversightLocked) {
+            // Nothing goes to a model before the organization's notice is
+            // confirmed; the server refuses too (lumi/oversight.py).
+            this.showToastMessage('Confirm your organization’s oversight notice above the message box first.');
+            document.getElementById('oversight-notice')?.focus();
+            return;
+        }
         if (this._newSessionInflight || this._pendingProjectSwitchId) {
             this.showToastMessage('Opening your session. Your draft is ready to send in a moment.');
             return;
@@ -3169,8 +3177,12 @@ class LumiApp {
         this._setSessionActivity(running ? 'working' : 'idle');
         this.sendBtn.style.display = 'flex';
         this.stopBtn.style.display = running ? 'flex' : 'none';
-        this.userInput.disabled = false;
-        this.userInput.placeholder = running
+        // An organization's oversight notice that isn't confirmed yet keeps
+        // the message box locked (settings_view.js _setOversightLock).
+        this.userInput.disabled = Boolean(this._oversightLocked);
+        this.userInput.placeholder = this._oversightLocked
+            ? 'Confirm the notice above to start'
+            : running
             ? 'Write a follow-up for the running agent...'
             : 'Message Lumi';
         const sendLabel = running
@@ -3627,6 +3639,13 @@ class LumiApp {
                 if (event.request_id && event.request_id === this._newSessionRequestId) this._releaseNewSessionGuard();
                 // A refused mission dispatch un-marks its Build button or card (autonomous_view.js).
                 if (event.source === 'mission_dispatch') this._missionDispatchRefused();
+                // Organization oversight refused work before any turn started: the
+                // notice above the message box says why (settings_view.js), so this
+                // is no failed turn with retries.
+                if (event.code === 'oversight_notice' && !this.isRunning && !this._activeTask) {
+                    this.showToastMessage(event.message || 'Confirm your organization’s oversight notice first.');
+                    break;
+                }
                 if (this._timelinePending) {
                     // The server refused the restore (a run started, or the
                     // checkpoint can't restore that): the user can try again.
@@ -4152,6 +4171,11 @@ class LumiApp {
                 this._renderAccountMenu();
                 if (this.currentView === 'settings') this.renderSettingsView();
                 break;
+            case 'voice_status':
+                // Whether dictation may listen now (after the oversight notice was confirmed, say).
+                if (this.settings) this.settings._meta = {...(this.settings._meta || {}), voice: event.data || {}};
+                this._syncDictationButton();
+                break;
             case 'voice.transcript':
             case 'voice.error': {
                 const request = this._voiceRequests?.get(event.request_id);
@@ -4313,6 +4337,10 @@ class LumiApp {
             case 'audit_status':
                 this.auditStatus = event;
                 if (this.currentView === 'settings') this.renderSettingsView();
+                break;
+            case 'oversight_status':
+                // The organization's oversight: the notice and Settings (settings_view.js).
+                this._applyOversight?.(event.data);
                 break;
             case 'cloud_status':
                 this.cloudStatus = event.data;
@@ -4744,6 +4772,10 @@ class LumiApp {
         if (Array.isArray(event.autonomous_missions)) {
             this.handleAutonomousMissions({ missions: event.autonomous_missions });
         }
+
+        // What the organization's oversight receives: the notice beside the
+        // message box, shown before anything is recorded (settings_view.js).
+        if (event.oversight) this._applyOversight?.(event.oversight);
 
         // Plans still running when this page connected; only the socket's
         // own init lists them. Before the returns below: a plan runs on the
@@ -5365,7 +5397,7 @@ class LumiApp {
                 MediaRecorder: window.MediaRecorder,
                 Blob: window.Blob,
             },
-            getStatus: () => this.settings?._meta?.voice,
+            getStatus: () => this._dictationStatus(),
             getText: () => composer.value,
             setText: text => {
                 composer.value = text;
@@ -5407,6 +5439,7 @@ class LumiApp {
         btn.addEventListener('pointerdown', event => {
             if (event.button !== 0) return;
             event.preventDefault();  // the composer keeps focus
+            if (this._oversightLocked) return;  // the button is disabled too
             try { btn.setPointerCapture(event.pointerId); } catch (_) { /* released already */ }
             dictation.press();
         });
@@ -5417,7 +5450,7 @@ class LumiApp {
         btn.addEventListener('keydown', event => {
             if ((event.key !== ' ' && event.key !== 'Enter') || event.ctrlKey || event.altKey || event.metaKey) return;
             event.preventDefault();
-            if (!event.repeat) dictation.press();
+            if (!event.repeat && !this._oversightLocked) dictation.press();
         });
         btn.addEventListener('keyup', event => {
             if (event.key !== ' ' && event.key !== 'Enter') return;
@@ -5432,6 +5465,12 @@ class LumiApp {
             if (event.code === 'Space' && event.ctrlKey && event.shiftKey && !event.altKey && !event.metaKey) {
                 if (this.currentView === 'settings') return;
                 event.preventDefault();
+                // Nothing listens while the organization's oversight notice waits: the
+                // webview's recognizer sends audio to its vendor like a model request.
+                if (this._oversightLocked) {
+                    if (!event.repeat) this.showToastMessage('Confirm your organization’s oversight notice above the message box first.');
+                    return;
+                }
                 if (!event.repeat && !shortcutHeld) {
                     shortcutHeld = true;
                     dictation.press();
@@ -5452,6 +5491,17 @@ class LumiApp {
         }, true);
         window.addEventListener('blur', releaseShortcut);
         this._syncDictationButton();
+    }
+
+    /**
+     * Which ways of dictating may listen (lumi/voice.py, settings._meta.voice),
+     * and none while the organization's oversight notice locks the message box.
+     */
+    _dictationStatus() {
+        const voice = this.settings?._meta?.voice;
+        if (!this._oversightLocked) return voice;
+        const reason = 'Confirm your organization’s oversight notice above the message box first.';
+        return {...(voice || {}), browser: false, service_ready: false, browser_reason: reason, reason};
     }
 
     /** The microphone button says whether dictation can run here, and why not. */

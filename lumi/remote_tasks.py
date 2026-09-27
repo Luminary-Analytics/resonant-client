@@ -13,7 +13,10 @@ refused when nobody answers within 10 minutes or the person says stop. The
 reply, or what went wrong, goes back to the chat.
 
 An organization can turn it off by locking ``cloud.remote_tasks`` in its
-policy. A managed computer never takes anyone's requests.
+policy. A managed computer never takes anyone's requests. Under an
+organization's oversight (lumi/oversight.py) a request runs only once this
+computer's person has confirmed the notice; until then ``Session.run``
+refuses it and the chat is told why.
 """
 
 from __future__ import annotations

@@ -7,7 +7,8 @@ usual tools. A pack can also add [panels](#panels): pages of its own that
 the person opens in Lumi, which run in a sandbox. You don't need Lumi's
 source to write either; this page and the
 SDK in [`sdk/`](https://github.com/Luminary-Analytics/resonant-client/tree/main/sdk)
-are the whole contract.
+are the whole contract. The SDK is under the MIT License (`sdk/LICENSE`),
+unlike Lumi itself, so packs can include it.
 
 This is the Extension SDK, version 1. Code: `lumi/engine/provider_extensions.py`
 and, for panels, `lumi/gui/extension_panels.py`.
@@ -29,7 +30,10 @@ described in [Writing a capability pack](packs.md).
    `python -m pytest`.
 3. Check it as Lumi will: `lumi extension check ~/work/acme-models`. This
    loads the manifest with Lumi's rules, lists the models, and asks the
-   first model a short question.
+   first model a short question. Under an organization's policy the
+   question passes the same gates as any model request: its
+   [oversight notice](organization-oversight.md) must be confirmed and its
+   [DLP rules](dlp.md) apply; the check says when it didn't ask.
 4. Install it: copy the folder into `~/.lumi/packs/`, or push it to a Git
    repository and use **Install from Git** in Settings > Capability packs.
    Review what it runs there and approve it.
@@ -304,7 +308,10 @@ what the person can review in the message box:
   command) or `/` (a Lumi command) is refused, and Lumi says so.
 
 Lumi puts the caret where the added text starts and scrolls the message box
-to it. Text is refused when no conversation is open.
+to it. Text is refused when no conversation is open. While an organization's
+[oversight notice](organization-oversight.md) waits to be confirmed, text can
+still be added to the locked message box, but nothing can be sent until the
+person confirms the notice with its own button, which no panel can reach.
 
 The bridge closes the panel when the person presses Escape in it, unless the
 panel handled the key (`event.preventDefault()`), and marks the page

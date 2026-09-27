@@ -14,10 +14,16 @@ Two layers, applied to the conversation just before each model request:
 A replacement reads ``[REDACTED <kind>]`` so the model knows something was
 there and why it can't see it. The scan covers Lumi's own model requests;
 Codex and Claude Code read files through their own tools and are not scanned.
+
+``redact_for_sharing`` is stricter, for what Lumi shares with an
+organization's Lumi Cloud (organization oversight): it also removes
+credentials without a well-known format, such as an ``Authorization``
+header, a ``--password`` option or a secret query parameter.
 """
 
 from __future__ import annotations
 
+import math
 import os
 import re
 import secrets
@@ -84,6 +90,128 @@ PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
         # once per line instead of backtracking through the name.
         r"(?m)^[ \t]*(?:export[ \t]+)?(?=[A-Z0-9_]*?" + _ENV_NAMES + r")[A-Z0-9_]+"
         r"[ \t]*=[ \t]*[\"']?" + _NOT_ALREADY + r"(?P<secret>[^\s\"'#]{8,})")),
+)
+
+# ── What leaves this computer: stricter (organization oversight) ────────────
+#
+# A model request keeps the patterns above: a model may need a hash or a long
+# identifier to do its work. What Lumi shares with an organization's Lumi
+# Cloud (lumi/oversight.py, lumi/security_flags.py) also loses credentials in
+# commands, URLs and messages that have no well-known format. These run after
+# PATTERNS, in linear time like them: a name is taken whole by a possessive
+# quantifier and judged by a function, never searched for a keyword by
+# backtracking.
+_NOT_ALREADY_QUOTED = r"(?![\"']?\[REDACTED)(?![\"']?[$<{])"
+# A value: quoted, or up to the end of the argument.
+_VALUE = r"(?:\"[^\"\n]*\"|'[^'\n]*'|[^\s\"',;&)}\]]+)"
+# Words that make a name a secret's when they are a whole part of it
+# (db_password, apiKey, X-Auth-Token, client-secret), not inside another word.
+_SECRET_WORD = re.compile(
+    r"(?i)^(?:password|passwd|passphrase|pwd|pass|secret|token|apikey|api_key|api-key|accesskey|access_key|"
+    r"access-key|secretkey|secret_key|secret-key|privatekey|private_key|private-key|credential|credentials|"
+    r"clientsecret|client_secret|client-secret|authtoken|auth_token|auth-token|accesstoken|access_token|"
+    r"access-token|refreshtoken|refresh_token|refresh-token|sessionid|session_id|session-id|sessiontoken|"
+    r"session_token|session-token|privatetoken|private_token|private-token|signature|sig|jwt|auth)$")
+# Environment variables are one upper-case word: PGPASSWORD, MYSQL_PWD, GITHUB_TOKEN.
+_ENV_SECRET = re.compile(r"PASSWORD|PASSWD|PASSPHRASE|SECRET|TOKEN|API_?KEY|ACCESS_?KEY|PRIVATE_?KEY|CREDENTIAL"
+                         r"|_PWD$|_PASS$|_AUTH$")
+# Query parameters that carry credentials whatever else they are called.
+_URL_SECRET = re.compile(r"(?i)^(?:key|code|sig|signature|auth|session|x-amz-signature|x-amz-credential|"
+                         r"x-amz-security-token|x-goog-signature|x-goog-credential)$")
+_NOT_A_SECRET = frozenset({"true", "false", "yes", "no", "none", "null", "on", "off"})
+
+
+def _name_parts(name: str) -> list[str]:
+    """``db_password`` → [db, password]; ``githubToken`` → [github, token]; ``X-Api-Key`` → [x, api, key, api-key]."""
+    split = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", name)
+    parts = [part for part in re.split(r"[_.\-]+", split) if part]
+    # Two-word names (api key, access token) as one part too.
+    return parts + [f"{a}_{b}" for a, b in zip(parts, parts[1:])]
+
+
+def _secret_name(name: str, *, url: bool = False) -> bool:
+    name = name.lstrip("-")
+    if not name or len(name) > 200:
+        return False
+    if url and _URL_SECRET.match(name):
+        return True
+    if name.isupper():  # an environment variable; PWD and OLDPWD are folders
+        return bool(_ENV_SECRET.search(name))
+    return any(_SECRET_WORD.match(part) for part in _name_parts(name))
+
+
+def _secret_value(value: str) -> bool:
+    bare = value.strip("\"'")
+    return bool(bare) and not bare.isdigit() and bare.lower() not in _NOT_A_SECRET
+
+
+def _named(match: re.Match[str], *, url: bool = False) -> bool:
+    return _secret_name(match.group("name"), url=url) and _secret_value(match.group("secret"))
+
+
+def _looks_random(match: re.Match[str]) -> bool:
+    """Whether a long token looks like a credential: both cases, digits, and the variety of random text.
+
+    Random letters rarely run lower-case for 7 or more, while a long
+    CamelCase name (``TestOrganizationPolicy2Factor``) spells words; very
+    varied text counts whatever its runs.
+    """
+    token = match.group("secret")
+    if not (any(c.islower() for c in token) and any(c.isupper() for c in token)
+            and sum(c.isdigit() for c in token) >= 2):
+        return False
+    counts = Counter(token)
+    entropy = -sum(n / len(token) * math.log2(n / len(token)) for n in counts.values())
+    longest = max((len(run) for run in re.findall(r"[a-z]+", token)), default=0)
+    return entropy >= 4.6 or (entropy >= 4.0 and longest <= 6)
+
+
+# (kind, pattern, whether a match is a secret: None for always).
+SHARING_PATTERNS: tuple[tuple[str, re.Pattern[str], Any], ...] = (
+    # A private key whose END was cut off: the header and the base64 after it.
+    ("private key", re.compile(r"-----BEGIN [A-Z0-9 ]{0,40}PRIVATE KEY(?: BLOCK)?-----[A-Za-z0-9+/=\s]*"), None),
+    # Authorization: Bearer <token>, Basic <base64>, token <x> (headers, curl -H, JSON).
+    ("authorization header", re.compile(
+        r"(?i)(?<![A-Za-z0-9-])(?:proxy-)?authorization[\"']?[ \t]*[:=][ \t]*[\"']?"
+        r"(?:(?:bearer|basic|token|digest|negotiate|apikey|api-key|sso-key|key)[ \t]+)?"
+        + _NOT_ALREADY + r"(?P<secret>[^\s\"',;]+)"), None),
+    ("cookie", re.compile(
+        r"(?i)(?<![A-Za-z0-9-])(?:set-)?cookie[\"']?[ \t]*:[ \t]*[\"']?" + _NOT_ALREADY
+        + r"(?P<secret>[^\"'\r\n]+)"), None),
+    # mysql -pPASSWORD (the password right after -p), sshpass -p x, curl -u user:password.
+    ("password or token option", re.compile(
+        r"(?<![\w.-])(?i:mysql|mysqldump|mysqladmin|mysqlimport|mysqlshow|mysqlcheck|mysqlsh|mariadb|"
+        r"mariadb-dump)(?:\.exe)?(?![\w.-])[^\n;&|]{0,300}?[ \t]-p(?!\s)" + _NOT_ALREADY
+        + r"(?P<secret>[^\s\"']+)"), None),
+    ("password or token option", re.compile(
+        r"(?<![\w-])sshpass[ \t]+-p[ \t]*" + _NOT_ALREADY + r"(?P<secret>[^\s\"']+)"), None),
+    ("password or token option", re.compile(
+        r"(?<![^\s\"'])(?:-u|--user)(?:[ \t]+|=)[\"']?[^\s:\"']+:" + _NOT_ALREADY + r"(?P<secret>[^\s\"'@]+)"),
+        None),
+    # --password=x, --token x, --api-key "x", --db-password=x.
+    ("password or token option", re.compile(
+        r"(?<![^\s\"'=(])--?(?P<name>[A-Za-z0-9][A-Za-z0-9-]*+)(?:=|[ \t]+)(?!-)" + _NOT_ALREADY_QUOTED
+        + r"(?P<secret>" + _VALUE + r")"), _named),
+    # ?api_key=x, &token=x, ?key=x, &X-Amz-Signature=x, ?code=x in a URL.
+    ("secret in a URL", re.compile(
+        r"(?<=[?&;])(?P<name>[A-Za-z0-9_.\-]++)=" + _NOT_ALREADY + r"(?P<secret>[^&#\s\"']+)"),
+        lambda match: _named(match, url=True)),
+    # PGPASSWORD=x psql, set GITHUB_TOKEN=x, db_password = x, apiKey=x (not ==).
+    ("secret assignment", re.compile(
+        r"(?<![A-Za-z0-9_.\-])(?P<name>[A-Za-z0-9_.\-]++)[ \t]*=(?!=)[ \t]*" + _NOT_ALREADY_QUOTED
+        + r"(?P<secret>" + _VALUE + r")"), _named),
+    # "password": "x", password: x, X-Api-Key: x (JSON, YAML, headers).
+    ("secret assignment", re.compile(
+        r"(?<![A-Za-z0-9_.\-])(?P<name>[A-Za-z0-9_.\-]++)[\"']?[ \t]*:[ \t]*" + _NOT_ALREADY_QUOTED
+        + r"(?P<secret>" + _VALUE + r")"), _named),
+    # user:x@host with a password shorter than PATTERNS' four characters.
+    ("password in a URL", re.compile(
+        r"(?<![a-zA-Z0-9+.\-])[a-zA-Z][a-zA-Z0-9+.\-]*://[^\s:/@]+:" + _NOT_ALREADY + r"(?P<secret>[^\s@/]+)@"),
+        None),
+    # A long random-looking token with no name or known format. Hex (hashes,
+    # commit ids) and UUIDs have one case and stay; "/" ends a token, so paths stay.
+    ("random-looking token", re.compile(
+        r"(?<![A-Za-z0-9_+=\-])(?P<secret>[A-Za-z0-9_+=\-]{32,})(?![A-Za-z0-9_+=\-])"), _looks_random),
 )
 
 # Setting names whose values are credentials wherever they appear (an MCP
@@ -180,10 +308,13 @@ def redact_text(text: str, *, patterns: bool | None = None,
     return text, found
 
 
-def _replacer(kind: str, found: Counter):
+def _replacer(kind: str, found: Counter, secret: Any = None):
+    """A ``re.sub`` function that replaces a match (or its ``secret`` group), when ``secret(match)`` agrees."""
     label = f"[REDACTED {kind}]"
 
     def replace(match: re.Match[str]) -> str:
+        if secret is not None and not secret(match):
+            return match.group(0)
         found[kind] += 1
         if "secret" not in match.re.groupindex or match.group("secret") is None:
             return label
@@ -193,6 +324,21 @@ def _replacer(kind: str, found: Counter):
         return whole[: start - whole_start] + label + whole[end - whole_start:]
 
     return replace
+
+
+def redact_for_sharing(text: Any) -> tuple[str, Counter]:
+    """``text`` as Lumi may share it outside this computer, and a count of what was removed by kind.
+
+    Saved key values and the well-known formats go at every level, whatever
+    the person's scan setting; then SHARING_PATTERNS: credentials in
+    headers, options, assignments and URLs, a private key cut off before its
+    end, and long random-looking tokens. Redact the whole text before cutting
+    it: a secret cut in half no longer matches its pattern or its value.
+    """
+    value, found = redact_text(str(text or ""), patterns=True)
+    for kind, pattern, secret in SHARING_PATTERNS:
+        value = pattern.sub(_replacer(kind, found, secret), value)
+    return value, found
 
 
 def _redact_content(content: Any, *, patterns: bool) -> tuple[Any, Counter]:

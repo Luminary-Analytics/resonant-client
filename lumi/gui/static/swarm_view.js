@@ -105,7 +105,8 @@ window.LumiSwarmView = class LumiSwarmView {
             <section data-swarm="orchestrator" class="swarm-orchestrator" hidden aria-labelledby="swarm-orchestrator-title"><h4 id="swarm-orchestrator-title">Orchestrator</h4>
             <p data-swarm="orchestrator-status" role="status"></p>
             <section data-swarm="orchestrator-report" class="swarm-report" hidden aria-labelledby="swarm-report-title"><h5 id="swarm-report-title">Final report</h5>
-            <p data-swarm="orchestrator-report-text" class="swarm-report-text"></p></section></section>
+            <p data-swarm="orchestrator-report-text" class="swarm-report-text"></p>
+            <p data-swarm="orchestrator-record" class="swarm-help"></p></section></section>
             <form data-swarm="followup-form" class="swarm-task" hidden aria-labelledby="swarm-followup-title"><h4 id="swarm-followup-title">Follow-up planning</h4>
             <p class="swarm-help">Ask the coordinator to propose additional work from retained findings. Existing workers continue. Review the new proposal before approving any additional workers.</p>
             <div class="swarm-fields"><label>Follow-up coordinator allowance<input data-swarm="followup-requests" type="number" min="1" max="1000" step="1" required></label>
@@ -1569,6 +1570,13 @@ window.LumiSwarmView = class LumiSwarmView {
         nodes['orchestrator-status'].textContent = `${turn}${applies} · ${autonomy.detail || ''}`;
         const report = autonomy.final_report || '';
         nodes['orchestrator-report'].hidden = !report;
+        // What Lumi recorded, beside what the model wrote: a live report claimed
+        // questions nobody asked (chat_context.team_record).
+        const record = this._swarmState?.team_record;
+        const plural = (count, word) => `${count} ${word}${count === 1 ? '' : 's'}`;
+        nodes['orchestrator-record'].textContent = record
+            ? `Recorded by Lumi: ${record.accepted} of ${plural(record.tasks, 'task')} accepted, ${plural(record.questions, 'question')} to the orchestrator and ${plural(record.answers, 'answer')}, ${plural(record.applied, 'change')} applied. The report above is the orchestrator’s own words.`
+            : '';
         if (report === nodes['orchestrator-report-text'].dataset.source) return;
         nodes['orchestrator-report-text'].dataset.source = report;
         // The report is model output: render its Markdown only through the

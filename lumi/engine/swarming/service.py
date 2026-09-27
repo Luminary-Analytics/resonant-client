@@ -23,7 +23,7 @@ from .coordinator import ANSWER_WORKER_PREFIX, CoordinatorPlans, OrchestratorAns
 from . import collaboration_desktop, managed_collaboration_desktop
 from . import connections as team_connections
 from .autopilot import MAX_ROUNDS, TeamAutopilot
-from .chat_context import chat_context
+from .chat_context import chat_context, team_record
 from .integration import CheckSpec, SwarmIntegration
 from .models import Conflict, IdempotencyConflict, RevisionConflict, ScopeDenied, SwarmError, require_id
 from .policy import PolicyProfile, normalize_scopes, team_provider
@@ -419,6 +419,8 @@ class SwarmRuntime:
     def _view(self, capture, store, run_id=None, *, after=0):
         run_id = run_id or self._latest(store, capture.scope)
         snapshot = store.snapshot(capture.scope, run_id) if run_id else None
+        # Counted before the panel's bounded message list is cut.
+        record = team_record(snapshot) if snapshot else None
         if snapshot:
             # The owner can inspect all evidence, but one panel response stays
             # bounded. Full history remains in replay/artifact interfaces.
@@ -491,6 +493,8 @@ class SwarmRuntime:
                 "run": snapshot,
                 "coordinator_planning": self._planning_view(store, run_id, snapshot) if snapshot else None,
                 "autonomy": self._autonomy_view(store, run_id, snapshot),
+                # Beside the orchestrator's model-written report (chat_context.team_record).
+                "team_record": record,
                 "collaboration": collaboration_desktop.view(store, capture.scope, run_id) if run_id and capture.scope.tenant_id == f"personal:{capture.scope.owner_id}" else None,
                 "managed_collaboration": self._managed_sharing[run_id].view() if run_id in self._managed_sharing else managed_collaboration_desktop.historical_view(store, capture.scope, run_id),
                 "events": [asdict(event) for event in store.events(capture.scope, run_id, after=after)] if run_id else [],

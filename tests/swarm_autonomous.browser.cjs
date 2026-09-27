@@ -107,6 +107,9 @@ test('The orchestrator runs a team from the panel and reports back', {timeout: 9
         await page.getByText('Should the CSV export also be checked for semicolons?',{exact:true}).waitFor();
         await page.getByText('Orchestrator → Worker 1 · Answer',{exact:true}).waitFor();
         await page.getByText('No: the export writes commas only, so semicolons need no check.',{exact:true}).waitFor();
+        // What Lumi recorded sits beside the model-written report.
+        assert.equal(await page.locator('[data-swarm="orchestrator-record"]').innerText(),
+            'Recorded by Lumi: 2 of 2 tasks accepted, 1 question to the orchestrator and 1 answer, 0 changes applied. The report above is the orchestrator’s own words.');
         const status=await page.locator('[data-swarm="orchestrator-status"]').innerText();
         assert.match(status,/The orchestrator finished the objective\./);
         assert.equal(await page.locator('[data-swarm="worker-model-note"]').innerText(),'Workers use ollama · fixture-worker; the orchestrator uses this session’s model.');

@@ -40,6 +40,23 @@ def _accepted_how(snapshot: dict[str, Any], attempt_id: str) -> str:
     return "accepted after its declared checks passed"
 
 
+def team_record(snapshot: dict[str, Any]) -> dict[str, int]:
+    """What the runtime recorded, to set beside the orchestrator's model-written report.
+
+    A live closing report said both workers had asked the orchestrator a
+    question when only one had; these counts come from the team's records.
+    """
+    kinds = {row["id"]: row["kind"] for row in snapshot["attempts"]}
+    messages = snapshot["messages"]
+    return {"accepted": sum(row["state"] == "accepted" for row in snapshot["work_items"]),
+            "tasks": len(snapshot["work_items"]),
+            "questions": sum(row["kind"] in {"question", "blocker"} and kinds.get(row["recipient_attempt_id"]) == "coordinator"
+                             for row in messages),
+            "answers": sum(row["kind"] == "answer" and kinds.get(row["sender_attempt_id"]) == "coordinator"
+                           for row in messages),
+            "applied": sum(row["state"] == "applied" for row in snapshot["integration_applications"])}
+
+
 def _plan_summary(snapshot: dict[str, Any]) -> str | None:
     """The latest accepted plan's summary, for a team whose coordinator wrote no final report."""
     for row in reversed(snapshot["coordinator_proposals"]):
@@ -65,6 +82,11 @@ def chat_context(snapshot: dict[str, Any]) -> dict[str, str]:
         lines += ["", "Final report (the team's orchestrator):", _bounded(report, 4_000)]
     elif (summary := _plan_summary(snapshot)) is not None:
         lines += ["", f"Latest accepted plan: {_bounded(summary, 1_000)}"]
+    record = team_record(snapshot)
+    lines += ["", f"Recorded by Lumi, not written by a model: {record['accepted']} of {record['tasks']} tasks "
+                  f"accepted; {record['questions']} question{'s' * (record['questions'] != 1)} to the orchestrator "
+                  f"and {record['answers']} answer{'s' * (record['answers'] != 1)}; {record['applied']} "
+                  f"change{'s' * (record['applied'] != 1)} applied."]
     work = {row["id"]: row for row in snapshot["work_items"]}
     submissions = {row["attempt_id"]: row for row in snapshot["submissions"]}
     accepted = []

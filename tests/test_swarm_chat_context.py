@@ -20,7 +20,7 @@ TOKEN = "gh" + "p_" + "Q" * 36
 def snapshot(**parts):
     run = {"id": "swarm_" + "a" * 64, "state": "completed", "objective": "Check how input is handled"}
     state = {"run": run, "attempts": [], "coordinator_proposals": [], "work_items": [], "submissions": [],
-             "check_receipts": [], "writer_acceptances": [], "integration_applications": []}
+             "check_receipts": [], "writer_acceptances": [], "integration_applications": [], "messages": []}
     return {**state, **parts}
 
 
@@ -50,6 +50,10 @@ def test_the_context_says_what_models_wrote_and_how_each_result_was_accepted():
                         {"attempt_id": "a1", "criterion_id": "owner_review", "check_name": "Explicit owner review",
                          "executor_id": "owner:owner"}],
         writer_acceptances=[{"attempt_id": "a3", "owner_id": "owner"}],
+        # One worker asked the orchestrator, which answered; workers also mailed each other.
+        messages=[{"kind": "question", "sender_attempt_id": "a0", "recipient_attempt_id": "plan"},
+                  {"kind": "answer", "sender_attempt_id": "plan", "recipient_attempt_id": "a0"},
+                  {"kind": "finding", "sender_attempt_id": "a1", "recipient_attempt_id": "a0"}],
         integration_applications=[{"state": "applied", "observed_revision": "b" * 40, "target_revision": "b" * 40}])
     found = chat_context(state)
     content = found["content"]
@@ -60,6 +64,9 @@ def test_the_context_says_what_models_wrote_and_how_each_result_was_accepted():
     assert "3. Fix the CLI (its checked change was applied and the owner accepted it)" in content
     assert "Accepted results (3 of 4 tasks):" in content and "Not accepted: 1 failed." in content
     assert f"its checkout is now at {'b' * 12}." in content
+    # What Lumi recorded sits beside the model's report.
+    assert ("Recorded by Lumi, not written by a model: 3 of 4 tasks accepted; 1 question to the orchestrator "
+            "and 1 answer; 1 change applied.") in content
     # Secret patterns are removed, and each result is bounded.
     assert TOKEN not in content and "[REDACTED GitHub token]" in content
     assert "x" * FINDING_LIMIT not in content and len(content) < 16_000
@@ -78,6 +85,8 @@ def test_an_orchestrated_team_is_attached_to_its_own_conversation_only(team):  #
     outputs += [plan_response(), "The API validates input.", "The UI escapes output.", json.dumps(FINAL)]
     run_id = start(service, capture, rounds=2)
     finished(service, capture, run_id)
+    view = service.operate(capture, {"request_id": "record", "run_id": run_id})
+    assert view["team_record"] == {"accepted": 2, "tasks": 2, "questions": 0, "answers": 0, "applied": 0}
     found = service.chat_context(capture.workspace, capture.scope, run_id)
     assert FINAL["summary"] in found["content"] and "The API validates input." in found["content"]
     assert "accepted under the owner's autonomy grant" in found["content"]

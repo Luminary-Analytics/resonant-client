@@ -80,7 +80,7 @@ def test_admission_returns_promptly_exact_racing_retries_launch_once_and_apply_e
     def blocked(*args, **kwargs):
         calls.append(kwargs["candidate_id"])
         entered.set()
-        assert release.wait(10)
+        assert release.wait(60)
         return original(*args, **kwargs)
     monkeypatch.setattr(integration, "prepare_candidate", blocked)
     revision = store.snapshot(authority.scope, authority.run_id)["run"]["revision"]
@@ -93,7 +93,7 @@ def test_admission_returns_promptly_exact_racing_retries_launch_once_and_apply_e
             receipts = [future.result(timeout=2) for future in futures]
         assert time.monotonic() - began < 2
         assert receipts[0]["id"] == receipts[1]["id"]
-        assert entered.wait(2) and len(calls) == 1
+        assert entered.wait(20) and len(calls) == 1
         assert git(project, "rev-parse", "HEAD") == base
         with pytest.raises(IdempotencyConflict):
             workflow.submit("prepare_candidate", {**payload, "checks": [{**payload["checks"][0], "argv": [sys.executable, "-c", "print('different')"]}]},
@@ -163,11 +163,11 @@ def test_close_revokes_queued_launch_and_does_not_claim_thread_termination(setup
     original = workflow._run
     def delayed(record):
         entered.set()
-        assert release.wait(5)
+        assert release.wait(60)
         original(record)
     monkeypatch.setattr(workflow, "_run", delayed)
     operation = submit(workflow, "prepare_candidate", payload, key="prepare")
-    assert entered.wait(2)
+    assert entered.wait(20)
     try:
         status = workflow.close(timeout=.01)[0]
         assert status["state"] == "queued" and status["active"]

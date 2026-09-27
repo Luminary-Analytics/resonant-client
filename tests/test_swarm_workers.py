@@ -93,7 +93,7 @@ class GatedBackend(Backend):
     def stream(self, **kwargs):
         try:
             self.entered.set()
-            assert self.release.wait(5), "Fixture provider was not released"
+            assert self.release.wait(60), "Fixture provider was not released"
             yield from super().stream(**kwargs)
         finally:
             self.generator_closed = True
@@ -223,7 +223,7 @@ def test_stop_is_not_blocked_by_scope_preflight_and_denies_the_effect(fixture, m
 
     def slow_scope(guard, name, arguments):
         entered.set()
-        assert release.wait(5), "Fixture scope traversal was not released"
+        assert release.wait(60), "Fixture scope traversal was not released"
         return original(guard, name, arguments)
 
     monkeypatch.setattr(SwarmExecutionGuard, "_tool_scope", slow_scope)

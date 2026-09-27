@@ -7,7 +7,7 @@ import time
 import pytest
 
 from lumi.engine.swarming import Scope
-from lumi.engine.swarming.models import Conflict, ScopeDenied, SwarmError
+from lumi.engine.swarming.models import Conflict, RevisionConflict, ScopeDenied, SwarmError
 from lumi.engine.swarming.service import CapturedSession, SwarmRuntime
 from lumi.gui.runtime import BackendSpec
 from lumi.gui.settings import SettingsManager
@@ -58,10 +58,21 @@ def view(desktop, run_id):
 
 
 def operate(desktop, run_id, action, request_id, **payload):
+    """One owner action at the revision just seen, as the panel sends it.
+
+    The runner's lease renewal (every 5 s) also advances the revision, so on a
+    busy runner one can land between the view and the action, which is then
+    refused before anything commits. The owner refreshes and sends it again.
+    """
     service, capture, *_ = desktop
-    revision = view(desktop, run_id)["run"]["revision"]
-    return service.operate(capture, {"action": action, "request_id": request_id, "run_id": run_id,
-                                    "expected_revision": revision, **payload})["run"]
+    for attempt in range(3):
+        revision = view(desktop, run_id)["run"]["revision"]
+        try:
+            return service.operate(capture, {"action": action, "request_id": request_id, "run_id": run_id,
+                                            "expected_revision": revision, **payload})["run"]
+        except RevisionConflict:
+            if attempt == 2:
+                raise
 
 
 # Creating a writer's worktree, running its worker and committing its result

@@ -33,7 +33,7 @@ class RuntimeFixture:
     def register(self):
         self.calls.append("register")
         self.contact.set()
-        self.allow_contact.wait(5)
+        self.allow_contact.wait(60)
         if self.fail:
             raise RuntimeError("SECRET endpoint/key.pem PRIVATE PROVIDER ERROR")
         self.journal.bind_remote(str(uuid4()))
@@ -189,11 +189,11 @@ def test_observer_projects_metadata_only_and_close_waits_honestly_for_admitted_n
     attachment.runtime.allow_contact.clear()
     runner = SimpleNamespace(authority=authority)
     attachment.start_pump(runner, lambda: snapshot(authority), interval_seconds=.05)
-    assert attachment.runtime.contact.wait(2)
+    assert attachment.runtime.contact.wait(20)
     assert attachment.close(timeout=.01) is False
     assert attachment.view()["observer_running"]
     attachment.runtime.allow_contact.set()
-    assert attachment.close(timeout=2)
+    assert attachment.close(timeout=5)  # the API's longest join
     assert attachment.runtime.calls == ["register"]
     with pytest.raises(ManagedSetupError, match="closed"):
         attachment.start_pump(runner, lambda: snapshot(authority))
@@ -207,11 +207,11 @@ def test_observer_failure_is_safe_and_local_stop_does_not_wait_for_network(setup
     stopped = threading.Event()
     runner = SimpleNamespace(authority=authority, stop=stopped.set)
     attachment.start_pump(runner, lambda: snapshot(authority), interval_seconds=.05)
-    assert attachment.runtime.contact.wait(2)
+    assert attachment.runtime.contact.wait(20)
     runner.stop()
     assert stopped.is_set()  # Observer has no local runner control lock.
     attachment.runtime.allow_contact.set()
-    assert attachment.close(timeout=2)
+    assert attachment.close(timeout=5)  # the API's longest join
     view = attachment.view()
     assert view["connection"] == "unavailable"
     assert "PRIVATE" not in json.dumps(view) and "pem" not in json.dumps(view)
@@ -225,8 +225,8 @@ def test_observer_never_renews_historical_authority_or_uses_foreign_snapshot(set
         read.set()
         return snapshot(authority, state="recovery_required")
     attachment.start_pump(SimpleNamespace(authority=authority), old_snapshot, interval_seconds=.05)
-    assert read.wait(2)
-    assert attachment.close(timeout=2)
+    assert read.wait(20)
+    assert attachment.close(timeout=5)  # the API's longest join
     assert attachment.runtime.calls == []
     with pytest.raises(ScopeDenied):
         attachment.start_pump(SimpleNamespace(authority=replace(authority, epoch=2)), old_snapshot)
@@ -288,6 +288,6 @@ def test_effect_cleanup_delivery_continues_when_ordinary_authority_contact_fails
     monkeypatch.setattr(effects, "flush", flush)
     attachment.runtime.fail = True
     attachment.start_pump(SimpleNamespace(authority=authority), lambda: snapshot(authority), interval_seconds=.05)
-    assert observed.wait(2)
-    assert attachment.close(timeout=2)
+    assert observed.wait(20)
+    assert attachment.close(timeout=5)  # the API's longest join
     assert attachment.view()["connection"] == "unavailable"

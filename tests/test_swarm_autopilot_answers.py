@@ -111,6 +111,8 @@ def test_a_running_worker_gets_the_orchestrators_answer_in_the_same_round(team):
     received = [event for event in runner.poll(limit=1000)["events"] if event.get("event") == "tool.result"
                 and event.get("name") == "swarm_receive" and event.get("attempt_id") == asker["id"]]
     assert received and ANSWER in received[-1]["output"]
-    # The answer turn spent team requests, not a worker's allowance.
+    # The answer turn spent team requests, not a worker's allowance, and had
+    # only what answering needs (a live one spent a request on swarm_status).
     answer_requests = [row for row in run["model_requests"] if row["attempt_id"] == answers[0]["id"]]
     assert len(answer_requests) == 2
+    assert set(json.loads(answers[0]["grant_json"])["tools"]) == {"swarm_send", "file_read", "glob", "grep"}

@@ -86,7 +86,7 @@ orchestrator, and you don't approve each step:
 - When a running worker asks the orchestrator a question or reports a blocker,
   the orchestrator answers in the same round: a short answer turn replies with
   `swarm_send` from the objective, the team's work and what it can read (no
-  file access while writers run). It spends up to 2 of the team's unallocated
+  file access while writers run). It spends up to 3 of the team's unallocated
   requests and proposes no work.
 - When a round's work is accepted, the orchestrator plans again from the
   findings and from workers' messages to it. It can finish early by proposing

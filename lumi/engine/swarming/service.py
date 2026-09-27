@@ -564,9 +564,9 @@ class SwarmRuntime:
             if type(requests) is not int or not 1 <= requests <= 1000:
                 raise ValueError("Choose an explicit answer request allowance from 1 to 1000")
             roots = list(normalize_scopes(tuple(read_roots)))
-            tools = _READ_TOOLS - {"swarm_submit"}
-            if not roots:
-                tools -= {"file_read", "glob", "grep"}
+            # Only what answering needs: the questions carry their senders'
+            # ids. A live answer turn spent a request on swarm_status instead.
+            tools = {"swarm_send"} | ({"file_read", "glob", "grep"} if roots else set())
             payload = {"worker_id": ANSWER_WORKER_PREFIX + hashlib.sha256(request_id.encode()).hexdigest()[:32],
                        "requests": requests, "model": {"provider": pair[0].backend_spec.backend_type,
                                                         "model": pair[0].backend_spec.model},

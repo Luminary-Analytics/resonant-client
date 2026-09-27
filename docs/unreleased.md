@@ -31,8 +31,13 @@ orchestrator loop starts a short answer turn
 
 - The answer turn replies to each sender with `swarm_send`, so a worker
   waiting in `swarm_receive` gets its answer while it still runs.
-- It uses up to 2 of the team's unallocated requests, has read access unless
-  writers are running, and proposes no work.
+- It uses up to 3 of the team's unallocated requests. Its only tools are
+  `swarm_send` and, unless writers are running, read access. It proposes no
+  work.
+- In a live NIM run the first worker's question was answered in the same
+  round, and that worker's report cited the answer. The second answer turn
+  spent its only tool request on `swarm_status` and never answered, hence
+  these limits.
 - The questions still reach the next round's planning input.
 
 ## September 27 Team: the orchestrator applies checked changes (source only, not released)

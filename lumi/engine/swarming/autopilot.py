@@ -85,7 +85,8 @@ class TeamAutopilot:
     # Consecutive refused steps (about ten seconds) before the owner is told.
     REFUSALS = 25
     # An answer turn's request allowance, from the team's unallocated requests.
-    ANSWER_REQUESTS = 2
+    # Its last request offers no tools, so 3 leave two chances to swarm_send.
+    ANSWER_REQUESTS = 3
 
     def __init__(self, runtime: Any, run_id: str, *, rounds: int, apply: bool = False) -> None:
         if type(rounds) is not int or not 1 <= rounds <= MAX_ROUNDS:

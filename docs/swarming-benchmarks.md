@@ -303,3 +303,31 @@ processes and 2 rounds:
     notice, had 3 of 4 workers end uncertain on "Service temporarily
     overloaded". Another attempt had 2 workers use all 8 requests without
     submitting.
+
+### Nemotron 3 Super: baseline and a first single-versus-team comparison
+
+September 27, 2026, `nvidia/nemotron-3-super-120b-a12b`, source identity
+`6954f5a`, equal-resource control with 12 requests per case. The benchmark's
+team mode is its fixed split (two readers or two writers, no orchestrator), not
+the orchestrated team above. No benefit threshold was declared, so neither
+study can support a benefit claim, and neither ran to completion: the protocol
+stops a study at its first interrupted case.
+
+- **Single-agent baseline** (180-second deadline, order seed 37). 8 of 12
+  cases ran before an investigation case reached the deadline. 2 were
+  accepted and independently verified: CSV export (1 of 1) and serial control
+  (1 of 2). The investigation (0 of 2) and processor repair (0 of 3) cases
+  failed their checks.
+- **Single versus team** (300-second deadline, order seed 41). 6 of 16 cases
+  ran before a single-agent processor repair reached the deadline: NIM took
+  about a minute per request at the time, 5 requests in 300 seconds. Only one
+  case was verified: a team processor repair (1 of 2).
+  - Team investigation and CSV cases failed in under 40 seconds. In one, a
+    reader assigned only `cache.py` spent all 6 of its requests on reads of
+    other files, each refused with the paths it could read. Its last request
+    was one more read, so it submitted nothing. A Team participant's last
+    request now offers no tools, so it has to answer.
+- **Reading these results.** Model quality and provider latency decided most
+  outcomes, and 14 cases are too few to separate the modes. A rerun with the
+  last-request change, a longer deadline and a declared threshold is still
+  needed.

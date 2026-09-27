@@ -131,10 +131,12 @@ class CoordinatorPlans:
                "findings and from workers' messages to you. If you can already answer the objective from what "
                "you read, return work_items [] and put the answer, with its evidence, in summary. "
                if self.autonomous else "")
-            + ("Implement items' changes are combined, run through the declared checks named in their criteria, "
-               "and applied to the project when every check passes; a writer whose change fails a check is sent "
-               "back once with the check's output. An accepted implement item's change is applied, and later "
-               "writers start from it. Give each writer its own files where you can, so changes combine cleanly. "
+            + ("A round's implement items are combined into one change. Every declared check (the allowed "
+               "criteria other than owner_review) runs on it, and it is applied to the project when every check "
+               "passes, so put all the work a check needs in the same round. A writer whose change fails a check "
+               "is sent back once with the check's output. An accepted implement item's change is applied, and "
+               "later writers start from it. Give each writer its own files where you can, so changes combine "
+               "cleanly. "
                if self.applies_changes else "")
             + ("This is your closing turn: the team's rounds are used up. Return work_items [] and write the final "
                "answer for the owner in summary: what was found, with evidence, and what remains uncertain.\n\n"

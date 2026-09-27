@@ -105,8 +105,11 @@ the orchestrator takes the steps you would, through the same integration path:
    `autonomy:<owner>`, never as your decision, and an exported report marks it
    `autonomy_grant`.
 
-A failing check sends each writer in the change back once, with the check's
-output in its retry. Changes that conflict with each other, a step without a
+Every declared check runs on each round's combined change, so declare checks
+the project should pass after every round (its test suite, a linter), not a
+check that only passes once all of the objective is done. The orchestrator is
+told to put the work a check needs in the same round. A failing check sends
+each writer in the change back once, with the check's output in its retry. Changes that conflict with each other, a step without a
 known outcome, or a checkout that has uncommitted changes or moved hand the team
 back to you; the orchestrator never retries an application. Later writers start
 from the team's latest applied change, so later rounds build on earlier ones.

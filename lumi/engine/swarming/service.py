@@ -244,6 +244,14 @@ class SwarmRuntime:
             raise Conflict(str(exc)) from None
         return {spec.backend_type: connection} if connection else {}
 
+    def _provider_label(self, backend_type: str) -> str:
+        """A connection's own name ("NVIDIA NIM") for display; a native provider's id."""
+        try:
+            connection = team_connections.resolve(self.settings, backend_type)
+        except ValueError:
+            connection = None
+        return connection["name"] if connection else backend_type
+
     def _team_unavailable(self, spec: BackendSpec) -> str:
         try:
             self.team_model(spec)
@@ -423,7 +431,8 @@ class SwarmRuntime:
         return {"available": not unavailable,
                 "enabled": self.settings.get("swarming", "enabled", False) is True,
                 "storage_attention": bool(self._storage_uncertain or self._discovery_errors),
-                "model": {"provider": capture.backend_spec.backend_type, "model": capture.backend_spec.model},
+                "model": {"provider": capture.backend_spec.backend_type, "model": capture.backend_spec.model,
+                          "label": self._provider_label(capture.backend_spec.backend_type)},
                 "execution_mode": self._execution_mode(capture), "managed": self._managed_view(capture, run_id),
                 "run": snapshot,
                 "coordinator_planning": self._planning_view(store, run_id, snapshot) if snapshot else None,

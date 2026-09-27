@@ -569,7 +569,7 @@ window.LumiSwarmView = class LumiSwarmView {
                 + (policy?.authenticated ? ` ${policy.valid ? 'Current' : 'Expired'} policy: ${policy.policy?.max_workers ?? '—'} worker slots; ${policy.policy?.request_limit ?? '—'} shared model requests.` : ' Effective policy has not been obtained.')
             : managed?.available ? 'Personal work stays local. Choose organization ownership explicitly for a new team.'
                 : 'Organization teams require an operator-provided managed configuration at application startup.';
-        nodes.model.textContent = event.model ? `${event.model.provider} · ${event.model.model}` : 'No supported native model selected';
+        nodes.model.textContent = event.model ? `${event.model.label || event.model.provider} · ${event.model.model}` : 'No supported model selected';
         const snapshot = event.run;
         nodes['run-section'].hidden = !incomingRun;
         if (incomingRun) {

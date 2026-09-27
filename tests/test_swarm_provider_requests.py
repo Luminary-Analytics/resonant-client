@@ -37,15 +37,24 @@ def test_guarded_http_rejection_is_one_generation_attempt(provider, status, monk
         calls.append(request)
         return httpx.Response(status, json={"error": {"type": "learning_queue_full", "message": "fixture unavailable"}})
     backend = _provider(provider, httpx.MockTransport(respond))
-    monkeypatch.setattr("lumi.backends._wait_with_cancel",
-                        lambda *_: pytest.fail("A supervised request cannot enter retry backoff"))
+    waits = []
+    def wait(delay, cancel_event):
+        if status != 429:
+            pytest.fail("A supervised request cannot enter retry backoff")
+        waits.append(delay)
+        return False
+    monkeypatch.setattr("lumi.backends._wait_with_cancel", wait)
     guard = RecordingGuard()
     boundary = ExecutionBoundary(guard)
     with pytest.raises(ExecutionGuardError):
         list(boundary.stream(backend, purpose="primary", inputs={"user_msg": "Inspect"},
                              invoke=lambda: backend.stream("Inspect", [], "Generated fixture", [])))
-    assert len(calls) == 1
-    assert calls[0].url.path.endswith("/chat/completions")
+    # Only a rate limit, which generated nothing, is waited out and sent again
+    # (SONN's full learning queue isn't retryable); every attempt was refused.
+    retried = status == 429 and provider != "sonn"
+    assert len(calls) == (4 if retried else 1)
+    assert waits == ([5.0, 10.0, 20.0] if retried else [])
+    assert all(call.url.path.endswith("/chat/completions") for call in calls)
     ends = [record for record in guard.records if record["kind"] == "request.end"]
     # A 4xx refusal before any output generated nothing, so its outcome is
     # known; a 5xx may have failed mid-generation and stays uncertain.
@@ -111,3 +120,26 @@ def test_guarded_ollama_unknown_capability_cannot_make_hidden_generation_probe(m
             "name": "file_read", "parameters": {"type": "object", "properties": {}}}}]))
     assert calls == ["http://127.0.0.1:59999/api/show"]
     assert backend.model not in backend._tool_support_cache
+
+
+def test_a_supervised_request_waits_out_a_rate_limit_and_generates_once(monkeypatch):
+    calls = []
+    def respond(request):
+        calls.append(request)
+        if len(calls) == 1:
+            return httpx.Response(429, headers={"retry-after": "2"}, json={"error": {"message": "slow down"}})
+        body = "".join("data: " + json.dumps(event) + "\n\n" for event in (
+            {"id": "ok", "choices": [{"delta": {"content": "Answer"}}]},
+            {"id": "ok", "choices": [{"delta": {}, "finish_reason": "stop"}]},
+            {"id": "ok", "choices": [], "usage": {"prompt_tokens": 5, "completion_tokens": 1}})) + "data: [DONE]\n\n"
+        return httpx.Response(200, text=body, headers={"content-type": "text/event-stream"})
+    backend = _provider("connection", httpx.MockTransport(respond))
+    waits = []
+    monkeypatch.setattr("lumi.backends._wait_with_cancel", lambda delay, _: waits.append(delay) or False)
+    guard = RecordingGuard()
+    events = list(ExecutionBoundary(guard).stream(backend, purpose="primary", inputs={"user_msg": "Inspect"},
+                  invoke=lambda: backend.stream("Inspect", [], "Generated fixture", [])))
+    assert len(calls) == 2 and waits == [2.0]  # Retry-After honoured.
+    assert any("Answer" in json.dumps(data) for _, data in events)
+    ends = [record for record in guard.records if record["kind"] == "request.end"]
+    assert len(ends) == 1 and ends[0]["outcome"] == "completed" and ends[0]["error"] == ""

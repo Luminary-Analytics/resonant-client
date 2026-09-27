@@ -260,3 +260,21 @@ def test_parser_does_not_mutate_supplied_policy_or_input_contracts():
     policy_before = POLICY.to_dict()
     parse(value)
     assert json.dumps(value) == before and POLICY.to_dict() == policy_before
+
+
+def test_prose_around_exactly_one_json_fence_is_read():
+    # Live models often explain first; one fenced block is still unambiguous.
+    fenced = "```json\n" + json.dumps(proposal()) + "\n```"
+    assert parse("I read both files first.\n\n" + fenced + "\n\nThat is the plan.").use_team
+    with pytest.raises(PlanRejected):
+        parse("Two options:\n" + fenced + "\nor\n" + fenced)
+    with pytest.raises(PlanRejected):
+        parse("No JSON here, only prose.")
+
+
+def test_only_follow_ups_and_owner_granted_orchestrators_may_propose_no_work():
+    finished = proposal([], use_team=False, summary="Both defects found; see the evidence.")
+    with pytest.raises(PlanRejected):
+        parse(finished)
+    assert parse(finished, allow_no_work=True).work_items == ()
+    assert parse(finished, namespace="attempt-2").work_items == ()

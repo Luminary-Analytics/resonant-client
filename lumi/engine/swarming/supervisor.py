@@ -508,7 +508,8 @@ class SwarmSupervisor:
             if set(proposed_ids) & set(merged):
                 raise Conflict("Additional proposals cannot replace historical work identities")
             merged.update({item["id"]: item for item in plan["work_items"]})
-            self._plan(connection, run, work_items=list(merged.values()))
+            if merged:  # An orchestrator that answered directly adds no work at all.
+                self._plan(connection, run, work_items=list(merged.values()))
         state = "accepted" if accept else "rejected"
         connection.execute("UPDATE coordinator_proposals SET state=?,decision_evidence=? WHERE id=?", (state, evidence, proposal_id))
         return {"proposal_id": proposal_id, "sha256": digest, "state": state}
@@ -981,7 +982,10 @@ class SwarmSupervisor:
     def _complete(self, connection: sqlite3.Connection, run: sqlite3.Row) -> dict[str, Any]:
         self.store._admitting(run)
         states = [row[0] for row in connection.execute("SELECT state FROM work_items WHERE run_id=?", (run["id"],))]
-        if not states or any(state != "accepted" for state in states) or self._unresolved(connection, run["id"]):
+        # A team without work completes only on an accepted orchestrator answer.
+        answered = connection.execute("SELECT 1 FROM coordinator_proposals WHERE run_id=? AND state='accepted'",
+                                      (run["id"],)).fetchone() is not None
+        if (not states and not answered) or any(state != "accepted" for state in states) or self._unresolved(connection, run["id"]):
             raise Conflict("Completion requires all work accepted and all effects/accounting resolved")
         for work in connection.execute("SELECT * FROM work_items WHERE run_id=?", (run["id"],)):
             if not json.loads(work["specification"])["write_roots"]:

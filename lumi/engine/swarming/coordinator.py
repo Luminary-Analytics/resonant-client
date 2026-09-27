@@ -122,7 +122,9 @@ class CoordinatorPlans:
             "This proposal will be validated before a separate runtime decision; it starts no worker.\n\n"
             + ("You are this team's orchestrator. The owner let you run it in rounds: a plan that fits the "
                "declared scopes runs without a separate approval, and after each round you plan again from the "
-               "findings and from workers' messages to you. " if self.autonomous else "")
+               "findings and from workers' messages to you. If you can already answer the objective from what "
+               "you read, return work_items [] and put the answer, with its evidence, in summary. "
+               if self.autonomous else "")
             + ("This is your closing turn: the team's rounds are used up. Return work_items [] and write the final "
                "answer for the owner in summary: what was found, with evidence, and what remains uncertain.\n\n"
                if self.closing else
@@ -184,7 +186,8 @@ class CoordinatorPlans:
         grant = AssignmentGrant.from_dict(json.loads(grant_json))
         plan = parse_plan(text, run_id=context.run_id, policy=policy,
                           model=grant.model, allowed_criteria=self.allowed_criteria,
-                          namespace=context.attempt_id if self.follow_up else None)
+                          namespace=context.attempt_id if self.follow_up else None,
+                          allow_no_work=self.autonomous)
         envelope = {"plan": plan.to_dict(), "source_sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
                     "allowed_criteria": sorted(self.allowed_criteria), "policy_digest": grant.policy_digest,
                     "graph_sha256": self._input_graphs[context.attempt_id], "input_sha256": attested["input_sha256"]}

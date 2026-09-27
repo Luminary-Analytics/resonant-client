@@ -85,7 +85,8 @@ def test_the_orchestrator_plans_runs_its_workers_and_reports_without_owner_steps
     assert all(row["state"] == "accepted" for row in run["work_items"])
     # The orchestrator knew it was running the team, and its follow-up saw the findings.
     first, follow_up = backends[0].stream_calls[0]["user_msg"], backends[3].stream_calls[0]["user_msg"]
-    assert "You are this team's orchestrator" in first and "work_items []" not in first
+    assert "You are this team's orchestrator" in first and "If you can already answer the objective" in first
+    assert "If the findings already meet the objective" not in first
     assert "The API validates input." in follow_up and "return work_items []" in follow_up
 
 
@@ -210,3 +211,17 @@ def test_two_unusable_orchestrator_turns_in_a_row_hand_the_team_back(team):
                     if row["kind"] == "coordinator"]
     assert len(coordinators) == 2 and len(backends) == 2
     assert view["run"]["run"]["state"] == "running" and not view["run"]["coordinator_proposals"]
+
+
+def test_an_orchestrator_can_answer_directly_and_the_team_completes_without_workers(team):
+    # A live Kimi K3 read the files, answered, and wrapped its JSON in prose.
+    service, capture, outputs, backends = team
+    outputs += ["I found both defects by reading the files, so no worker round is needed.\n\n```json\n"
+                + json.dumps(FINAL) + "\n```"]
+    run_id = start(service, capture, rounds=2)
+    view = finished(service, capture, run_id)
+    run = view["run"]
+    assert run["run"]["state"] == "completed" and not service.busy
+    assert view["autonomy"]["final_report"] == FINAL["summary"] and view["autonomy"]["phase"] == "finished"
+    assert run["work_items"] == [] and [row["state"] for row in run["coordinator_proposals"]] == ["accepted"]
+    assert len(backends) == 1  # No worker ran.

@@ -62,8 +62,9 @@ navigation are gated while the client owns active team work.
 Choose one of two planning approaches:
 
 - **Assign investigations myself:** enter focused tasks and readable paths.
-  The UI offers two to four worker slots, defaults to two, and permits up to
-  four tasks, bounded by the selected slots. Tasks begin read only.
+  The UI offers one to eight worker slots, defaults to two, and permits up to
+  eight tasks, bounded by the selected slots. Organization-managed teams keep
+  their policy's limit (at most four). Tasks begin read only.
 - **Ask a coordinator to propose a plan:** enter an objective, coordinator
   allowance and allowance per worker. The coordinator reads within its scope
   and submits a proposal. It does not approve its own plan or task results.

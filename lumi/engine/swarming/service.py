@@ -571,8 +571,8 @@ class SwarmRuntime:
                 raise Conflict(support["reason"])
         if type(objective) is not str or not objective.strip() or len(objective.encode()) > 8192:
             raise ValueError("Describe a team objective of at most 8 KiB")
-        if type(workers) is not int or not 1 <= workers <= 4:
-            raise ValueError("Choose one to four worker slots")
+        if type(workers) is not int or not 1 <= workers <= 8:
+            raise ValueError("Choose one to eight worker slots")
         if plan_mode == "coordinator":
             if tasks not in (None, []):
                 raise ValueError("Coordinator planning begins from the objective; manual tasks require manual mode")

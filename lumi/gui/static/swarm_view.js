@@ -57,7 +57,7 @@ window.LumiSwarmView = class LumiSwarmView {
             <button type="button" data-swarm="previous-team" hidden>Back to saved team</button>
             <form data-swarm="form"><label>Planning approach<select data-swarm="plan-mode"><option value="manual">Assign investigations myself</option><option value="coordinator">Ask a coordinator to propose a plan</option></select></label>
             <label>Team objective<textarea data-swarm="objective" rows="2" maxlength="8000" required placeholder="What should the team investigate?"></textarea></label>
-            <div class="swarm-fields"><label>Worker slots<select data-swarm="slots"><option value="1">1 worker</option><option value="2" selected>2 workers</option><option value="3">3 workers</option><option value="4">4 workers</option></select></label>
+            <div class="swarm-fields"><label>Worker slots<select data-swarm="slots"><option value="1">1 worker</option><option value="2" selected>2 workers</option><option value="3">3 workers</option><option value="4">4 workers</option><option value="5">5 workers</option><option value="6">6 workers</option><option value="7">7 workers</option><option value="8">8 workers</option></select></label>
             <label>Total model requests<input data-swarm="allowance" type="number" min="1" max="1000" step="1" value="12" required></label></div>
             <p class="swarm-help">The request allowance includes each worker’s planning and compression calls. Uncertain calls keep their allowance.</p>
             <label class="swarm-switch"><input type="checkbox" data-swarm="allow-writes"> Allow scoped file changes</label>
@@ -311,7 +311,7 @@ window.LumiSwarmView = class LumiSwarmView {
 
     _swarmAddTask() {
         const nodes = this._swarmNodes;
-        if (!nodes || nodes.tasks.children.length >= 4) return;
+        if (!nodes || nodes.tasks.children.length >= 8) return;
         const row = document.createElement('fieldset');
         row.className = 'swarm-task';
         row.innerHTML = `<legend>Investigation</legend><label>Task<textarea data-task-objective rows="2" required maxlength="4000" placeholder="A focused question this worker can answer"></textarea></label>
@@ -361,7 +361,7 @@ window.LumiSwarmView = class LumiSwarmView {
             row.querySelector('[data-remove-task]').setAttribute('aria-label', `Remove investigation ${index + 1}`);
             row.querySelector('[data-remove-task]').disabled = nodes.tasks.children.length <= 1;
         });
-        nodes['add-task'].disabled = nodes.tasks.children.length >= 4;
+        nodes['add-task'].disabled = nodes.tasks.children.length >= 8;
         nodes.slots.setCustomValidity(!coordinator && nodes.tasks.children.length > Number(nodes.slots.value)
             ? 'Choose at least as many worker slots as investigations for this preview.' : '');
         nodes.allowance.min = String(coordinator ? Number(nodes['coordinator-requests'].value) + Number(nodes['worker-requests'].value)
@@ -1478,7 +1478,15 @@ window.LumiSwarmView = class LumiSwarmView {
         nodes['orchestrator-status'].textContent = `${turn} · ${autonomy.detail || ''}`;
         const report = autonomy.final_report || '';
         nodes['orchestrator-report'].hidden = !report;
-        nodes['orchestrator-report-text'].textContent = report;
+        if (report === nodes['orchestrator-report-text'].dataset.source) return;
+        nodes['orchestrator-report-text'].dataset.source = report;
+        // The report is model output: render its Markdown only through the
+        // chat's sanitizer, and fall back to plain text without it.
+        if (report && typeof marked !== 'undefined' && typeof DOMPurify !== 'undefined') {
+            nodes['orchestrator-report-text'].innerHTML = this.sanitizeMarkdownHtml(marked.parse(report));
+        } else {
+            nodes['orchestrator-report-text'].textContent = report;
+        }
     }
 
     _renderSwarmMessages(snapshot) {

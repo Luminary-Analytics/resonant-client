@@ -46,6 +46,19 @@ test('A capability pack panel runs sandboxed and reaches the app only through th
     server.stdout.on('data', chunk => { stdout += chunk; });
     server.stderr.on('data', chunk => { stderr += chunk; });
     const exited = new Promise(resolve => server.once('exit', (code, signal) => resolve({code, signal})));
+    // Where the check got to, for failure.txt. node:test's timeout reports a
+    // failure but doesn't stop a stuck step (page.evaluate has no timeout), so
+    // a watchdog saves the evidence and ends the run.
+    const steps = [];
+    const step = label => steps.push(`${new Date().toISOString()} ${label}`);
+    const watchdog = setTimeout(async () => {
+        fs.writeFileSync(path.join(output, 'failure.txt'),
+            `Stuck after: ${steps.at(-1)}\n\n${steps.join('\n')}\n\nserver stderr:\n${stderr}`);
+        if (page) await page.screenshot({path: path.join(output, 'stuck.png')}).catch(() => {});
+        console.error(`stuck; evidence: ${output}`);
+        server.kill();
+        process.exit(1);
+    }, 110000);
     try {
         for (let i = 0; i < 300 && !info; i++) {
             const line = stdout.split(/\r?\n/).find(row => row.startsWith('{"url":'));
@@ -74,6 +87,7 @@ test('A capability pack panel runs sandboxed and reaches the app only through th
         await page.locator('#user-input').fill('Existing draft');
 
         // ── View > Panels, with the pointer ──────────────────────────────
+        step('View > Panels, with the pointer');
         await page.locator('.titlebar-menu-button').click();
         await page.locator('.menubar-item[data-menu="view"]').hover();
         const item = page.locator('.extension-panel-menu-item', {hasText: 'Build stats'});
@@ -92,6 +106,7 @@ test('A capability pack panel runs sandboxed and reaches the app only through th
         await page.screenshot({path: path.join(output, 'panel-dark.png')});
 
         // ── What the panel could do from inside its sandbox ────────────────
+        step('What the panel could do from inside its sandbox');
         const probe = await frame.evaluate(() => window.probe);
         fs.writeFileSync(path.join(output, 'probe.json'), JSON.stringify(probe, null, 2));
         assert.equal(probe.origin, 'ran: null', 'the frame has an opaque origin');
@@ -116,6 +131,7 @@ test('A capability pack panel runs sandboxed and reaches the app only through th
         assert.equal(await frame.evaluate(() => document.documentElement.dataset.lumiTheme), 'dark');
 
         // ── Adding to the message: into the draft, never sent ──────────────
+        step('Adding to the message: into the draft, never sent');
         const sentBefore = commands.filter(command => ['chat', 'send_message', 'user_message'].includes(command)).length;
         await frame.locator('#insert').click();
         await frame.waitForFunction(() => window.insertResult === 'ok');
@@ -129,6 +145,7 @@ test('A capability pack panel runs sandboxed and reaches the app only through th
             sentBefore, 'the panel sent no message');
 
         // ── Both themes: the dialog's tokens, and the panel is told ─────────
+        step("Both themes: the dialog's tokens, and the panel is told");
         const darkBackground = await page.locator('.extension-panel-dialog').evaluate(node => getComputedStyle(node).backgroundColor);
         await page.evaluate(() => window.LumiAppearance.setTheme('light'));
         await frame.waitForFunction(() => document.documentElement.dataset.lumiTheme === 'light');
@@ -139,12 +156,13 @@ test('A capability pack panel runs sandboxed and reaches the app only through th
         await page.evaluate(() => window.LumiAppearance.setTheme('dark'));
 
         // ── Keyboard: Tab stays in the dialog; Escape closes, focus returns ──
+        step('Keyboard: Tab stays in the dialog; Escape closes, focus returns');
         await page.getByRole('button', {name: 'Close Build stats'}).focus();
         await page.keyboard.press('Tab');                                // into the panel: its first button
         assert.equal(await page.evaluate(() => document.activeElement.tagName), 'IFRAME');
         assert.equal(await frame.evaluate(() => document.activeElement.id), 'insert');
         // Past the panel's last tab stop (the probe added a frame after the buttons), focus comes back to Close.
-        for (let step = 0; step < 10 && await page.evaluate(() => document.activeElement.tagName) === 'IFRAME'; step++) {
+        for (let tries = 0; tries < 10 && await page.evaluate(() => document.activeElement.tagName) === 'IFRAME'; tries++) {
             await page.keyboard.press('Tab');
         }
         assert.equal(await page.evaluate(() => document.activeElement.getAttribute('aria-label')), 'Close Build stats',
@@ -152,15 +170,19 @@ test('A capability pack panel runs sandboxed and reaches the app only through th
         await page.keyboard.press('Shift+Tab');                          // and backwards, into the panel
         assert.equal(await page.evaluate(() => document.activeElement.tagName), 'IFRAME');
         await page.getByRole('button', {name: 'Close Build stats'}).focus();
+        step('keyboard: Escape on Close');
         await page.keyboard.press('Escape');
         await dialog.waitFor({state: 'detached'});
+        step('keyboard: closed');
         // Opened from the menu, whose items take no focus: focus goes back to the message box.
         assert.equal(await page.evaluate(() => document.activeElement.id), 'user-input');
         assert.equal((await fetch(`${info.url}/panels/${token}/index.html`)).status, 404, 'closing withdrew the token');
 
         // From the command palette; Escape pressed inside the panel closes it too.
+        step('palette: open again');
         await openFromPalette(page);
         const again = await panelFrame(page);
+        step('palette: Escape inside the panel');
         await again.frame.locator('#toast').focus();
         assert.equal(await page.evaluate(() => document.activeElement.tagName), 'IFRAME');
         await page.keyboard.press('Escape');
@@ -168,6 +190,7 @@ test('A capability pack panel runs sandboxed and reaches the app only through th
         assert.equal(await page.evaluate(() => document.activeElement.id), 'user-input');
 
         // ── A panel URL outside the frame Lumi made ──────────────────────
+        step('A panel URL outside the frame Lumi made');
         await openFromPalette(page);
         const opened = await panelFrame(page);
         const liveToken = (await opened.handle.getAttribute('src')).split('/')[2];
@@ -196,12 +219,14 @@ test('A capability pack panel runs sandboxed and reaches the app only through th
         await page.evaluate(() => document.getElementById('unsandboxed-probe').remove());
 
         // ── It can't navigate itself to another site ───────────────────────
+        step("It can't navigate itself to another site");
         await opened.frame.locator('#navigate').click();
         await page.waitForTimeout(1000);
         const canaryAfterNavigation = (await evidence(info)).canary_hits;
         assert.deepEqual(canaryAfterNavigation, [], 'navigating the frame away reached the network');
 
         // ── Revoked in Settings: the open panel closes, its files are gone ──
+        step('Revoked in Settings: the open panel closes, its files are gone');
         const revoked = await (await fetch(info.url + '/__fixture__/revoke', {method: 'POST'})).json();
         assert.equal(revoked.status, 'needs_approval');
         await page.evaluate(() => window.dispatchEvent(new Event('focus')));
@@ -215,6 +240,7 @@ test('A capability pack panel runs sandboxed and reaches the app only through th
         await page.keyboard.press('Escape');
 
         // ── Compact width ──────────────────────────────────────────────────
+        step('Compact width');
         await page.setViewportSize({width: 390, height: 844});
         // Approved again, as Settings > Capability packs would.
         const reapproved = await (await fetch(info.url + '/__fixture__/approve', {method: 'POST'})).json();
@@ -242,10 +268,11 @@ test('A capability pack panel runs sandboxed and reaches the app only through th
         console.log(`evidence: ${output}`);
     } catch (error) {
         if (page) await page.screenshot({path: path.join(output, 'failure.png')}).catch(() => {});
-        fs.writeFileSync(path.join(output, 'failure.txt'), `${error.stack}\n\nserver stderr:\n${stderr}`);
+        fs.writeFileSync(path.join(output, 'failure.txt'), `${error.stack}\n\n${steps.join('\n')}\n\nserver stderr:\n${stderr}`);
         console.error(`failure evidence: ${output}`);
         throw error;
     } finally {
+        clearTimeout(watchdog);
         if (browser) await browser.close();
         if (info) await fetch(info.url + '/__fixture__/shutdown', {method: 'POST'}).catch(() => {});
         const done = await Promise.race([exited, new Promise(resolve => setTimeout(() => resolve(null), 5000))]);

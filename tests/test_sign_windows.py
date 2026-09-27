@@ -35,7 +35,11 @@ AZURE = {
 SHELLS = ["powershell.exe", *(["pwsh"] if shutil.which("pwsh") else [])]
 SIGNER_SETTINGS = {*AZURE, "ARTIFACT_SIGNING_SIGNED_IN", "ARTIFACT_SIGNING_DLIB", "WINDOWS_SIGN_PFX_BASE64",
                    "WINDOWS_SIGN_PFX_PASSWORD", "WINDOWS_SIGN_COMMAND", "WINDOWS_SIGNING_REQUIRED",
-                   "WINDOWS_SIGNTOOL", "WINDOWS_SIGN_TIMESTAMP_URL", "GITHUB_RUN_ID"}
+                   "WINDOWS_SIGNTOOL", "WINDOWS_SIGN_TIMESTAMP_URL", "GITHUB_RUN_ID",
+                   # Each PowerShell finds its own modules: under a PowerShell 7 parent (as in CI),
+                   # Windows PowerShell given pwsh's module path can't load Get-FileHash or
+                   # Get-AuthenticodeSignature.
+                   "PSModulePath"}
 FAKE_SIGNTOOL = """\
 import json, os, sys
 from pathlib import Path
@@ -218,7 +222,8 @@ def test_the_signing_client_is_used_only_as_pinned(tmp_path):
     destination = tmp_path / "client"
     result = subprocess.run(["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
                              str(ROOT / "packaging" / "fetch_artifact_signing.ps1"), "-Destination", str(destination),
-                             "-PackagePath", str(package)], capture_output=True, text=True, timeout=120)
+                             "-PackagePath", str(package)], capture_output=True, text=True, timeout=120,
+                            env={key: value for key, value in os.environ.items() if key != "PSModulePath"})
     assert result.returncode != 0
     assert "SHA-256 mismatch" in output(result)
     assert not (destination / "bin").exists() and list(destination.iterdir()) == []

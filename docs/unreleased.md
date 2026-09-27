@@ -14,32 +14,35 @@ An organization's policy can have Lumi share its people's work with the
 organization's Lumi Cloud, and Lumi tells them first. See [organization
 oversight](organization-oversight.md).
 
-- **Policy** (`lumi/policy.py`): an `oversight` section with `activity`,
-  `messages` (`off`, `redacted`, `full`), `security_flags`,
-  `retention_days`, `notice` and `project_paths`, read strictly: a key Lumi
-  doesn't know makes the policy invalid. `policy.oversight_settings()` reads
-  it. Off without it.
+- **Policy** (`lumi/policy.py`): an `oversight` section with `version`,
+  `activity`, `messages` (`off`, `redacted`, `full`), `security_flags`,
+  `retention_days`, `notice` and `project_paths`. A key or version Lumi
+  doesn't know turns oversight off with the reason in Settings; the rest of
+  the policy applies. `policy.oversight_settings()` reads it. Off without it.
 - **Recording** (`lumi/oversight.py`): `Session.run` builds each turn's
-  record (session, title, project folder, turn number, times, model, mode,
+  record (session, project folder, turn number, times, model, mode,
   outcome, tools and whether each ran, cost) and, at the configured level,
-  the person's message and Lumi's final reply and the tools' commands and
-  paths. Secrets are removed at every level; `redacted` also drops code
-  blocks and email addresses. File contents and tool output never leave, and
-  excluded files appear as `[excluded file]`.
+  the person's message, Lumi's final reply, the session's title and the
+  tools' commands and paths. Secrets are removed at every level
+  (`secret_scan.redact_for_sharing`); `redacted` also drops code blocks,
+  email addresses and web addresses' query strings. File contents and tool
+  output never leave, and excluded files appear as `[excluded file]`.
 - **Security flags** (`lumi/security_flags.py`): refused destructive and
   risky commands, organization and project rule denials, excluded files,
   paths outside the project, declined approvals, removed secrets and signs
-  of prompt injection in tool output, each with a severity. The engine now
-  marks refused `tool.result` events with `denied_by` (and `denied_rule`).
+  of prompt injection in tool output, each with a severity and a rule label
+  from a closed set. The engine now marks refused `tool.result` events with
+  `denied_by` (and `denied_rule`).
 - **The notice**: beside the message box while a policy asks, naming the
   organization and what it receives, with no close button; **What's shared**
   opens Settings > Privacy & security > Organization oversight, which lists
   what is and isn't shared, the queue and the person's own flags. Nothing is
-  recorded until the notice for the policy in force has been shown (the
-  page acknowledges its fingerprint); `lumi run`, the terminal UI and the
-  chat gateway print it.
-- **Sending**: a bounded queue in `~/.lumi/oversight/`, sent from a
-  background thread to `POST /api/v1/oversight/events` with the device's
+  recorded until the person confirms the notice for the policy in force with
+  its **I've read this** button (the page sends its fingerprint); `lumi run`
+  and the terminal UI print it, and the chat gateway sends it to each chat
+  before recording that chat.
+- **Sending**: a bounded queue in `~/.lumi/oversight/queue.sqlite3`, never
+  kept past the policy's retention, sent from a background thread to `POST /api/v1/oversight/events` with the device's
   sign-in, retried with backoff. Nothing is sent once the policy stops
   asking, Lumi Cloud says oversight is off, or the computer leaves the
   organization: queued records are deleted and counted.
@@ -82,6 +85,98 @@ Validation on September 27, 2026:
   Security flags pages, messages redacted as above.
 - Not run: a packaged build, a deployed Lumi Cloud, the terminal UI and
   gateway notices in a real terminal, and screen readers.
+
+### Review fixes (September 27)
+
+A code review of PR #90 found these, each reproduced; the behavior above is
+changed where it says so.
+
+- **Excerpts no longer carry part of a secret.** Injection excerpts are cut
+  from tool output after secrets are removed from all of it (and a token cut
+  at the 200,000-character search limit is dropped whole); before, a window
+  cut first kept, for example, the last 20 characters of a GitHub token or a
+  JWT's signature, which no longer matched a pattern.
+- **A flag's rule is a fixed label** (`security_flags.RULES`:
+  `delete_everything`, `organization_rule`, `hook_denied`,
+  `excluded_by_organization`, `ignore_instructions`...), never free text: a
+  hook's reason, a policy rule's words and an exclusion pattern (which can
+  be a file's name) stay on the computer. What someone wrote goes only in
+  the excerpt, which goes only with messages, and never for excluded files.
+  Settings shows each label's meaning.
+- **The notice is confirmed only by its "I've read this" button** (or an
+  interactive terminal), never on a status push, a timer or a painted
+  window, so a policy that collects more is never confirmed in a minimized
+  window. A notice with nowhere to send records can't be confirmed; the
+  fingerprint now covers the organization id and the device; leaving the
+  organization or signing out of Lumi Cloud forgets confirmations
+  (`oversight.notice_forgotten` in the audit log).
+- **Gateway chats are told in the chat**: each chat is sent the notice once
+  per policy before its first recorded turn, and its turns are recorded
+  only after the notice was delivered (adapters' `send` now reports a
+  failure).
+- **Credentials without a known format are removed from what is shared**
+  (`secret_scan.redact_for_sharing`): Authorization, Cookie and API-key
+  headers, secret query parameters, password and token options
+  (`--password`, `mysql -p…`, `curl -u`, `sshpass -p`), assignments to
+  secret names (`PGPASSWORD=…`, `"apiKey": "…"`), private keys cut before
+  their end and long random-looking tokens. At `redacted`, web addresses
+  lose their query strings. Model requests keep the old patterns.
+- **Linear-time patterns.** The HTML-comment injection check is a bounded
+  scan instead of a regex that took 2.4 s on 20 KB of `<!-- AI must` (25 s
+  on 200 KB) inside `Session.run`; the role-marker check no longer crosses
+  lines (2.2 s on 20 KB of blank lines); and the JWT, URL-password, `.env`
+  and private-key patterns in `secret_scan` (also used before model
+  requests) and oversight's email pattern no longer rescan from every token.
+- **Retention on the computer**: queued records older than the policy's
+  `retention_days` are deleted unsent and counted. The queue is now a SQLite
+  table (`queue.sqlite3`), so adding and sending records no longer re-reads
+  and rewrites the whole queue; new turns don't cut a retry backoff short
+  (a policy change still does), and `lumi run` prints its result before a
+  bounded, 5-second upload.
+- **Session titles go only with messages** (an automatic title is the gist
+  of the first message), at their level; Settings, the notice and the docs
+  say so.
+- **An unknown key or `version` in the `oversight` section turns oversight
+  off** with the reason in Settings (Organization policy and Organization
+  oversight) and the log, instead of invalidating the policy: a machine
+  policy no longer blocks every model request, and a Lumi Cloud download is
+  no longer refused. The section takes `"version": 1`.
+
+Validation of the fixes, September 27, 2026 (isolated home, a clean
+Python 3.13 venv, `PYTHONNOUSERSITE=1`):
+
+- `tests/test_oversight.py` (58), `tests/test_security_flags.py` (66),
+  `tests/test_secret_scan.py` (75) and `tests/test_chat_gateway.py` (12)
+  pass, among them: secrets straddling both edges of an excerpt window and
+  the search limit; labels for every guardrail and tier refusal and for
+  hook, organization, exclusion and approval refusals; a real hook's reason
+  kept local; 200 KB of hostile text through the injection checks in under
+  0.5 s and through both redactions in under 1 s;
+  each new redaction rule, and ordinary commands left alone; confirmation
+  refused without a destination, and per enrollment; gateway chats told
+  first, not recorded when the notice can't be delivered; records past
+  retention never sent; titles only with messages; a machine policy and a
+  Lumi Cloud download with a newer oversight section applied with oversight
+  off. `node --test` covers the notice's button (99 UI tests).
+- 18 neighbouring test files (policy, cloud, headless, TUI, audit, share,
+  hand-off, CSP and others): 400 passed.
+- In the browser pane against an isolated fixture (a copied source tree, a
+  throwaway home, stub Ollama and Lumi Cloud, a managed enrollment): the
+  page loaded while the pane was hidden (`visibilityState` "hidden") and
+  showed the notice with **I've read this** without confirming it; a turn
+  sent then reached the model and nothing was recorded. Shift+Tab from the
+  message box reached the button (visible focus ring); Enter confirmed it,
+  hid the button and kept focus on **What's shared**. The next turn reached
+  the stub Lumi Cloud with the Authorization header, `api_key` parameter and
+  `mysql -p` password removed and two labelled flags. A status push did not
+  confirm a pending notice; at 375 px the pending notice fits with both
+  buttons and no horizontal scroll, and the button's text contrast is 11.4:1;
+  a click confirmed it. With a `version: 2` oversight section, Settings
+  showed the reason in both places, the notice stayed hidden and model
+  requests ran. The real `~/.resonant` (hashes) and Credential Manager were
+  unchanged.
+- Not run: a full local `pytest` (CI runs it), a packaged build, the
+  terminal UI and a real Telegram or Slack chat.
 
 ## September 26–27 the Team (swarming) preview — source only, not released
 

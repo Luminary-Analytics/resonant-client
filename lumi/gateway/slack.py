@@ -164,13 +164,14 @@ class SlackChannel(ChannelAdapter):
             on_message(InboundMessage(chat_id=channel, sender=user, text=f"/{verb} {action.get('value') or ''}",
                                       channel=self.name))
 
-    def send(self, chat_id: str, text: str) -> None:
+    def send(self, chat_id: str, text: str) -> bool:
         for chunk in _chunk(text, _MAX_MESSAGE_CHARS):
             try:
                 self._api("chat.postMessage", channel=chat_id, text=chunk)
             except Exception:
                 logger.exception("Failed to send a Slack reply to %s", chat_id)
-                return
+                return False
+        return True
 
     def ask(self, chat_id: str, text: str, approval_id: str) -> None:
         text = text[:_MAX_MESSAGE_CHARS]

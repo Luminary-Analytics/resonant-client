@@ -3288,8 +3288,7 @@ class Session:
                         turn_failed_tools.append(fn_name)
                         yield make_event(EngineEvent.TOOL_RESULT, name=fn_name, call_id=call_id,
                                          output=approval.message, is_error=False, denied=True, elapsed=0.0,
-                                         denied_by="second_approval",
-                                         denied_rule=f"{approval.pattern} ({approval.state})")
+                                         denied_by="second_approval", denied_rule=approval.state)
                         self.conversation_history.append({
                             "role": "tool_call", "name": fn_name,
                             "arguments": fn_args_str, "call_id": call_id,
@@ -3603,7 +3602,9 @@ class Session:
                     except (SandboxViolation, ToolBoundaryViolation) as exc:
                         turn_failed_tools.append(fn_name)
                         result_output = f"Blocked by tool boundary: {exc}"
-                        # An excluded file names its rule, never the file (lumi/security_flags.py).
+                        # An excluded file's flag says only whose rule it was
+                        # (organization policy, Settings, .lumiignore): a
+                        # pattern can be a file's name (lumi/security_flags.py).
                         excluded = isinstance(exc, ExcludedPathViolation)
                         rule = getattr(exc, "rule", None)
                         yield make_event(EngineEvent.TOOL_RESULT,
@@ -3612,7 +3613,7 @@ class Session:
                                         denied=True, elapsed=0.0,
                                         denied_by=("exclusion" if excluded else "sandbox"
                                                    if isinstance(exc, SandboxViolation) else "boundary"),
-                                        denied_rule=rule.describe() if excluded and rule is not None else "")
+                                        denied_rule=str(getattr(rule, "source", "") or "") if excluded else "")
                         self.conversation_history.append({
                             "role": "tool_call", "name": fn_name,
                             "arguments": fn_args_str, "call_id": call_id,

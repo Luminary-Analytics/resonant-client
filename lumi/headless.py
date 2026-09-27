@@ -45,6 +45,8 @@ import uuid
 from typing import Any, Iterable, TextIO
 
 EXIT_OK, EXIT_FAILED, EXIT_USAGE, EXIT_ATTENTION = 0, 1, 2, 3
+# How long a finished run waits, at most, to send its organization oversight records.
+FLUSH_SECONDS = 5.0
 
 # `--mode ask` is read only: nobody can answer a prompt during a run, so it
 # keeps the suggest tier, whose policy refuses changes outright. The
@@ -467,12 +469,6 @@ def main(argv: list[str] | None = None, *, stdin: TextIO | None = None, stdout: 
     from . import activity
 
     activity.record_turn(events, cancelled=timed_out.is_set())
-    if notice:
-        # Send this run's oversight records now if Lumi Cloud answers quickly;
-        # otherwise the app, or the next run, sends them.
-        from .cloud import CloudClient
-
-        oversight.flush(lambda: CloudClient(settings), seconds=10.0)
     if args.output == "json":
         stdout.write(json.dumps(result, indent=2) + "\n")
     elif args.output == "jsonl":
@@ -481,4 +477,18 @@ def main(argv: list[str] | None = None, *, stdin: TextIO | None = None, stdout: 
         stdout.write("\n")
         stderr.write(f"lumi run: {result['status']} ({result['outcome']}); "
                      f"{result['usage']['calls']} model calls, ${result['usage']['cost_usd']:.4f}\n")
+    if notice:
+        # After the result is out: send this run's oversight records if Lumi
+        # Cloud answers within a few seconds. A request still waiting then is
+        # abandoned (its records stay queued; the app or the next run sends them).
+        try:
+            stdout.flush()
+        except (OSError, ValueError):
+            pass
+        from .cloud import CloudClient
+
+        sender = threading.Thread(target=oversight.flush, args=(lambda: CloudClient(settings),),
+                                  kwargs={"seconds": FLUSH_SECONDS}, daemon=True, name="lumi-run-oversight")
+        sender.start()
+        sender.join(FLUSH_SECONDS)
     return exit_code(result)

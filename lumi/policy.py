@@ -55,7 +55,12 @@ run (engine/second_approval.py).
 ``redacted`` or ``full``, secrets removed at every level) and security flags,
 kept there for ``retention_days``. It is off unless a policy turns it on, and
 the person is always told: Lumi shows a notice naming the organization and
-what it receives, and shares nothing until that notice has been shown.
+what it receives, and shares nothing until they have confirmed they read it.
+Its ``version`` (1, the default) says which keys it may have. A key or a
+version this Lumi doesn't know turns oversight off, with the reason in
+Settings, and leaves the rest of the policy in force: Lumi never collects
+less or more than it can describe, and a newer Lumi Cloud never blocks model
+requests on an older Lumi.
 
 Locked settings override the user's value and can't be changed in Settings,
 which shows who manages them. Lists match ``fnmatch`` patterns.
@@ -96,7 +101,10 @@ class PolicyError(ValueError):
 
 # How much of people's messages an organization's oversight receives (lumi/oversight.py).
 OVERSIGHT_MESSAGE_LEVELS = ("off", "redacted", "full")
-OVERSIGHT_KEYS = frozenset({"activity", "messages", "security_flags", "retention_days", "notice", "project_paths"})
+# The section's versions this Lumi understands, and each one's keys.
+OVERSIGHT_VERSIONS = (1,)
+OVERSIGHT_KEYS = frozenset({"version", "activity", "messages", "security_flags", "retention_days", "notice",
+                            "project_paths"})
 OVERSIGHT_NOTICE_LIMIT = 500
 
 
@@ -104,16 +112,19 @@ OVERSIGHT_NOTICE_LIMIT = 500
 class Oversight:
     """What the organization's policy has Lumi share with its Lumi Cloud; nothing by default.
 
-    * ``activity``: each turn's metadata: session, project folder name, title,
+    * ``activity``: each turn's metadata: session, project folder name,
       model, outcome, tool names, cost.
-    * ``messages``: the person's message and Lumi's final reply with each turn:
-      ``off``, ``redacted`` (without code blocks or email addresses, shortened)
-      or ``full`` (as written). Secrets are removed at every level.
+    * ``messages``: the person's message and Lumi's final reply with each
+      turn, and the session's title: ``off``, ``redacted`` (without code
+      blocks or email addresses, shortened) or ``full`` (as written). Secrets
+      are removed at every level.
     * ``security_flags``: refused dangerous commands, policy and file denials,
       declined approvals, removed secrets and signs of prompt injection.
     * ``retention_days``: how long Lumi Cloud keeps it.
     * ``notice``: the organization's own words, shown with Lumi's description.
     * ``project_paths``: full project paths instead of folder names.
+    * ``error``: why a section this Lumi can't honor (an unknown key or
+      version) turned oversight off; shown in Settings.
     """
 
     activity: bool = False
@@ -122,29 +133,49 @@ class Oversight:
     retention_days: int = 90
     notice: str = ""
     project_paths: bool = False
+    version: int = 1
+    error: str = ""
 
     @property
     def enabled(self) -> bool:
-        """Whether anything is shared (messages come only with activity)."""
-        return self.activity or self.security_flags
+        """Whether anything is shared (messages come only with activity; nothing when ``error``)."""
+        return not self.error and (self.activity or self.security_flags)
 
     def summary(self) -> dict:
-        return {"activity": self.activity, "messages": self.messages, "security_flags": self.security_flags,
-                "retention_days": self.retention_days, "notice": self.notice, "project_paths": self.project_paths,
-                "enabled": self.enabled}
+        return {"version": self.version, "activity": self.activity, "messages": self.messages,
+                "security_flags": self.security_flags, "retention_days": self.retention_days,
+                "notice": self.notice, "project_paths": self.project_paths, "enabled": self.enabled,
+                "error": self.error}
 
 
 def _oversight(value: Any) -> Oversight:
-    """The ``oversight`` section. Keys Lumi doesn't know are refused rather than guessed at:
-    this section decides what is collected about people."""
+    """The ``oversight`` section.
+
+    A version or a key this Lumi doesn't know turns oversight off with the
+    reason (``Oversight.error``) rather than guessing at what the organization
+    wants collected, and without invalidating the rest of the policy: a
+    newer Lumi Cloud's section must never stop model requests on this
+    computer. Other mistakes (a value of the wrong type) make the policy
+    invalid, like a mistake in any section.
+    """
     if value is None:
         return Oversight()
     if not isinstance(value, dict):
         raise PolicyError("oversight must be an object.")
+    version = value.get("version", 1)
+    if isinstance(version, bool) or version not in OVERSIGHT_VERSIONS:
+        shown = json.dumps(version) if isinstance(version, (int, float, str, bool)) or version is None else "that"
+        error = (f"The policy's oversight section is version {shown[:40]}, which this version of Lumi doesn't "
+                 "understand, so it collects nothing. Update Lumi, or ask your administrator.")
+        logger.warning("Organization oversight is off: %s", error)
+        return Oversight(error=error)
     unknown = sorted(str(key) for key in value if key not in OVERSIGHT_KEYS)
     if unknown:
-        raise PolicyError(f"oversight doesn't take {', '.join(unknown)}; it takes "
-                          f"{', '.join(sorted(OVERSIGHT_KEYS))}.")
+        names = ", ".join(name[:40] for name in unknown[:5])
+        error = (f"The policy's oversight section asks for {names}, which this version of Lumi doesn't "
+                 "understand, so it collects nothing. Update Lumi, or ask your administrator.")
+        logger.warning("Organization oversight is off: %s", error)
+        return Oversight(error=error)
     activity = _flag(value.get("activity"), "oversight.activity")
     messages = value.get("messages", "off")
     if messages is None:

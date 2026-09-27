@@ -2286,10 +2286,11 @@ class AppState:
             self._push_ws_event(self.get_init_data(refresh_only=True))
         except Exception:
             logger.exception("Applying the new organization policy failed")
-        # Queued oversight records go now, or are deleted if the policy stopped asking.
+        # Queued oversight records go now, or are deleted if the policy stopped
+        # asking, even while sending backs off after a failure.
         from .. import oversight
 
-        oversight.wake()
+        oversight.wake(urgent=True)
 
     def apply_policy_change(self) -> None:
         """Apply a different organization policy (from Lumi Cloud) to the running app.

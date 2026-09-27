@@ -128,13 +128,22 @@ host enrollment and actual packaged/learned-benefit qualification remain open.
   never replaces a machine policy (`policy._with_cloud_policy`).
 - Organization oversight (`oversight.py`, `security_flags.py`) is the only
   path that sends people's turns to Lumi Cloud: off unless the policy's
-  `oversight` section asks, only to the Lumi Cloud that policy came from,
-  and only after the person has seen the notice for that policy
-  (`oversight.acknowledge`, a fingerprint of the section). `Session.run`
-  records every turn, so a new entry point is covered by running through
-  it; a new surface that runs turns must show `oversight.terminal_notice`
-  or the app's notice first. Secrets are removed at every level, file
-  contents and tool output never leave, and excluded files are never named.
+  `oversight` section asks (a key or version Lumi doesn't know turns it off,
+  never the policy), only to the Lumi Cloud that policy came from, and only
+  after the person confirmed the notice for that policy
+  (`oversight.acknowledge`: the notice's own button, never a status push or
+  a painted page, or an interactive terminal; a fingerprint of the
+  organization, the enrollment and the section). `Session.run` records
+  every turn, so a new entry point is covered by running through it; a new
+  surface that runs turns must show `oversight.terminal_notice` or the
+  app's notice first, and one whose people aren't the computer's person (the
+  gateway's chats) tells them itself first (`oversight.chat_notice`).
+  Anything shared passes `secret_scan.redact_for_sharing` before it is cut;
+  file contents and tool output never leave, and excluded files and their
+  patterns are never named. A flag's `rule` is a label from
+  `security_flags.RULES`, never free text; what someone wrote goes only in
+  the excerpt, which goes only with messages. Session titles go only with
+  messages. Patterns that run on tool output must take linear time.
   Refusals carry `denied_by` on their `tool.result` for the flags; a new
   place that refuses a tool call should set it. Tests use fake clients,
   never a real Lumi Cloud.

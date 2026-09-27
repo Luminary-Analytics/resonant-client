@@ -57,11 +57,12 @@ and the month's spend so far; Lumi stops model requests when it's used up
 ([shared credit](usage-and-costs.md#an-organizations-shared-credit)).
 
 An organization's policy can also turn on **organization oversight**: each
-turn's activity, optionally your messages (secrets removed), and security
-flags, sent separately from check-ins. Lumi then shows a notice beside the
-message box naming the organization and what it receives, records nothing
-until that notice has been shown, and lists exactly what is shared in
-**Settings > Privacy & security**. See [organization
+turn's activity, optionally your messages and sessions' titles (secrets
+removed), and security flags, sent separately from check-ins. Lumi then
+shows a notice beside the message box naming the organization and what it
+receives, records nothing until you confirm it with **I've read this**, and
+lists exactly what is shared in **Settings > Privacy & security**. Leaving
+the organization or signing out forgets the confirmation. See [organization
 oversight](organization-oversight.md).
 
 ### The organization's policy

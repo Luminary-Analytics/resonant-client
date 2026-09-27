@@ -24,9 +24,10 @@ keys (lumi/policy.py) and applies it. A revoked device forgets its
 enrollment and the downloaded policy.
 
 **Organization oversight** (lumi/oversight.py) is separate: only when the
-organization's policy asks, and after the person has seen the notice, turn
-records and security flags go to ``/api/v1/oversight/events`` through
-``device_call``. Leaving the organization deletes any still queued.
+organization's policy asks, and after the person has confirmed the notice,
+turn records and security flags go to ``/api/v1/oversight/events`` through
+``device_call``. Leaving the organization deletes any still queued, and
+leaving or signing out forgets the confirmed notice.
 """
 
 from __future__ import annotations
@@ -397,9 +398,11 @@ class CloudClient:
             except CloudError:
                 logger.info("Couldn't reach Lumi Cloud to revoke the sign-in; forgetting it here")
         self._forget_account()
-        from . import audit
+        from . import audit, oversight
 
         audit.record("cloud.signed_out", url=self.url)
+        # The oversight notice is confirmed again after signing back in (lumi/oversight.py).
+        oversight.forget_notice("Signed out of Lumi Cloud")
         self._changed()
 
     # ── Enrolling ──────────────────────────────────────────────────────────
@@ -482,10 +485,12 @@ class CloudClient:
             logger.warning("Couldn't delete the downloaded organization policy", exc_info=True)
         policy.load(force=True)
         audit.record("cloud.unenrolled", organization=organization, reason=reason)
-        # Oversight records meant for the organization aren't sent anywhere else (lumi/oversight.py).
+        # Oversight records meant for the organization aren't sent anywhere
+        # else, and a later enrollment shows its own notice (lumi/oversight.py).
         from . import oversight
 
         oversight.discard(f"This computer left {organization or 'the organization'} ({reason}).")
+        oversight.forget_notice(f"This computer left {organization or 'the organization'} ({reason}).")
         self._changed()
 
     # ── Device sign-in and check-ins ───────────────────────────────────────

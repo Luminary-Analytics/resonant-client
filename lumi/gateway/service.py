@@ -14,6 +14,10 @@ the organization's policy and the permission mode apply. In Ask and
 Auto-edit modes an action the mode doesn't allow is sent to the chat for
 approval, and nobody answering in time refuses it. Restrict who can reach the
 gateway with the channel's allowlist.
+
+When the organization's policy has Lumi share work with its Lumi Cloud
+(lumi/oversight.py), each chat is sent the notice before its first turn is
+recorded, once per policy; a chat that wasn't sent it isn't recorded.
 """
 
 from __future__ import annotations
@@ -220,6 +224,7 @@ class GatewayService:
 
         self._adapter.notify_busy(msg.chat_id)
         session = self._session_for(msg.chat_id)
+        self._send_oversight_notice(msg.chat_id, session)
         # A /stop cancels one turn, not every later one in this chat.
         session.reset_cancel()
         with self._lock:
@@ -249,6 +254,27 @@ class GatewayService:
             self._adapter.send(msg.chat_id, f"Agent error: {error_message}")
             return
         self._adapter.send(msg.chat_id, "\n\n".join(reply_parts).strip() or "(no response)")
+
+    def _send_oversight_notice(self, chat_id: str, session: object) -> None:
+        """Tell the chat what its organization receives before its first recorded turn (lumi/oversight.py).
+
+        Once per policy: the chat's turns are recorded only after its notice
+        was sent, so a send that fails leaves them unrecorded.
+        """
+        from .. import oversight
+
+        key = str(getattr(session, "audit_session_id", "") or "") or f"{oversight.CHAT_PREFIX}{chat_id}"
+        pending = oversight.chat_notice(key)
+        if pending is None:
+            return
+        text, fingerprint = pending
+        try:
+            delivered = self._adapter.send(chat_id, text) is not False
+        except Exception:
+            logger.warning("Couldn't send the oversight notice to chat %s", chat_id, exc_info=True)
+            delivered = False
+        if delivered:
+            oversight.chat_notice_sent(key, fingerprint)
 
     def _asker(self, chat_id: str) -> Callable[[str, dict], bool]:
         """The session's permission prompt: ask in the chat and wait for the answer."""

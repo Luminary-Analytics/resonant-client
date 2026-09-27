@@ -129,13 +129,14 @@ class TelegramChannel(ChannelAdapter):
         on_message(InboundMessage(chat_id=chat_id, sender=_sender(query.get("from")),
                                   text=f"/{action} {approval_id}", channel=self.name))
 
-    def send(self, chat_id: str, text: str) -> None:
+    def send(self, chat_id: str, text: str) -> bool:
         for chunk in _chunk(text, _MAX_MESSAGE_CHARS):
             try:
                 self._call("sendMessage", chat_id=chat_id, text=chunk)
             except Exception:
                 logger.exception("Failed to send Telegram reply to chat %s", chat_id)
-                return
+                return False
+        return True
 
     def ask(self, chat_id: str, text: str, approval_id: str) -> None:
         buttons = [[{"text": "Approve", "callback_data": f"approve:{approval_id}"},

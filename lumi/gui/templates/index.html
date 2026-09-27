@@ -401,8 +401,9 @@
                              organization's policy has Lumi share activity,
                              messages or security flags, this names the
                              organization and what it receives. It can't be
-                             dismissed, and nothing is recorded until it has
-                             been on screen (settings_view.js). -->
+                             dismissed, and nothing is recorded until the
+                             person confirms it with "I've read this"
+                             (settings_view.js). -->
                         <section id="oversight-notice" class="oversight-notice" aria-labelledby="oversight-notice-title" hidden>
                             <svg class="oversight-notice-icon" width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
                                 <path d="M8 1 2 3v5c0 4 3 6 6 7 3-1 6-3 6-7V3z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/>
@@ -412,6 +413,7 @@
                             <h2 id="oversight-notice-title" class="sr-only">Organization oversight</h2>
                             <p id="oversight-notice-text" class="oversight-notice-text" role="status"></p>
                             <button type="button" id="oversight-notice-details" class="oversight-notice-details" aria-describedby="oversight-notice-text">What’s shared</button>
+                            <button type="button" id="oversight-notice-confirm" class="oversight-notice-confirm" aria-describedby="oversight-notice-text" hidden>I’ve read this</button>
                         </section>
                         <div id="composer-queue" class="composer-queue" hidden></div>
                         <div class="input-wrapper">

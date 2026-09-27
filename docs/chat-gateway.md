@@ -55,6 +55,12 @@ A request that arrives while another is running waits its turn: requests run
 one at a time on the computer. An approval nobody answers in time is refused,
 and the agent is told it wasn't done.
 
+If the organization's policy turns on [organization
+oversight](organization-oversight.md), each chat is sent a notice naming the
+organization and what it receives before that chat's first request is
+recorded, once per policy. A chat's requests are recorded only after its
+notice was sent; **status** repeats it.
+
 ## Telegram
 
 1. Create a bot with [@BotFather](https://t.me/BotFather) and copy its token.

@@ -6,18 +6,21 @@ Nothing here runs unless the organization's policy turns it on (the
 tasks from chat), Lumi builds a record of the turn and queues it for the
 organization's Lumi Cloud:
 
-* **activity**: the session and its title, the project's folder name (its full
-  path only with ``project_paths``), the turn's number, when it ran, the
-  provider and model, the permission mode, how it ended, the tools it called
-  and whether each ran, and what it cost;
+* **activity**: the session, the project's folder name (its full path only
+  with ``project_paths``), the turn's number, when it ran, the provider and
+  model, the permission mode, how it ended, the tools it called and whether
+  each ran, and what it cost;
 * **messages** (``redacted`` or ``full``): the person's message and Lumi's
-  final reply, and the commands, paths and patterns the tools were given.
-  ``redacted`` leaves out code blocks and email addresses and keeps 2,000
-  characters; ``full`` keeps 20,000. Secrets are removed at every level
-  (lumi/secret_scan.py), and paths inside excluded files are never named;
+  final reply, the session's title (an automatic title is the gist of the
+  first message) and the commands, paths and patterns the tools were given.
+  ``redacted`` leaves out code blocks, email addresses and web addresses'
+  query strings and keeps 2,000 characters; ``full`` keeps 20,000. Secrets
+  are removed at every level (``secret_scan.redact_for_sharing``), and paths
+  inside excluded files are never named;
 * **security flags** (lumi/security_flags.py): refused dangerous commands,
   policy and file denials, declined approvals, removed secrets and signs of
-  prompt injection in tool output. Flags also show in the person's own
+  prompt injection in tool output. A flag's rule is a fixed label; its short
+  excerpt goes only with messages. Flags also show in the person's own
   Settings.
 
 Never file contents or tool output (beyond a flag's short excerpt when
@@ -26,19 +29,26 @@ Lumi's own turns.
 
 **The person always knows.** The app shows a notice naming the organization
 and what it receives, which can't be dismissed, and Settings lists exactly
-what is collected. Lumi records nothing until the notice for the policy in
-force has been shown (``acknowledge``): in the app, or at an interactive
-terminal (``lumi run``, the terminal UI, the gateway). A change to what the
-policy collects needs the new notice shown first.
+what is collected. Lumi records nothing until the person has confirmed the
+notice for the policy in force (``acknowledge``): with the notice's own
+button in the app, or by running ``lumi run`` or the terminal UI at an
+interactive terminal, which print it first. Its fingerprint covers the
+organization, this computer's enrollment and what the policy collects, so
+another enrollment or a policy that collects more needs it confirmed again,
+and leaving the organization or signing out of Lumi Cloud forgets it (it
+never records anything because of what nobody saw). People who reach Lumi
+through the chat gateway are sent the notice in their chat before their
+first turn is recorded (``chat_notice``); until then their turns aren't.
 
 **Where it goes.** Only to the Lumi Cloud of the organization whose policy
 asks for it: the policy must come from that Lumi Cloud (verified for this
 enrolled computer), or be a machine policy that enrolled it there. Records
-wait in ``~/.lumi/oversight/queue.jsonl`` (bounded) and a background thread
+wait in ``~/.lumi/oversight/queue.sqlite3`` (bounded, and deleted unsent
+once older than the policy's ``retention_days``) and a background thread
 sends them with the device's own sign-in (lumi/cloud.py), retrying with
 backoff. If the policy stops asking, or the computer leaves the
 organization, queued records are deleted, not sent. Every record dropped,
-refused or deleted is counted in Settings.
+refused, expired or deleted is counted in Settings.
 """
 
 from __future__ import annotations
@@ -48,11 +58,13 @@ import json
 import logging
 import os
 import re
+import sqlite3
 import threading
 import time
 import uuid
 from collections import Counter
-from datetime import datetime, timezone
+from contextlib import closing
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
 
@@ -72,12 +84,16 @@ BATCH_RECORDS = 100
 BATCH_BYTES = 900_000
 LOCAL_FLAGS = 500
 KNOWN_SESSIONS = 2_000
+KNOWN_CHATS = 2_000
 IDLE_SECONDS = 300.0
 BUSY_SECONDS = 2.0
 RETRY_SECONDS = (30.0, 60.0, 120.0, 300.0, 900.0, 1800.0, 3600.0)
 # Where a session's turns come from, by the audit session id the surface sets.
 SURFACES = (("headless:", "lumi run"), ("gateway:", "chat gateway"), ("chat-task:", "task from chat"),
             ("tui:", "terminal"))
+# Sessions whose people aren't this computer's person: each chat of the chat
+# gateway is told in the chat (chat_notice) before its turns are recorded.
+CHAT_PREFIX = "gateway:"
 # Tools whose output is Lumi's own (a worker's hand-off, a skill, the
 # person's answer): not searched for injection.
 _NOT_SCANNED = frozenset({"task", "task_batch", "await_user", "search_tools", "skill_view", "artifact_read"})
@@ -85,7 +101,9 @@ _PATH_ARGUMENTS = ("path", "cwd", "working_subdir")
 _TEXT_ARGUMENTS = ("command", "pattern", "glob", "query", "url", "agent_type")
 _WRITE_TOOLS = frozenset({"file_edit", "file_write", "file_replace"})
 _CODE_BLOCK = re.compile(r"(?ms)^[ \t]*(```|~~~)[^\n]*\n.*?(?:^[ \t]*\1[ \t]*$|\Z)")
-_EMAIL = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")
+# Starts only where an address can start (not \b, which "a.a.a." has
+# everywhere), so a long run of such text isn't rescanned from every dot.
+_EMAIL = re.compile(r"(?<![A-Za-z0-9._%+-])[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")
 
 _lock = threading.RLock()
 
@@ -127,15 +145,22 @@ class Scope:
         current = state.policy
         self.settings = current.oversight if current is not None else policy.Oversight()
         self.organization = current.organization if current is not None else ""
+        # A section this Lumi can't honor turns oversight off; Settings says why (policy.Oversight.error).
+        self.error = self.settings.error if current is not None else ""
         self.configured = bool(current is not None and self.settings.enabled)
         self.fingerprint = ""
         self.reason = ""
         self.destination = False
         if not self.configured:
             return
-        self.fingerprint = hashlib.sha256(policy.canonical({
-            "organization": self.organization, "oversight": self.settings.summary()})).hexdigest()[:16]
         device = policy.enrolled_device()
+        # What the notice said, and to which organization and enrollment of
+        # this computer records go: any of them changing needs the notice again.
+        self.fingerprint = hashlib.sha256(policy.canonical({
+            "organization": self.organization,
+            "organization_id": str(device.get("organization_id") or ""),
+            "device": str(device.get("id") or ""),
+            "oversight": self.settings.summary()})).hexdigest()[:16]
         from_cloud = state.cloud
         managed = device.get("how") == "managed" and isinstance(current.raw.get("cloud"), dict)
         if not device:
@@ -156,25 +181,25 @@ class Scope:
 
     @property
     def active(self) -> bool:
-        """Whether turns are recorded now: asked for, a destination, and the notice shown."""
+        """Whether turns are recorded now: asked for, a destination, and the notice confirmed."""
         return self.configured and self.destination and self.acknowledged
 
 
-def notice_text(settings: Any, organization: str) -> str:
-    """One sentence for the notice beside the message box."""
+def notice_text(settings: Any, organization: str, *, where: str = "from Lumi on this computer") -> str:
+    """One sentence for the notice beside the message box (and a chat's)."""
     parts = []
     if settings.activity:
         parts.append("your sessions and what they did")
     if settings.messages == "redacted":
-        parts.append("your messages and Lumi's replies (shortened, without code or secrets)")
+        parts.append("your messages, Lumi's replies and your sessions' titles (shortened, without code or secrets)")
     elif settings.messages == "full":
-        parts.append("your messages and Lumi's replies (without secrets)")
+        parts.append("your messages, Lumi's replies and your sessions' titles (without secrets)")
     if settings.security_flags:
         parts.append("security flags")
     if not parts:
         return ""
     listed = parts[0] if len(parts) == 1 else ", ".join(parts[:-1]) + " and " + parts[-1]
-    return f"{organization or 'Your organization'} receives {listed} from Lumi on this computer."
+    return f"{organization or 'Your organization'} receives {listed} {where}."
 
 
 def described(settings: Any, organization: str) -> dict:
@@ -183,46 +208,56 @@ def described(settings: Any, organization: str) -> dict:
     shared = []
     if settings.activity:
         where = "the project's full path" if settings.project_paths else "the project folder's name"
-        shared.append(f"Each turn's activity: the session and its title, {where}, the model and permission mode, "
-                      "when it ran, how it ended, which tools ran or were refused, and its cost.")
+        shared.append(f"Each turn's activity: the session, {where}, the model and permission mode, when it ran, "
+                      "how it ended, which tools ran or were refused, and its cost.")
     if settings.messages == "redacted":
-        shared.append("Your message and Lumi's final reply in each turn, up to 2,000 characters, without code "
-                      "blocks, email addresses or secrets; and the commands, paths and search patterns tools "
-                      "were given, shortened and without secrets.")
+        shared.append("Your message and Lumi's final reply in each turn and the session's title, up to 2,000 "
+                      "characters, without code blocks, email addresses or secrets; and the commands, paths and "
+                      "search patterns tools were given, shortened, without secrets or web addresses' query "
+                      "strings.")
     elif settings.messages == "full":
-        shared.append("Your message and Lumi's final reply in each turn as written, up to 20,000 characters, "
-                      "without secrets; and the commands, paths and search patterns tools were given, without "
-                      "secrets.")
+        shared.append("Your message and Lumi's final reply in each turn and the session's title, as written, up to "
+                      "20,000 characters, without secrets; and the commands, paths and search patterns tools were "
+                      "given, without secrets.")
     if settings.security_flags:
         excerpt = ", each with a short excerpt without secrets" if settings.messages != "off" else ""
         shared.append("Security flags: dangerous commands Lumi refused, commands and files your organization's "
                       "rules refused, approvals that were declined, secrets Lumi removed and signs of prompt "
-                      f"injection in what tools returned{excerpt}.")
+                      f"injection in what tools returned{excerpt}. A flag names a fixed rule, never a file or "
+                      "what a hook said.")
     not_shared = [
         "File contents and what tools returned (command output, web pages).",
         "Screenshots, keystrokes, the clipboard, or anything you do outside Lumi's turns.",
-        "Saved API keys, and anything that looks like a secret, at every level.",
-        "The names of files you exclude from Lumi.",
+        "Saved API keys and anything that looks like a secret, at every level: keys and tokens, passwords in "
+        "commands and web addresses, authorization headers.",
+        "The names of files you exclude from Lumi, and the patterns that exclude them.",
     ]
     if settings.messages == "off":
-        not_shared.insert(0, "Your messages, Lumi's replies, and the commands and paths tools were given.")
+        not_shared.insert(0, "Your messages, Lumi's replies, your sessions' titles, and the commands and paths "
+                             "tools were given.")
     return {"shared": shared, "not_shared": not_shared,
-            "retention": f"{who} keeps it for {settings.retention_days} days, then Lumi Cloud deletes it."}
+            "retention": f"{who} keeps it for {settings.retention_days} days, then Lumi Cloud deletes it. "
+                         "Records waiting on this computer longer than that are deleted unsent."}
 
 
 def status() -> dict:
     """What the notice and Settings show; never raises."""
+    from .security_flags import rule_text
+
     try:
         scope = Scope()
         settings = scope.settings
         info = {
             "configured": scope.configured,
             "active": scope.active,
+            "destination": scope.destination,
             "organization": scope.organization,
             "settings": settings.summary(),
             "fingerprint": scope.fingerprint,
             "acknowledged": scope.acknowledged,
             "reason": scope.reason,
+            # The policy asks for oversight this Lumi can't honor, so it's off (policy.Oversight.error).
+            "policy_error": scope.error,
             "notice": notice_text(settings, scope.organization) if scope.configured else "",
             "organization_notice": settings.notice if scope.configured else "",
             **(described(settings, scope.organization) if scope.configured else {}),
@@ -231,18 +266,20 @@ def status() -> dict:
         logger.exception("Oversight status failed")
         info = {"configured": False, "active": False, "error": str(exc)}
     info["queue"] = queue_status()
-    info["flags"] = recent_flags(50)
+    info["flags"] = [{**flag, "rule_text": rule_text(flag.get("rule"))} for flag in recent_flags(50)]
     return info
 
 
 def acknowledge(fingerprint: str, surface: str) -> bool:
-    """The notice for the policy in force was shown; turns are recorded from now on.
+    """The person confirmed the notice for the policy in force; turns are recorded from now on.
 
-    Refused (False) when ``fingerprint`` isn't the policy in force: a page
-    that showed an older notice doesn't start a newer policy's collection.
+    Refused (False) when ``fingerprint`` isn't the policy in force (a page
+    that showed an older notice doesn't start a newer policy's collection),
+    or when records have nowhere to go: that notice says nothing is
+    collected, so confirming it can't start collection later.
     """
     scope = Scope()
-    if not scope.configured or not fingerprint or fingerprint != scope.fingerprint:
+    if not (scope.configured and scope.destination) or not fingerprint or fingerprint != scope.fingerprint:
         return False
     with _lock:
         if scope.acknowledged:
@@ -252,16 +289,38 @@ def acknowledge(fingerprint: str, surface: str) -> bool:
     from . import audit
 
     audit.record("oversight.notice_shown", organization=scope.organization, surface=str(surface)[:40],
-                 **{key: value for key, value in scope.settings.summary().items() if key != "notice"})
+                 **{key: value for key, value in scope.settings.summary().items() if key not in ("notice", "error")})
     return True
 
 
+def forget_notice(reason: str) -> None:
+    """Forget every confirmed notice, the app's and the chats' (the computer left, or signed out); never raises."""
+    root = _root()
+    if not root.is_dir():
+        return
+    forgotten = []
+    try:
+        with _lock, exclusive(root / ".lock"):
+            for name in ("notice.json", "chats.json"):
+                path = root / name
+                if path.exists():
+                    path.unlink()
+                    forgotten.append(name)
+    except OSError:
+        logger.warning("Couldn't forget the oversight notice", exc_info=True)
+        return
+    if forgotten:
+        from . import audit
+
+        audit.record("oversight.notice_forgotten", reason=str(reason)[:300])
+
+
 def terminal_notice(interactive: bool, surface: str) -> str:
-    """The notice for a terminal surface, acknowledged if someone is there to read it; '' when off."""
+    """The notice for a terminal surface, confirmed if someone is there to read it; '' when off."""
     try:
         scope = Scope()
         if not scope.configured:
-            return ""
+            return scope.error  # a section this Lumi can't honor: say so, nothing is collected
         text = notice_text(scope.settings, scope.organization)
         if scope.settings.notice:
             text += f" {scope.settings.notice}"
@@ -270,20 +329,82 @@ def terminal_notice(interactive: bool, surface: str) -> str:
         elif interactive:
             acknowledge(scope.fingerprint, surface)
         elif not scope.acknowledged:
-            text += " Nothing is recorded until you've seen this notice in the Lumi app or a terminal."
+            text += " Nothing is recorded until you've confirmed this notice in the Lumi app or at a terminal."
         return text
     except Exception:
         logger.debug("Oversight notice failed", exc_info=True)
         return ""
 
 
+# ── The chat gateway's chats ────────────────────────────────────────────────
+
+
+def _chat_key(session: Any) -> str:
+    key = str(getattr(session, "audit_session_id", "") or "")
+    return key if key.startswith(CHAT_PREFIX) else ""
+
+
+def _chat_notified(chat: str, fingerprint: str) -> bool:
+    known = _read_json(_root() / "chats.json", {})
+    entry = known.get(chat) if isinstance(known, dict) else None
+    return bool(fingerprint) and isinstance(entry, dict) and entry.get("fingerprint") == fingerprint
+
+
+def chat_notice(chat: str) -> tuple[str, str] | None:
+    """(text, fingerprint): the notice a gateway chat must be sent before its turns are recorded.
+
+    None when nothing would be recorded (no policy asks, or there's nowhere
+    to send records) or the chat was already sent this policy's notice. The
+    person running the gateway saw its notice at their terminal; the people
+    in a chat are told in the chat. Never raises.
+    """
+    try:
+        scope = Scope()
+        if not (scope.configured and scope.destination) or _chat_notified(chat, scope.fingerprint):
+            return None
+        text = notice_text(scope.settings, scope.organization, where="from Lumi through this chat")
+        if scope.settings.notice:
+            text += f" {scope.settings.notice}"
+        text += " Nothing from this chat was shared before this message."
+        return f"Organization oversight: {text}", scope.fingerprint
+    except Exception:
+        logger.debug("Oversight chat notice failed", exc_info=True)
+        return None
+
+
+def chat_notice_sent(chat: str, fingerprint: str) -> None:
+    """The chat was sent the notice for ``fingerprint``: its turns are recorded from now on."""
+    path = _root() / "chats.json"
+    with _lock, exclusive(_root() / ".lock"):
+        known = _read_json(path, {})
+        known = known if isinstance(known, dict) else {}
+        known[str(chat)[:200]] = {"fingerprint": str(fingerprint), "at": _now()}
+        if len(known) > KNOWN_CHATS:
+            newest = sorted(known.items(), key=lambda item: str(item[1].get("at") or ""), reverse=True)
+            known = dict(newest[:KNOWN_CHATS])
+        _write_json(path, known)
+    from . import audit
+
+    scope = Scope()
+    audit.record("oversight.notice_shown", organization=scope.organization, surface="chat gateway",
+                 session=str(chat)[:200],
+                 **{key: value for key, value in scope.settings.summary().items() if key not in ("notice", "error")})
+
+
 # ── Recording a turn ────────────────────────────────────────────────────────
 
 
 def _redact(text: str) -> tuple[str, Counter]:
-    from .secret_scan import redact_text
+    from .secret_scan import redact_for_sharing
 
-    return redact_text(text, patterns=True)
+    return redact_for_sharing(text)
+
+
+def _without_query(url: str) -> str:
+    """A web address without its query string and fragment (messages at ``redacted``)."""
+    base, question, _query = url.partition("?")
+    base = base.split("#", 1)[0]
+    return base + ("?…" if question else "")
 
 
 def _code_block(match: re.Match[str]) -> str:
@@ -294,7 +415,11 @@ def _code_block(match: re.Match[str]) -> str:
 
 
 def _message(text: Any, level: str) -> tuple[dict | None, Counter]:
-    """A message at ``level``, secrets removed; its secret kinds counted."""
+    """A message at ``level``, secrets removed; its secret kinds counted.
+
+    Secrets go before anything is cut: a secret cut in half at the limit
+    would match neither its pattern nor its saved value.
+    """
     value = str(text or "")
     if not value.strip():
         return None, Counter()
@@ -437,7 +562,8 @@ class TurnTracker:
         return full if self.settings.project_paths else os.path.basename(full)
 
     def _arguments(self, arguments: dict, found: Counter) -> dict:
-        limit = ARGUMENT_LIMITS[self.settings.messages]
+        level = self.settings.messages
+        limit = ARGUMENT_LIMITS[level]
         summary: dict[str, str] = {}
         for key in _PATH_ARGUMENTS:
             if isinstance(arguments.get(key), str) and arguments[key]:
@@ -447,8 +573,11 @@ class TurnTracker:
             if isinstance(value, list):
                 value = " ".join(str(word) for word in value)
             if isinstance(value, str) and value:
+                # The whole value loses its secrets before anything is cut from it.
                 text, kinds = _redact(value)
                 found.update(kinds)
+                if level == "redacted" and key == "url":
+                    text = _without_query(text)
                 summary[key] = text if len(text) <= limit else text[:limit] + "…"
         return summary
 
@@ -457,8 +586,13 @@ class TurnTracker:
 
         project = self.project_path
         name = (project if self.settings.project_paths else os.path.basename(project.rstrip("\\/"))) if project else ""
-        return {"id": self.session_id, "title": clip(self.title, TITLE_LIMIT), "project": name,
-                "surface": _surface(self.session_id)}
+        session = {"id": self.session_id, "project": name, "surface": _surface(self.session_id)}
+        # A title is conversation content (an automatic one is the first
+        # message's gist): it goes only when messages do, at their level.
+        if self.settings.messages != "off" and self.title:
+            title = clip(self.title, TITLE_LIMIT)
+            session["title"] = _EMAIL.sub("[email]", title) if self.settings.messages == "redacted" else title
+        return session
 
     def finish(self, outcome: str) -> None:
         """Queue the turn's records; never raises."""
@@ -519,6 +653,8 @@ class TurnTracker:
             record["flags"] = [flag.id for flag in flags]
         for flag in flags:
             entry = {"type": "flag", **flag.to_dict(), "session": session, "turn": turn}
+            # Only a label leaves this computer as a flag's rule (security_flags.RULES).
+            entry["rule"] = security_flags.label(entry["kind"], entry["rule"])
             if settings.messages == "off":
                 entry.pop("excerpt", None)
             elif settings.messages == "redacted":
@@ -527,7 +663,7 @@ class TurnTracker:
         if flags:
             _save_flags([{**flag.to_dict(), "session": session, "turn": turn} for flag in flags])
         if records:
-            enqueue(records)
+            enqueue(records, retention_days=settings.retention_days)
             wake()
 
 
@@ -542,13 +678,20 @@ def begin_turn(session: Any, user_msg: str, *, images: int = 0, input_origin: st
     """A tracker for this turn when oversight is recording, else None; never raises.
 
     A delegated worker's turn is part of its parent's, which sees the
-    worker's tool calls, so workers aren't recorded on their own.
+    worker's tool calls, so workers aren't recorded on their own. A chat of
+    the chat gateway is recorded only once the chat itself was sent the
+    notice for the policy in force (chat_notice), whoever else confirmed it.
     """
     try:
         if getattr(session, "is_subagent", False):
             return None
         scope = Scope()
-        if not scope.active:
+        chat = _chat_key(session)
+        if chat:
+            recording = scope.configured and scope.destination and _chat_notified(chat, scope.fingerprint)
+        else:
+            recording = scope.active
+        if not recording:
             return None
         return TurnTracker(session, user_msg, images, scope, input_origin)
     except Exception:
@@ -612,6 +755,11 @@ def recent_flags(limit: int = 50) -> list[dict]:
 
 
 # ── The queue ───────────────────────────────────────────────────────────────
+#
+# A SQLite table rather than a file rewritten per turn and per batch: adding
+# a record, taking a batch and removing a sent one don't read the rest of the
+# queue, so a long time offline doesn't slow every turn's end. The app and
+# `lumi run` share it; SQLite's own locking serializes them.
 
 
 def _counters() -> dict:
@@ -623,22 +771,107 @@ def _count(**changes: Any) -> None:
     """Add to (or set) the queue's counters; call with the lock held."""
     data = _counters()
     for key, value in changes.items():
-        if isinstance(value, int) and not isinstance(value, bool) and key not in ("pending",):
+        if isinstance(value, int) and not isinstance(value, bool):
             data[key] = int(data.get(key) or 0) + value
         else:
             data[key] = value
+    data.pop("pending", None)  # counted from the queue itself (queue_status)
     _write_json(_root() / "state.json", data)
 
 
-def _queued() -> list[dict]:
+def _database() -> sqlite3.Connection:
+    path = _root() / "queue.sqlite3"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    connection = sqlite3.connect(path, timeout=30.0, isolation_level=None)
+    connection.execute("CREATE TABLE IF NOT EXISTS records (seq INTEGER PRIMARY KEY AUTOINCREMENT, "
+                       "id TEXT UNIQUE NOT NULL, at TEXT NOT NULL, size INTEGER NOT NULL, body TEXT NOT NULL)")
+    connection.execute("CREATE INDEX IF NOT EXISTS records_at ON records (at)")
+    return connection
+
+
+def _record_time(record: dict) -> str:
+    """When the record's turn ended or its flag was raised, as a sortable UTC time (never in the future)."""
+    value = record.get("ended_at") if record.get("type") == "turn" else record.get("at")
+    now = datetime.now(timezone.utc)
     try:
-        lines = (_root() / "queue.jsonl").read_text(encoding="utf-8").splitlines()
-    except OSError:
-        return []
-    records = []
-    for line in lines:
+        moment = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        moment = moment if moment.tzinfo else moment.replace(tzinfo=timezone.utc)
+    except ValueError:
+        moment = now
+    moment = min(moment.astimezone(timezone.utc), now)
+    return moment.isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+def _pending(connection: sqlite3.Connection) -> int:
+    return int(connection.execute("SELECT COUNT(*) FROM records").fetchone()[0])
+
+
+def _expire_locked(connection: sqlite3.Connection, retention_days: int) -> int:
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=int(retention_days))).isoformat(
+        timespec="milliseconds").replace("+00:00", "Z")
+    return connection.execute("DELETE FROM records WHERE at < ?", (cutoff,)).rowcount or 0
+
+
+def enqueue(records: list[dict], *, retention_days: int | None = None) -> None:
+    """Add records for Lumi Cloud; the oldest go (counted) when the queue is full.
+
+    With ``retention_days``, records older than the organization keeps
+    records go too: Lumi Cloud would only delete them.
+    """
+    with _lock, exclusive(_root() / ".lock"), closing(_database()) as connection:
+        connection.execute("BEGIN IMMEDIATE")
         try:
-            record = json.loads(line)
+            for record in records:
+                body = json.dumps(record, separators=(",", ":"))
+                connection.execute("INSERT OR IGNORE INTO records (id, at, size, body) VALUES (?, ?, ?, ?)",
+                                   (str(record.get("id") or uuid.uuid4().hex), _record_time(record),
+                                    len(body.encode("utf-8")), body))
+            expired = _expire_locked(connection, retention_days) if retention_days else 0
+            count, size = connection.execute("SELECT COUNT(*), COALESCE(SUM(size), 0) FROM records").fetchone()
+            dropped = 0
+            if count > MAX_RECORDS or size > MAX_QUEUE_BYTES:
+                oldest = []
+                for seq, length in connection.execute("SELECT seq, size FROM records ORDER BY seq"):
+                    if count <= MAX_RECORDS and size <= MAX_QUEUE_BYTES:
+                        break
+                    oldest.append(seq)
+                    count, size = count - 1, size - length
+                for start in range(0, len(oldest), 500):
+                    chunk = oldest[start:start + 500]
+                    connection.execute(f"DELETE FROM records WHERE seq IN ({','.join('?' * len(chunk))})", chunk)
+                dropped = len(oldest)
+            connection.execute("COMMIT")
+        except BaseException:
+            connection.execute("ROLLBACK")
+            raise
+        if dropped:
+            logger.warning("The oversight queue is full; dropped the %d oldest records", dropped)
+        _count(dropped=dropped, recorded=len(records), expired=expired)
+
+
+def expire(retention_days: int) -> int:
+    """Delete queued records older than the organization keeps them; how many (counted in Settings)."""
+    root = _root()
+    if not (root / "queue.sqlite3").exists():
+        return 0
+    with _lock, exclusive(root / ".lock"), closing(_database()) as connection:
+        expired = _expire_locked(connection, retention_days)
+        if expired:
+            _count(expired=expired)
+    return expired
+
+
+def queued_records(limit: int | None = None) -> list[dict]:
+    """The records waiting to be sent, oldest first."""
+    if not (_root() / "queue.sqlite3").exists():
+        return []
+    with closing(_database()) as connection:
+        rows = connection.execute("SELECT body FROM records ORDER BY seq" + (" LIMIT ?" if limit else ""),
+                                  (limit,) if limit else ()).fetchall()
+    records = []
+    for (body,) in rows:
+        try:
+            record = json.loads(body)
         except ValueError:
             continue
         if isinstance(record, dict) and record.get("id"):
@@ -646,43 +879,15 @@ def _queued() -> list[dict]:
     return records
 
 
-def _rewrite(records: list[dict]) -> None:
-    path = _root() / "queue.jsonl"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(".jsonl.tmp")
-    temporary.write_text("".join(json.dumps(r, separators=(",", ":")) + "\n" for r in records), encoding="utf-8")
-    os.replace(temporary, path)
-
-
-def enqueue(records: list[dict]) -> None:
-    """Add records for Lumi Cloud; the oldest go (counted) when the queue is full."""
-    path = _root() / "queue.jsonl"
-    with _lock, exclusive(_root() / ".lock"):
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("a", encoding="utf-8") as handle:
-            for record in records:
-                handle.write(json.dumps(record, separators=(",", ":")) + "\n")
-        queued = _queued()
-        size = path.stat().st_size
-        dropped = 0
-        while queued and (len(queued) > MAX_RECORDS or size > MAX_QUEUE_BYTES):
-            oldest = queued.pop(0)
-            size -= len(json.dumps(oldest, separators=(",", ":"))) + 1
-            dropped += 1
-        if dropped:
-            _rewrite(queued)
-            logger.warning("The oversight queue is full; dropped the %d oldest records", dropped)
-        _count(pending=len(queued), dropped=dropped, recorded=len(records))
-
-
 def discard(reason: str) -> int:
     """Delete everything queued (oversight ended); returns how many, which Settings shows."""
-    with _lock, exclusive(_root() / ".lock"):
-        count = len(_queued())
+    if not (_root() / "queue.sqlite3").exists():
+        return 0
+    with _lock, exclusive(_root() / ".lock"), closing(_database()) as connection:
+        count = connection.execute("DELETE FROM records").rowcount or 0
         if not count:
             return 0
-        _rewrite([])
-        _count(pending=0, discarded=count, last_discard_reason=str(reason)[:300], last_discard=_now())
+        _count(discarded=count, last_discard_reason=str(reason)[:300], last_discard=_now())
     from . import audit
 
     audit.record("oversight.discarded", records=count, reason=str(reason)[:300])
@@ -691,17 +896,27 @@ def discard(reason: str) -> int:
 
 def queue_status() -> dict:
     data = _counters()
-    return {key: data.get(key, default) for key, default in (
-        ("pending", 0), ("recorded", 0), ("uploaded", 0), ("dropped", 0), ("discarded", 0), ("rejected", 0),
+    info = {key: data.get(key, default) for key, default in (
+        ("recorded", 0), ("uploaded", 0), ("dropped", 0), ("discarded", 0), ("rejected", 0), ("expired", 0),
         ("last_upload", ""), ("last_error", ""), ("last_discard_reason", ""), ("next_attempt", ""))}
+    try:
+        if (_root() / "queue.sqlite3").exists():
+            with closing(_database()) as connection:
+                info["pending"] = _pending(connection)
+        else:
+            info["pending"] = 0
+    except sqlite3.Error:
+        logger.warning("Couldn't count the oversight queue", exc_info=True)
+        info["pending"] = 0
+    return info
 
 
 # ── Sending ─────────────────────────────────────────────────────────────────
 
 
-def _batch(records: list[dict]) -> list[dict]:
+def _batch() -> list[dict]:
     batch, size = [], 0
-    for record in records[:BATCH_RECORDS]:
+    for record in queued_records(BATCH_RECORDS):
         length = len(json.dumps(record, separators=(",", ":")))
         if batch and size + length > BATCH_BYTES:
             break
@@ -711,10 +926,12 @@ def _batch(records: list[dict]) -> list[dict]:
 
 
 def _remove(ids: set[str], *, outcome: str, error: str = "") -> None:
-    with _lock, exclusive(_root() / ".lock"):
-        remaining = [record for record in _queued() if record.get("id") not in ids]
-        _rewrite(remaining)
-        changes: dict[str, Any] = {"pending": len(remaining), outcome: len(ids)}
+    with _lock, exclusive(_root() / ".lock"), closing(_database()) as connection:
+        listed = sorted(ids)
+        for start in range(0, len(listed), 500):
+            chunk = listed[start:start + 500]
+            connection.execute(f"DELETE FROM records WHERE id IN ({','.join('?' * len(chunk))})", chunk)
+        changes: dict[str, Any] = {outcome: len(ids)}
         if outcome == "uploaded":
             changes.update(last_upload=_now(), last_error="")
         else:
@@ -758,14 +975,14 @@ def upload_pending(client: Any, *, max_batches: int = 20) -> str:
     """Send queued records to Lumi Cloud: "idle", "more", "discarded" or "retry".
 
     Checks the policy before every batch, so nothing goes once the
-    organization stops asking for it or the computer leaves.
+    organization stops asking for it or the computer leaves, and nothing
+    older than the organization keeps records.
     """
     from . import policy
     from .cloud import CloudError
 
     for _ in range(max_batches):
-        records = _queued()
-        if not records:
+        if not queued_records(1):
             return "idle"
         scope = Scope()
         if not scope.configured:
@@ -774,10 +991,14 @@ def upload_pending(client: Any, *, max_batches: int = 20) -> str:
         if not scope.destination:
             discard(scope.reason)
             return "discarded"
+        expire(scope.settings.retention_days)
+        batch = _batch()
+        if not batch:
+            return "idle"
         state = policy.load()
         version = state.policy.raw.get("policy_version") if state.policy else None
         try:
-            _send(client, _batch(records), version)
+            _send(client, batch, version)
         except _OversightOff as exc:
             discard(f"{scope.organization}'s Lumi Cloud doesn't have oversight on ({exc}).")
             return "discarded"
@@ -804,6 +1025,11 @@ class _Uploader:
             self.wakeup.wait(delay)
             self.wakeup.clear()
             delay = self.step()
+
+    def wake(self, *, urgent: bool = False) -> None:
+        """Send soon; while it backs off after a failure, only an urgent wake (a policy change) cuts the wait."""
+        if urgent or not self.failures:
+            self.wakeup.set()
 
     def step(self) -> float:
         try:
@@ -838,11 +1064,15 @@ def start_uploader(client: Any) -> None:
             _uploader = _Uploader(client)
 
 
-def wake() -> None:
-    """A record was queued: send soon."""
+def wake(*, urgent: bool = False) -> None:
+    """A record was queued (send soon), or the policy changed (``urgent``: check now, even while backing off)."""
     uploader = _uploader
     if uploader is not None:
-        uploader.wakeup.set()
+        waker = getattr(uploader, "wake", None)
+        if callable(waker):
+            waker(urgent=urgent)
+        else:
+            uploader.wakeup.set()
 
 
 def set_uploader_for_tests(uploader: Any) -> None:
@@ -853,7 +1083,7 @@ def set_uploader_for_tests(uploader: Any) -> None:
 def flush(client_factory: Callable[[], Any], *, seconds: float = 10.0) -> None:
     """Try to send what's queued before a short-lived process exits (``lumi run``); never raises."""
     try:
-        if not _queued():
+        if not queued_records(1):
             return
         deadline = time.monotonic() + seconds
         client = client_factory()

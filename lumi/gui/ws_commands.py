@@ -809,10 +809,12 @@ async def _oversight_status(ctx: CommandContext) -> None:
 
 @command("oversight_notice_shown")
 async def _oversight_notice_shown(ctx: CommandContext) -> None:
-    """The page shows the oversight notice for this policy (its fingerprint); recording may start.
+    """The person confirmed the oversight notice for this policy (its fingerprint); recording may start.
 
-    A fingerprint that isn't the policy in force starts nothing: the page
-    gets the current status back and shows that notice instead.
+    The page sends it only from the notice's "I've read this" button. A
+    fingerprint that isn't the policy in force, or a policy with nowhere to
+    send records, starts nothing: the page gets the current status back and
+    shows that notice instead.
     """
     from .. import oversight
 

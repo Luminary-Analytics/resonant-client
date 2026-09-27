@@ -536,6 +536,9 @@ class LumiSettingsView {
             ['Shell rules', String(policy.shell_rules || 0)],
             ['MCP servers', `${list(policy.mcp_allowed, 'all')}${policy.mcp_allow_stdio ? '' : ' · command-based servers off'}`],
             ['Capability packs', list(policy.packs_allowed, 'all')],
+            // Oversight this Lumi can't honor is off, and the rest of the policy applies.
+            ['Organization oversight', policy.oversight?.error ? `Off: ${esc(policy.oversight.error)}`
+                : policy.oversight?.enabled ? 'On; see Organization oversight below' : 'Off'],
         ];
         return rows.map(([label, value]) => `<div class="settings-row"><div class="settings-row-copy"><span class="settings-row-label">${label}</span></div><div class="settings-row-value settings-policy-value">${value}</div></div>`).join('');
     }
@@ -544,21 +547,17 @@ class LumiSettingsView {
     // While an organization's policy has Lumi share activity, messages or
     // security flags with its Lumi Cloud, a notice beside the message box
     // names the organization and what it receives. It can't be dismissed, and
-    // Lumi records nothing until it has been on screen: the page then tells
-    // the server which policy it showed (its fingerprint).
+    // Lumi records nothing until the person confirms it with the notice's own
+    // "I’ve read this" button: only that click tells the server which
+    // policy's notice was read (its fingerprint). A status that arrives while
+    // the window is minimized or in the background is never confirmed for them.
 
     _initOversightNotice() {
         const notice = document.getElementById('oversight-notice');
         if (!notice || this._oversightNoticeReady) return;
         this._oversightNoticeReady = true;
         document.getElementById('oversight-notice-details')?.addEventListener('click', () => this._openOversightSettings());
-        if (typeof IntersectionObserver === 'function') {
-            // The message box (and the notice with it) can appear after the
-            // status arrives: acknowledge when the notice comes into view.
-            new IntersectionObserver(entries => {
-                if (entries.some(entry => entry.isIntersecting)) this._acknowledgeOversight();
-            }).observe(notice);
-        }
+        document.getElementById('oversight-notice-confirm')?.addEventListener('click', () => this._confirmOversightNotice());
     }
 
     _applyOversight(status) {
@@ -566,26 +565,32 @@ class LumiSettingsView {
         this.oversightStatus = status;
         const notice = document.getElementById('oversight-notice');
         const text = document.getElementById('oversight-notice-text');
+        const confirm = document.getElementById('oversight-notice-confirm');
         if (notice && text) {
             const shown = Boolean(status.configured);
-            const words = shown ? [status.notice, status.organization_notice, status.reason].filter(Boolean).join(' ') : '';
+            // Confirming starts recording, so only a notice that would record asks for it.
+            const pending = shown && Boolean(status.destination) && !status.acknowledged && Boolean(status.fingerprint);
+            const words = shown ? [status.notice, status.organization_notice, status.reason,
+                pending ? 'Nothing is shared until you confirm you’ve read this.' : ''].filter(Boolean).join(' ') : '';
             if (text.textContent !== words) text.textContent = words;
             notice.hidden = !shown;
             notice.classList.toggle('oversight-notice-inactive', shown && Boolean(status.reason));
+            notice.classList.toggle('oversight-notice-pending', pending);
+            if (confirm) {
+                const hadFocus = document.activeElement === confirm;
+                confirm.hidden = !pending;
+                // Confirmed: keep keyboard focus in the notice rather than losing it with the button.
+                if (hadFocus && !pending) document.getElementById('oversight-notice-details')?.focus();
+            }
         }
-        // A notice already on screen doesn't come into view again; give it a
-        // moment to be painted, then acknowledge this policy's notice.
-        setTimeout(() => this._acknowledgeOversight(), 250);
         if (this.currentView === 'settings') this.renderSettingsView();
     }
 
-    _acknowledgeOversight() {
+    _confirmOversightNotice() {
+        // Sent only from the button's own click (or Enter/Space on it); the
+        // server checks the fingerprint is still the policy in force.
         const status = this.oversightStatus;
-        const notice = document.getElementById('oversight-notice');
-        if (!status?.configured || status.acknowledged || !status.fingerprint || !notice || notice.hidden) return;
-        if (!notice.getClientRects().length) return;  // the message box isn't on screen yet
-        if (this._oversightAcknowledged === status.fingerprint) return;
-        this._oversightAcknowledged = status.fingerprint;
+        if (!status?.configured || !status.destination || status.acknowledged || !status.fingerprint) return;
         this.send({command: 'oversight_notice_shown', fingerprint: status.fingerprint});
     }
 
@@ -619,6 +624,7 @@ class LumiSettingsView {
         if (q.dropped) counts.push(`${esc(q.dropped)} dropped because too many were waiting`);
         if (q.rejected) counts.push(`${esc(q.rejected)} refused by Lumi Cloud`);
         if (q.discarded) counts.push(`${esc(q.discarded)} deleted without sending${q.last_discard_reason ? ` (${esc(q.last_discard_reason)})` : ''}`);
+        if (q.expired) counts.push(`${esc(q.expired)} deleted without sending because they waited longer than ${esc(s.organization || 'the organization')} keeps records`);
         const sending = counts.join(' · ');
         const problem = q.last_error ? row('Last problem sending', `${esc(q.last_error)}${q.next_attempt ? ` Lumi tries again at ${esc(when(q.next_attempt))}.` : ''}`, 'status') : '';
         const labels = {
@@ -630,20 +636,25 @@ class LumiSettingsView {
         const flags = (s.flags || []).map(flag => {
             const severity = severities[flag.severity] ? flag.severity : 'low';
             const session = flag.session || {};
-            const where = [session.title || 'Untitled session', session.project, flag.turn ? `turn ${flag.turn}` : '', when(flag.at)].filter(Boolean).map(esc).join(' · ');
+            // A session's title is shared only with messages, so it may not be here.
+            const where = [session.title, session.project, flag.turn ? `turn ${flag.turn}` : '', when(flag.at)].filter(Boolean).map(esc).join(' · ');
             return `<li class="oversight-flag"><span class="oversight-severity oversight-severity-${severity}">${severities[severity]}</span>
-                <div class="oversight-flag-copy"><strong>${esc(labels[flag.kind] || flag.kind)}</strong>: ${esc(flag.rule)}${flag.tool ? ` · <code>${esc(flag.tool)}</code>` : ''}
+                <div class="oversight-flag-copy"><strong>${esc(labels[flag.kind] || flag.kind)}</strong>: ${esc(flag.rule_text || flag.rule)}${flag.tool ? ` · <code>${esc(flag.tool)}</code>` : ''}
                 <div class="settings-row-hint">${where}</div>${flag.excerpt ? `<div class="settings-row-hint oversight-excerpt">${esc(flag.excerpt)}</div>` : ''}</div></li>`;
         }).join('');
         const flagList = flags ? `<ul class="oversight-flags">${flags}</ul>` : '<p class="editor-help">None.</p>';
         if (!s.configured) {
-            return `<p class="editor-help" id="org-oversight-start" tabindex="-1">Off. No organization policy on this computer asks Lumi to share your activity, messages or security flags.</p>
+            // A policy whose oversight section this Lumi can't honor turns it off, and says so.
+            const off = s.policy_error
+                ? `<p class="editor-error" id="org-oversight-start" tabindex="-1" role="status">Off. ${esc(s.policy_error)}</p>`
+                : '<p class="editor-help" id="org-oversight-start" tabindex="-1">Off. No organization policy on this computer asks Lumi to share your activity, messages or security flags.</p>';
+            return `${off}
                 ${sending ? row('Earlier records', sending) : ''}${flags ? `<h4 class="settings-subheading">Earlier security flags</h4>${flagList}` : ''}`;
         }
         const list = items => `<ul class="oversight-list">${(items || []).map(item => `<li>${esc(item)}</li>`).join('')}</ul>`;
         const state = s.reason ? `Nothing is collected: ${esc(s.reason)}`
             : s.acknowledged ? `On. ${esc(s.notice)}`
-            : 'Starts once the notice beside the message box has been shown.';
+            : 'Starts once you confirm the notice beside the message box with I’ve read this. Until then nothing is recorded.';
         return `${row(`Managed by ${esc(s.organization)}`, state, 'status', 'org-oversight-start')}
             ${s.organization_notice ? row(`From ${esc(s.organization)}`, esc(s.organization_notice)) : ''}
             <h4 class="settings-subheading">What ${esc(s.organization)} receives</h4>${list(s.shared)}

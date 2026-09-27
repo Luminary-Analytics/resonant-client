@@ -37,8 +37,8 @@ class ChannelAdapter(ABC):
         """
 
     @abstractmethod
-    def send(self, chat_id: str, text: str) -> None:
-        """Deliver a reply to the given conversation."""
+    def send(self, chat_id: str, text: str) -> bool | None:
+        """Deliver a reply to the given conversation; False when it couldn't (None means sent)."""
 
     def ask(self, chat_id: str, text: str, approval_id: str) -> None:
         """Ask the person to approve an action. Adapters with buttons show them."""

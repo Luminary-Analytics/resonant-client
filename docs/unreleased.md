@@ -35,6 +35,11 @@ port:
   Windows; `handoff._git` also gives git no input;
 - keeps a failed startup discovery from stopping the app. New team work is
   then refused until a restart;
+- checks that artifact blobs stay in the store by resolving their shard
+  directory and refusing linked blobs. Resolving the blob itself on Windows
+  could keep the `\\?\` prefix while another worker published the same
+  evidence, which read as an escape and failed about one parallel publish in
+  fifty;
 - fetches the pinned ripgrep in CI, which managed searches require (they
   never use a `rg` from PATH).
 

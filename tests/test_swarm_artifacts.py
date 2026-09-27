@@ -325,3 +325,23 @@ def test_blob_directory_junction_cannot_escape_runtime_root(fixture, tmp_path):
     with pytest.raises(ScopeDenied):
         artifacts.publish_bytes(producer, content)
     assert list(outside.iterdir()) == []
+
+
+def test_linked_blob_cannot_stand_in_for_stored_evidence(fixture, tmp_path):
+    # The store resolves only the shard directory (resolving a blob that another
+    # publisher is linking can misreport an escape on Windows), so a blob that
+    # is itself a link must still be refused, even with matching bytes.
+    _, _, artifacts, (producer, _, _) = fixture
+    content = b"linked blob fixture"
+    digest = hashlib.sha256(content).hexdigest()
+    outside = tmp_path / "outside.bin"
+    outside.write_bytes(content)
+    shard = artifacts.root / digest[:2]
+    shard.mkdir()
+    try:
+        (shard / digest).symlink_to(outside)
+    except OSError as exc:
+        pytest.skip(f"Symlink creation unavailable: {exc}")
+    with pytest.raises(ScopeDenied):
+        artifacts.publish_bytes(producer, content)
+    assert outside.read_bytes() == content

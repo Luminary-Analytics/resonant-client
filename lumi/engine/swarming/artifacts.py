@@ -104,7 +104,13 @@ class SwarmArtifacts:
         if len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest):
             raise ValueError("Invalid artifact digest")
         target = self.root / digest[:2] / digest
-        if not target.resolve().is_relative_to(self.root):
+        # Resolve the directory, not the blob. On Windows, resolving a file that
+        # another publisher is linking, reading or unlinking can keep the \\?\
+        # prefix (realpath re-checks the file to strip it, and that check can
+        # fail mid-race), which then reads as an escape. The digest is 64 hex
+        # characters, so only a link in the objects tree could lead elsewhere:
+        # a linked directory fails the resolve and a linked blob fails lstat.
+        if not target.parent.resolve().is_relative_to(self.root) or target.is_symlink():
             raise ScopeDenied("Artifact storage path escaped its runtime directory")
         return target
 

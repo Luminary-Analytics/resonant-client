@@ -232,6 +232,22 @@ class TestModelRequests:
         assert events == [("error", {"message": "Offline mode: Anthropic needs api.anthropic.com" + MESSAGE})]
         assert backend.calls == 0
 
+    def test_a_request_to_another_backend_during_a_turn_is_refused_too(self):
+        # A compression model, or offline mode turned on after the turn started.
+        _on()
+        session = self._session_on(_Backend("ollama", "http://127.0.0.1:11434"))
+        cloud = _Backend("openai", "https://api.openai.com/v1", "OpenAI")
+        events = list(session._model_stream(purpose="compression", backend=cloud, user_msg="x",
+                                            conversation_history=[], instructions="", tools=[]))
+        assert events == [("error", {"message": "Offline mode: OpenAI needs api.openai.com" + MESSAGE})]
+        assert cloud.calls == 0
+
+    @staticmethod
+    def _session_on(backend):
+        from lumi.engine.session import Session
+
+        return Session(backend, auto_approve=True)
+
     def test_fallbacks_offline_mode_blocks_are_skipped(self):
         from lumi.engine.session import Session
 
@@ -264,6 +280,92 @@ class TestModelRequests:
         events = list(backend.stream("hi", [], "", []))
         assert ("error", {"message": "Offline mode: Anthropic needs api.anthropic.com" + MESSAGE}) in events
         assert recorder.requests == []
+
+
+class TestWithDataLossPrevention:
+    """Offline mode and the organization's DLP rules (lumi/dlp.py) on the same requests.
+
+    Offline mode refuses first: a provider it can't reach gets nothing, and
+    DLP neither checks nor records the request. A reachable provider's
+    request still passes DLP and reaches the backend through ``dlp.send``.
+    """
+
+    CARD = "4111 1111 1111 1111"
+
+    @pytest.fixture
+    def records(self, tmp_path):
+        from lumi import audit, policy
+        from lumi.audit import AuditLog
+
+        log = AuditLog(tmp_path / "audit")
+        audit.set_for_tests(log)
+        policy.set_for_tests(policy.parse({"schema": policy.SCHEMA, "organization": "Acme",
+                                           "dlp": {"version": 1, "detectors": {"credit_card": "redact"},
+                                                   "rules": []}}, source="test policy"))
+        return lambda: [json.loads(line) for path in sorted(log.root.glob("*.jsonl"))
+                        for line in path.read_text(encoding="utf-8").splitlines()]
+
+    @staticmethod
+    def _guarded(name, url, label=""):
+        from lumi import dlp
+
+        @dlp.guard_backend
+        class Guarded(_Backend):
+            """Guarded like the real backends: a request that skipped DLP raises instead of arriving."""
+
+            def stream(self, **kwargs):
+                self.sent = kwargs
+                yield from _Backend.stream(self, **kwargs)
+
+        return Guarded(name, url, label)
+
+    def _request(self):
+        return {"user_msg": f"Charge {self.CARD} now", "conversation_history": [], "instructions": "",
+                "tools": []}
+
+    def test_an_unreachable_provider_gets_nothing_not_even_a_dlp_check(self, records):
+        from lumi.engine.request_purpose import auxiliary_stream
+        from lumi.engine.session import Session
+
+        _on()
+        cloud = self._guarded("openai", "https://api.openai.com/v1", "OpenAI")
+        refused = [("error", {"message": "Offline mode: OpenAI needs api.openai.com" + MESSAGE})]
+        assert list(auxiliary_stream(cloud, "title", **self._request())) == refused
+        session = Session(self._guarded("ollama", "http://127.0.0.1:11434"), auto_approve=True)
+        assert list(session._model_stream(purpose="compression", backend=cloud, **self._request())) == refused
+        errors = [e for e in Session(cloud, auto_approve=True).run(f"Charge {self.CARD} now")
+                  if e.get("event") == "error"]
+        assert errors[0]["message"] == "Offline mode: OpenAI needs api.openai.com" + MESSAGE
+        assert cloud.calls == 0
+        assert not [record for record in records() if record["type"].startswith("dlp.")]
+
+    def test_planning_asks_nothing_of_a_provider_it_cant_reach(self, records):
+        from lumi import dlp
+        from lumi.engine.session import Session
+
+        @dlp.guard_backend
+        class Classifying(_Backend):
+            def classify(self, prompt, max_tokens=20):
+                self.calls += 1
+                return "COMPLEX"
+
+        # The terminal UI asks before each turn; Codex's classify would start its own program.
+        _on()
+        codex = Classifying("codex", label="Codex")
+        assert Session(codex, auto_approve=True).should_plan(f"Charge {self.CARD} now") is False
+        assert codex.calls == 0 and not [r for r in records() if r["type"].startswith("dlp.")]
+        local = Classifying("ollama", "http://127.0.0.1:11434")
+        assert Session(local, auto_approve=True).should_plan("Refactor the parser") is True and local.calls == 1
+
+    def test_a_reachable_provider_still_gets_dlps_redacted_copy(self, records):
+        from lumi.engine.request_purpose import auxiliary_stream
+
+        _on("llm.corp.example")
+        local = self._guarded("conn-gpu", "https://llm.corp.example/v1", "GPU cluster")
+        events = list(auxiliary_stream(local, "title", **self._request()))
+        assert local.calls == 1 and events[-1][0] == "done"
+        assert local.sent["user_msg"] == "Charge [REDACTED:credit_card] now"
+        assert any(record["type"].startswith("dlp.") for record in records())
 
 
 class TestProviderDiscovery:

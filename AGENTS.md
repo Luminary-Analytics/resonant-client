@@ -141,7 +141,9 @@ host enrollment and actual packaged/learned-benefit qualification remain open.
   Chrome, WinSparkle, a browser sign-in) call `offline.refusal` or
   `check_url` first; a provider or tool that reaches the network is refused
   with the reason (`backend_refusal`, `tool_refusal`), never silently
-  dropped. Locality is decided from the name as written, never by resolving
+  dropped. That refusal comes before DLP (`Session._model_stream`,
+  `should_plan`, `request_purpose`): a request that can't be sent is neither
+  DLP-checked nor recorded. Locality is decided from the name as written, never by resolving
   it, and only plain host names match allowed hosts. Read the settings
   through `SettingsManager.get`; when a policy turns it on, only the policy's
   hosts apply, and a policy that can't be used keeps it on with no allowed

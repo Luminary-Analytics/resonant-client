@@ -106,7 +106,11 @@ says offline mode stays on until the administrator fixes it.
   proxy).
 - A model turn, and each auxiliary request (titles, summaries), is refused
   before anything is sent when its provider, or where it signs in, can't be
-  reached, and discovery doesn't probe providers that can't be.
+  reached, and discovery doesn't probe providers that can't be. The refusal
+  comes before your organization's [DLP rules](dlp.md) look at the request,
+  so nothing is checked or recorded for it; a reachable provider's requests
+  pass DLP as usual. The terminal UI doesn't ask an unreachable provider
+  whether to plan either.
 - As a backstop for Lumi's Python process, once offline mode has been on, a
   host name lookup through Python's socket module (`getaddrinfo`,
   `gethostbyname`, and the reverse lookups `gethostbyaddr` and `getnameinfo`)

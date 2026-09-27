@@ -1046,6 +1046,13 @@ class Session:
 
     def should_plan(self, user_msg: str) -> bool:
         """Use a quick LLM classification to decide if this request needs planning."""
+        from .. import offline
+
+        if offline.backend_refusal(self.backend):
+            # Nothing goes to a provider offline mode can't reach (a CLI
+            # adapter's classify would start its own program); the turn itself
+            # reports the refusal.
+            return False
         try:
             self._guarded_no_hooks()
             if not callable(getattr(self.backend, "classify", None)):
@@ -1079,6 +1086,14 @@ class Session:
         later requests leave them out).
         """
         backend = backend or self.backend
+        # Offline mode first (lumi/offline.py): a provider this computer may not
+        # reach gets nothing, not even a DLP check, also when offline mode was
+        # turned on during the turn or the request goes to another backend.
+        from .. import offline
+
+        refusal = offline.backend_refusal(backend)
+        if refusal:
+            return iter([(EVENT_ERROR, {"message": refusal})])
         if self._execution_boundary:
             self._guarded_no_hooks()
         try:

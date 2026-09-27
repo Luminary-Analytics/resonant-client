@@ -62,6 +62,13 @@ See [Offline and air-gapped operation](offline.md).
   clients not built with the factory (Ollama's own API, provider catalogs, the
   chat gateway, Engram) meet it, with a generic message. It doesn't see native
   code that resolves names by itself.
+- **With DLP** ([DLP](dlp.md)): offline mode refuses first, in
+  `Session._model_stream` (every request of a turn, and compression's),
+  `request_purpose.auxiliary_stream` and `send_checked`, and the terminal UI's
+  planning question (`Session.should_plan`, which for Codex or Claude Code
+  would start their programs). A request that can't be sent is neither
+  DLP-checked nor recorded; a reachable provider's request passes DLP and
+  `dlp.send` as before.
 
 **Updates from a file** (`lumi/update_file.py`). Settings > Updates > Install
 an update from a file, and `lumi updates verify <file>`, take the installer
@@ -111,7 +118,7 @@ stay editable though they change nothing (the status says why). The macOS
 profile maker has no license-key option yet.
 
 **Validation.**
-- 198 new tests: 196 in `tests/test_offline.py`, `test_offline_features.py`,
+- 202 new tests: 200 in `tests/test_offline.py`, `test_offline_features.py`,
   `test_update_file.py` and `test_license.py`, and 2 in `test_policy.py`
   (one Windows-only), with mock transports, fakes and keys they generate; no
   test reaches another computer (the backstop's lookups are refused before

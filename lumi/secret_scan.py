@@ -41,10 +41,18 @@ _ENV_SECRETS = PROVIDER_KEY_ENV + (
 # (kind, pattern). A pattern with a ``secret`` group replaces only that group,
 # keeping the surrounding name (``DB_PASSWORD=``) readable. Specific formats come
 # before generic ones: an Anthropic key would otherwise read as an OpenAI key.
+#
+# Every pattern scans in linear time, because each request's text (and the
+# organization's DLP check, lumi/dlp.py) runs them over whatever a tool read.
+# A match may start only where the run of characters it consumes starts (the
+# lookbehinds below), and a private key's body stops at the next BEGIN line;
+# otherwise text such as "-eyJ-eyJ…" or "a.a.a.…" makes each position rescan
+# the rest of the text.
 _NOT_ALREADY = r"(?!\[REDACTED)(?![$<{])"
+_ENV_NAMES = r"(?:PASSWORD|PASSWD|SECRET|TOKEN|API_KEY|APIKEY|PRIVATE_KEY|ACCESS_KEY)"
 PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("private key", re.compile(
-        r"-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY(?: BLOCK)?-----[\s\S]*?"
+        r"-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY(?: BLOCK)?-----(?:(?!-----BEGIN )[\s\S])*?"
         r"-----END (?:[A-Z0-9]+ )*PRIVATE KEY(?: BLOCK)?-----")),
     ("AWS access key", re.compile(r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b")),
     ("AWS secret key", re.compile(
@@ -60,12 +68,16 @@ PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("Hugging Face token", re.compile(r"\bhf_[A-Za-z0-9]{30,}")),
     ("npm token", re.compile(r"\bnpm_[A-Za-z0-9]{36}\b")),
     ("Azure storage key", re.compile(r"(?i)AccountKey=(?P<secret>[A-Za-z0-9+/=]{40,})")),
-    ("JSON web token", re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}")),
+    ("JSON web token", re.compile(
+        r"(?<![A-Za-z0-9_-])eyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}")),
     ("password in a URL", re.compile(
-        r"\b[a-zA-Z][a-zA-Z0-9+.\-]*://[^\s:/@]+:" + _NOT_ALREADY + r"(?P<secret>[^\s@/]{4,})@")),
+        r"(?<![a-zA-Z0-9+.\-])[a-zA-Z][a-zA-Z0-9+.\-]*://[^\s:/@]+:" + _NOT_ALREADY
+        + r"(?P<secret>[^\s@/]{4,})@")),
     ("secret in .env", re.compile(
-        r"(?m)^[ \t]*(?:export[ \t]+)?[A-Z0-9_]*(?:PASSWORD|PASSWD|SECRET|TOKEN|API_KEY|APIKEY|PRIVATE_KEY|ACCESS_KEY)"
-        r"[A-Z0-9_]*[ \t]*=[ \t]*[\"']?" + _NOT_ALREADY + r"(?P<secret>[^\s\"'#]{8,})")),
+        # The name must contain one of _ENV_NAMES; the lookahead checks that
+        # once per line instead of backtracking through the name.
+        r"(?m)^[ \t]*(?:export[ \t]+)?(?=[A-Z0-9_]*?" + _ENV_NAMES + r")[A-Z0-9_]+"
+        r"[ \t]*=[ \t]*[\"']?" + _NOT_ALREADY + r"(?P<secret>[^\s\"'#]{8,})")),
 )
 
 # Setting names whose values are credentials wherever they appear (an MCP

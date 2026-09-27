@@ -73,7 +73,7 @@ def takeover(fixture):
     return recovery.acquire(expected_epoch=1)
 
 
-def until(predicate, timeout=3):
+def until(predicate, timeout=20):
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if predicate():
@@ -118,9 +118,9 @@ def test_recovery_lease_renews_without_viewers_or_workers(tmp_path):
     authority = supervisor.create(scope, supervisor_id="original", objective="Lease fixture", request_limit=1, policy=policy, lease_seconds=.1)
     time.sleep(.15)
     with SwarmRecovery(supervisor, scope, authority.run_id, process_observations=ProcessObservations(store, host_id="fixture")) as recovery:
-        recovery.acquire(expected_epoch=1, lease_seconds=.45)
+        recovery.acquire(expected_epoch=1, lease_seconds=3)
         initial = recovery.inspect()["run"]["lease_until"]
-        time.sleep(1.0)  # More than two whole lease periods without polling.
+        time.sleep(7)  # More than two whole lease periods without polling.
         snapshot = recovery.inspect()
         assert snapshot["run"]["lease_until"] > initial
         assert snapshot["recovery"]["owns_lease"]

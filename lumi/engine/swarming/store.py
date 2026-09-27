@@ -355,7 +355,10 @@ class SwarmStore:
         if write and self.read_only:
             raise PermissionError("Swarm store is read-only")
         uri = f"{self.path.as_uri()}?mode={'rwc' if write else 'ro'}"
-        connection = sqlite3.connect(uri, uri=True, timeout=5, isolation_level=None)
+        # Several threads share this file (workers, lease maintenance, the UI's
+        # reads). On a loaded machine a writer can hold it for seconds, so wait
+        # longer than SQLite's 5 s default before reporting it locked.
+        connection = sqlite3.connect(uri, uri=True, timeout=15, isolation_level=None)
         connection.row_factory = sqlite3.Row
         try:
             connection.execute("PRAGMA foreign_keys=ON")

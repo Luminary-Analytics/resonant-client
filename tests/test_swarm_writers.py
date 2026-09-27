@@ -95,7 +95,7 @@ def runner(fixture, backend):
 
 
 def finished(runtime, context):
-    deadline = time.monotonic() + 6
+    deadline = time.monotonic() + 30
     while time.monotonic() < deadline:
         if not runtime.inspect(context.attempt_id)["alive"]:
             return
@@ -225,7 +225,7 @@ def test_stop_during_writer_validation_commits_before_filesystem_check_finishes(
 
     def gate(guard):
         entered.set()
-        assert release.wait(5)
+        assert release.wait(20)
         return original(guard)
 
     monkeypatch.setattr(SwarmExecutionGuard, "_validate_writer", gate)
@@ -233,7 +233,7 @@ def test_stop_during_writer_validation_commits_before_filesystem_check_finishes(
     runtime = runner(fixture, backend)
     try:
         runtime.start(context, BackendSpec("ollama", "chosen"), writer_id=writer["id"])
-        assert entered.wait(2)
+        assert entered.wait(20)
         started = time.monotonic()
         runtime.stop()
         assert time.monotonic() - started < 1

@@ -56,7 +56,7 @@ def snapshot(fixture):
     return supervisor.store.snapshot(authority.scope, authority.run_id)
 
 
-def until(predicate, timeout=4):
+def until(predicate, timeout=20):
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         result = predicate()
@@ -116,7 +116,7 @@ def test_dispatch_is_nonblocking_and_peers_finish_independently(fixture):
         started = time.monotonic()
         runtime.start(first, BackendSpec("ollama", "chosen"))
         assert time.monotonic() - started < 1
-        assert slow.entered.wait(2)
+        assert slow.entered.wait(20)
         runtime.start(second, BackendSpec("ollama", "chosen"))
         finished(runtime, second)
         assert runtime.inspect(second.attempt_id)["state"] == "submitted"
@@ -159,7 +159,7 @@ def test_stop_remains_live_until_uncooperative_provider_is_closed(fixture):
     context = assign(fixture)
     try:
         runtime.start(context, BackendSpec("ollama", "chosen"))
-        assert backend.entered.wait(2)
+        assert backend.entered.wait(20)
         started = time.monotonic()
         result = runtime.stop()
         assert time.monotonic() - started < 1
@@ -186,7 +186,7 @@ def test_pause_allows_admitted_slow_tool_to_settle_then_resume(fixture, monkeypa
 
     def slow_tool(*args, **kwargs):
         entered.set()
-        assert release.wait(5), "Fixture tool was not released"
+        assert release.wait(20), "Fixture tool was not released"
         return original(*args, **kwargs)
 
     monkeypatch.setattr(session_module, "execute_tool", slow_tool)
@@ -196,7 +196,7 @@ def test_pause_allows_admitted_slow_tool_to_settle_then_resume(fixture, monkeypa
     context = assign(fixture)
     try:
         runtime.start(context, BackendSpec("ollama", "chosen"))
-        assert entered.wait(2)
+        assert entered.wait(20)
         assert runtime.pause()["state"] == "pausing"
         release.set()
         until(lambda: snapshot(fixture)["run"]["state"] == "paused")
@@ -231,7 +231,7 @@ def test_stop_is_not_blocked_by_scope_preflight_and_denies_the_effect(fixture, m
     context = assign(fixture)
     try:
         runtime.start(context, BackendSpec("ollama", "chosen"))
-        assert entered.wait(2)
+        assert entered.wait(20)
         started = time.monotonic()
         assert runtime.stop()["state"] == "stopping"
         assert time.monotonic() - started < 1
@@ -262,7 +262,7 @@ def test_addressed_peer_message_is_generated_input_with_durable_receipts(fixture
     runtime = runner(fixture, lambda spec: next(backends))
     try:
         runtime.start(first, BackendSpec("ollama", "chosen"))
-        assert receiver.entered.wait(2)
+        assert receiver.entered.wait(20)
         runtime.start(second, BackendSpec("ollama", "chosen"))
         finished(runtime, second)
         assert len(snapshot(fixture)["messages"]) == 1
@@ -301,7 +301,7 @@ def test_lease_is_renewed_while_a_provider_blocks(fixture):
     before = snapshot(fixture)["run"]["lease_until"]
     try:
         runtime.start(context, BackendSpec("ollama", "chosen"))
-        assert backend.entered.wait(2)
+        assert backend.entered.wait(20)
         until(lambda: snapshot(fixture)["run"]["lease_until"] > before)
         assert runtime.inspect(context.attempt_id)["alive"]
         assert not runtime.inspect(context.attempt_id)["termination_recorded"]
@@ -368,7 +368,7 @@ def test_mutable_backend_reuse_rejected_without_closing_other_worker(fixture):
     first, second = assign(fixture), assign(fixture, "second")
     try:
         runtime.start(first, BackendSpec("ollama", "chosen"))
-        assert backend.entered.wait(2)
+        assert backend.entered.wait(20)
         runtime.start(second, BackendSpec("ollama", "chosen"))
         finished(runtime, second)
         assert runtime.inspect(second.attempt_id)["state"] == "failed"

@@ -190,6 +190,15 @@ notice text that was shown:
   SHA-256 of the notice text as the surface shows it now, and this computer
   user (or, for a chat, that chat). A `notice.json` or `chats.json` written
   or changed by hand counts for nothing.
+- **Whom it counts for.** Lumi Cloud counts a confirmation for a member only
+  when it can check it's theirs: the computer is that member's own (they
+  joined it to the organization in the app), or, on a managed computer
+  (enrolled with a token, so it belongs to nobody), the person's own desktop
+  sign-in goes with it in a `Lumi-Account-Token` header: Lumi sends the
+  signed-in person's access token when the record names them and they're
+  still the one signed in. With nobody signed in to Lumi Cloud, the record
+  names no account and counts for the computer. Anything else is kept as an
+  unverified claim. Settings says which, before and after confirming.
 - The person is unblocked at once. The record then waits in the queue's
   `acknowledgments` table and goes to `POST /api/v1/oversight/acknowledgments`
   (`{"record": ..., "signature": ...}`, signed in as the device) before any
@@ -458,7 +467,9 @@ What Lumi Cloud implements against (lumi-cloud's oversight ingest):
   <the record above>, "signature": "<base64url Ed25519 over the canonical
   JSON of record>"}`. Lumi Cloud verifies it with the device's registered
   public key, checks that `organization` and `device_id` match the
-  authenticated device, and stores it immutably. Answers: `201 {"id": ...,
+  authenticated device, and stores it immutably. From a managed computer it
+  may carry `Lumi-Account-Token: <the person's desktop access token>`, so
+  Lumi Cloud can count it for them. Answers: `201 {"id": ...,
   "policy_version": <matched version or null>}`; `409 notice_mismatch`;
   `422 invalid_signature`.
 - **Events** carry `trigger` and `unattended` (and `os_user`) as above; Lumi

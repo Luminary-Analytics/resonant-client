@@ -61,10 +61,11 @@ def _parse(section, **extra):
     return policy.parse({**BASE, **extra, "oversight": section}, source="test")
 
 
-def _device(how="joined", device_id="dev-1", organization_id="org_acme", account=None):
+def _device(how="joined", device_id="dev-1", organization_id="org_acme", account=None, owner=None):
     home = state_home()
     home.mkdir(parents=True, exist_ok=True)
-    cloud = {"device": {"id": device_id, "how": how, "organization_id": organization_id, "organization_name": "Acme"}}
+    cloud = {"device": {"id": device_id, "how": how, "organization_id": organization_id, "organization_name": "Acme",
+                        "user_id": owner or ""}}
     if account:
         cloud["account"] = {"user_id": account, "email": "ada@acme.example"}
     # The enrolled device key (LUMI_KEYCHAIN=off keeps it in settings.json): confirmations must verify with it.
@@ -699,20 +700,28 @@ class TestEveryPath:
 class _AckClient:
     """Stands in for CloudClient: signs as the device, answers acknowledgments and events."""
 
-    def __init__(self, *failures, key=DEVICE_KEY):
+    def __init__(self, *failures, key=DEVICE_KEY, account_token=None):
         self.failures = list(failures)
         self.acknowledgments: list[dict] = []
+        self.headers: list[dict] = []  # sent with each acknowledgment
         self.events: list[dict] = []
         self.key = key
+        self._account_token = account_token  # the signed-in person's desktop sign-in, or the CloudError it raises
 
     def sign_as_device(self, data: bytes) -> str:
         return base64.urlsafe_b64encode(self.key.sign(data)).decode("ascii")
+
+    def account_token(self) -> str:
+        if isinstance(self._account_token, Exception):
+            raise self._account_token
+        return self._account_token or ""
 
     def device_call(self, method, path, **kwargs):
         assert method == "POST"
         if path == oversight.ACKNOWLEDGMENT_PATH:
             if self.failures:
                 raise self.failures.pop(0)
+            self.headers.append(dict(kwargs.get("headers") or {}))
             self.acknowledgments.append(kwargs["json"])
             return {"id": f"ack_{len(self.acknowledgments)}"}
         assert path == oversight.UPLOAD_PATH
@@ -798,6 +807,57 @@ class TestAcknowledgment:
         assert not oversight.acknowledge(fingerprint, "app", signer=_sign)
         assert oversight.refusal() and oversight.acknowledgments_waiting() == 0
         assert not (state_home() / "oversight" / "notice.json").exists()
+
+    def test_whom_a_confirmation_counts_for(self, org):
+        from lumi.cloud import CloudError
+
+        org(EVERYTHING)
+        # Nobody signed in to Lumi Cloud here: it counts for the computer, and Settings says so first.
+        assert "counts for this computer, not for a person" in oversight.status()["confirms_as"]
+        _shown()
+        client = _AckClient(account_token="tok-ada")
+        assert oversight.upload_pending(client) == "idle" and client.headers == [{}]  # no account, no sign-in
+        assert oversight.status()["acknowledgment"]["counts_for"].startswith("It counts for this computer")
+        # Someone who joined this computer to the organization themselves: it's theirs.
+        oversight.forget_notice("test")
+        _device(account="usr_ada", owner="usr_ada")
+        assert oversight.status()["confirms_as"] == "It counts for you: this computer is yours in Acme."
+        _shown()
+        client = _AckClient()
+        assert oversight.upload_pending(client) == "idle"
+        assert client.headers == [{}]  # a joined computer sends no sign-in: Lumi Cloud knows whose it is
+        assert oversight.status()["acknowledgment"]["counts_for"] == "It counts for you: this computer is yours in Acme."
+        # Another member's computer: only a claim.
+        oversight.forget_notice("test")
+        _device(account="usr_ada", owner="usr_bob")
+        assert "unverified claim" in oversight.status()["confirms_as"]
+
+        # A managed computer belongs to nobody: the person's own sign-in goes with their confirmation.
+        oversight.forget_notice("test")
+        org(EVERYTHING, extra={"cloud": {"url": "https://cloud.example.test"}})
+        _device(how="managed", account="usr_ada")
+        assert oversight.status()["confirms_as"] == "Lumi sends your sign-in with it, so Lumi Cloud can check it's yours."
+        _shown()
+        client = _AckClient(account_token="tok-ada")
+        assert oversight.upload_pending(client) == "idle"
+        assert client.headers == [{oversight.ACCOUNT_TOKEN_HEADER: "tok-ada"}]
+        assert oversight.status()["acknowledgment"]["counts_for"].startswith("It counts for you: Lumi sent your sign-in")
+        # Signed out before it went: sent without it, a claim Lumi Cloud can't count.
+        oversight.forget_notice("test")
+        _device(how="managed", account="usr_ada", device_id="dev-2")
+        _shown()
+        client = _AckClient(account_token=CloudError("Sign in to Lumi Cloud first.", code="signed_out"))
+        assert oversight.upload_pending(client) == "idle"
+        assert client.headers == [{}] and "unverified claim" in oversight.status()["acknowledgment"]["counts_for"]
+        # Lumi Cloud couldn't refresh the sign-in just now: it waits and goes with it later.
+        oversight.forget_notice("test")
+        _device(how="managed", account="usr_ada", device_id="dev-3")
+        _shown()
+        client = _AckClient(account_token=CloudError("Lumi Cloud is unavailable.", code="unavailable", status=503))
+        assert oversight.upload_pending(client) == "retry" and client.headers == []
+        client = _AckClient(account_token="tok-ada")
+        assert oversight.upload_pending(client) == "idle"
+        assert client.headers == [{oversight.ACCOUNT_TOKEN_HEADER: "tok-ada"}]
 
     def test_a_confirmation_from_another_enrollment_isnt_sent(self, org):
         org(EVERYTHING)
@@ -1862,6 +1922,52 @@ def test_joined_organization_end_to_end(monkeypatch, tmp_path):
     assert not oversight.status()["configured"]
     # Joining again, even the same organization, needs the notice confirmed again.
     assert not (state_home() / "oversight" / "notice.json").exists()
+
+
+def test_whom_lumi_cloud_counts_a_confirmation_for(monkeypatch, tmp_path):
+    """A personal computer's confirmation counts for its member; a managed computer's counts for the person whose
+    sign-in went with it, and for the computer when nobody was signed in."""
+    from lumi import cloud as lumi_cloud
+    from tests.test_cloud import URL, _sign_in
+
+    # A member's own computer, joined in the app.
+    fake, client = _cloud(monkeypatch, tmp_path, {"version": 1, "activity": True})
+    client.enroll("org_acme")
+    _confirm_with(client)
+    assert oversight.upload_pending(client) == "idle"
+    assert [a["attribution"] for a in fake.acknowledgments] == ["person"]
+    assert oversight.status()["acknowledgment"]["counts_for"] == "It counts for you: this computer is yours in Acme."
+    client.unenroll()
+
+    # A managed computer: its machine policy enrolls it with a token, so it belongs to nobody.
+    bootstrap = tmp_path / "machine-policy.json"
+    bootstrap.write_text(json.dumps({
+        "schema": "lumi.policy/v1", "organization": "Acme",
+        "cloud": {"url": URL, "organization_id": "org_acme", "enrollment_token": fake.enrollment_token},
+        "trusted_keys": {fake.key_id: fake.public}}), encoding="utf-8")
+    monkeypatch.setattr(policy, "machine_policy_file", lambda: bootstrap)
+    policy.load(force=True)
+    client.sign_out()
+    client.background_step()  # enrolls and applies the organization's policy
+    assert client.device()["how"] == "managed" and oversight.status()["required"]
+    assert "counts for this computer, not for a person" in oversight.status()["confirms_as"]
+    _confirm_with(client)
+    assert oversight.upload_pending(client) == "idle"
+    assert fake.acknowledgments[-1]["attribution"] == "none"  # nobody signed in: the computer's
+    assert oversight.status()["acknowledgment"]["counts_for"].startswith("It counts for this computer")
+
+    # Signed in, a new notice: the person's own sign-in goes with their confirmation.
+    _sign_in(client, fake)
+    fake.publish({"oversight": {"version": 1, "activity": True, "messages": "redacted"}})
+    client.check_in()
+    assert oversight.status()["required"]
+    assert oversight.status()["confirms_as"].startswith("Lumi sends your sign-in with it")
+    _confirm_with(client)
+    assert oversight.upload_pending(client) == "idle"
+    assert fake.acknowledgments[-1]["attribution"] == "signed_in"
+    assert fake.acknowledgments[-1]["record"]["person"]["account"] == "usr_1"
+    assert oversight.status()["acknowledgment"]["counts_for"].startswith("It counts for you: Lumi sent your sign-in")
+    assert isinstance(client, lumi_cloud.CloudClient)
 
 
 def test_lumi_cloud_refuses_a_notice_it_didnt_produce_or_a_bad_signature(monkeypatch, tmp_path):

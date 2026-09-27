@@ -161,7 +161,8 @@ host enrollment and actual packaged/learned-benefit qualification remain open.
   an interactive terminal, or a gateway chat's button or reply for that
   chat, always with the notice text it showed. It is a record signed with
   the device key (`CloudClient.sign_as_device`), kept locally and sent in
-  the background to `/api/v1/oversight/acknowledgments`; a kept record
+  the background to `/api/v1/oversight/acknowledgments` (from a managed
+  computer with the signed-in person's `Lumi-Account-Token`); a kept record
   counts only while it verifies with that key and covers the notice in
   force (fingerprint, the full SHA-256, and the text's SHA-256). Only a
   surface that sets `Session.oversight_unattended` runs unconfirmed, under

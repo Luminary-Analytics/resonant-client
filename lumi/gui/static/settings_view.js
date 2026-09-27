@@ -727,9 +727,12 @@ class LumiSettingsView {
             const which = ack.current ? 'the notice in force' : 'an earlier notice';
             const cloud = clouds[upload.state] || 'Lumi Cloud hasn’t answered yet.';
             const why = upload.error && upload.state !== 'sent' ? ` ${esc(upload.error)}` : '';
-            const unsigned = ack.signed ? '' : ' It isn’t signed with this computer’s key yet.';
-            confirmed = row('Your confirmation', `You confirmed ${which}${surfaces[ack.surface] || ''} on ${esc(when(ack.at))}. ${cloud}${why}${unsigned}`, 'status', 'org-oversight-confirmation')
+            // Whom it counts for: this person, or this computer when nobody was signed in to Lumi Cloud.
+            const counts = ack.counts_for ? ` ${esc(ack.counts_for)}` : '';
+            confirmed = row('Your confirmation', `You confirmed ${which}${surfaces[ack.surface] || ''} on ${esc(when(ack.at))}. ${cloud}${why}${counts}`, 'status', 'org-oversight-confirmation')
                 + (ack.notice ? row('The notice you confirmed', `${esc(ack.notice)} (notice ${esc(ack.fingerprint)})`) : '');
+        } else if (s.required && s.confirms_as) {
+            confirmed = row('Your confirmation', `You haven’t confirmed the notice yet. ${esc(s.confirms_as.replace(/^It counts/, 'It will count'))}`, 'status', 'org-oversight-confirmation');
         }
         return `${row(`Managed by ${esc(s.organization)}`, state, 'status', 'org-oversight-start')}
             ${s.organization_notice ? row(`From ${esc(s.organization)}`, esc(s.organization_notice)) : ''}

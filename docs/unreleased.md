@@ -107,6 +107,12 @@ now.
   - The notice fingerprint is the full SHA-256 hex digest (64 characters),
     in step with Lumi Cloud; a chat's I've read this button carries its
     first 32 characters, which fit Telegram's button data.
+  - Whom a confirmation counts for: a managed computer sends the signed-in
+    person's desktop sign-in with their confirmation (`Lumi-Account-Token`),
+    so Lumi Cloud counts it for them; a joined computer is its member's; with
+    nobody signed in it counts for the computer. Settings says which, before
+    and after confirming. The joined computer's member is kept with its
+    enrollment (`cloud.device.user_id`).
 - **Panels (merged from main)**: **I've read this** takes only a click or
   key press the browser reports as the person's (`isTrusted`); a click a
   script makes confirms nothing. A capability pack's panel can add text to

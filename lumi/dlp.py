@@ -5,27 +5,37 @@ detectors and adds custom rules. Every outgoing model request passes
 ``check_request`` before its backend sees it: turns (``Session._model_stream``),
 auxiliary requests (``engine/request_purpose.auxiliary_stream``: titles,
 compaction, image descriptions, skill extraction), and ``check_text`` for
-planning classification (``Session.should_plan``), structured-output repair
-and SONN employee advice. The app, ``lumi run``, the chat gateway, the
-terminal UI and Team workers all send through those; tests/test_dlp.py lists
+planning classification (``Session.should_plan``), structured-output repair,
+SONN employee advice and ``[vision]`` acceptance checks. The app, ``lumi run``,
+the chat gateway, the terminal UI and Team workers all send through those.
+
+Backends' request methods are ``guarded``: while an organization's policy
+applies, they refuse a call that doesn't come through ``send`` (a checked
+request) or ``permit`` (fixed text, such as a warm-up), so a new path that
+skips the check fails closed instead of sending. tests/test_dlp.py also lists
 every call that sends to a model.
 
 The check runs on the request as it will be sent (history, the new message,
-tool results, instructions), after ``secret_scan``. Each rule has an action:
+tool results, instructions), after ``secret_scan``, on a normalized copy of
+each text (``dlp_detectors.normalized``: Unicode spaces, dashes and digits in
+their ASCII form, invisible characters removed). Each rule has an action:
 
 * ``flag``: send, and record;
 * ``redact``: replace each match with ``[REDACTED:<rule>]`` in the copy that is
   sent. The conversation kept on this computer keeps the original. Tool call
-  arguments are JSON: only their string values change. A model's signed
-  reasoning can't be edited, so reasoning with a match is left out instead;
+  arguments are JSON: only their keys and values change, and arguments with a
+  duplicated key go out as the JSON the tool received (each key's last
+  value). A model's signed reasoning can't be edited, so reasoning with a match
+  is left out instead;
 * ``block``: refuse the request with a message that names the rule and where
   the content was, never the content. The conversation entry that held it is
   marked (``dlp_withheld``), and later requests send a notice in its place, so
   one blocked paste doesn't end the conversation.
 
 A rule's ``scope`` limits it to kinds of content (``KINDS``). Content made of
-several kinds (a compaction summary, an auxiliary request's transcript) is
-``mixed``, and every rule checks it.
+several kinds (a compaction summary, an auxiliary request's transcript, a
+message Lumi wrote, which can quote tool output) is ``mixed``, and every rule
+checks it.
 
 Every flag, redaction and block is recorded in the audit log (``dlp.finding``:
 rule, action, content kind, count; never the matched text). Content already
@@ -33,7 +43,9 @@ recorded for a session, provider and model isn't recorded again when later
 requests send it again.
 
 An optional external service (``dlp.service``) gets the text after the
-built-in redactions and answers allow, redact or block.
+built-in redactions and answers allow, redact or block. Its verdicts are
+remembered for each text; while a service is configured, an entry that was
+blocked stays out of later requests and isn't sent to the service again.
 
 A ``dlp`` section Lumi can't use refuses every model request
 (``policy.blocked_reason``) until it's fixed; the rest of the policy still
@@ -42,6 +54,8 @@ applies. See docs/dlp.md.
 
 from __future__ import annotations
 
+import contextvars
+import functools
 import hashlib
 import json
 import logging
@@ -49,8 +63,10 @@ import re
 import threading
 import urllib.parse
 from collections import Counter, OrderedDict
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
-from typing import Any, Iterator
+from typing import Any, NoReturn
 
 from . import dlp_detectors
 from .dlp_detectors import Finder, PatternError
@@ -247,7 +263,10 @@ def parse_section(value: Any) -> DlpPolicy:
                                    for word in words)):
                     raise DlpError(f"{where}.keywords must list 1 to {MAX_KEYWORDS} words or phrases of up to "
                                    f"{MAX_KEYWORD_CHARS} characters.")
-                words = [word.strip() for word in words]
+                # Compared the way text is: normalized, each run of whitespace one space.
+                words = [dlp_detectors.keyword_text(word) for word in words]
+                if not all(words):
+                    raise DlpError(f"{where}.keywords has an entry with no visible characters.")
                 keyword_chars += sum(map(len, words))
                 if keyword_chars > MAX_TOTAL_KEYWORD_CHARS:
                     raise DlpError(f"dlp.rules hold more than {MAX_TOTAL_KEYWORD_CHARS:,} characters of keywords.")
@@ -299,6 +318,7 @@ class _Item:
     path: tuple            # where the text is, from the request's top
     entry: int = -1        # its conversation_history index
     json_path: tuple | None = None  # inside the JSON string at ``path`` (tool arguments)
+    json_key: bool = False  # the text is that JSON object key, not its value
     droppable: bool = False  # reasoning: left out rather than edited
 
 
@@ -307,7 +327,9 @@ def _history_kind(entry: dict) -> str | None:
     if role == "tool_catalog":
         return None  # tool definitions, not content
     if role == "user":
-        return "prompt"
+        # A message Lumi wrote (a hook's context, a nudge, a recovery prompt)
+        # can quote tool arguments and results: every rule checks it.
+        return MIXED if entry.get("input_origin") == "generated" else "prompt"
     if role == "tool_result":
         return "tool_result"
     if role == "system":
@@ -342,56 +364,83 @@ def _content_items(items: list, content: Any, path: tuple, kind: str, attachment
 # Parsed tool arguments by their JSON text, so a long conversation's calls
 # aren't parsed again for every request. Bounded by entries and characters.
 _json_lock = threading.Lock()
-_json_cache: OrderedDict[str, Any] = OrderedDict()
+_json_cache: OrderedDict[str, tuple] = OrderedDict()
 _json_chars = 0
 _INVALID = object()
 
 
-def _parsed_json(text: str) -> Any:
+def _parsed_json(text: str) -> tuple[Any, bool]:
+    """Tool arguments parsed (``_INVALID`` if they aren't JSON), and whether parsing
+    dropped anything: a duplicated key keeps only its last value, as the tool sees it."""
     global _json_chars
     with _json_lock:
         if text in _json_cache:
             _json_cache.move_to_end(text)
             return _json_cache[text]
+    lossy = False
+
+    def pairs(members: list) -> dict:
+        nonlocal lossy
+        result: dict = {}
+        for key, value in members:
+            lossy = lossy or key in result
+            result[key] = value
+        return result
+
     try:
-        value = json.loads(text)
+        value = json.loads(text, object_pairs_hook=pairs)
     except (ValueError, RecursionError):
-        value = _INVALID
+        value, lossy = _INVALID, False
+    parsed = (value, lossy)
     with _json_lock:
         if text not in _json_cache:
-            _json_cache[text] = value
+            _json_cache[text] = parsed
             _json_chars += len(text)
             while _json_cache and (len(_json_cache) > 2_000 or _json_chars > 8_000_000):
                 old, _ = _json_cache.popitem(last=False)
                 _json_chars -= len(old)
-    return value
+    return parsed
 
 
-def _leaves(value: Any, prefix: tuple = ()) -> Iterator[tuple[tuple, str]]:
-    """String values (and whole numbers, which can be card numbers) in parsed JSON; not keys."""
+def _leaves(value: Any, prefix: tuple = ()) -> Iterator[tuple[tuple, str, bool]]:
+    """(path, text, is_key) for the object keys, strings and numbers in parsed JSON
+    (numbers can be card numbers)."""
     if isinstance(value, str):
-        yield prefix, value
-    elif isinstance(value, int) and not isinstance(value, bool):
-        yield prefix, str(value)
+        yield prefix, value, False
+    elif isinstance(value, bool) or value is None:
+        return
+    elif isinstance(value, (int, float)):
+        yield prefix, str(value), False
     elif isinstance(value, dict):
         for key, item in value.items():
+            yield prefix + (key,), key, True
             yield from _leaves(item, prefix + (key,))
     elif isinstance(value, list):
         for index, item in enumerate(value):
             yield from _leaves(item, prefix + (index,))
 
 
-def _json_items(items: list, text: str, path: tuple, kind: str, entry: int) -> None:
-    parsed = _parsed_json(text)
-    if parsed is _INVALID:
+def _json_items(items: list, lossy: set, text: str, path: tuple, kind: str, entry: int) -> None:
+    parsed, dropped = _parsed_json(text)
+    leaves = None
+    if parsed is not _INVALID:
+        try:
+            leaves = list(_leaves(parsed))
+        except RecursionError:  # nested too deeply to walk: check it as text
+            leaves = None
+    if leaves is None:
         items.append(_Item(kind, text, path, entry))
         return
-    for json_path, leaf in _leaves(parsed):
+    if dropped:
+        # The text holds values the parsed arguments don't (a duplicated key):
+        # send the arguments as parsed, so nothing unchecked goes out.
+        lossy.add(path)
+    for json_path, leaf, is_key in leaves:
         if leaf:
-            items.append(_Item(kind, leaf, path, entry, json_path=json_path))
+            items.append(_Item(kind, leaf, path, entry, json_path=json_path, json_key=is_key))
 
 
-def _entry_items(items: list, entry: dict, index: int) -> None:
+def _entry_items(items: list, lossy: set, entry: dict, index: int) -> None:
     kind = _history_kind(entry)
     if kind is None:
         return
@@ -418,13 +467,13 @@ def _entry_items(items: list, entry: dict, index: int) -> None:
                 items.append(_Item(kind, image[key], base + ("image", key), index))
     arguments = entry.get("arguments")
     if isinstance(arguments, str) and arguments:
-        _json_items(items, arguments, base + ("arguments",), "model_output", index)
+        _json_items(items, lossy, arguments, base + ("arguments",), "model_output", index)
     calls = entry.get("response_tool_calls")
     if isinstance(calls, list):
         for number, call in enumerate(calls):
             function = call.get("function") if isinstance(call, dict) else None
             if isinstance(function, dict) and isinstance(function.get("arguments"), str) and function["arguments"]:
-                _json_items(items, function["arguments"],
+                _json_items(items, lossy, function["arguments"],
                             base + ("response_tool_calls", number, "function", "arguments"), "model_output", index)
 
 
@@ -445,19 +494,29 @@ def _instruction_spans(instructions: str, segments: Any) -> list[tuple[str, int,
     return spans
 
 
-def _collect(request: dict, message_kind: str, segments: Any) -> list[_Item]:
+def _collect(request: dict, message_kind: str, segments: Any) -> tuple[list[_Item], set]:
+    """The request's texts, and the tool-argument paths whose JSON must go out as parsed."""
     items: list[_Item] = []
+    lossy: set = set()
     instructions = request.get("instructions")
     if isinstance(instructions, str) and instructions:
         for number, (kind, start, end) in enumerate(_instruction_spans(instructions, segments)):
             items.append(_Item(kind, instructions[start:end], ("instructions", number)))
-    _content_items(items, request.get("user_msg"), ("user_msg",), message_kind, "attachment", -1)
     history = request.get("conversation_history")
-    if isinstance(history, list):
-        for index, entry in enumerate(history):
-            if isinstance(entry, dict):
-                _entry_items(items, entry, index)
-    return items
+    history = history if isinstance(history, list) else []
+    user_msg = request.get("user_msg")
+    if user_msg:
+        # The message is usually in the history too, and backends leave the
+        # separate copy out when the two match: check them alike, so they still do.
+        for entry in reversed(history):
+            if isinstance(entry, dict) and entry.get("role") == "user" and entry.get("content") == user_msg:
+                message_kind = _history_kind(entry) or message_kind
+                break
+    _content_items(items, user_msg, ("user_msg",), message_kind, "attachment", -1)
+    for index, entry in enumerate(history):
+        if isinstance(entry, dict):
+            _entry_items(items, lossy, entry, index)
+    return items, lossy
 
 
 # ── Scanning ──────────────────────────────────────────────────────────────
@@ -478,7 +537,10 @@ class _Match:
 
 
 def _scan(policy: DlpPolicy, kind: str, text: str) -> tuple[tuple[_Match, ...], str]:
-    """Matches in ``text`` for the rules that check ``kind``, and a digest of it when any matched."""
+    """Matches in ``text`` for the rules that check ``kind``, and a digest of it when any matched.
+
+    Rules read the normalized copy (dlp_detectors.normalized); spans are the original's.
+    """
     global _cache_chars
     key = (policy.fingerprint, kind, text)
     with _cache_lock:
@@ -486,9 +548,15 @@ def _scan(policy: DlpPolicy, kind: str, text: str) -> tuple[tuple[_Match, ...], 
         if cached is not None:
             _cache.move_to_end(key)
             return cached
-    matches = tuple(_Match(index, start, end)
-                    for index, rule in enumerate(policy.rules) if rule.applies_to(kind)
-                    for start, end in rule.find(text) if end > start)
+    applicable = [(index, rule) for index, rule in enumerate(policy.rules) if rule.applies_to(kind)]
+    found: list[_Match] = []
+    if applicable:
+        copy = dlp_detectors.normalized(text)
+        for index, rule in applicable:
+            for start, end in rule.find(copy.text):
+                if end > start:
+                    found.append(_Match(index, *copy.span(start, end)))
+    matches = tuple(found)
     digest = hashlib.sha256(f"{kind}\0{text}".encode("utf-8", "surrogatepass")).hexdigest()[:24] if matches else ""
     result = (matches, digest)
     with _cache_lock:
@@ -525,6 +593,25 @@ def _redact(text: str, spans: list[tuple[int, int, str]]) -> str:
         cursor = end
     pieces.append(text[cursor:])
     return "".join(pieces)
+
+
+def entry_blocked(entry: Any) -> bool:
+    """Whether a conversation entry is withheld, or holds text a block rule matches.
+
+    For work done ahead of the request that will carry the entry (describing
+    its images); records nothing, since that request reports the block.
+    """
+    if not isinstance(entry, dict):
+        return False
+    if entry.get(WITHHELD):
+        return True
+    rules = active()
+    if rules is None or not any(rule.action == "block" for rule in rules.rules):
+        return False
+    items: list[_Item] = []
+    _entry_items(items, set(), entry, 0)
+    return any(rules.rules[match.rule].action == "block"
+               for item in items for match in _scan(rules, item.kind, item.text)[0])
 
 
 # ── Records ────────────────────────────────────────────────────────────────
@@ -590,7 +677,7 @@ def check_request(request: dict, *, purpose: str, provider: str = "", model: str
     has the same keys, with redactions applied to copies. Raises Blocked when
     the request must not be sent: a block rule matched, the service refused or
     couldn't answer (``on_error: block``), or the organization's policy (its
-    ``dlp`` section included) can't be used.
+    ``dlp`` section included) can't be used. Send the result with ``send``.
     """
     from .policy import blocked_reason, current
 
@@ -618,7 +705,7 @@ def check_request(request: dict, *, purpose: str, provider: str = "", model: str
 def _check(request: dict, rules: DlpPolicy, organization: str, message_kind: str, segments: Any,
            audit_fields: dict | None, context: dict) -> Checked:
     provider, model = context["provider"], context["model"]
-    items = _collect(request, message_kind, segments)
+    items, lossy = _collect(request, message_kind, segments)
     if sum(len(item.text) for item in items) > MAX_REQUEST_CHARS:
         _record("dlp.error", audit_fields, reason="too_large", **context)
         raise Blocked(f"This request is larger than your organization's data loss prevention rules can check "
@@ -631,10 +718,17 @@ def _check(request: dict, rules: DlpPolicy, organization: str, message_kind: str
     def blocking(matches: tuple) -> list:
         return [m for m in matches if rules.rules[m.rule].action == "block"]
 
-    # An entry that was blocked before is left out while its content still blocks.
-    withheld = {item.entry for item, (matches, _) in zip(items, scans)
-                if item.entry >= 0 and isinstance(history[item.entry], dict)
-                and history[item.entry].get(WITHHELD) and blocking(matches)}
+    marked = {index for index, entry in enumerate(history) if isinstance(entry, dict) and entry.get(WITHHELD)}
+    if rules.service is not None:
+        # The service may be what blocked a marked entry. Asking it again could
+        # only refuse this request too, or, when it can't answer, send what it
+        # once blocked: while there is a service, a marked entry stays out.
+        withheld = marked
+    else:
+        # A marked entry stays out while a rule still blocks it (an
+        # administrator may have relaxed the rule since).
+        withheld = {item.entry for item, (matches, _) in zip(items, scans)
+                    if item.entry in marked and blocking(matches)}
     blocked: Counter = Counter()
     entries: set[int] = set()
     for item, (matches, _digest) in zip(items, scans):
@@ -680,7 +774,7 @@ def _check(request: dict, rules: DlpPolicy, organization: str, message_kind: str
         _ask_service(rules.service, rules.fingerprint, organization, items, texts, dropped, withheld,
                      new_redactions, audit_fields, context)
 
-    return Checked(_rebuilt(request, items, texts, dropped, withheld, rules, scans),
+    return Checked(_rebuilt(request, items, texts, dropped, withheld, lossy, rules, scans),
                    notice=_notice(new_redactions), redacted=dict(new_redactions))
 
 
@@ -722,6 +816,7 @@ def mark_withheld(history: list, entries: tuple[int, ...]) -> None:
 
 _LEAF = object()
 _DROP = object()
+_NO_LEAF = object()
 
 
 def _patched(value: Any, tree: dict) -> Any:
@@ -734,11 +829,15 @@ def _patched(value: Any, tree: dict) -> Any:
     else:
         return value
     for key, sub in tree.items():
-        if sub.get(_LEAF) is _DROP:
+        leaf = sub.get(_LEAF, _NO_LEAF)
+        if leaf is _DROP:
             if isinstance(result, dict):
                 result.pop(key, None)
-            continue
-        result[key] = _patched(value[key], sub)
+        elif leaf is not _NO_LEAF:
+            # A new value: the key needn't be there yet (an entry saved without content).
+            result[key] = leaf
+        else:
+            result[key] = _patched(value[key], sub)
     return result
 
 
@@ -754,6 +853,9 @@ def _withhold(tree: dict, entry: dict, index: int, names: set) -> None:
     base = ("conversation_history", index)
     _put(tree, base + ("content",), "[Withheld: this content was blocked by your organization's data loss "
                                     f"prevention rules ({', '.join(sorted(names)) or 'a block rule'}).]")
+    if entry.get("role") == "user":
+        # Lumi wrote this copy, not the person: nothing may learn from it as their words.
+        _put(tree, base + ("input_origin",), "generated")
     if isinstance(entry.get("assistant_content"), str):
         _put(tree, base + ("assistant_content",), "")
     for name in (*_REASONING_FIELDS, "reasoning_details", "image"):
@@ -768,14 +870,14 @@ def _withhold(tree: dict, entry: dict, index: int, names: set) -> None:
                 _put(tree, base + ("response_tool_calls", number, "function", "arguments"), "{}")
 
 
-def _rebuilt(request: dict, items: list, texts: dict, dropped: set, withheld: set,
+def _rebuilt(request: dict, items: list, texts: dict, dropped: set, withheld: set, lossy: set,
              rules: DlpPolicy, scans: list) -> dict:
     """``request`` with its redactions, left-out reasoning and withheld entries, copying
     only the containers on the way to a change."""
-    if not texts and not dropped and not withheld:
+    if not texts and not dropped and not withheld and not lossy:
         return request
     tree: dict = {}
-    json_edits: dict[tuple, dict] = {}   # arguments path -> {json path: text}
+    json_edits: dict[tuple, tuple[dict, dict]] = {}   # arguments path -> (values, keys) by JSON path
     instruction_parts: dict[int, str] = {}
     withheld_rules: dict[int, set] = {entry: set() for entry in withheld}
     for index, item in enumerate(items):
@@ -792,15 +894,20 @@ def _rebuilt(request: dict, items: list, texts: dict, dropped: set, withheld: se
         elif item.path[0] == "instructions":
             instruction_parts[item.path[1]] = texts[index]
         elif item.json_path is not None:
-            json_edits.setdefault(item.path, {})[item.json_path] = texts[index]
+            values, keys = json_edits.setdefault(item.path, ({}, {}))
+            (keys if item.json_key else values)[item.json_path] = texts[index]
         else:
             _put(tree, item.path, texts[index])
-    for path, edits in json_edits.items():
+    for path in lossy:
+        if path[1] not in withheld:
+            json_edits.setdefault(path, ({}, {}))
+    for path, (values, keys) in json_edits.items():
         original: Any = request
         for key in path:
             original = original[key]
-        # Only string values change, so the arguments stay the same JSON structure.
-        _put(tree, path, json.dumps(_patched(_parsed_json(original), _json_tree(edits)), ensure_ascii=False))
+        # Keys and values change; the structure stays, so the arguments stay valid JSON.
+        _put(tree, path, json.dumps(_json_rebuilt(_parsed_json(original)[0], (), values, keys),
+                                    ensure_ascii=False))
     history = request.get("conversation_history")
     for entry in withheld:
         _withhold(tree, history[entry], entry, withheld_rules[entry])
@@ -810,18 +917,122 @@ def _rebuilt(request: dict, items: list, texts: dict, dropped: set, withheld: se
     return _patched(request, tree) if tree else request
 
 
-def _json_tree(edits: dict) -> dict:
-    tree: dict = {}
-    for json_path, text in edits.items():
-        _put(tree, json_path, text)
-    return tree
+def _json_rebuilt(value: Any, path: tuple, values: dict, keys: dict) -> Any:
+    """Parsed tool arguments with redacted values (by JSON path) and renamed keys."""
+    if path in values:
+        return values[path]
+    if isinstance(value, dict):
+        result: dict = {}
+        for key, item in value.items():
+            child = path + (key,)
+            name = keys.get(child, key)
+            if name in result:
+                # Two keys redacted alike: number the later ones, so no value is lost.
+                number = 2
+                while f"{name} #{number}" in result:
+                    number += 1
+                name = f"{name} #{number}"
+            result[name] = _json_rebuilt(item, child, values, keys)
+        return result
+    if isinstance(value, list):
+        return [_json_rebuilt(item, path + (index,), values, keys) for index, item in enumerate(value)]
+    return value
+
+
+# ── Only checked requests reach a backend ─────────────────────────────────
+
+_permit: contextvars.ContextVar[bool] = contextvars.ContextVar("lumi_dlp_permit", default=False)
+REQUEST_METHODS = ("stream", "stream_auxiliary", "classify", "generate_structured")
+_UNCHECKED = ("This model request didn't go through your organization's data loss prevention check, so "
+              "nothing was sent. This is a problem in Lumi; please report it.")
+
+
+@contextmanager
+def permit() -> Iterator[None]:
+    """Let model requests made inside through the guard: requests that ``check_request``
+    or ``check_text`` returned, or fixed text such as a warm-up."""
+    token = _permit.set(True)
+    try:
+        yield
+    finally:
+        _permit.reset(token)
+
+
+def send(method: Any, /, *args: Any, **kwargs: Any) -> Any:
+    """Call a backend's request method with a checked request.
+
+    A stream it returns keeps the permit while it produces events (adapters
+    call their parent class's stream as it runs), never while the caller
+    handles them.
+    """
+    with permit():
+        result = method(*args, **kwargs)
+    if isinstance(result, Iterator):
+        return _permitted(result)
+    return result
+
+
+def _permitted(stream: Iterator) -> Iterator:
+    try:
+        while True:
+            with permit():
+                try:
+                    event = next(stream)
+                except StopIteration:
+                    return
+            yield event
+    finally:
+        close = getattr(stream, "close", None)
+        if callable(close):
+            close()
+
+
+def _enforced() -> bool:
+    """Whether an organization's policy decides what goes to models (its DLP rules, or
+    a policy that refuses every request)."""
+    from .policy import blocked_reason, current
+
+    policy = current()
+    return (policy is not None and policy.dlp is not None) or bool(blocked_reason())
+
+
+def guarded(method: Any) -> Any:
+    """Mark a method that sends to a model. While ``_enforced``, a call that didn't come
+    through ``send`` or ``permit`` raises Blocked instead of sending."""
+    @functools.wraps(method)
+    def call(*args: Any, **kwargs: Any) -> Any:
+        if not _permit.get() and _enforced():
+            where = str(getattr(method, "__qualname__", "") or method)
+            logger.error("Refused a model request that skipped the DLP check: %s", where)
+            _record("dlp.error", None, reason="unchecked", error=where)
+            raise Blocked(_UNCHECKED, code="dlp_unchecked")
+        return method(*args, **kwargs)
+
+    call.dlp_guarded = True  # type: ignore[attr-defined]
+    return call
+
+
+def guard_backend(cls: type) -> type:
+    """Class decorator for model backends: guard the request methods the class defines."""
+    for name in REQUEST_METHODS:
+        method = cls.__dict__.get(name)
+        if callable(method) and not getattr(method, "dlp_guarded", False):
+            setattr(cls, name, guarded(method))
+    return cls
 
 
 # ── The external DLP service ──────────────────────────────────────────────
 
 _transport: Any = None  # tests install an httpx.MockTransport
 _verdict_lock = threading.Lock()
-_verdicts: OrderedDict[tuple, tuple] = OrderedDict()
+# Verdicts by (url, rules, kind, text): the redactions of an allow or redact
+# verdict, or _Refused for a text the service blocked.
+_verdicts: OrderedDict[tuple, Any] = OrderedDict()
+
+
+@dataclass(frozen=True)
+class _Refused:
+    rule: str
 
 
 class _ServiceError(Exception):
@@ -891,13 +1102,15 @@ def _post(service: Service, payload: dict) -> Any:
 _verdict_chars = 0
 
 
-def _remember_verdict(key: tuple, redactions: tuple) -> None:
-    """Keep an allow or redact verdict for a text, bounded by entries and characters."""
+def _remember_verdict(key: tuple, verdict: Any) -> None:
+    """Keep a verdict for a text, bounded by entries and characters."""
     global _verdict_chars
     with _verdict_lock:
         if key in _verdicts:
+            _verdicts[key] = verdict
+            _verdicts.move_to_end(key)
             return
-        _verdicts[key] = redactions
+        _verdicts[key] = verdict
         _verdict_chars += len(key[-1])
         while _verdicts and (len(_verdicts) > 10_000 or _verdict_chars > 16_000_000):
             old, _ = _verdicts.popitem(last=False)
@@ -910,22 +1123,29 @@ def _ask_service(service: Service, fingerprint: str, organization: str, items: l
     """Send text the service hasn't judged to it and apply its verdict to ``texts``.
 
     Each distinct (kind, text) goes once: a message and its copy in the
-    history are one item.
+    history are one item. Text it blocked before is refused without asking.
     """
     pending: dict[tuple[str, str], list[int]] = {}   # (kind, text) -> item indices
     known: dict[int, list] = {}
+    refused: dict[tuple[str, str], tuple[str, list[int]]] = {}  # (kind, text) -> (rule, item indices)
     for index, item in enumerate(items):
         if item.entry in withheld or index in dropped:
             continue
         text = texts.get(index, item.text)
+        key = (service.url, fingerprint, item.kind, text)
         with _verdict_lock:
-            cached = _verdicts.get((service.url, fingerprint, item.kind, text))
+            cached = _verdicts.get(key)
             if cached is not None:
-                _verdicts.move_to_end((service.url, fingerprint, item.kind, text))
+                _verdicts.move_to_end(key)
         if cached is None:
             pending.setdefault((item.kind, text), []).append(index)
+        elif isinstance(cached, _Refused):
+            refused.setdefault((item.kind, text), (cached.rule, []))[1].append(index)
         else:
             known[index] = list(cached)
+    if refused:
+        _refuse(Counter((rule, kind) for (kind, _text), (rule, _) in refused.items()),
+                [indices for _rule, indices in refused.values()], items, audit_fields, context)
     if pending:
         ordered = list(pending.items())
         try:
@@ -942,31 +1162,43 @@ def _ask_service(service: Service, fingerprint: str, organization: str, items: l
         except _ServiceError as exc:
             _record("dlp.error", audit_fields, reason="service", error=str(exc), on_error=service.on_error, **context)
             if service.on_error == "allow":
-                _apply_known(items, texts, known, new_redactions, audit_fields, context)
+                _apply_known(items, texts, known, dropped, new_redactions, audit_fields, context)
                 return
             raise Blocked("Your organization's data loss prevention service couldn't check this request "
                           f"({exc}), so nothing was sent. Try again, or ask your administrator.") from None
         if action == "block":
-            # The service may name the items it objects to; otherwise the whole request is refused.
-            named = [indices for number, (_, indices) in enumerate(ordered) if str(number) in blocked_items]
-            blocked = Counter((rule, kind) for number, ((kind, _text), _) in enumerate(ordered)
-                              if str(number) in blocked_items)
-            for (name, kind), count in (blocked or Counter({(rule, MIXED): 1})).items():
-                _record("dlp.finding", audit_fields, rule=name, action="block", kind=kind, count=count,
-                        source="service", **context)
-            entries = {items[index].entry for indices in named for index in indices if items[index].entry >= 0}
-            raise Blocked(_block_message(blocked or Counter({(rule, MIXED): 1}), entries, by="service"),
-                          entries=tuple(sorted(entries)))
+            named = [(key, indices) for number, (key, indices) in enumerate(ordered) if str(number) in blocked_items]
+            for (kind, text), _indices in named:
+                # Remembered, so the same text is refused again without asking.
+                _remember_verdict((service.url, fingerprint, kind, text), _Refused(rule))
+            if named:
+                blocked = Counter((rule, kind) for (kind, _text), _ in named)
+                groups = [indices for _key, indices in named]
+            else:
+                # The whole request: leave out of later requests everything in it
+                # the service hadn't allowed before, since one of those was it.
+                blocked = Counter({(rule, MIXED): 1})
+                groups = [indices for _key, indices in ordered]
+            _refuse(blocked, groups, items, audit_fields, context)
         for number, ((kind, text), indices) in enumerate(ordered):
             applicable = tuple((value, name) for value, name, item in redactions
                                if (item is None or item == str(number)) and value in text)
             for index in indices:
                 known[index] = list(applicable)
             _remember_verdict((service.url, fingerprint, kind, text), applicable)
-    _apply_known(items, texts, known, new_redactions, audit_fields, context)
+    _apply_known(items, texts, known, dropped, new_redactions, audit_fields, context)
 
 
-def _apply_known(items: list, texts: dict, known: dict, new_redactions: Counter,
+def _refuse(blocked: Counter, groups: list, items: list, audit_fields: dict | None, context: dict) -> NoReturn:
+    """Record a service block and raise it, naming the history entries it came from."""
+    for (name, kind), count in blocked.items():
+        _record("dlp.finding", audit_fields, rule=name, action="block", kind=kind, count=count,
+                source="service", **context)
+    entries = {items[index].entry for indices in groups for index in indices if items[index].entry >= 0}
+    raise Blocked(_block_message(blocked, entries, by="service"), entries=tuple(sorted(entries)))
+
+
+def _apply_known(items: list, texts: dict, known: dict, dropped: set, new_redactions: Counter,
                  audit_fields: dict | None, context: dict) -> None:
     for index, redactions in known.items():
         if not redactions:
@@ -979,7 +1211,12 @@ def _apply_known(items: list, texts: dict, known: dict, new_redactions: Counter,
             if count:
                 text = text.replace(value, f"[REDACTED:{name}]")
                 found[name] += count
-        texts[index] = text
+        if not found:
+            continue
+        if item.droppable:
+            dropped.add(index)  # signed reasoning: left out, never edited
+        else:
+            texts[index] = text
         digest = hashlib.sha256(f"{item.kind}\0{item.text}".encode("utf-8", "surrogatepass")).hexdigest()[:24]
         for name, count in found.items():
             key = (str((audit_fields or {}).get("session") or ""), context["provider"], context["model"],

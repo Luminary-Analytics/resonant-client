@@ -106,6 +106,9 @@ test('DLP redacts, blocks and shows its rules in the source app', {timeout: 1200
         for (const secret of [CARD, '4111111111111111', SSN, 'Project Falcon', 'Jane Doe']) {
             assert.ok(!auditText.includes(secret), secret);
         }
+        // The fixture's backend is guarded like the real ones: no app path reached it unchecked.
+        const dlpErrors = seen.audit.filter(record => record.type === 'dlp.error').map(record => record.data);
+        assert.deepEqual(dlpErrors, []);
 
         // 5. Settings shows the organization's rules, read-only, from the keyboard.
         await page.keyboard.press('Control+Comma');

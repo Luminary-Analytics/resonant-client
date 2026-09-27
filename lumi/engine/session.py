@@ -1057,10 +1057,11 @@ class Session:
                 provider=str(getattr(self.backend, "name", "") or ""),
                 model=str(getattr(self.backend, "model", "") or ""), audit_fields=self._audit_fields(),
             )
-            result = (
-                self._execution_boundary.classify(self.backend, prompt, max_tokens=20)
-                if self._execution_boundary else self.backend.classify(prompt, max_tokens=20)
-            )
+            with dlp.permit():  # the prompt passed the check above
+                result = (
+                    self._execution_boundary.classify(self.backend, prompt, max_tokens=20)
+                    if self._execution_boundary else self.backend.classify(prompt, max_tokens=20)
+                )
             return "COMPLEX" in result.upper()
         except ExecutionGuardError:
             raise
@@ -1098,7 +1099,7 @@ class Session:
             kwargs = {**captured, **({"cancel_event": kwargs["cancel_event"]} if "cancel_event" in kwargs else {})}
         def invoke():
             if purpose == "primary":
-                return backend.stream(**kwargs)
+                return dlp.send(backend.stream, **kwargs)
             from .request_purpose import send_checked
             # A guarded request's usage is recorded by its execution guard's
             # owner (engine/swarming/organization.py), not a second time here.

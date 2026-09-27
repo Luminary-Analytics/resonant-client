@@ -38,8 +38,13 @@ def rules(*items, **detectors):
     return {"version": 1, "detectors": detectors, "rules": list(items)}
 
 
+@dlp.guard_backend
 class Backend:
-    """Records exactly what each request would send to the provider."""
+    """Records exactly what each request would send to the provider.
+
+    Guarded like the real backends (lumi/backends.py), so every test here also
+    proves its path reaches the backend through dlp.send or dlp.permit.
+    """
 
     def __init__(self, *, scripts=None, events=None, name="ollama", model="test-model"):
         self.name, self.model = name, model
@@ -87,7 +92,9 @@ def request(user_msg="", history=None, instructions="You are helpful."):
 
 
 def spans(detector: str, text: str) -> list[str]:
-    return [text[start:end] for start, end in dlp_detectors.DETECTORS[detector](text)]
+    """What a detector finds in ``text``, read as DLP reads it (normalized), as the original's text."""
+    copy_ = dlp_detectors.normalized(text)
+    return [text[slice(*copy_.span(start, end))] for start, end in dlp_detectors.DETECTORS[detector](copy_.text)]
 
 
 @pytest.mark.parametrize("number", [
@@ -181,6 +188,71 @@ def test_email_addresses():
     assert spans("email", "@handle, user@localhost, a@b") == []
 
 
+# Unicode formatting: characters written with chr() so the source stays plain ASCII.
+NBSP, NARROW_NBSP, EN_DASH, ZWSP, SOFT_HYPHEN, FI = chr(0xA0), chr(0x202F), chr(0x2013), chr(0x200B), chr(0xAD), chr(0xFB01)
+
+
+def full_width(text: str) -> str:
+    return "".join(chr(ord(c) + 0xFEE0) if "!" <= c <= "~" else c for c in text)
+
+
+@pytest.mark.parametrize("number", [
+    f"4111{NBSP}1111{NBSP}1111{NBSP}1111", f"4111{NARROW_NBSP}1111{NARROW_NBSP}1111{NARROW_NBSP}1111",
+    f"4111{EN_DASH}1111{EN_DASH}1111{EN_DASH}1111", "4111.1111.1111.1111", full_width("4111111111111111"),
+    f"4111{ZWSP}1111{ZWSP}1111{ZWSP}1111", f"41{SOFT_HYPHEN}11111111111111",
+])
+def test_formatted_card_numbers_are_found(number):
+    # The span is the original text's: all of the number, invisible characters included.
+    assert spans("credit_card", f"Pay with {number}, thanks") == [number]
+
+
+@pytest.mark.parametrize("text,number", [
+    (f"SSN: 123{EN_DASH}45{EN_DASH}6789.", f"123{EN_DASH}45{EN_DASH}6789"),
+    (f"SSN: 123{NBSP}45{NBSP}6789.", f"123{NBSP}45{NBSP}6789"),
+    (f"SSN: {full_width('123-45-6789')}.", full_width("123-45-6789")),
+    ("SSN-123-45-6789", "123-45-6789"),
+])
+def test_formatted_social_security_numbers_are_found(text, number):
+    assert spans("us_ssn", text) == [number]
+
+
+@pytest.mark.parametrize("text", ["1-123-45-6789", "123-45-6789-1", f"9{EN_DASH}123-45-6789"])
+def test_social_security_numbers_inside_longer_numbers_are_left_alone(text):
+    assert spans("us_ssn", f"x {text} y") == []
+
+
+def test_ibans_grouped_with_no_break_spaces_are_found():
+    iban = IBAN.replace(" ", NBSP)
+    assert spans("iban", f"Transfer to {iban}.") == [iban]
+
+
+@pytest.mark.parametrize("text", [
+    "Project\nFalcon", "Project  Falcon", f"Project{NBSP}Falcon", "Project \r\n\t Falcon",
+    f"Pro{ZWSP}ject Falcon", full_width("Project Falcon"),
+])
+def test_keywords_match_however_the_text_is_spaced_or_encoded(text):
+    policy = parse_section(rules({"name": "falcon", "keywords": ["Project Falcon"], "action": "flag"}))
+    sentence = f"about {text} today"
+    assert [sentence[start:end] for *_rule, start, end in dlp.scan_text(sentence, policy=policy)] == [text]
+
+
+def test_keywords_are_normalized_like_the_text():
+    policy = parse_section(rules({"name": "codename", "keywords": [f"  Project{NBSP}{NBSP}Falcon ", "finance"],
+                                  "action": "flag"}))
+    assert len(dlp.scan_text("Project Falcon", policy=policy)) == 1
+    found = dlp.scan_text(f"{FI}nance report", policy=policy)  # a ligature is "fi"
+    assert [(start, end) for *_rest, start, end in found] == [(0, 6)]  # the whole original word
+    with pytest.raises(dlp.DlpError, match="no visible characters"):
+        parse_section(rules({"name": "x", "keywords": [ZWSP + SOFT_HYPHEN], "action": "flag"}))
+
+
+def test_redactions_cover_the_original_characters():
+    install(rules({"name": "falcon", "keywords": ["Project Falcon"], "action": "redact"}, credit_card="redact"))
+    text = f"card 4111{ZWSP}1111{ZWSP}1111{ZWSP}1111 for Pro{ZWSP}ject{NBSP}Falcon, done"
+    sent = check_request(request(text), purpose="primary").request["user_msg"]
+    assert sent == "card [REDACTED:credit_card] for [REDACTED:falcon], done"
+
+
 # ── Keyword and pattern rules ────────────────────────────────────────────────
 
 
@@ -214,8 +286,14 @@ def test_pattern_rules():
     (r"\d{1,20}\d{1,20}x", "compete for the same characters"),
     (r"(\w{1,5})\1", "backreferences"),
     (r"x?", "empty text"),
-    (r"[a-z]{1,300}", "more than 256 characters"),
+    (r"[a-z]{1,200}", "more than 128 characters"),
     (r"(unclosed", "isn't a valid regular expression"),
+    # A lookaround runs its whole search each time the pattern reaches it:
+    # inside a repeat, once per repetition (about 11 s per MB, and 17 minutes
+    # with one more level, before lookarounds' work was counted).
+    (r"(?:(?![a-z]{1,8}[a-z]{1,2}0)[a-z]){1,120}0", "could take too long"),
+    (r"(?:(?!(?:(?![a-z]{1,8}[a-z]{1,2}0)[a-z]){1,9}0)[a-z]){1,120}0", "could take too long"),
+    (r"(?>[a-z]{1,4}[a-z]{1,4}){1,15}0", "could take too long"),  # an atomic group's work, too
 ])
 def test_patterns_that_could_scan_slowly_are_refused(pattern, problem):
     with pytest.raises(dlp.DlpError, match=problem) as refused:
@@ -226,7 +304,8 @@ def test_patterns_that_could_scan_slowly_are_refused(pattern, problem):
 def test_reasonable_patterns_pass_the_check():
     for pattern in (r"CUST-\d{8}", r"[A-Z]{2}\d{6,10}", r"[a-z0-9-]{1,63}\.corp\.example\.com",
                     r"(?:acct|invoice|order)[ #:]{0,3}\d{8}", r"(?i)acme-[a-z]{2,4}\d{3,5}",
-                    r"\b[\w.+-]{1,64}@example\.com\b"):
+                    r"\b[\w.+-]{1,64}@example\.com\b", r"(?<![0-9])\d{16}(?![0-9])",
+                    r"(?:[a-z]{1,4}+){1,20}0", r"[a-z]{1,127}0"):
         dlp_detectors.check_pattern(pattern, case_sensitive=False)
 
 
@@ -414,7 +493,76 @@ def test_tool_call_arguments_stay_valid_json_after_redaction():
         assert value["count"] == "[REDACTED:credit_card]"
         assert value["nested"] == [{"token": "[REDACTED:secrets]"}]
     assert (sent["name"], sent["call_id"], sent["response_id"]) == ("file_write", "c1", "r1")
+    assert CARD not in json.dumps(sent)
     assert CARD in history[1]["arguments"]  # the conversation keeps the original
+
+
+def tool_call_entry(arguments: str, **extra) -> dict:
+    return {"role": "tool_call", "name": "file_write", "call_id": "c1", "arguments": arguments,
+            "content": "Called file_write", **extra}
+
+
+def test_tool_argument_keys_are_checked_too():
+    install(rules({"name": "falcon", "keywords": ["Project Falcon"], "action": "redact"}, credit_card="redact"))
+    arguments = '{"labels": {"Project Falcon": 1, "4111111111111111": 2, "5555555555554444": 3}}'
+    sent = check_request(request("", [tool_call_entry(arguments)]), purpose="primary").request
+    labels = json.loads(sent["conversation_history"][0]["arguments"])["labels"]
+    # Keys redacted alike are numbered, so no value is lost.
+    assert labels == {"[REDACTED:falcon]": 1, "[REDACTED:credit_card]": 2, "[REDACTED:credit_card] #2": 3}
+    install(rules(credit_card="block"))
+    with pytest.raises(Blocked, match="credit_card in an earlier reply"):
+        check_request(request("", [tool_call_entry(arguments)]), purpose="primary")
+
+
+def test_arguments_with_a_duplicated_key_go_out_as_the_tool_read_them(audit_log):
+    install(rules(us_ssn="block"))
+    # json.loads keeps the last value, and so did the tool; the first never reaches the model.
+    arguments = f'{{"content": "SSN {SSN}", "content": "ok"}}'
+    history = [tool_call_entry(arguments, response_tool_calls=[
+        {"id": "c1", "type": "function", "function": {"name": "file_write", "arguments": arguments}}])]
+    sent = check_request(request("", history), purpose="primary").request["conversation_history"][0]
+    assert sent["arguments"] == '{"content": "ok"}'
+    assert sent["response_tool_calls"][0]["function"]["arguments"] == '{"content": "ok"}'
+    assert SSN not in json.dumps(sent) and history[0]["arguments"] == arguments
+
+
+def test_a_withheld_entry_without_content_is_sent_as_a_notice():
+    # Older saved conversations have entries with no "content" at all.
+    install(rules(us_ssn="block"))
+    entry = {"role": "tool_call", "name": "bash", "call_id": "c1", "arguments": json.dumps({"command": f"echo {SSN}"}),
+             "dlp_withheld": True}
+    sent = check_request(request("next", [entry, {"role": "user", "content": "next"}]),
+                         purpose="primary").request["conversation_history"][0]
+    assert sent["content"].startswith("[Withheld:") and sent["arguments"] == "{}"
+    assert SSN not in json.dumps(sent) and "content" not in entry
+
+
+def test_a_withheld_message_isnt_learning_input_for_sonn():
+    from lumi.sonn import SonnBackend
+
+    install(rules(us_ssn="block"))
+    history = [{"role": "user", "content": f"My SSN is {SSN}", "dlp_withheld": True},
+               {"role": "assistant", "content": "Understood."},
+               {"role": "user", "content": "What's next?"}]
+    sent = check_request(request("What's next?", history), purpose="primary").request
+    body = SonnBackend("key", base_url="https://sonn.example/v1/workspace/projects/fixture/openai/v1")._payload(
+        sent["user_msg"], sent["conversation_history"], sent["instructions"], [], 256)
+    generated = body["metadata"]["sonn_generated_user_indices"]
+    users = [(index, message["content"]) for index, message in enumerate(body["messages"]) if message["role"] == "user"]
+    # The notice Lumi wrote in the message's place is marked generated; the person's next message isn't.
+    assert [(index in generated, text.startswith("[Withheld:")) for index, text in users] == [(True, True), (False, False)]
+    assert SSN not in json.dumps(body)
+
+
+def test_messages_lumi_writes_are_checked_by_every_rule():
+    # A hook's context or a nudge can quote tool output: rules scoped to tool
+    # results check it, and the same text sent as the message is checked alike.
+    install(rules({"name": "customer-id", "pattern": r"CUST-\d{8}", "action": "redact", "scope": ["tool_result"]}))
+    nudge = "The last tool returned CUST-12345678; check it."
+    history = [{"role": "user", "content": "go"}, {"role": "user", "content": nudge, "input_origin": "generated"}]
+    sent = check_request(request(nudge, history), purpose="primary").request
+    assert sent["user_msg"] == sent["conversation_history"][1]["content"] == (
+        "The last tool returned [REDACTED:customer-id]; check it.")
 
 
 def test_signed_reasoning_with_a_match_is_left_out_not_edited():
@@ -583,11 +731,22 @@ def test_compaction_leaves_out_withheld_entries_so_it_still_works():
     summarizer = Backend(events=[text_delta(json.dumps(summary)), done()])
     session = Session(Backend(), auto_approve=True)
     session.conversation_history = (
-        [{"role": "user", "content": f"My SSN is {SSN}", "dlp_withheld": True}]
+        [{"role": "user", "content": f"My SSN is {SSN}", "dlp_withheld": True},
+         # A withheld tool call's command and path stay out of the preserved evidence too.
+         {"role": "tool_call", "name": "bash", "call_id": "c1", "dlp_withheld": True,
+          "arguments": json.dumps({"command": f"grep {SSN} people.csv", "path": f"/{SSN}.txt"})},
+         {"role": "tool_result", "name": "bash", "call_id": "c1", "content": f"{SSN}: Jane", "dlp_withheld": True},
+         # And so does what an earlier summary kept, when that summary was withheld.
+         {"role": "assistant", "content": "[Previous conversation summary]\n...", "dlp_withheld": True,
+          "preserved_context": {"user_requirements": [f"SSN {SSN}"], "tool_evidence": []}}]
         + [{"role": "user", "content": "More context " * 200} for _ in range(9)])
     compressed, note = compress(session, backend=summarizer, max_tokens=20)
     assert summarizer.requests and SSN not in summarizer.sent() and note
-    assert SSN not in json.dumps(compressed)
+    kept = [entry for entry in compressed if entry.get("preserved_context") is not None]
+    assert kept and SSN not in json.dumps(kept) and "[Withheld:" in json.dumps(kept[0]["preserved_context"])
+    # What the next request sends has none of it either.
+    sent = check_request(request("next", compressed), purpose="primary").request
+    assert SSN not in json.dumps(sent)
 
 
 def test_planning_classification_is_checked():
@@ -605,6 +764,7 @@ def test_structured_output_repair_is_checked():
 
     install(rules(credit_card="block"))
 
+    @dlp.guard_backend
     class Structured(Backend):
         def generate_structured(self, user_msg, schema, **kwargs):
             self.requests.append({"user_msg": user_msg})
@@ -616,6 +776,69 @@ def test_structured_output_repair_is_checked():
     install(rules(credit_card="redact"))
     assert LocalSpecialistRunner._repair_structured_output(backend, f"found {CARD}", {"type": "object"}) == {"ok": True}
     assert CARD not in backend.sent()
+
+
+def test_vision_acceptance_questions_are_checked(audit_log):
+    from lumi.orchestration.acceptance_check import VisionRunner
+
+    asked = []
+    runner = VisionRunner(model="llava", _call=lambda model, prompt, image: asked.append(prompt) or "YES, it is.")
+    install(rules(credit_card="block"))
+    verdict, raw = runner.ask(b"png", f"Does the page show {CARD}?")
+    assert verdict is False and asked == [] and "credit_card" in raw and CARD not in raw
+    install(rules(credit_card="redact"))
+    assert runner.ask(b"png", f"Does the page show {CARD}?")[0] is True
+    assert CARD not in asked[0] and "[REDACTED:credit_card]" in asked[0]
+
+
+class FakeEngramTools:
+    """What the Engram MCP server would receive."""
+
+    def __init__(self):
+        self.calls: list[tuple[str, dict]] = []
+
+    def call_tool(self, name, arguments):
+        self.calls.append((name, copy.deepcopy(arguments)))
+        return {"content": [{"text": "a memory"}]}
+
+
+def test_what_lumi_sends_engram_passes_the_rules(audit_log):
+    from lumi.engine.memory import EngramIntegration
+
+    install(rules(credit_card="redact", us_ssn="block"))
+    engram = EngramIntegration()
+    engram._enabled = True
+    tools = FakeEngramTools()
+    engram.set_mcp_manager(tools)
+    assert engram.recall(f"refund {CARD}") == ["a memory"]
+    assert engram.recall(f"my SSN {SSN}") == []  # a blocked query isn't sent
+    engram.remember(f"customer SSN {SSN}")
+    engram.remember(f"card {CARD}")
+    engram.session_summary([
+        {"role": "user", "content": f"My SSN is {SSN}", "dlp_withheld": True},
+        {"role": "user", "content": "x" * 190 + f" {CARD}"},  # checked whole, before it's shortened
+        {"role": "assistant", "content": "Refunded."},
+    ])
+    sent = json.dumps(tools.calls)
+    assert SSN not in sent and CARD not in sent and "4111" not in sent
+    assert [name for name, _ in tools.calls] == [
+        "mcp_engram_engram_recall", "mcp_engram_engram_remember", "mcp_engram_engram_session_summary"]
+    assert tools.calls[0][1]["query"] == "refund [REDACTED:credit_card]"
+    shortened = ("x" * 190 + " [REDACTED:credit_card]")[:200] + "..."
+    assert tools.calls[2][1]["items"] == ["user: " + shortened, "assistant: Refunded."]
+
+
+def test_images_of_withheld_or_blocked_messages_arent_described():
+    from lumi.engine import image_descriptions
+
+    install(rules(us_ssn="block"))
+    image = {"type": "image", "media_type": "image/png", "data": "iVBORw0KGgo="}
+    history = [
+        {"role": "user", "content": [dict(image), {"type": "text", "text": "a screenshot"}], "dlp_withheld": True},
+        {"role": "user", "content": [dict(image), {"type": "text", "text": f"my SSN {SSN}"}]},  # will be blocked
+        {"role": "tool_result", "call_id": "c", "content": "shot", "image": dict(image)},
+    ]
+    assert image_descriptions.pending(history) == [history[2]["image"]]
 
 
 class RecordingGuard:
@@ -874,22 +1097,105 @@ def test_the_service_uses_the_apps_network_settings(monkeypatch):
     assert seen and seen[0]["timeout"] == 2.0 and seen[0]["transport"] is not None
 
 
+def export_control(payload):
+    """A service that blocks, naming them, the items that mention ITAR."""
+    named = [item["id"] for item in payload["items"] if "ITAR" in item["text"]]
+    return {"action": "block", "rule": "export-control", "items": named} if named else {"action": "allow"}
+
+
+def texts_sent(service, since=0) -> list[str]:
+    return [item["text"] for call in service.calls[since:] for item in call["items"]]
+
+
+def test_the_conversation_goes_on_after_a_service_block(audit_log):
+    service = with_service(export_control)
+    backend = Backend()
+    session = Session(backend, auto_approve=True, max_steps=2)
+    events = list(session.run("Summarize the ITAR schematic"))
+    assert backend.requests == [] and any(e.get("code") == "dlp_blocked" for e in events)
+    assert session.conversation_history[0]["dlp_withheld"] is True
+    # Later requests leave it out, and the service isn't asked about it again.
+    before = len(service.calls)
+    list(session.run("Never mind. What's 2 + 2?"))
+    assert len(backend.requests) == 1 and "ITAR" not in backend.sent() and "[Withheld:" in backend.sent()
+    assert not any("ITAR" in text for text in texts_sent(service, before))
+    # Sending the same text again is refused from memory, without asking.
+    before = len(service.calls)
+    events = list(session.run("Summarize the ITAR schematic"))
+    assert len(service.calls) == before and len(backend.requests) == 1
+    assert any(e.get("code") == "dlp_blocked" and "export-control" in e["message"] for e in events)
+
+
+def test_a_withheld_entry_stays_out_when_the_service_cant_answer(audit_log):
+    # on_error "allow" sends what the built-in rules allow; never what was blocked before.
+    with_service(httpx.ConnectError("refused"), on_error="allow")
+    history = [{"role": "user", "content": "the ITAR schematic", "dlp_withheld": True},
+               {"role": "user", "content": "next"}]
+    sent = check_request(request("next", history), purpose="primary").request
+    assert sent["conversation_history"][0]["content"].startswith("[Withheld:")
+    assert "ITAR" not in json.dumps(sent)
+
+
+def test_a_service_block_naming_no_items_leaves_out_what_it_hadnt_allowed(audit_log):
+    service = with_service(lambda payload: {"action": "block"} if any("ITAR" in text for text in [
+        item["text"] for item in payload["items"]]) else {"action": "allow"})
+    backend = Backend()
+    session = Session(backend, auto_approve=True, max_steps=2)
+    list(session.run("hello"))
+    events = list(session.run("the ITAR schematic"))
+    assert any(e.get("code") == "dlp_blocked" and "dlp-service" in e["message"] for e in events)
+    withheld = [entry.get("content") for entry in session.conversation_history if entry.get("dlp_withheld")]
+    assert "the ITAR schematic" in withheld and "hello" not in withheld  # "hello" was allowed before
+    before = len(service.calls)
+    list(session.run("What's 2 + 2?"))
+    assert len(backend.requests) == 2 and "ITAR" not in backend.sent()
+    assert not any("ITAR" in text for text in texts_sent(service, before))
+
+
+def test_service_redactions_leave_signed_reasoning_out(audit_log):
+    with_service({"action": "redact", "rule": "person", "redactions": ["Jane Doe"]})
+    history = [{"role": "user", "content": "go"},
+               {"role": "tool_call", "name": "bash", "call_id": "c1", "arguments": "{}",
+                "content": "Called bash for Jane Doe", "reasoning_content": "Jane Doe asked for this",
+                "reasoning_details": [{"type": "thinking", "thinking": "Jane Doe asked", "signature": "sig"}]},
+               {"role": "tool_result", "call_id": "c1", "content": "ok"}]
+    sent = check_request(request("", history), purpose="primary").request["conversation_history"][1]
+    # A signed thinking block can't be edited: it's left out, never sent changed under its signature.
+    assert "reasoning_details" not in sent and "reasoning_content" not in sent
+    assert sent["content"] == "Called bash for [REDACTED:person]"
+    assert history[1]["reasoning_details"][0]["thinking"] == "Jane Doe asked"
+
+
 # ── Speed ────────────────────────────────────────────────────────────────────
 
 
+MB = 1_000_000
 ADVERSARIAL = {
-    "digits": "1" * 1_000_000,
+    "digits": "1" * MB,
     "card groups": "4111 " * 200_000,
     "ssn-like": "123-45-678 " * 90_910,
     "iban-like": "DE89 3704 0044 0532 0130 " * 40_000,
-    "letters": "a" * 1_000_000,
+    "letters": "a" * MB,
     "dotted": "a." * 500_000,
     "jwt-like": "-eyJ" * 250_000,
+    "jwt first parts": "eyJ" + "a-" * 499_999,
+    "url schemes": "1." * 499_999 + "a://",
     "env names": "TOKEN" * 200_000,
     "key headers": "-----BEGIN PRIVATE KEY-----\n" * 35_715,
     "emails": "a@b." * 250_000,
     "secret anchors": ("-----BEGIN PRIVATE KEY----- AKIA ghp_ glpat- xox hooks.slack.com _live_ sk-ant- "
                        "AIza hf_ npm_ eyJ :// = aws_secret_access_key AccountKey= ") * 7_600,
+    # The pattern rules' fixed text is there, so their regexes run over all of it.
+    "customer ids": ("CUST-" + "1" * 7 + " ") * 76_923,
+    "host labels": "a" * (MB - 17) + ".corp.example.com",
+    "spaced keywords": "Project" + " " * (MB - 7),
+    # Text that has to be normalized first.
+    "no-break card groups": f"4111{NBSP}" * 200_000,
+    "zero-width digits": f"4{ZWSP}" * 500_000,
+    "full-width digits": full_width("4111 ") * 200_000,
+    "ligatures": FI * MB,
+    "dashed ssn-like": f"123{EN_DASH}45{EN_DASH}678 " * 90_910,
+    "ideographs": chr(0x4E2D) * MB,
 }
 
 
@@ -910,39 +1216,130 @@ def test_a_megabyte_of_adversarial_text_scans_in_well_under_a_second(label):
     assert time.perf_counter() - started < 1.0
 
 
+@pytest.mark.parametrize("text", ["a" * MB, "a0" * (MB // 2), "aaaaaaaaaaa0" * (MB // 12)], ids=["a", "a0", "11a0"])
+def test_a_pattern_at_the_checks_limit_scans_a_megabyte_in_well_under_a_second(text):
+    # About the costliest pattern the check allows: 10 ways of 12 steps.
+    policy = parse_section(rules({"name": "costliest", "pattern": r"[a-z]{1,10}[a-z]0", "action": "flag"}))
+    started = time.perf_counter()
+    dlp.scan_text(text, policy=policy)
+    assert time.perf_counter() - started < 1.0
+
+
 # ── Every model request goes through DLP ─────────────────────────────────────
 
-# Calls that send content to a model, and why each one is covered. A new call
-# must go through Session._model_stream or request_purpose.auxiliary_stream
-# (or check its text with dlp.check_text) and be listed here. The scan sees
-# direct calls only: send_checked's stream_auxiliary, looked up with getattr,
-# is covered by its own docstring's rule.
-COVERED = {
-    ("lumi/engine/session.py", "should_plan", "classify"): "prompt passed dlp.check_text first",
-    ("lumi/engine/session.py", "invoke", "stream"): "Session._model_stream checked the request",
-    ("lumi/engine/session.py", "_model_stream", "stream"): "the execution boundary around the checked request",
-    ("lumi/engine/request_purpose.py", "send_checked", "stream"): "only after dlp.check_request",
-    ("lumi/engine/execution_guard.py", "classify", "classify"): "Session.should_plan checked the prompt",
-    ("lumi/orchestration/runner.py", "_repair_structured_output", "generator"): "prompt passed dlp.check_text",
-    ("lumi/backends.py", "warm_up", "stream"): "fixed warm-up text, no content",
-    ("lumi/backends.py", "classify", "stream"): "CLI adapters: Session.should_plan checked the prompt",
-    ("lumi/backends.py", "stream", "stream"): "an adapter calling its parent class with the same request",
-    ("lumi/engine/provider_extensions.py", "classify", "stream"): "Session.should_plan checked the prompt",
-    ("lumi/sonn.py", "stream_auxiliary", "stream"): "reached only through send_checked",
-    ("lumi/sonn.py", "stream", "stream"): "an adapter calling its parent class with the same request",
-    ("lumi/smoke/flaky.py", "stream", "stream"): "test wrapper around a Session's backend",
-    ("lumi/sonn_tasks.py", "_request", "stream"): "httpx transport; its model request, ask_advice, passes dlp.check_text",
+ARGUMENTS = {"user_msg": "hello", "conversation_history": [], "instructions": "", "tools": []}
+
+
+def test_a_backend_call_that_skips_the_check_is_refused(audit_log):
+    backend = Backend()
+    list(backend.stream(**ARGUMENTS))  # no policy, nothing to enforce
+    install(rules(credit_card="flag"))
+    with pytest.raises(Blocked) as refused:
+        backend.stream(**ARGUMENTS)
+    assert refused.value.code == "dlp_unchecked" and len(backend.requests) == 1
+    errors = [r["data"] for r in read_log(audit_log) if r["type"] == "dlp.error"]
+    assert errors == [{"reason": "unchecked", "error": "Backend.stream"}]
+    with pytest.raises(Blocked):
+        backend.classify("hello")
+    assert list(dlp.send(backend.stream, **ARGUMENTS))  # a checked request goes through
+    with dlp.permit():  # fixed text, such as a warm-up
+        assert backend.classify("fixed text") == "SIMPLE"
+    # A policy that refuses every request (here, one with an unusable dlp section) refuses these too.
+    install({"version": 2})
+    with pytest.raises(Blocked):
+        backend.stream(**ARGUMENTS)
+
+
+def test_a_stream_holds_the_permit_only_while_it_makes_events():
+    @dlp.guard_backend
+    class Adapter(Backend):
+        def stream(self, **kwargs):
+            yield from super().stream(**kwargs)  # its parent's guarded stream, reached as this one runs
+
+    install(rules(credit_card="flag"))
+    backend, other = Adapter(), Backend()
+    events = []
+    for event in dlp.send(backend.stream, **ARGUMENTS):
+        events.append(event)
+        with pytest.raises(Blocked):  # the caller, between events, has no permit
+            other.classify("hello")
+    assert events and len(backend.requests) == 1 and other.requests == []
+
+
+def model_backend_classes() -> dict[tuple[str, str], set[str]]:
+    """(module, class) -> the request methods it defines, for every class in lumi/."""
+    found = {}
+    for path in sorted((ROOT / "lumi").rglob("*.py")):
+        module = ".".join(path.relative_to(ROOT).with_suffix("").parts)
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if isinstance(node, ast.ClassDef):
+                methods = {item.name for item in node.body if isinstance(item, ast.FunctionDef)} & set(dlp.REQUEST_METHODS)
+                if methods:
+                    found[(module, node.name)] = methods
+    return found
+
+
+def test_every_model_backend_guards_its_request_methods():
+    import importlib
+
+    found = model_backend_classes()
+    # Not a backend: it takes one and calls the backend's own guarded methods,
+    # with the permit its callers hold (Session._model_stream and should_plan).
+    assert found.pop(("lumi.engine.execution_guard", "ExecutionBoundary"))
+    assert ("lumi.backends", "OllamaBackend") in found and len(found) >= 10
+    for (module, name), methods in sorted(found.items()):
+        cls = getattr(importlib.import_module(module), name)
+        for method in methods:
+            assert getattr(cls.__dict__[method], "dlp_guarded", False), f"{module}.{name}.{method} isn't guarded"
+
+
+# The second line: every use of a backend's request methods in lumi/ (called,
+# passed on, or looked up with getattr), counted per function, and why it's
+# covered. A new use, even in a function listed here, changes a count and
+# must be reviewed.
+COVERED_USES = {
+    ("lumi/engine/session.py", "should_plan", "classify"): (3, "prompt passed dlp.check_text; sent under dlp.permit"),
+    ("lumi/engine/session.py", "invoke", "stream"): (1, "dlp.send of the request _model_stream checked"),
+    ("lumi/engine/session.py", "_model_stream", "stream"): (1, "the execution boundary around that checked request"),
+    ("lumi/engine/request_purpose.py", "send_checked", "stream"): (1, "dlp.send, after dlp.check_request"),
+    ("lumi/engine/request_purpose.py", "send_checked", "stream_auxiliary"): (1, "dlp.send, after dlp.check_request"),
+    ("lumi/engine/execution_guard.py", "classify", "classify"): (1, "reached from should_plan's permit"),
+    ("lumi/orchestration/runner.py", "_repair_structured_output", "generate_structured"): (
+        1, "prompt passed dlp.check_text; sent with dlp.send"),
+    ("lumi/backends.py", "warm_up", "stream"): (1, "EXO warm-up: fixed text, under dlp.permit"),
+    ("lumi/backends.py", "classify", "stream"): (2, "CLI adapters' classify (guarded) runs their own stream"),
+    ("lumi/backends.py", "stream", "stream"): (1, "EXO's stream calling its parent's, as it runs under the permit"),
+    ("lumi/engine/provider_extensions.py", "classify", "stream"): (1, "classify (guarded) runs its own stream"),
+    ("lumi/sonn.py", "stream_auxiliary", "stream"): (1, "stream_auxiliary (guarded) runs a copy's stream"),
+    ("lumi/sonn.py", "stream", "stream"): (1, "SONN's stream calling its parent's, as it runs"),
+    ("lumi/smoke/flaky.py", "stream", "stream"): (1, "test wrapper (guarded) around a Session's backend"),
+    ("lumi/sonn_tasks.py", "_request", "stream"): (1, "httpx transport; the advice question passes dlp.check_text"),
 }
+# Functions whose code names a model API endpoint: a direct HTTP call to a
+# model has no backend method to guard, so each is listed with its reason.
+COVERED_ENDPOINTS = {
+    ("lumi/backends.py", "_open_chat_stream_with_retry"): "OllamaBackend.stream's request (guarded)",
+    ("lumi/backends.py", "stream"): "the backends' own guarded stream methods",
+    ("lumi/backends.py", "classify"): "OllamaBackend.classify (guarded)",
+    ("lumi/backends.py", "generate_structured"): "OllamaBackend.generate_structured (guarded)",
+    ("lumi/backends.py", "warm_up"): "Ollama warm-up: the fixed text \"hi\"",
+    ("lumi/backends.py", "_detect_tool_support"): "Ollama tool-support probe: fixed text",
+    ("lumi/anthropic_api.py", "_endpoint"): "AnthropicBackend.stream's address (guarded)",
+    ("lumi/openai_api.py", "stream"): "OpenAIResponsesBackend.stream (guarded)",
+    ("lumi/orchestration/acceptance_check.py", "_call_ollama"): "VisionRunner.ask checks the question first",
+    ("lumi/sonn_tasks.py", "ask_advice"): "the question passes dlp.check_text first",
+}
+_ENDPOINT_MARKERS = ("/api/chat", "/api/generate", "/chat/completions", "/v1/messages")
 
 
-class _ModelCalls(ast.NodeVisitor):
-    """(function, method) for each call that could send a request to a model backend."""
-
-    METHODS = {"stream", "classify", "generate_structured", "stream_auxiliary", "generator"}
-
+class _ModelUses(ast.NodeVisitor):
     def __init__(self):
         self.functions: list[str] = []
-        self.found: set[tuple[str, str]] = set()
+        self.uses: dict[tuple[str, str], int] = {}
+        self.endpoints: set[str] = set()
+
+    def _where(self) -> str:
+        return self.functions[-1] if self.functions else "<module>"
 
     def visit_FunctionDef(self, node):
         self.functions.append(node.name)
@@ -951,23 +1348,46 @@ class _ModelCalls(ast.NodeVisitor):
 
     visit_AsyncFunctionDef = visit_FunctionDef
 
+    def _use(self, method: str) -> None:
+        key = (self._where(), method)
+        self.uses[key] = self.uses.get(key, 0) + 1
+
     def visit_Call(self, node):
-        # Backend methods, and the one place that calls a backend method held in a variable.
-        name = (node.func.attr if isinstance(node.func, ast.Attribute)
-                else node.func.id if isinstance(node.func, ast.Name) and node.func.id == "generator" else "")
-        # httpx's client.stream("POST", url) is transport, not a model request.
-        transport = bool(node.args) and isinstance(node.args[0], ast.Constant) and node.args[0].value in {"GET", "POST"}
-        if name in self.METHODS and not transport:
-            self.found.add((self.functions[-1] if self.functions else "<module>", name))
+        func = node.func
+        if (isinstance(func, ast.Attribute) and func.attr == "stream" and node.args
+                and isinstance(node.args[0], ast.Constant) and node.args[0].value in {"GET", "POST"}):
+            # httpx's client.stream("POST", url): transport, not a backend method.
+            for child in [func.value, *node.args, *node.keywords]:
+                self.visit(child)
+            return
+        if (isinstance(func, ast.Name) and func.id == "getattr" and len(node.args) >= 2
+                and isinstance(node.args[1], ast.Constant) and node.args[1].value in dlp.REQUEST_METHODS):
+            self._use(node.args[1].value)
         self.generic_visit(node)
 
+    def visit_Attribute(self, node):
+        if node.attr in dlp.REQUEST_METHODS and isinstance(node.ctx, ast.Load):
+            self._use(node.attr)
+        self.generic_visit(node)
 
-def test_every_call_that_sends_to_a_model_is_covered_by_dlp():
-    found = set()
+    def visit_Expr(self, node):
+        if not (isinstance(node.value, ast.Constant) and isinstance(node.value.value, str)):  # not a docstring
+            self.generic_visit(node)
+
+    def visit_Constant(self, node):
+        if isinstance(node.value, str) and (node.value == "responses" or any(
+                marker in node.value for marker in _ENDPOINT_MARKERS)):
+            self.endpoints.add(self._where())
+
+
+def test_every_use_of_a_model_request_is_listed_with_its_check():
+    uses: dict = {}
+    endpoints: set = set()
     for path in sorted((ROOT / "lumi").rglob("*.py")):
-        visitor = _ModelCalls()
+        visitor = _ModelUses()
         visitor.visit(ast.parse(path.read_text(encoding="utf-8")))
-        found |= {(path.relative_to(ROOT).as_posix(), function, name) for function, name in visitor.found}
-    uncovered = sorted(found - set(COVERED))
-    assert uncovered == [], f"model calls without a DLP check: {uncovered}"
-    assert not set(COVERED) - found, "COVERED lists calls that no longer exist"
+        name = path.relative_to(ROOT).as_posix()
+        uses.update({(name, function, method): count for (function, method), count in visitor.uses.items()})
+        endpoints |= {(name, function) for function in visitor.endpoints}
+    assert uses == {key: count for key, (count, _why) in COVERED_USES.items()}
+    assert endpoints == set(COVERED_ENDPOINTS)

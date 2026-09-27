@@ -5,14 +5,24 @@
   mod-97 checked), the credential formats of ``secret_scan.PATTERNS``, and
   email addresses.
 * Keyword rules: literal words and phrases, compiled into one prefix tree.
+  A space in a keyword matches any run of whitespace, line breaks included.
 * Pattern rules: regular expressions an administrator writes. Python's regex
   engine backtracks, so ``check_pattern`` refuses what could make a scan slow:
   unbounded repeats (``*``, ``+``, ``{n,}``), backreferences, matches longer
   than ``MAX_MATCH_WIDTH`` characters, and repeats that compete for the same
   characters beyond ``MAX_WAYS`` combinations (``\\d{1,5}\\d{1,5}`` counts 25;
   ``[a-z]{1,63}\\.`` counts one, because nothing it gives back can start a
-  dot). The combinations times the longest match stay under ``MAX_COST``, so a
-  scan takes at most about that many steps per character, whatever the text.
+  dot). Each combination's steps (the characters it reads, plus the work of
+  every lookaround and atomic group each time it runs) times the combinations
+  stay under ``MAX_COST``, so a scan takes at most about that many steps per
+  character, whatever the text.
+
+Everything is matched against ``normalized`` text: Unicode spaces, dashes and
+digits in their ASCII form, compatibility characters (full-width letters,
+ligatures) in their plain form, and invisible characters (zero-width spaces
+and joiners, soft hyphens) removed, so "4111 1111…" written with no-break
+spaces or full-width digits is still a card number. Spans map back to the
+original text.
 
 Every finder takes the text and yields ``(start, end)`` spans.
 """
@@ -20,19 +30,154 @@ Every finder takes the text and yields ``(start, end)`` spans.
 from __future__ import annotations
 
 import re
+import unicodedata
+from array import array
 from re import _constants as _sre
 from re import _parser as _sre_parse
 from typing import Callable, Iterable, Iterator, NamedTuple
 
 Finder = Callable[[str], Iterable[tuple[int, int]]]
 
-MAX_MATCH_WIDTH = 256
+MAX_MATCH_WIDTH = 128
 MAX_WAYS = 16
 MAX_COST = 128
 
 
 class PatternError(ValueError):
     """A pattern rule Lumi won't run; the message says why and how to fix it."""
+
+
+# ── Normalization ────────────────────────────────────────────────────────────
+#
+# Text is compared in a normalized copy, one character at a time (so each
+# character of the copy comes from one character of the original):
+#
+# * format characters (Unicode category Cf: zero-width spaces and joiners,
+#   word joiners, soft hyphens, direction marks) and the combining grapheme
+#   joiner are removed;
+# * every space separator becomes " ", line and paragraph separators "\n",
+#   every dash (category Pd) and the minus sign "-", and every decimal digit
+#   its ASCII digit;
+# * anything else takes its NFKC form (full-width "Ａ" is "A", "ﬁ" is "fi"),
+#   unless that is longer than two characters, which leaves it as it is (so
+#   the copy is at most twice as long as the text).
+
+_INVISIBLE = frozenset("͏")
+_MAX_EXPANSION = 2
+
+
+def _plain(character: str) -> str:
+    category = unicodedata.category(character)
+    if category == "Cf" or character in _INVISIBLE:
+        return ""
+    if category == "Zs":
+        return " "
+    if category in ("Zl", "Zp"):
+        return "\n"
+    if category == "Pd" or character == "−":
+        return "-"
+    if category == "Nd":
+        value = unicodedata.decimal(character, None)
+        return character if value is None else str(value)
+    return character
+
+
+def fold_character(character: str) -> str:
+    """How DLP reads one character (see the notes above); may be empty or two characters."""
+    if character < "\x80":
+        return character
+    plain = _plain(character)
+    if plain != character:
+        return plain
+    compatible = unicodedata.normalize("NFKC", character)
+    if compatible == character or len(compatible) > _MAX_EXPANSION:
+        return character
+    return "".join(_plain(part) for part in compatible)
+
+
+# A character whose folded form isn't exactly one character maps to this
+# noncharacter in the one-to-one table, which sends the text the slow way.
+_IRREGULAR = "﷐"
+
+
+class _OneToOne(dict):
+    """A ``str.translate`` table: each character's folded form when that is one character."""
+
+    def __missing__(self, code: int) -> str:
+        folded = fold_character(chr(code))
+        value = folded if len(folded) == 1 else _IRREGULAR
+        if len(self) < 100_000:
+            self[code] = value
+        return value
+
+
+_ONE_TO_ONE = _OneToOne()
+
+
+class _Folded(dict):
+    """A ``str.translate`` table: each character's folded form (empty, one or two characters)."""
+
+    def __missing__(self, code: int) -> str:
+        folded = fold_character(chr(code))
+        if len(self) < 100_000:
+            self[code] = folded
+        return folded
+
+
+_FOLDED = _Folded()
+
+
+class Normalized:
+    """The copy of a text that detectors and rules read, and the way back to the text."""
+
+    __slots__ = ("text", "_original", "_mapped", "_origin")
+
+    def __init__(self, text: str, original: str, mapped: str | None = None):
+        self.text = text
+        self._original = original
+        # ``mapped`` (the one-to-one translation) is kept only when some
+        # characters were removed or expanded; otherwise positions are the same.
+        self._mapped = mapped
+        self._origin: array | None = None
+
+    def span(self, start: int, end: int) -> tuple[int, int]:
+        """The original text's span for ``text[start:end]``: whole characters, including
+        any removed invisible ones inside it."""
+        if self._mapped is None:
+            return start, end
+        if self._origin is None:  # built on the first match only
+            self._origin = _origin(self._original, self._mapped)
+        origin = self._origin
+        if end <= start:
+            return origin[start], origin[start]
+        return origin[start], origin[end - 1] + 1
+
+
+def _origin(original: str, mapped: str) -> array:
+    """For each character of the normalized copy, the index of the character it came from."""
+    origin = array("q")
+    last = 0
+    position = mapped.find(_IRREGULAR)
+    while position >= 0:
+        origin.extend(range(last, position))
+        origin.extend((position,) * len(fold_character(original[position])))
+        last = position + 1
+        position = mapped.find(_IRREGULAR, last)
+    origin.extend(range(last, len(original)))
+    origin.append(len(original))
+    return origin
+
+
+def normalized(text: str) -> Normalized:
+    """``text`` as DLP reads it (see above). ASCII text is its own copy."""
+    if text.isascii():
+        return Normalized(text, text)
+    mapped = text.translate(_ONE_TO_ONE)
+    if _IRREGULAR not in mapped:
+        return Normalized(mapped, text)
+    # Some characters were removed or expanded: translate again with their
+    # full forms, and keep the one-to-one copy to map spans back if needed.
+    return Normalized(text.translate(_FOLDED), text, mapped)
 
 
 # The built-in patterns start with a character class so the regex engine can
@@ -42,8 +187,9 @@ class PatternError(ValueError):
 
 # ── Payment cards ────────────────────────────────────────────────────────────
 
-_CARD_RUN = re.compile(r"[0-9](?<![0-9][0-9])[0-9]{0,18}(?:[ -][0-9]{1,19})*(?![0-9])")
-_GROUP = re.compile(r"[0-9]+")
+_CARD_RUN = re.compile(r"[0-9](?<![0-9][0-9])[0-9]{0,18}(?:[ .-][0-9]{1,19})*(?![0-9])")
+_SEPARATOR = re.compile(r"[ .-]")
+_CARD_FIRST = frozenset("23456")  # no card network's numbers start otherwise
 _PLAIN = bytes(c - 48 if 48 <= c <= 57 else 0 for c in range(256))
 _DOUBLED = bytes((2 * (c - 48)) - (9 if c > 52 else 0) if 48 <= c <= 57 else 0 for c in range(256))
 
@@ -87,47 +233,55 @@ def card_brand_ok(digits: str) -> bool:
 
 def find_cards(text: str) -> Iterator[tuple[int, int]]:
     """Card numbers written as one run of 13-19 digits, or in groups separated by
-    single spaces or hyphens, the first of four digits and the rest of three to
-    six (4111 1111 1111 1111, 3782-822463-10005)."""
+    single spaces, hyphens or dots, the first of four digits and the rest of
+    three to six (4111 1111 1111 1111, 3782-822463-10005, 4111.1111.1111.1111)."""
     for match in _CARD_RUN.finditer(text):
         run = match.group()
         if len(run) < 13:
             continue
         base = match.start()
-        groups = [group.span() for group in _GROUP.finditer(run)]
-        index = 0
-        while index < len(groups):
-            start, end = groups[index]
-            if end - start >= 13:
-                if card_brand_ok(run[start:end]) and luhn_ok(run[start:end]):
-                    yield base + start, base + end
-                index += 1
-                continue
-            best = -1
-            if end - start == 4:
-                digits = run[start:end]
-                for last in range(index + 1, len(groups)):
-                    group_start, group_end = groups[last]
-                    if not 3 <= group_end - group_start <= 6:
+        if len(run) <= 19 and run.isdigit():  # one bare number, the usual case
+            if card_brand_ok(run) and luhn_ok(run):
+                yield match.span()
+            continue
+        # The run's groups, with exactly one separator between two of them.
+        parts = _SEPARATOR.split(run)
+        count = len(parts)
+        index = offset = 0  # offset: where parts[index] starts in the run
+        while index < count:
+            part = parts[index]
+            end = offset + len(part)
+            if len(part) >= 13:
+                if card_brand_ok(part) and luhn_ok(part):
+                    yield base + offset, base + end
+            elif len(part) == 4 and part[0] in _CARD_FIRST:
+                # The longest valid number from here, at most five more groups.
+                digits, cursor, best, best_end = part, end, -1, 0
+                for last in range(index + 1, min(count, index + 6)):
+                    following = parts[last]
+                    if not 3 <= len(following) <= 6:
                         break
-                    digits += run[group_start:group_end]
+                    digits += following
+                    cursor += 1 + len(following)
                     if len(digits) > 19:
                         break
                     if len(digits) >= 13 and card_brand_ok(digits) and luhn_ok(digits):
-                        best = last
-            if best >= 0:
-                yield base + start, base + groups[best][1]
-                index = best + 1
-            else:
-                index += 1
+                        best, best_end = last, cursor
+                if best >= 0:
+                    yield base + offset, base + best_end
+                    index, offset = best + 1, best_end + 1
+                    continue
+            index, offset = index + 1, end + 1
 
 
 # ── US Social Security numbers ───────────────────────────────────────────────
 #
 # Only with separators (123-45-6789 or 123 45 6789): nine bare digits are too
 # often something else. Areas 000, 666 and 900-999, group 00 and serial 0000
-# are never issued.
-_SSN = re.compile(r"[0-9](?<![0-9-][0-9])[0-9]{2}([- ])[0-9]{2}\1[0-9]{4}(?![0-9-])")
+# are never issued. Not part of a longer number: no digit, or digit and
+# hyphen, right before or after it ("SSN-123-45-6789" counts, "1-123-45-6789"
+# doesn't).
+_SSN = re.compile(r"[0-9](?<![0-9][0-9])(?<![0-9]-[0-9])[0-9]{2}([- ])[0-9]{2}\1[0-9]{4}(?![0-9])(?!-[0-9])")
 
 
 def find_ssns(text: str) -> Iterator[tuple[int, int]]:
@@ -289,12 +443,20 @@ def _is_word_character(character: str) -> bool:
 
 def _emit(node: dict) -> str:
     """One trie node as a regex in which sibling branches start with different characters."""
-    branches = [re.escape(character) + _emit(child)
+    # A space matches a whole run of whitespace (a line break, two spaces, a
+    # no-break space) and never gives any back: what follows isn't whitespace.
+    branches = [(r"\s++" if character == " " else re.escape(character)) + _emit(child)
                 for character, child in sorted(node.items()) if character != _END]
     if _END in node:
         # Last, so a longer keyword through this node is preferred.
         branches.append(r"(?!\w)" if node[_END] else "")
     return branches[0] if len(branches) == 1 else "(?:" + "|".join(branches) + ")"
+
+
+def keyword_text(word: str) -> str:
+    """A keyword as rules compare it: normalized like the text, with each run of
+    whitespace one space and none at either end."""
+    return " ".join(normalized(word).text.split())
 
 
 def keyword_pattern(words: Iterable[str], *, case_sensitive: bool, whole_word: bool) -> re.Pattern[str]:
@@ -303,6 +465,7 @@ def keyword_pattern(words: Iterable[str], *, case_sensitive: bool, whole_word: b
 
     ``whole_word`` keeps "Falcon" from matching inside "Falconry": a keyword that
     starts or ends with a letter, digit or underscore needs a boundary there.
+    Run it on ``normalized`` text.
     """
     def fold(character: str) -> str:
         if case_sensitive:
@@ -311,7 +474,7 @@ def keyword_pattern(words: Iterable[str], *, case_sensitive: bool, whole_word: b
         return lower if len(lower) == 1 else character
 
     trees: dict[bool, dict] = {True: {}, False: {}}
-    for word in words:
+    for word in filter(None, map(keyword_text, words)):
         bounded_start = whole_word and _is_word_character(word[0])
         node = trees[bounded_start]
         for character in word:
@@ -388,6 +551,9 @@ class _Info(NamedTuple):
     high: int        # longest match
     first: tuple     # characters a match can start with
     nullable: bool   # can match empty text
+    # Steps one combination takes: the characters it reads, plus everything a
+    # lookaround or atomic group does inside, each time it runs.
+    cost: int
 
 
 _SATURATE = 10 ** 12
@@ -520,28 +686,35 @@ class _Checker:
             infos.append(info)
             after = _union(info.first, after) if info.nullable else info.first
         infos.reverse()
-        ways, low, high, first, nullable = 1, 0, 0, _NONE, True
+        ways, low, high, cost, first, nullable = 1, 0, 0, 0, _NONE, True
         for info in infos:
             ways = _multiply(ways, info.ways)
             low += info.low
             high += info.high
+            cost = min(_SATURATE, cost + info.cost)
             if nullable:
                 first = _union(first, info.first)
                 nullable = info.nullable
-        return _Info(ways, low, high, first, nullable)
+        return _Info(ways, low, high, first, nullable, cost)
+
+    @staticmethod
+    def _work(info: _Info) -> int:
+        """Everything a part of the pattern can do each time it runs, backtracking included."""
+        return _multiply(info.ways, max(1, info.cost))
 
     def node(self, op, value, follow: tuple, flags: int) -> _Info:
         if op in (_sre.LITERAL, _sre.NOT_LITERAL, _sre.ANY, _sre.IN):
-            return _Info(1, 1, 1, self._unit(op, value, flags)[1], False)
+            return _Info(1, 1, 1, self._unit(op, value, flags)[1], False, 1)
         if op is _sre.AT:
-            return _Info(1, 0, 0, _NONE, True)
+            return _Info(1, 0, 0, _NONE, True, 0)
         if op is _sre.SUBPATTERN:
             _group, add, remove, sub = value
             return self.sequence(sub.data, follow, (flags | add) & ~remove)
         if op is _sre.ATOMIC_GROUP:
             inner = self.sequence(value.data, _NONE, flags)
             self.bounded(inner)
-            return inner._replace(ways=1)  # never backtracked into
+            # Never backtracked into, but it does all its own work each time it runs.
+            return inner._replace(ways=1, cost=self._work(inner))
         if op is _sre.BRANCH:
             infos = [self.sequence(alternative.data, follow, flags) for alternative in value[1]]
             first = _union(*(info.first for info in infos))
@@ -552,7 +725,7 @@ class _Checker:
             # gets past its first character.
             ways = max(info.ways for info in infos) if distinct else sum(info.ways for info in infos)
             return _Info(min(ways, _SATURATE), min(info.low for info in infos),
-                         max(info.high for info in infos), first, nullable)
+                         max(info.high for info in infos), first, nullable, max(info.cost for info in infos))
         if op in (_sre.MAX_REPEAT, _sre.MIN_REPEAT, _sre.POSSESSIVE_REPEAT):
             low, high, sub = value
             if high == _sre.MAXREPEAT:
@@ -562,31 +735,35 @@ class _Checker:
             body = self.sequence(sub.data, _union(body_first, follow) if high > 1 else follow, flags)
             if op is _sre.POSSESSIVE_REPEAT:
                 self.bounded(body)
-                ways = 1
+                ways, cost = 1, _multiply(high, self._work(body))
             else:
                 # Giving back a repeat's characters helps only if what follows
                 # can start with one of them.
                 competing = body.nullable or _overlaps(body.first, follow)
                 ways = _multiply(high - low + 1 if competing else 1, _power(body.ways, high))
-            return _Info(ways, low * body.low, high * body.high, body.first, low == 0 or body.nullable)
+                cost = _multiply(high, body.cost)
+            return _Info(ways, low * body.low, high * body.high, body.first, low == 0 or body.nullable, cost)
         if op in (_sre.ASSERT, _sre.ASSERT_NOT):
-            self.bounded(self.sequence(value[1].data, _NONE, flags))
-            return _Info(1, 0, 0, _NONE, True)
+            # A lookaround matches nothing, but runs its whole search each time
+            # the pattern reaches it: inside a repeat, once per repetition.
+            inner = self.sequence(value[1].data, _NONE, flags)
+            self.bounded(inner)
+            return _Info(1, 0, 0, _NONE, True, self._work(inner))
         if op in (_sre.GROUPREF, _sre.GROUPREF_EXISTS):
             raise PatternError("backreferences and conditional groups (\\1, (?P=name), (?(1)...)) "
                                "aren't supported")
         raise PatternError(f"uses a construct Lumi can't check ({op})")
 
-    @staticmethod
-    def bounded(info: _Info) -> None:
+    @classmethod
+    def bounded(cls, info: _Info) -> None:
         if info.high > MAX_MATCH_WIDTH:
             raise PatternError(f"can match more than {MAX_MATCH_WIDTH} characters; lower its repeat limits")
         if info.ways > MAX_WAYS:
             raise PatternError("has repeats that compete for the same characters, which makes scans slow; "
                                "separate them with a character they can't match, or lower their limits")
-        if info.ways * max(1, info.high) > MAX_COST:
-            raise PatternError("could take too long on some text: shorten its longest match or make its "
-                               "repeats more specific")
+        if cls._work(info) > MAX_COST:
+            raise PatternError("could take too long on some text: shorten its longest match, make its "
+                               "repeats more specific, or move lookarounds out of repeats")
 
 
 def _parse(pattern: str, case_sensitive: bool):

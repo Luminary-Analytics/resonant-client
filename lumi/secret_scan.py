@@ -43,17 +43,20 @@ _ENV_SECRETS = PROVIDER_KEY_ENV + (
 # before generic ones: an Anthropic key would otherwise read as an OpenAI key.
 #
 # Every pattern scans in linear time, because each request's text (and the
-# organization's DLP check, lumi/dlp.py) runs them over whatever a tool read.
-# A match may start only where the run of characters it consumes starts (the
-# lookbehinds below), and a private key's body stops at the next BEGIN line;
+# organization's DLP check, lumi/dlp.py) runs them over whatever a tool read:
 # otherwise text such as "-eyJ-eyJ…" or "a.a.a.…" makes each position rescan
-# the rest of the text.
+# the rest of the text. So a match starts only where the run of characters it
+# consumes starts (the lookbehinds below); a token's first part stops before
+# another "-eyJ"; and a private key's body may run over at most two more
+# BEGIN lines (a truncated key before a whole one) on its way to its END.
 _NOT_ALREADY = r"(?!\[REDACTED)(?![$<{])"
 _ENV_NAMES = r"(?:PASSWORD|PASSWD|SECRET|TOKEN|API_KEY|APIKEY|PRIVATE_KEY|ACCESS_KEY)"
+_KEY_LABEL = r"(?:[A-Z0-9]+ )*PRIVATE KEY(?: BLOCK)?-----"
+_KEY_BODY = r"(?:(?!-----BEGIN )[\s\S])*?"
 PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("private key", re.compile(
-        r"-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY(?: BLOCK)?-----(?:(?!-----BEGIN )[\s\S])*?"
-        r"-----END (?:[A-Z0-9]+ )*PRIVATE KEY(?: BLOCK)?-----")),
+        r"-----BEGIN " + _KEY_LABEL + _KEY_BODY + r"(?:-----BEGIN " + _KEY_BODY + r"){0,2}"
+        r"-----END " + _KEY_LABEL)),
     ("AWS access key", re.compile(r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b")),
     ("AWS secret key", re.compile(
         r"(?i)aws_secret_access_key[\"']?\s*[:=]\s*[\"']?(?P<secret>[A-Za-z0-9/+=]{40})(?![A-Za-z0-9/+=])")),
@@ -68,11 +71,14 @@ PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("Hugging Face token", re.compile(r"\bhf_[A-Za-z0-9]{30,}")),
     ("npm token", re.compile(r"\bnpm_[A-Za-z0-9]{36}\b")),
     ("Azure storage key", re.compile(r"(?i)AccountKey=(?P<secret>[A-Za-z0-9+/=]{40,})")),
+    # In these two, a repeat that the next character can't continue is possessive
+    # (``++``, ``*+``, ``{8,}+``): giving characters back could never help it match.
     ("JSON web token", re.compile(
-        r"(?<![A-Za-z0-9_-])eyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}")),
+        r"(?<![A-Za-z0-9_])eyJ(?:[A-Za-z0-9_]|-(?!eyJ)){8,}+\.eyJ[A-Za-z0-9_-]{8,}+\.[A-Za-z0-9_-]{8,}")),
     ("password in a URL", re.compile(
-        r"(?<![a-zA-Z0-9+.\-])[a-zA-Z][a-zA-Z0-9+.\-]*://[^\s:/@]+:" + _NOT_ALREADY
-        + r"(?P<secret>[^\s@/]{4,})@")),
+        # The scheme starts at the first letter of its run ("-https://", "1.https://").
+        r"(?<![a-zA-Z0-9+.\-])[0-9+.\-]*+[a-zA-Z][a-zA-Z0-9+.\-]*+://[^\s:/@]++:" + _NOT_ALREADY
+        + r"(?P<secret>[^\s@/]{4,}+)@")),
     ("secret in .env", re.compile(
         # The name must contain one of _ENV_NAMES; the lookahead checks that
         # once per line instead of backtracking through the name.

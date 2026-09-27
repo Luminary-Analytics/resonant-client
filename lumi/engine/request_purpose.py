@@ -27,8 +27,11 @@ def send_checked(backend, purpose: str, *, usage_context: dict | None = None, re
     Only ``Session._model_stream``, which checks its requests itself, calls
     this directly; anything else uses ``auxiliary_stream``.
     """
+    from .. import dlp
+
     method = getattr(backend, "stream_auxiliary", None)
-    stream = method(purpose=purpose, **kwargs) if callable(method) else backend.stream(**kwargs)
+    stream = (dlp.send(method, purpose=purpose, **kwargs) if callable(method)
+              else dlp.send(backend.stream, **kwargs))
     return _recorded(stream, backend, purpose, dict(usage_context or {})) if record else stream
 
 

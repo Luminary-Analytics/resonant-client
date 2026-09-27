@@ -336,14 +336,20 @@ def compress(
     preserved = {"user_requirements": [], "checklist": list(getattr(session, "todos", [])),
                  "tool_evidence": []}
     for entry in old_messages:
-        previous = entry.get("preserved_context") or {}
+        # An entry the organization's DLP rules blocked (lumi/dlp.py) keeps its
+        # content on this computer: none of it, not even a tool call's command
+        # or path, may reach the summary that later requests send.
+        withheld = bool(entry.get("dlp_withheld"))
+        previous = {} if withheld else entry.get("preserved_context") or {}
         for key in ("user_requirements", "tool_evidence"):
             preserved[key].extend(previous.get(key, []))
         if entry.get("role") == "user":
             preserved["user_requirements"].append(_extract_text(entry))
         if entry.get("role") in {"tool_call", "tool_result"}:
             evidence = {key: entry[key] for key in ("role", "name", "call_id", "is_error", "artifact_id") if key in entry}
-            if entry.get("role") == "tool_call":
+            if withheld:
+                evidence["observation"] = _extract_text(entry)  # the withheld notice
+            elif entry.get("role") == "tool_call":
                 try:
                     args = json.loads(entry.get("arguments") or "{}")
                     evidence["targets"] = {key: args[key] for key in ("path", "command") if key in args}

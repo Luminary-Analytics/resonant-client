@@ -76,6 +76,7 @@ def main() -> None:
     from starlette.responses import JSONResponse
     from starlette.routing import Route
 
+    from lumi import dlp
     from lumi.engine import Session
     from lumi.gui import app as gui
     from lumi.gui.runtime import BackendSpec
@@ -84,12 +85,18 @@ def main() -> None:
     received: list[dict] = []
     service_calls: list[dict] = []
 
+    # Guarded like the real backends: an app path that skipped the DLP check
+    # would fail here instead of reaching the scripted model.
+    @dlp.guard_backend
     class RecordingBackend(StreamingBackend):
         def stream(self, **kwargs):
             received.append({"user_msg": kwargs.get("user_msg"),
                              "conversation_history": kwargs.get("conversation_history"),
                              "max_tokens": kwargs.get("max_tokens")})
             yield from super().stream(**kwargs)
+
+        def classify(self, prompt, max_tokens=20):
+            return super().classify(prompt, max_tokens=max_tokens)
 
     state = gui.state
     state.project.set_project(str(workspace))

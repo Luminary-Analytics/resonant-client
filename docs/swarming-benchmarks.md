@@ -254,4 +254,38 @@ benefit.
     undispatched, as the protocol requires.
   - The ledger now keeps the provider's status code for such failures, and each
     case keeps `worker-events.json`.
-- **Third baseline.** In progress.
+- **Third baseline.** Processor repair was accepted and independently verified
+  (93 seconds).
+  - The investigation failed on the contract again. The findings were right,
+    but the cache values were the strings `"False"`/`"True"`, not JSON
+    booleans.
+  - Serial control was interrupted by `429 Too Many Requests`. That was
+    self-inflicted: a live team ran on the same key at the same time. A
+    supervised request now waits out a 429, which generated nothing.
+
+### Orchestrated teams, live
+
+September 27, 2026, `engine/swarming/autopilot.py`, headless, with real worker
+processes and 2 rounds:
+
+- **Kimi K3, the two-defect investigation.** The orchestrator read both files
+  and answered directly (work items `[]`, the answer in its summary). The team
+  completed in 24 seconds with 2 requests, and the report was correct. Before
+  the fixes this run found, the same answer was rejected: a first plan had to
+  propose work, and prose before the JSON wasn't accepted.
+- **Kimi K3, a five-module review** (cache.py, urls.py, ledger.py, processor.py,
+  backend.py). Both orchestrator turns failed:
+  - one on a 429;
+  - one ended with `<|close|>!!!!...` instead of its plan;
+  - after a retry, three empty replies.
+
+  The loop retried once and then handed the team back, as designed. Such
+  replies are now asked again.
+- **Nemotron 3 Super (`nvidia/nemotron-3-super-120b-a12b`), the same review.**
+  Completed in 303 seconds with 32 requests, all settled.
+  - The orchestrator planned five tasks, four ran at once, and one failed task
+    was retried once.
+  - Round 2 read the findings and wrote the combined report.
+  - The findings were uneven: it found cache.py's unit bug but reported no
+    defect in urls.py (it missed `doseq`), and ledger.py's findings were
+    generic. The workers exchanged no messages; the modules are independent.

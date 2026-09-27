@@ -40,6 +40,10 @@ The dated September 15/18 records below are historical.
 **Fixes found by the live runs.**
 - A worker's call outside its assignment is refused and reported to its model,
   instead of ending the worker (`ToolScopeRefused`).
+- An orchestrator may answer directly with no workers, and prose around one
+  fenced JSON plan is read.
+- A supervised request waits out a 429.
+- A reply of only template tokens and punctuation is asked again.
 - The guarded ledger keeps a provider's status code.
 - The benchmark keeps each case's worker events.
 - Worker processes start before `lumi/__main__.py` moves `~/.resonant`, so a
@@ -54,9 +58,13 @@ The dated September 15/18 records below are historical.
 - `tests/swarm_autonomous.browser.cjs` passes in Edge against the source app
   with scripted inference. The six existing Team browser tests pass;
   `swarm_followup_stop` failed once in five runs and its output wasn't kept.
-- Live NVIDIA NIM runs (`moonshotai/kimi-k3`) are recorded in the
-  [benchmarks](swarming-benchmarks.md#live-runs-on-nvidia-nim). The orchestrator
-  itself hasn't yet run against a live model.
+- Live NVIDIA NIM runs are recorded in the
+  [benchmarks](swarming-benchmarks.md#live-runs-on-nvidia-nim):
+  - Kimi K3's orchestrator answered a small investigation directly.
+  - Nemotron 3 Super ran a five-worker review through two rounds to its final
+    report, in 303 seconds.
+  - Finding quality depends on the model, and no benefit over a single agent is
+    claimed.
 
 ## September 26–27 the Team (swarming) preview — source only, not released
 

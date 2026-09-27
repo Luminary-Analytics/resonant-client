@@ -8,6 +8,107 @@ The heartbeat remains paused. Documentation maintenance does not resume work,
 spending or grants, and changes no native implementation or installed bundle.
 The dated September 15/18 records below are historical.
 
+## September 27 data loss prevention for outgoing content (source only, not released)
+
+**An organization's DLP rules check every request before it leaves for a
+model provider** ([data loss prevention](dlp.md)). A policy's new `dlp`
+section (`"version": 1`) enables built-in detectors and adds rules:
+
+- Detectors: payment card numbers (network prefix and Luhn checked), US Social
+  Security numbers (with separators), IBANs (country length and mod-97
+  checked), the secret scan's credential formats, and email addresses (only
+  when listed).
+- Rules: keywords and phrases (whole words, ignoring case by default; a space
+  matches any run of whitespace) and regular expressions. A pattern that could
+  scan slowly is refused when the policy loads: unbounded or competing
+  repeats, backreferences, matches over 128 characters, and lookarounds or
+  atomic groups whose work, counted each time they run, is too much.
+- Rules read a normalized copy of the text: Unicode spaces, dashes and digits
+  (full-width ones too) in their ASCII form, compatibility characters in their
+  plain form, zero-width characters and soft hyphens ignored. Redactions cover
+  the original characters.
+- Each detector or rule flags, redacts (`[REDACTED:<rule>]` in the copy that is
+  sent; the conversation keeps the original) or blocks, optionally for some
+  kinds of content only (prompts, attachments, tool results, instructions,
+  model output). Messages Lumi writes into a conversation (hook context,
+  nudges) are checked by every rule, since they can quote tool output.
+- An optional external DLP service gets the text after the built-in
+  redactions and answers allow, redact or block; `on_error` says what a
+  failure does (block by default). Its verdicts are remembered per text.
+
+**Where it applies.** `Session._model_stream` (turns in the app, `lumi run`,
+scheduled tasks, the gateway, the terminal UI, sub-agents, specialists and Team
+workers in and out of process) and `request_purpose.auxiliary_stream` (titles,
+compaction, image descriptions, skill extraction, which now goes through it)
+check the exact request, after the secret scan. The planning check, a
+specialist's structured-output repair, SONN employee advice and a `[vision]`
+acceptance check's question check their text with `dlp.check_text`. Every
+model backend's request methods are guarded (`dlp.guard_backend`): while a
+policy applies, a call that didn't come through the check (`dlp.send`, or
+`dlp.permit` for fixed text) is refused instead of sent. `tests/test_dlp.py`
+also counts every use of those methods and every model endpoint in the code,
+so a new one fails until it's reviewed. What Lumi sends Engram (recall
+queries, memories, session summaries) passes the rules too.
+
+**What people see.**
+- A redaction leaves a quiet notice in the conversation naming the rules and
+  counts.
+- A block fails the turn with a message naming the rule and where it matched,
+  never the content. The entry it came from is left out of later requests
+  (with a DLP service, for good, and it isn't sent to the service again), and
+  the failed card offers **Continue** without **Retry**.
+- **Settings > Privacy & security > Organization policy** lists the rules'
+  names, actions and scope, read-only; keywords and patterns never reach the
+  page.
+- A `dlp` section that can't be used (an unknown key, an unsupported version,
+  a refused pattern) refuses every model request with the reason, while the
+  rest of the policy applies (`policy.blocked_reason`).
+
+**Records.** `dlp.finding` (rule, action, content kind, count, purpose,
+provider, model, source) and `dlp.error` in the audit log, never matched text;
+content already recorded for a session and model isn't recorded again.
+
+**Tool arguments and withheld entries.** Tool call arguments are checked key
+by key and value by value and stay valid JSON; arguments with a duplicated
+key go out as the tool read them (each key's last value). Signed reasoning with
+a match is left out, never edited, whether a rule or the service found it. A
+withheld entry's notice is marked as Lumi's (so SONN doesn't learn from it as
+the person's words), works for entries saved without content, and stays out of
+compaction summaries along with its tool call's command and path; its images
+aren't described.
+
+**Also changed.**
+- Four `secret_scan` patterns scanned some text in quadratic time (50 KB of
+  `-eyJ`, `a.`, `TOKEN` or a private key's BEGIN line repeated took 0.4 to
+  1.8 seconds per pattern). They're linear now and find what they did before
+  (a token after a hyphen, `-https://user:password@…`, a truncated key before a
+  whole one), with two documented limits: a token whose first part contains
+  `-eyJ`, and a key body with more than two further BEGIN lines before its END.
+
+**Not yet.** Images (their descriptions are checked), dictation audio, tool
+definitions and what the Codex and Claude Code CLIs read themselves aren't
+checked; sharing, hand-offs, MCP and web tool requests aren't model requests
+and aren't covered; the service can't carry a credential.
+
+**Validation.**
+- `tests/test_dlp.py` (198 tests): detectors (with Unicode formatting),
+  rules, the pattern check (lookarounds included), strict parsing, every
+  action, scopes, JSON keys and duplicated keys, signed reasoning, turns, tool
+  results, titles, compaction, planning, repair, vision questions, Engram, a
+  guarded worker Session, the Team runtime's in-process worker and a real
+  worker process that loads the policy from `LUMI_POLICY_FILE`, the external
+  service through `httpx.MockTransport` (conversations continuing after its
+  blocks), the backend guard, audit records and timing checks. A megabyte of
+  each of 23 adversarial inputs scans in 0.05 to 0.6 seconds on the development machine,
+  under load; the test fails at a second.
+- `tests/test_secret_scan.py` covers the restored matches, the two limits and
+  the patterns' speed on adversarial text.
+- `tests/dlp_ui.browser.cjs` passed five runs in a row in Edge against
+  the source app, with scripted inference, a fixture policy and a loopback DLP
+  service that redacts a name. It covers the redaction notice, what the model
+  and the service received, the block with **Continue**, the withheld entry,
+  the audit records and the Settings rows at desktop and phone widths.
+
 ## September 27 Team: a team's results in its chat (source only, not released)
 
 **Use in chat.** The Team panel's **Use in chat** adds `@team:<run id>` to the

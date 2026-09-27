@@ -168,6 +168,13 @@ class SonnTaskController:
         """One owner-consented consultation; return to ordinary execution next."""
         if mode not in ('advise', 'coordinate'):
             raise ValueError('Select execution advice or coordination advice')
+        if isinstance(question, str) and question.strip():
+            # A model request like any other: the organization's DLP rules (lumi/dlp.py) first.
+            from .dlp import Blocked, check_text
+            try:
+                question = check_text(question, purpose='advice', kind='prompt', provider='sonn', model='sonn-auto')
+            except Blocked as exc:
+                raise SonnTaskError(exc.message) from None
         if not isinstance(question, str) or not question.strip() or len(question.encode('utf-8')) > 8192:
             raise ValueError('Advice question must contain 1 to 8192 UTF-8 bytes')
         sources = [] if source_teaching_ids is None else source_teaching_ids

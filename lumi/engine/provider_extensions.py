@@ -54,6 +54,7 @@ import time
 from pathlib import Path
 from typing import Any, Iterator
 
+from .. import dlp
 from ..backends import EVENT_DONE, EVENT_ERROR, EVENT_TEXT_DELTA, EVENT_TOOL_CALL, _described, _new_call_id
 from ..capabilities import ModelCapabilities
 from ..content import content_text, text_fallback
@@ -299,6 +300,7 @@ def _count(value: Any) -> int:
         return 0
 
 
+@dlp.guard_backend
 class ExtensionBackend:
     """A model connection whose provider is a pack's process (connection type ``extension``)."""
 

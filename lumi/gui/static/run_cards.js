@@ -329,6 +329,7 @@ class LumiRunCards {
         };
         this._agentRunErrored = false;
         this._agentRunErrorMessage = '';
+        this._agentRunErrorCode = '';
     }
 
 
@@ -521,9 +522,12 @@ class LumiRunCards {
         if (['incomplete', 'failed', 'changed_unverified'].includes(outcome) && !this._replay) {
             const actions = document.createElement('span');
             actions.className = 'task-recovery-actions';
+            // The organization's DLP rules refused the request (lumi/dlp.py): sending
+            // it again, to this model or another, is refused the same way.
+            const refusedContent = outcome === 'failed' && ['dlp_blocked', 'policy_blocked'].includes(this._agentRunErrorCode);
             actions.innerHTML = `
-                <button type="button" class="task-review-btn" data-recovery="retry">Retry</button>
-                <button type="button" class="task-review-btn" data-recovery="alternate">Retry another model</button>
+                ${refusedContent ? '' : `<button type="button" class="task-review-btn" data-recovery="retry">Retry</button>
+                <button type="button" class="task-review-btn" data-recovery="alternate">Retry another model</button>`}
                 <button type="button" class="task-review-btn" data-recovery="continue">${outcome === 'changed_unverified' ? 'Verify changes' : 'Continue'}</button>
             `;
             actions.querySelector('[data-recovery="retry"]')?.addEventListener('click', () => {

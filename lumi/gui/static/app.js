@@ -9702,6 +9702,7 @@ class LumiApp {
         // failed, and no next prompt is suggested.
         this._agentRunErrored = true;
         this._agentRunErrorMessage = event.message || '';
+        this._agentRunErrorCode = event.code || '';
 
         // A task card already has a dedicated failure summary with recovery
         // actions and expandable detail. Rendering a raw error block beside it
@@ -11056,6 +11057,8 @@ class LumiApp {
             this._renderOllamaExhaustedChip(event);
         } else if (event.kind === 'secrets_redacted') {
             this._renderSecretsRedactedNotice(event);
+        } else if (event.kind === 'dlp_redacted') {
+            this._renderDlpRedactedNotice(event);
         } else if (event.kind === 'budget_warning') {
             this._renderBudgetNotice(event);
         } else if (event.kind === 'model_fallback') {
@@ -11122,6 +11125,24 @@ class LumiApp {
         notice.innerHTML = `
             <svg class="backend-status-icon" width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M8 1 2 3v5c0 4 3 6 6 7 3-1 6-3 6-7V3z M5.5 8l2 2 3-3.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
             <span class="backend-status-text">${this.escapeHtml(event.message || 'Removed secrets before sending to the model.')}</span>
+        `;
+        this.chatMessages.appendChild(notice);
+        this.scrollToBottom();
+    }
+
+    /**
+     * The organization's DLP rules redacted content in the copy sent to the
+     * model (lumi/dlp.py); the conversation here keeps the original. The
+     * event names rules and counts, never what matched.
+     */
+    _renderDlpRedactedNotice(event) {
+        if (!this.chatMessages) return;
+        const notice = document.createElement('div');
+        notice.className = 'backend-status-banner backend-status-privacy backend-status-dlp';
+        notice.setAttribute('role', 'status');
+        notice.innerHTML = `
+            <svg class="backend-status-icon" width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M8 1 2 3v5c0 4 3 6 6 7 3-1 6-3 6-7V3z M5 8h6" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            <span class="backend-status-text">${this.escapeHtml(event.message || 'Your organization’s data loss prevention rules changed content before sending.')}</span>
         `;
         this.chatMessages.appendChild(notice);
         this.scrollToBottom();

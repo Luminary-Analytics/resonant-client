@@ -86,10 +86,10 @@ class FakeCloud:
             return httpx.Response(403, json={"error": "device_mismatch",
                                              "error_description": "Not this device's organization."})
         # A notice one of the organization's policies produced for this device:
-        # SHA-256 of {device, organization_id, oversight section as published}, first 16 hex.
+        # The SHA-256 hex digest of {device, organization_id, oversight section as published}.
         produced = {hashlib.sha256(json.dumps(
             {"device": device_id, "organization_id": "org_acme", "oversight": document.get("oversight") or {}},
-            sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")).hexdigest()[:16]
+            sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")).hexdigest()
             for document in self.published}
         if record.get("notice_fingerprint") not in produced:
             return httpx.Response(409, json={"error": "notice_mismatch",

@@ -374,6 +374,52 @@ def _interactive(stdin: TextIO, stderr: TextIO) -> bool:
         return False
 
 
+def _terminal_attached(*streams: Any) -> bool:
+    """Whether a person may be at a terminal: one of ``streams`` is a terminal, or the process has a
+    controlling terminal.
+
+    Organization oversight counts a run as unattended only when neither is so
+    (lumi/oversight.py): the run's environment says whether anyone is there,
+    never what started it.
+    """
+    for stream in streams:
+        try:
+            if stream is not None and stream.isatty():
+                return True
+        except (AttributeError, OSError, ValueError):
+            continue
+    return _controlling_terminal()
+
+
+def _controlling_terminal() -> bool:
+    """POSIX: ``/dev/tty`` opens. Windows: a console window, in an interactive session (not session 0)."""
+    return _windows_console() if sys.platform == "win32" else _posix_tty()
+
+
+def _posix_tty(opener: Any = os.open, closer: Any = os.close) -> bool:
+    try:
+        descriptor = opener("/dev/tty", os.O_RDONLY | getattr(os, "O_NOCTTY", 0))
+    except OSError:
+        return False
+    closer(descriptor)
+    return True
+
+
+def _windows_console() -> bool:
+    try:
+        import ctypes
+
+        kernel32 = ctypes.windll.kernel32
+        if not kernel32.GetConsoleWindow():
+            return False  # a windowless process: Task Scheduler's, or started without a console
+        session = ctypes.c_ulong(0)
+        if kernel32.ProcessIdToSessionId(kernel32.GetCurrentProcessId(), ctypes.byref(session)) and not session.value:
+            return False  # session 0 runs services: nobody sees its consoles
+        return True
+    except Exception:
+        return False
+
+
 def _confirm_oversight(gate: Any, settings: Any, stdin: TextIO, stderr: TextIO) -> bool:
     """Ask the person at this terminal to confirm the organization's notice; True once they typed yes."""
     from . import oversight
@@ -389,8 +435,13 @@ def _confirm_oversight(gate: Any, settings: Any, stdin: TextIO, stderr: TextIO) 
     if not oversight.is_yes(answer):
         stderr.write("lumi run: nothing was sent.\n")
         return False
-    if not oversight.acknowledge(gate.fingerprint, "terminal", notice=gate.text,
-                                 signer=CloudClient(settings).sign_as_device):
+    try:
+        confirmed = oversight.acknowledge(gate.fingerprint, "terminal", notice=gate.text,
+                                          signer=CloudClient(settings).sign_as_device)
+    except oversight.ConfirmationError as exc:
+        stderr.write(f"lumi run: {exc}\n")
+        return False
+    if not confirmed:
         stderr.write("lumi run: the organization's notice changed while you read it; nothing was sent. "
                      "Run the command again to see the current notice.\n")
         return False
@@ -398,13 +449,16 @@ def _confirm_oversight(gate: Any, settings: Any, stdin: TextIO, stderr: TextIO) 
 
 
 def main(argv: list[str] | None = None, *, stdin: TextIO | None = None, stdout: TextIO | None = None,
-         stderr: TextIO | None = None, trigger: str = "") -> int:
+         stderr: TextIO | None = None, trigger: str = "", attended: bool = False) -> int:
     """``lumi run``.
 
     ``trigger`` names what started it for organization oversight
-    (``schedule`` for a scheduled task, which is never interactive); by
-    default a run at an interactive terminal is ``terminal`` and any other
-    ``headless``.
+    (``schedule`` for a scheduled task, which never asks); by default a run
+    with someone at a terminal is ``terminal`` and any other ``headless``.
+    Whether anyone is there comes from the environment: the run is
+    unattended only when none of its standard streams is a terminal and the
+    process has no controlling terminal. ``attended`` (the app's Run now)
+    can only say someone is there: such a run needs the notice confirmed.
     """
     stdin, stdout, stderr = stdin or sys.stdin, stdout or sys.stdout, stderr or sys.stderr
     parser = argparse.ArgumentParser(prog="lumi run", description="Run one task without a UI and report the result.")
@@ -470,16 +524,19 @@ def main(argv: list[str] | None = None, *, stdin: TextIO | None = None, stdout: 
         return EXIT_USAGE
     # Organization oversight (lumi/oversight.py), before anything starts: the
     # notice, then a typed yes from someone at an interactive terminal. A run
-    # nobody can answer (a schedule, CI) is unattended: it runs if this
+    # with nobody at a terminal (a schedule, CI: none of its streams is a
+    # terminal, and no controlling terminal) is unattended: it runs if this
     # computer user confirmed the notice, or under the policy's
     # `oversight.unattended` ("record" prints the notice with the output and
-    # records the run; "block" refuses it).
+    # records the run; "block" refuses it). Anyone there who can't answer
+    # here (a task piped in) confirms the notice in the app first.
     from . import oversight
 
-    interactive = trigger != "schedule" and _interactive(stdin, stderr)
-    session.oversight_trigger = trigger or ("terminal" if interactive else "headless")
-    session.oversight_unattended = not interactive
-    gate = oversight.for_terminal(unattended=not interactive)
+    present = attended or _terminal_attached(stdin, stdout, stderr, sys.__stdin__, sys.__stdout__, sys.__stderr__)
+    can_ask = trigger != "schedule" and _interactive(stdin, stderr)
+    session.oversight_trigger = trigger or ("terminal" if present else "headless")
+    session.oversight_unattended = not present
+    gate = oversight.for_terminal(unattended=not present)
     notice = gate.notice
     if notice:
         stderr.write(f"{NOTICE_PREFIX}{notice}\n")
@@ -487,6 +544,9 @@ def main(argv: list[str] | None = None, *, stdin: TextIO | None = None, stdout: 
         stderr.write(f"lumi run: {gate.refusal}\n")
         return EXIT_USAGE
     if gate.confirm:
+        if not can_ask:
+            stderr.write(f"lumi run: {oversight.refusal('terminal')}\n")
+            return EXIT_ATTENTION
         if not _confirm_oversight(gate, settings, stdin, stderr):
             return EXIT_ATTENTION
         from .cloud import CloudClient

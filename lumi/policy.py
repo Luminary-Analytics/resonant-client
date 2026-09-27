@@ -60,10 +60,10 @@ kept there for ``retention_days``. It is off unless a policy turns it on, and
 the person is always told: Lumi shows a notice naming the organization and
 what it receives, and sends nothing to a model until they have confirmed
 they read it. ``unattended`` says what a run with nobody to show the notice
-to does (a scheduled task, ``lumi run`` without an interactive terminal)
-while nobody has confirmed it as that computer user: ``record`` (the
-default) runs it, prints the notice with its output and records it;
-``block`` refuses it. Its ``version`` (1, the default) says which keys it
+to does (a scheduled task or ``lumi run`` with no terminal, as its
+environment reports) while nobody has confirmed it as that computer user:
+``record`` (the default) runs it, prints the notice with its output and
+records it; ``block`` refuses it. Its ``version`` (1, the default) says which keys it
 may have. A key or a version this Lumi doesn't know turns oversight off,
 with the reason in Settings, and leaves the rest of the policy in force:
 Lumi never collects less or more than it can describe, and a newer Lumi

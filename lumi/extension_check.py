@@ -4,7 +4,9 @@
   each provider the way a connection would: once to list its models and once
   to answer a short prompt, checking what it writes against the protocol.
   The folder is the author's own pack, so it runs without an approval;
-  nothing is installed or saved.
+  nothing is installed or saved. Under an organization's policy the prompt
+  passes the same gates as any model request: its oversight notice must be
+  confirmed (lumi/oversight.py) and its DLP rules apply (lumi/dlp.py).
 * ``keygen <key file>`` makes an Ed25519 key for signing packs, and ``sign
   <folder>`` writes the pack's ``lumi-pack.sig`` (engine/pack_signing.py).
 """
@@ -82,8 +84,29 @@ def check(folder: str | Path, *, prompt: str = DEFAULT_PROMPT, api_key: str = ""
         if declared and set(declared) != set(ids):
             findings.append(("note", f"The manifest lists {', '.join(declared)}; Lumi offers those without "
                                      "starting the process, so keep the two in step."))
-        findings.extend(_try_stream(pack, provider, command, ids[0], prompt, api_key, timeout))
+        checked, why = _gated(pack, ids[0], prompt)
+        if why:
+            findings.append(("note", f"{label} wasn't asked to answer: {why}"))
+            continue
+        findings.extend(_try_stream(pack, provider, command, ids[0], checked, api_key, timeout))
     return findings
+
+
+def _gated(pack, model: str, prompt: str) -> tuple[str, str]:
+    """(the prompt as it may be sent, why it may not): an organization's policy's gates for a model request."""
+    from . import dlp, oversight
+    from .policy import current
+
+    if current() is None:
+        return prompt, ""
+    refusal = oversight.refusal("terminal")
+    if refusal:
+        return "", refusal
+    try:
+        return dlp.check_text(prompt, purpose="extension_check", kind="prompt", provider=f"extension:{pack.id}",
+                              model=model), ""
+    except dlp.Blocked as exc:
+        return "", exc.message
 
 
 def _try_stream(pack, provider, command, model, prompt, api_key, timeout) -> list[tuple[str, str]]:

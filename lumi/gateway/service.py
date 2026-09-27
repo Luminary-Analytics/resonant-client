@@ -286,13 +286,21 @@ class GatewayService:
             return True
         notice, fingerprint = pending
         command, token = parse_command(msg.text)
-        confirming = (command == "acknowledge" and token in ("", fingerprint)) or oversight.is_acknowledgment(msg.text)
-        if confirming and oversight.chat_notified(key, fingerprint) and oversight.acknowledge(
-                fingerprint, "gateway", chat=key, notice=notice, signer=self._oversight_signer):
-            self._adapter.send(chat_id, "Thanks. Lumi runs this chat's requests from now on: send yours again.")
-            return False
+        confirming = ((command == "acknowledge" and token in ("", oversight.button_token(fingerprint)))
+                      or oversight.is_acknowledgment(msg.text))
+        if confirming and oversight.chat_notified(key, fingerprint):
+            try:
+                confirmed = oversight.acknowledge(fingerprint, "gateway", chat=key, notice=notice,
+                                                  signer=self._oversight_signer)
+            except oversight.ConfirmationError as exc:
+                self._adapter.send(chat_id, str(exc))
+                return False
+            if confirmed:
+                self._adapter.send(chat_id, "Thanks. Lumi runs this chat's requests from now on: send yours again.")
+                return False
         try:
-            delivered = self._adapter.notice(chat_id, oversight.chat_message(notice), fingerprint) is not False
+            delivered = self._adapter.notice(chat_id, oversight.chat_message(notice),
+                                             oversight.button_token(fingerprint)) is not False
         except Exception:
             logger.warning("Couldn't send the oversight notice to chat %s", chat_id, exc_info=True)
             delivered = False

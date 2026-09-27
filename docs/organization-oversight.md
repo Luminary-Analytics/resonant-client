@@ -119,11 +119,22 @@ hasn't confirmed its notice on this computer, Lumi sends nothing to a model:
   nor a DLP service see its text, and nothing about it is recorded as a DLP
   finding.
 
-A policy that collects more, another enrollment, or another organization
-needs the notice confirmed again, and leaving the organization or signing
-out of Lumi Cloud forgets the confirmation (the app locks again at once).
-Confirmations are per computer user: another person signing in to the same
-computer confirms for themselves.
+A policy that collects more, another enrollment, another organization, or a
+changed notice text (a new Lumi's wording, a renamed organization) needs the
+notice confirmed again, and leaving the organization or signing out of Lumi
+Cloud forgets the confirmation (the app locks again at once). Confirmations
+are per computer user: another person signing in to the same computer
+confirms for themselves.
+
+While the notice waits, dictation doesn't listen either: the microphone
+button is disabled, **Ctrl+Shift+Space** does nothing but say why, and
+`voice.status` tells the page and the transcription path that neither the
+webview's recognizer (which sends audio to Google, Microsoft or Apple) nor
+a transcription service may start. Dictation already listening stops when
+the notice locks the message box. A capability pack's
+[panel](extensions.md#panels) can still add text to the locked box, but
+nothing sends it. After a turn the notice stopped, nothing of it goes to
+Engram either.
 
 **Settings > Privacy & security > Organization oversight** lists exactly what
 is shared and what never is, who can read messages, what happens to runs
@@ -142,8 +153,8 @@ A confirmation comes only from a person:
 
 - **app**: the notice's own **I've read this** button (never a status push,
   a timer or a painted page). The page sends the fingerprint and the notice
-  as it showed it; a page that showed another policy's notice or text
-  confirms nothing.
+  as it showed it, and must send both: a page that showed another policy's
+  notice or text, or doesn't say what it showed, confirms nothing.
 - **terminal**: `lumi run` at an interactive terminal (standard input and
   standard error are both terminals) and the terminal UI print the notice
   and ask for a typed `yes`; anything else stops without sending anything.
@@ -170,12 +181,20 @@ notice text that was shown:
 - **Signed** with the enrolled device's Ed25519 key (`api_keys`
   `lumi_cloud_device_key`, `CloudClient.sign_as_device`) over the record's
   canonical JSON: sorted keys, no whitespace, UTF-8 (`ensure_ascii=False`),
-  as policies are signed. The signature is base64url **with** padding.
+  as policies are signed. The signature is base64url **with** padding. A
+  confirmation that can't be signed with that key (it isn't there, or the
+  credential store refuses) confirms nothing, and the person is told why.
+- **Checked every time it's used**: a kept confirmation counts only while
+  its signature verifies with this computer's device key and it covers the
+  notice in force: the same organization, enrollment and fingerprint, the
+  SHA-256 of the notice text as the surface shows it now, and this computer
+  user (or, for a chat, that chat). A `notice.json` or `chats.json` written
+  or changed by hand counts for nothing.
 - The person is unblocked at once. The record then waits in the queue's
   `acknowledgments` table and goes to `POST /api/v1/oversight/acknowledgments`
   (`{"record": ..., "signature": ...}`, signed in as the device) before any
-  turn records, retried with the same backoff. A record the key couldn't
-  sign when it was made is signed by the sender first.
+  turn records, retried with the same backoff. An unsigned record is never
+  sent.
 - Lumi Cloud answers `201 {"id": ..., "policy_version": ...}` (the version
   whose notice the fingerprint matched, or `null`: a confirmation of a notice
   it didn't publish, such as a machine policy's, is kept and shown as
@@ -189,8 +208,17 @@ notice text that was shown:
 ## Runs with nobody at the screen
 
 A scheduled task (`lumi schedule run`, trigger `schedule`) and `lumi run`
-without an interactive terminal (CI, service accounts, output or input
-piped; trigger `headless`) have nobody to show the notice to.
+(trigger `headless`) have nobody to show the notice to when **their
+environment** says so: none of standard input, output and error is a
+terminal, and the process has no controlling terminal (POSIX: `/dev/tty`
+doesn't open; Windows: no console window in an interactive session). What
+started the run can't say that nobody is there; the app's **Run now** says
+the opposite, since the person is in the app, and its run is recorded as
+`schedule` with `unattended: false` and needs the notice confirmed like any
+attended run. A run with someone at a terminal that can't be asked (a task
+piped into `lumi run`) is attended too: it is refused (exit code 3) until
+the notice is confirmed in the app or by typing yes at an interactive
+`lumi run` or the terminal UI.
 
 - If this computer user confirmed the notice for the policy in force (in the
   app or at a terminal), the run proceeds and is recorded as theirs.
@@ -210,8 +238,9 @@ piped; trigger `headless`) have nobody to show the notice to.
 - Tasks from chat never run on a managed computer (AGENTS.md); on a joined
   one they run only after the person confirmed the notice.
 
-Only a surface that says nobody is there (`Session.oversight_unattended`)
-runs under `record`; every other turn needs a person's confirmation.
+Only a surface that says nobody is there (`Session.oversight_unattended`,
+which `lumi run` and scheduled runs take from their environment) runs under
+`record`; every other turn needs a person's confirmation.
 
 ## The chat gateway
 
@@ -223,10 +252,11 @@ run:
   instead of a reply, with an **I've read this** button (Telegram, Slack) and
   *reply "I've read this"*. The request doesn't run and nothing reaches a
   model.
-- The button (`/acknowledge <token>`) or the reply `I've read this` (any
-  case, with or without the curly apostrophe; also `I have read this`)
-  confirms it for that chat and that policy's fingerprint: a signed record
-  with `surface: "gateway"` and `person.chat`. A reply counts only once the
+- The button (`/acknowledge <token>`, the fingerprint's first 32 hex
+  characters, which fit Telegram's 64-byte button data) or the reply `I've
+  read this` (any case, with or without the curly apostrophe; also `I have
+  read this`) confirms it for that chat and that policy's fingerprint: a
+  signed record with `surface: "gateway"` and `person.chat`. A reply counts only once the
   chat was sent that notice, and a button from an older notice is answered
   with the current one. The chat then sends its request again.
 - A policy that collects more is confirmed again. **status** repeats the
@@ -290,6 +320,12 @@ token options (`--password`, `--token`, `mysql -p…`, `curl -u user:…`,
 `db_password = …`, `"apiKey": "…"`); a private key whose end was cut off;
 and long random-looking tokens. Hashes, commit ids, UUIDs and paths stay.
 The record counts what was removed, never the values.
+
+**A session's title stays out once DLP touched the session.** A title is
+the gist of the first message, shortened and capitalized, where DLP's own
+checks can't recognize what they matched (a keyword cut in half). Once DLP
+withheld or changed a message of a session, or a DLP service refused one of
+its turns, that session's records carry no title from then on.
 
 **The organization's [DLP rules](dlp.md) apply to everything shared, after
 secrets are removed and before anything is cut** (`dlp.shareable`), as they
@@ -407,8 +443,8 @@ notice, with their records) and `sessions.json` (turn numbers).
 
 What Lumi Cloud implements against (lumi-cloud's oversight ingest):
 
-- **The fingerprint** of the notice in force: the first 16 hex characters of
-  SHA-256 over the canonical JSON (sorted keys, no whitespace, UTF-8,
+- **The fingerprint** of the notice in force: the SHA-256 hex digest (all 64
+  characters) of the canonical JSON (sorted keys, no whitespace, UTF-8,
   `ensure_ascii=False`) of `{"device": <device id>, "organization_id":
   <organization id>, "oversight": <the policy's oversight section exactly as
   published>}` (`oversight.notice_fingerprint`). Lumi Cloud computes it for
@@ -431,9 +467,10 @@ What Lumi Cloud implements against (lumi-cloud's oversight ingest):
 
 ## Known limits
 
-- `lumi run` counts as interactive only when standard input and standard
-  error are both terminals: a person who pipes a task in (`lumi run -`) is
-  an unattended run, which prints the notice and, under `record`, runs.
+- "Unattended" is what the run's environment reports. A service account
+  that gives its runs a terminal (a pseudo-terminal, a console window in an
+  interactive session) is attended and needs the notice confirmed, and one
+  that detaches a person's run from every terminal makes it unattended.
 - The check reads small files before every turn and model request
   (`settings.json`, the confirmation): cheap, but not free.
 - A worker's own secret redactions and model usage aren't in its parent's

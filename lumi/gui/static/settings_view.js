@@ -612,6 +612,13 @@ class LumiSettingsView {
     _setOversightLock(locked) {
         const was = Boolean(this._oversightLocked);
         this._oversightLocked = locked;
+        // Nothing may keep listening once the notice locks the message box.
+        if (locked && this._dictation && this._dictation.state !== 'idle') this._dictation.cancel({focus: false});
+        if (locked !== was) {
+            if (typeof this._syncDictationButton === 'function') this._syncDictationButton();
+            // Unlocked: ask again which ways of dictating may listen (lumi/voice.py follows the notice).
+            if (!locked && typeof this.send === 'function') this.send({command: 'voice_status'});
+        }
         const input = this.userInput || document.getElementById('user-input');
         const hadFocus = Boolean(input) && document.activeElement === input;
         for (const id of ['user-input', 'send-btn', 'add-context-btn', 'composer-prompts-btn', 'mic-btn', 'composer-autonomous-btn']) {

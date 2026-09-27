@@ -123,10 +123,11 @@ def test_a_run_is_lumi_run_with_the_schedules_settings(project, monkeypatch):
                                    max_minutes=5))
     seen = {}
 
-    def fake_main(argv, *, stdin, stdout, stderr, trigger=""):
+    def fake_main(argv, *, stdin, stdout, stderr, trigger="", attended=False):
         seen["argv"] = argv
         seen["running"] = schedules.running(schedule.id)
         seen["trigger"] = trigger
+        seen["attended"] = attended
         stdout.write(json.dumps({"status": "completed", "outcome": "answered", "text": "All current.",
                                  "changed_files": ["requirements.txt"], "errors": [],
                                  "usage": {"cost_usd": 0.0123}}))
@@ -139,8 +140,9 @@ def test_a_run_is_lumi_run_with_the_schedules_settings(project, monkeypatch):
     assert seen["argv"] == ["--project", project, "--mode", "auto-edit", "--output", "json", "--timeout", "300",
                             "--provider", "anthropic", "--model", "claude-x", "Check the dependencies."]
     assert seen["running"] is True
-    # Organization oversight records it as a scheduled, unattended run (lumi/oversight.py).
-    assert seen["trigger"] == "schedule"
+    # Organization oversight records it as a scheduled run, unattended when its
+    # environment says so; the scheduler doesn't say anyone is there (lumi/oversight.py).
+    assert seen["trigger"] == "schedule" and seen["attended"] is False
     assert schedules.running(schedule.id) is False  # the claim goes with the run
 
     last = schedules.last_run(schedule.id)
@@ -159,7 +161,7 @@ def test_a_failed_run_is_recorded_and_old_results_are_pruned(project, monkeypatc
     schedule = schedules.save(_raw(project))
     from lumi import headless
 
-    def broken(argv, *, stdin, stdout, stderr, trigger=""):
+    def broken(argv, *, stdin, stdout, stderr, trigger="", attended=False):
         raise RuntimeError("provider unreachable")
 
     monkeypatch.setattr(headless, "main", broken)
@@ -168,7 +170,7 @@ def test_a_failed_run_is_recorded_and_old_results_are_pruned(project, monkeypatc
     assert last["status"] == "failed" and "provider unreachable" in last["error"]
 
     # A run that got as far as a summary reports its own errors.
-    def refused(argv, *, stdin, stdout, stderr, trigger=""):
+    def refused(argv, *, stdin, stdout, stderr, trigger="", attended=False):
         stdout.write(json.dumps({"status": "budget_exceeded", "outcome": "failed", "text": "",
                                  "errors": [{"message": "The daily budget is used up.", "code": "budget_exceeded"}]}))
         stderr.write("lumi run: stopped")
@@ -281,6 +283,8 @@ def test_run_now_claims_the_run_for_the_process_it_starts(project, monkeypatch):
     assert started["args"][-3:] == ["schedule", "run", schedule.id]
     assert started["stdin"] is subprocess.DEVNULL
     token = started["env"][schedules.CLAIM_ENV]
+    # The person pressed Run now: the run is attended (organization oversight).
+    assert started["env"][schedules.ATTENDED_ENV] == "1"
     claim = json.loads((schedules.runs_folder(schedule.id) / "running.json").read_text(encoding="utf-8"))
     assert claim["token"] == token and claim["pid"] == os.getpid()
     # A second click finds it running.
@@ -291,10 +295,13 @@ def test_run_now_claims_the_run_for_the_process_it_starts(project, monkeypatch):
     # doesn't stay in the environment its own commands inherit.
     from lumi import headless
 
-    monkeypatch.setattr(headless, "main", lambda argv, **_: 0)
+    passed = {}
+    monkeypatch.setattr(headless, "main", lambda argv, **kwargs: passed.update(kwargs) or 0)
     monkeypatch.setenv(schedules.CLAIM_ENV, token)
+    monkeypatch.setenv(schedules.ATTENDED_ENV, "1")
     assert schedules.run(schedule.id) == 0
-    assert schedules.CLAIM_ENV not in os.environ
+    assert schedules.CLAIM_ENV not in os.environ and schedules.ATTENDED_ENV not in os.environ
+    assert passed["attended"] is True
     with pytest.raises(schedules.ScheduleError, match="no longer exists"):
         schedules.start("gone")
 

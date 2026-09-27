@@ -41,18 +41,24 @@ interactive terminal (``lumi run``, the terminal UI) or, for a chat of the
 chat gateway, that chat's button or reply; never from a status push, a timer
 or a painted page. Each one is a record (``ACKNOWLEDGMENT_KIND``) signed with
 this computer's enrolled device key, kept here and sent to Lumi Cloud in the
-background; the person is unblocked at once. Its fingerprint covers the
-organization, this computer's enrollment and the policy's ``oversight``
-section as published, so another enrollment or a changed section needs it
-confirmed again, and leaving the organization or signing out of Lumi Cloud
-forgets it.
+background; the person is unblocked at once. A kept confirmation counts only
+while its signature verifies with this computer's device key and it covers
+the notice in force: its fingerprint (the organization, this computer's
+enrollment and the policy's ``oversight`` section as published) and the
+SHA-256 of the notice's text. Another enrollment, a changed section or a
+changed text (a new Lumi, a renamed organization) needs it confirmed again,
+a file written by hand counts for nothing, and leaving the organization or
+signing out of Lumi Cloud forgets it.
 
-**Unattended runs** (a scheduled task, ``lumi run`` without an interactive
-terminal) have nobody to show the notice to. If this computer user
-confirmed it, they run and are recorded as theirs; otherwise the policy's
-``oversight.unattended`` decides: ``record`` (the default) runs them, prints
-the notice with their output and records them with the computer user and
-device as who ran them; ``block`` refuses them.
+**Unattended runs** have nobody to show the notice to: a scheduled task or
+``lumi run`` whose standard input, output and error are none of them a
+terminal, in a process with no controlling terminal (on Windows, no console
+window in an interactive session). The run's environment says so, never
+what started it. If this computer user confirmed the notice, they run and
+are recorded as theirs; otherwise the policy's ``oversight.unattended``
+decides: ``record`` (the default) runs them, prints the notice with their
+output and records them with the computer user and device as who ran them;
+``block`` refuses them.
 
 **Where it goes.** Only to the Lumi Cloud of the organization whose policy
 asks for it: the policy must come from that Lumi Cloud (verified for this
@@ -91,10 +97,10 @@ UPLOAD_PATH = "/api/v1/oversight/events"
 ACKNOWLEDGMENT_PATH = "/api/v1/oversight/acknowledgments"
 ACKNOWLEDGMENT_KIND = "lumi.oversight-acknowledgment/v1"
 # What started a turn, on every record (the contract with Lumi Cloud): the
-# app's chat, a terminal (the terminal UI, or `lumi run` someone confirmed at
-# an interactive terminal), a chat (the chat gateway, tasks from chat), a
-# scheduled task, `lumi run` without an interactive terminal, /plan, a
-# mission or autonomous session, or a Team worker.
+# app's chat, a terminal (the terminal UI, or `lumi run` with someone at a
+# terminal), a chat (the chat gateway, tasks from chat), a scheduled task,
+# `lumi run` with no terminal, /plan, a mission or autonomous session, or a
+# Team worker.
 TRIGGERS = ("app", "terminal", "gateway", "schedule", "headless", "plan", "mission", "team")
 # Where a confirmation of the notice can come from (an acknowledgment's ``surface``).
 ACKNOWLEDGING_SURFACES = ("app", "terminal", "gateway")
@@ -208,16 +214,101 @@ def canonical(document: dict) -> bytes:
 def notice_fingerprint(organization_id: str, device_id: str, section: Any) -> str:
     """Which notice is in force: the organization, this computer's enrollment and the section as published.
 
-    The first 16 hex characters of SHA-256 over the canonical JSON of
+    The SHA-256 hex digest (64 characters) of the canonical JSON of
     ``{"device": <device id>, "organization_id": <organization id>,
     "oversight": <the policy's oversight section exactly as published>}``.
     Lumi Cloud computes the same from the policy versions it published to
-    tell a notice it produced (docs/organization-oversight.md).
+    tell which notice was confirmed (docs/organization-oversight.md).
     """
     return hashlib.sha256(canonical({
         "device": str(device_id or ""),
         "organization_id": str(organization_id or ""),
-        "oversight": section if isinstance(section, dict) else {}})).hexdigest()[:16]
+        "oversight": section if isinstance(section, dict) else {}})).hexdigest()
+
+
+def button_token(fingerprint: str) -> str:
+    """What a chat's I've read this button carries (``/acknowledge <token>``): enough of the fingerprint to
+    tell notices apart, short enough for Telegram's 64-byte button data."""
+    return str(fingerprint or "")[:32]
+
+
+class ConfirmationError(Exception):
+    """A person confirmed the notice, but Lumi couldn't make the signed record; nothing was confirmed."""
+
+
+# The api_keys entry that holds this computer's enrolled device key (cloud.DEVICE_SECRET).
+_DEVICE_KEY_NAME = "lumi_cloud_device_key"
+_public_keys: dict[tuple, Any] = {}
+
+
+def _device_public_key(device: dict) -> Any:
+    """The public half of this computer's enrolled device key, or None when there's none.
+
+    Read from settings.json, or the credential store its placeholder names,
+    once per enrollment and key in this process.
+    """
+    from .paths import state_home
+    from .secrets_store import PLACEHOLDER, SecretStore
+
+    data = _read_json(state_home() / "settings.json", {})
+    keys = data.get("api_keys") if isinstance(data, dict) else None
+    saved = str(keys.get(_DEVICE_KEY_NAME) or "") if isinstance(keys, dict) else ""
+    if not saved or not device.get("id"):
+        return None
+    cache = (str(device.get("id")), str(device.get("enrolled_at") or ""), saved)
+    if cache not in _public_keys:
+        secret = SecretStore().get(_DEVICE_KEY_NAME) if saved == PLACEHOLDER else saved
+        if not secret:
+            return None
+        import base64
+
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+        _public_keys[cache] = Ed25519PrivateKey.from_private_bytes(base64.b64decode(secret)).public_key()
+    return _public_keys[cache]
+
+
+def _signed_by_this_computer(record: dict, signature: str, device: dict) -> bool:
+    """Whether ``signature`` (base64url) is this computer's device key's over the record's canonical JSON."""
+    import base64
+
+    try:
+        public = _device_public_key(device)
+        if public is None or not signature:
+            return False
+        public.verify(base64.urlsafe_b64decode(signature + "=" * (-len(signature) % 4)), canonical(record))
+        return True
+    except Exception:
+        return False
+
+
+def _confirmed(entry: Any, scope: "Scope", *, chat: str = "") -> bool:
+    """Whether a kept confirmation covers the notice in force.
+
+    The record this computer's device key signed, for this organization and
+    enrollment, this notice (its fingerprint, and the SHA-256 of its text as
+    the surface shows it) and this person: the computer user (the app, a
+    terminal) or ``chat``. Anything else, a file written by hand included,
+    counts as no confirmation.
+    """
+    if not isinstance(entry, dict) or not scope.fingerprint:
+        return False
+    record, signature = entry.get("record"), entry.get("signature")
+    if not isinstance(record, dict) or not isinstance(signature, str):
+        return False
+    surface = record.get("surface")
+    person = record.get("person") if isinstance(record.get("person"), dict) else {}
+    if chat:
+        if surface != "gateway" or person.get("chat") != chat[len(CHAT_PREFIX):]:
+            return False
+    elif surface not in ("app", "terminal") or person.get("os_user") != os_user():
+        return False
+    shown = hashlib.sha256(scope.notice(surface).encode("utf-8")).hexdigest()
+    if (record.get("kind") != ACKNOWLEDGMENT_KIND or record.get("notice_fingerprint") != scope.fingerprint
+            or record.get("organization") != scope.organization_id or record.get("device_id") != scope.device_id
+            or record.get("notice_sha256") != shown):
+        return False
+    return _signed_by_this_computer(record, signature, scope.device)
 
 
 # ── What the policy asks for ────────────────────────────────────────────────
@@ -241,9 +332,12 @@ class Scope:
         self.destination = False
         self.organization_id = ""
         self.device_id = ""
+        self.device: dict = {}
+        self._acknowledged: bool | None = None
         if not self.configured:
             return
         device = policy.enrolled_device()
+        self.device = device
         self.organization_id = str(device.get("organization_id") or "")
         self.device_id = str(device.get("id") or "")
         # What the notice said, and to which organization and enrollment of
@@ -273,12 +367,10 @@ class Scope:
 
     @property
     def acknowledged(self) -> bool:
-        """This computer user confirmed the notice in force (the app or a terminal)."""
-        if not self.configured:
-            return False
-        shown = _read_json(_root() / "notice.json", {})
-        return (isinstance(shown, dict) and bool(self.fingerprint) and shown.get("fingerprint") == self.fingerprint
-                and shown.get("os_user") == os_user())
+        """This computer user confirmed the notice in force (the app or a terminal): ``_confirmed``."""
+        if self._acknowledged is None:
+            self._acknowledged = self.configured and _confirmed(_read_json(_root() / "notice.json", {}), self)
+        return self._acknowledged
 
     @property
     def active(self) -> bool:
@@ -349,14 +441,12 @@ def described(settings: Any, organization: str) -> dict:
                "and flag excerpts through their role; anyone else only if an owner allows them. Every view is "
                "recorded in the organization's activity log.") if settings.messages != "off" else ""
     if settings.unattended == "block":
-        unattended = ("Runs with nobody at the screen (scheduled tasks, lumi run without an interactive terminal) "
-                      "don't start until this notice is confirmed on this computer as the computer user they run "
-                      "as.")
+        unattended = ("Runs with nobody at the screen (scheduled tasks, lumi run with no terminal) don't start until "
+                      "this notice is confirmed on this computer as the computer user they run as.")
     else:
-        unattended = ("Runs with nobody at the screen (scheduled tasks, lumi run without an interactive terminal) "
-                      "still run if nobody confirmed this notice as their computer user: they print it with their "
-                      f"output, and {who} receives them with the computer user name and this computer as who ran "
-                      "them.")
+        unattended = ("Runs with nobody at the screen (scheduled tasks, lumi run with no terminal) still run if "
+                      "nobody confirmed this notice as their computer user: they print it with their output, and "
+                      f"{who} receives them with the computer user name and this computer as who ran them.")
     return {"shared": shared, "not_shared": not_shared, "readers": readers, "unattended_runs": unattended,
             "retention": f"{who} keeps it for {settings.retention_days} days, then Lumi Cloud deletes it. "
                          "Records waiting on this computer longer than that are deleted unsent."}
@@ -465,7 +555,7 @@ def _admission(scope: Scope, *, trigger: str, unattended: bool, chat: str = "", 
         # Nothing is collected (not asked for, or nowhere to send it): nothing to confirm.
         return Admission(trigger=trigger, unattended=unattended)
     if chat:
-        if _chat_acknowledged(chat, scope.fingerprint):
+        if _chat_acknowledged(chat, scope):
             return Admission(scope=scope, trigger=trigger, acknowledged=True)
         return Admission(refusal=_chat_refusal(scope), trigger=trigger)
     if scope.acknowledged:
@@ -599,15 +689,21 @@ def _acknowledgment_record(scope: Scope, surface: str, notice: str, chat: str) -
     }
 
 
-def _sign(record: dict, signer: Callable[[bytes], str] | None) -> tuple[str, str]:
-    """(signature, problem): the device key's signature over the record's canonical JSON."""
+def _sign(record: dict, signer: Callable[[bytes], str] | None, scope: Scope) -> str:
+    """The device key's signature over the record's canonical JSON; ConfirmationError when there's none."""
     if signer is None:
-        return "", ""
+        raise ConfirmationError("Lumi couldn't sign your confirmation: this computer's Lumi Cloud key isn't "
+                                "available here. Nothing was confirmed.")
     try:
-        return str(signer(canonical(record)) or ""), ""
-    except Exception as exc:  # the uploader signs it later with the device key
+        signature = str(signer(canonical(record)) or "")
+    except Exception as exc:
         logger.warning("Couldn't sign an oversight acknowledgment", exc_info=True)
-        return "", f"Couldn't sign it with this computer's key: {exc}"[:300]
+        raise ConfirmationError(f"Lumi couldn't sign your confirmation with this computer's key ({exc}). "
+                                "Nothing was confirmed; try again.") from exc
+    if not _signed_by_this_computer(record, signature, scope.device):
+        raise ConfirmationError("Your confirmation's signature doesn't match this computer's Lumi Cloud key. "
+                                "Nothing was confirmed.")
+    return signature
 
 
 def acknowledge(fingerprint: str, surface: str, *, notice: str | None = None, chat: str = "",
@@ -616,12 +712,13 @@ def acknowledge(fingerprint: str, surface: str, *, notice: str | None = None, ch
 
     ``surface`` is ``app`` (the notice's own button), ``terminal`` (a typed yes
     at an interactive terminal) or ``gateway`` (a chat's button or reply;
-    ``chat`` is its session key). ``notice`` is the text that was shown: a
-    page or chat that showed another text (the policy changed) confirms
-    nothing. The record (``ACKNOWLEDGMENT_KIND``) is signed with ``signer``
-    (the device key; ``CloudClient.sign_as_device``), kept with the
-    confirmation and queued for Lumi Cloud; the uploader signs it if it
-    couldn't be signed now.
+    ``chat`` is its session key). ``notice`` is the text that was shown, and
+    is required: a page, terminal or chat that showed another text (the
+    policy changed) or doesn't say what it showed confirms nothing. The
+    record (``ACKNOWLEDGMENT_KIND``) is signed with ``signer`` (the device
+    key; ``CloudClient.sign_as_device``), kept with the confirmation and
+    queued for Lumi Cloud. Without a signature this computer's key verifies,
+    nothing is confirmed: ConfirmationError says why.
 
     Refused (False) when ``fingerprint`` isn't the policy in force, or when
     records have nowhere to go: that notice says nothing is collected, so
@@ -635,21 +732,25 @@ def acknowledge(fingerprint: str, surface: str, *, notice: str | None = None, ch
     if surface == "gateway" and not str(chat).startswith(CHAT_PREFIX):
         return False
     shown = scope.notice(surface)
-    if notice is not None and notice != shown:
+    if not isinstance(notice, str) or notice != shown:
         return False
-    if (surface == "gateway" and _chat_acknowledged(chat, fingerprint)) or (
-            surface != "gateway" and scope.acknowledged):
+
+    def confirmed() -> bool:
+        if surface == "gateway":
+            return _chat_acknowledged(chat, scope)
+        return _confirmed(_read_json(_root() / "notice.json", {}), scope)
+
+    if confirmed():
         return True
     record = _acknowledgment_record(scope, surface, shown, chat)
-    signature, problem = _sign(record, signer)
+    signature = _sign(record, signer, scope)
     ack_id = uuid.uuid4().hex
     entry = {"id": ack_id, "fingerprint": fingerprint, "organization": scope.organization, "surface": surface,
              "os_user": record["person"]["os_user"], "shown_at": record["acknowledged_at"], "notice": shown,
              "record": record, "signature": signature}
     with _lock, exclusive(_root() / ".lock"):
         # Confirmed meanwhile (a second click, another process): one record, not two.
-        if (surface == "gateway" and _chat_acknowledged(chat, fingerprint)) or (
-                surface != "gateway" and scope.acknowledged):
+        if confirmed():
             return True
         if surface == "gateway":
             known = _read_json(_root() / "chats.json", {})
@@ -659,7 +760,7 @@ def acknowledge(fingerprint: str, surface: str, *, notice: str | None = None, ch
             _write_json(_root() / "chats.json", _bounded_chats(known))
         else:
             _write_json(_root() / "notice.json", entry)
-        _queue_acknowledgment(ack_id, record, signature, problem)
+        _queue_acknowledgment(ack_id, record, signature)
     from . import audit
 
     audit.record("oversight.notice_shown", organization=scope.organization, surface=surface,
@@ -702,8 +803,7 @@ def _acknowledgment_status(scope: Scope) -> dict | None:
     return {"id": shown["id"], "at": str(shown.get("shown_at") or ""), "surface": str(shown.get("surface") or ""),
             "notice": str(shown.get("notice") or ""), "fingerprint": str(shown.get("fingerprint") or ""),
             "notice_sha256": str(shown["record"].get("notice_sha256") or ""),
-            "current": shown.get("fingerprint") == scope.fingerprint and shown.get("os_user") == os_user(),
-            "signed": bool(shown.get("signature")) or upload.get("signed", False), "upload": upload}
+            "current": _confirmed(shown, scope), "signed": bool(shown.get("signature")), "upload": upload}
 
 
 # ── The chat gateway's chats ────────────────────────────────────────────────
@@ -722,8 +822,9 @@ def _chat_entry(chat: str) -> dict:
     return entry if isinstance(entry, dict) else {}
 
 
-def _chat_acknowledged(chat: str, fingerprint: str) -> bool:
-    return bool(fingerprint) and _chat_entry(chat).get("acknowledged") == fingerprint
+def _chat_acknowledged(chat: str, scope: Scope) -> bool:
+    """The chat's people confirmed the notice in force (``_confirmed``)."""
+    return _confirmed(_chat_entry(chat), scope, chat=chat)
 
 
 def chat_notified(chat: str, fingerprint: str) -> bool:
@@ -741,7 +842,7 @@ def chat_notice(chat: str) -> tuple[str, str] | None:
     """
     try:
         scope = Scope()
-        if not scope.in_force or _chat_acknowledged(chat, scope.fingerprint):
+        if not scope.in_force or _chat_acknowledged(chat, scope):
             return None
         return scope.notice("gateway"), scope.fingerprint
     except Exception:
@@ -804,8 +905,9 @@ def _code_block(match: re.Match[str]) -> str:
     return f"[code block, {len(lines)} line{'s' if len(lines) != 1 else ''}]"
 
 
-def _message(text: Any, level: str, kind: str = "mixed") -> tuple[dict | None, Counter]:
-    """A message at ``level``, secrets removed and DLP applied; its secret kinds counted.
+def _message(text: Any, level: str, kind: str = "mixed") -> tuple[dict | None, Counter, bool]:
+    """A message at ``level``, secrets removed and DLP applied; its secret kinds counted, and whether DLP
+    withheld or changed it.
 
     Secrets go, then the DLP rules for ``kind`` apply, before anything is
     cut: a secret or a match cut in half at the limit would no longer be
@@ -813,18 +915,20 @@ def _message(text: Any, level: str, kind: str = "mixed") -> tuple[dict | None, C
     """
     value = str(text or "")
     if not value.strip():
-        return None, Counter()
+        return None, Counter(), False
     value, found = _redact(value)
     shared = _shareable(value, kind)
     if shared is None:
-        return {"text": WITHHELD, "chars": len(str(text)), "truncated": False}, found
+        return {"text": WITHHELD, "chars": len(str(text)), "truncated": False}, found, True
+    touched = shared != value
     value = shared
     if level == "redacted":
         value = _CODE_BLOCK.sub(_code_block, value)
         value = _EMAIL.sub("[email]", value)
     limit = MESSAGE_LIMITS[level]
     truncated = len(value) > limit
-    return {"text": value[:limit] + ("…" if truncated else ""), "chars": len(str(text)), "truncated": truncated}, found
+    return ({"text": value[:limit] + ("…" if truncated else ""), "chars": len(str(text)), "truncated": truncated},
+            found, touched)
 
 
 class TurnTracker:
@@ -991,7 +1095,7 @@ class TurnTracker:
                 summary[key] = text if len(text) <= limit else text[:limit] + "…"
         return summary
 
-    def _session(self) -> dict:
+    def _session(self, *, title: bool = True) -> dict:
         from .security_flags import clip
 
         project = self.project_path
@@ -999,8 +1103,8 @@ class TurnTracker:
         session = {"id": self.session_id, "project": name, "surface": _surface(self.session_id)}
         # A title is conversation content (an automatic one is the first
         # message's gist): it goes only when messages do, at their level, and
-        # not when DLP withholds it (clip checks it).
-        title = clip(self.title, TITLE_LIMIT) if self.settings.messages != "off" and self.title else ""
+        # not when DLP withholds it (clip checks it) or ``title`` is False.
+        title = clip(self.title, TITLE_LIMIT) if title and self.settings.messages != "off" and self.title else ""
         if title:
             session["title"] = _EMAIL.sub("[email]", title) if self.settings.messages == "redacted" else title
         return session
@@ -1033,10 +1137,29 @@ class TurnTracker:
         from . import security_flags
 
         settings = self.settings
-        turn = _next_turn(self.session_id)
-        session = self._session()
         # No text from a turn a DLP service refused (the activity still goes).
         textless = self._service_blocked()
+        messages: dict[str, Any] | None = None
+        message_redactions: Counter = Counter()
+        touched = False
+        if settings.activity and settings.messages != "off":
+            # As DLP reads them in requests: what the person typed (a message
+            # Lumi wrote meets every rule) and the model's reply.
+            user, user_found, touched = _message(self.prompt, settings.messages,
+                                                 "mixed" if self.origin == "generated" else "prompt")
+            reply, reply_found, _ = _message(self.reply, settings.messages, "model_output")
+            if textless:
+                user = {"text": WITHHELD, "chars": user["chars"], "truncated": False} if user else None
+                reply = {"text": WITHHELD, "chars": reply["chars"], "truncated": False} if reply else None
+            message_redactions.update(user_found)
+            message_redactions.update(reply_found)
+            messages = {"level": settings.messages, "user": user, "assistant": reply}
+        # A session's title is the gist of its first message, shortened and
+        # capitalized, where DLP's own checks can't recognize what it matched:
+        # once DLP withheld or changed a message of the session, or a DLP
+        # service refused one of its turns, its title stays out of every record.
+        turn, title_withheld = _next_turn(self.session_id, withhold_title=textless or touched)
+        session = self._session(title=not title_withheld)
         shared_redactions: Counter = Counter()
         record: dict[str, Any] | None = None
         if settings.activity:
@@ -1060,18 +1183,9 @@ class TurnTracker:
             if self.origin == "generated":
                 record["origin"] = "generated"
 
-            if settings.messages != "off":
-                # As DLP reads them in requests: what the person typed (a message
-                # Lumi wrote meets every rule) and the model's reply.
-                user, user_found = _message(self.prompt, settings.messages,
-                                            "mixed" if self.origin == "generated" else "prompt")
-                reply, reply_found = _message(self.reply, settings.messages, "model_output")
-                if textless:
-                    user = {"text": WITHHELD, "chars": user["chars"], "truncated": False} if user else None
-                    reply = {"text": WITHHELD, "chars": reply["chars"], "truncated": False} if reply else None
-                shared_redactions.update(user_found)
-                shared_redactions.update(reply_found)
-                record["messages"] = {"level": settings.messages, "user": user, "assistant": reply}
+            if messages is not None:
+                shared_redactions.update(message_redactions)
+                record["messages"] = messages
             if shared_redactions:
                 record["redactions"] = dict(shared_redactions)
         flags: list[Any] = list(self.flags.values())
@@ -1142,20 +1256,22 @@ def begin_turn(session: Any, user_msg: str, *, images: int = 0, input_origin: st
             session.display_prompt = None
 
 
-def _next_turn(session_id: str) -> int:
-    """The session's next turn number (kept per session, across restarts)."""
+def _next_turn(session_id: str, *, withhold_title: bool = False) -> tuple[int, bool]:
+    """The session's next turn number, and whether its title is withheld (both kept per session, across
+    restarts); ``withhold_title`` withholds it from now on."""
     path = _root() / "sessions.json"
     with _lock, exclusive(_root() / ".lock"):
         known = _read_json(path, {})
         known = known if isinstance(known, dict) else {}
         entry = known.get(session_id) if isinstance(known.get(session_id), dict) else {}
         turn = int(entry.get("turns") or 0) + 1
-        known[session_id] = {"turns": turn, "at": _now()}
+        withheld = bool(entry.get("title_withheld")) or withhold_title
+        known[session_id] = {"turns": turn, "at": _now(), **({"title_withheld": True} if withheld else {})}
         if len(known) > KNOWN_SESSIONS:
             newest = sorted(known.items(), key=lambda item: str(item[1].get("at") or ""), reverse=True)
             known = dict(newest[:KNOWN_SESSIONS])
         _write_json(path, known)
-    return turn
+    return turn, withheld
 
 
 # ── The person's own flags ──────────────────────────────────────────────────
@@ -1360,14 +1476,14 @@ def queue_status() -> dict:
 # ── Confirmations waiting for Lumi Cloud ────────────────────────────────────
 
 
-def _queue_acknowledgment(ack_id: str, record: dict, signature: str, problem: str = "") -> None:
+def _queue_acknowledgment(ack_id: str, record: dict, signature: str) -> None:
     """Keep a confirmation's record and signature, to send; the oldest settled ones go past KEPT_ACKNOWLEDGMENTS."""
     body = json.dumps({"record": record, "signature": signature}, separators=(",", ":"), sort_keys=True)
     with closing(_database()) as connection:
         connection.execute("BEGIN IMMEDIATE")
         try:
             connection.execute("INSERT OR REPLACE INTO acknowledgments (id, at, body, state, error, updated) "
-                               "VALUES (?, ?, ?, 'pending', ?, ?)", (ack_id, _now(), body, problem, _now()))
+                               "VALUES (?, ?, ?, 'pending', '', ?)", (ack_id, _now(), body, _now()))
             connection.execute("DELETE FROM acknowledgments WHERE state IN ('sent', 'refused', 'not_sent') AND id "
                                "NOT IN (SELECT id FROM acknowledgments ORDER BY at DESC LIMIT ?)",
                                (KEPT_ACKNOWLEDGMENTS,))
@@ -1442,23 +1558,6 @@ def _settle_acknowledgment(ack_id: str, state: str, *, error: str = "", cloud_id
                                "WHERE id = ?", (state, str(error)[:300], str(cloud_id)[:200], _now(), body, ack_id))
 
 
-def _keep_signature(ack_id: str, signature: str) -> None:
-    """A confirmation signed after the fact: keep the signature with the local copy too."""
-    with _lock, exclusive(_root() / ".lock"):
-        shown = _read_json(_root() / "notice.json", {})
-        if isinstance(shown, dict) and shown.get("id") == ack_id:
-            _write_json(_root() / "notice.json", {**shown, "signature": signature})
-        known = _read_json(_root() / "chats.json", {})
-        if isinstance(known, dict):
-            changed = False
-            for entry in known.values():
-                if isinstance(entry, dict) and entry.get("id") == ack_id:
-                    entry["signature"] = signature
-                    changed = True
-            if changed:
-                _write_json(_root() / "chats.json", known)
-
-
 def _upload_acknowledgments(client: Any) -> str:
     """Send confirmations to Lumi Cloud: "idle", or "retry" when one should be tried again later.
 
@@ -1483,15 +1582,9 @@ def _upload_acknowledgments(client: Any) -> str:
                                                              "Cloud received it.")
             continue
         if not signature:
-            try:
-                signature = str(client.sign_as_device(canonical(record)))
-            except Exception as exc:
-                _settle_acknowledgment(ack_id, "pending", error=f"Couldn't sign it with this computer's key: {exc}")
-                outcome = "retry"
-                continue
-            raw = json.dumps({"record": record, "signature": signature}, separators=(",", ":"), sort_keys=True)
-            _settle_acknowledgment(ack_id, "sending", body=raw)
-            _keep_signature(ack_id, signature)
+            # Every confirmation is signed when it's made (acknowledge); an unsigned one isn't one.
+            _settle_acknowledgment(ack_id, "not_sent", error="It wasn't signed with this computer's key.")
+            continue
         try:
             answer = client.device_call("POST", ACKNOWLEDGMENT_PATH, json={"record": record, "signature": signature})
         except CloudError as exc:

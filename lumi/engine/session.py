@@ -4207,7 +4207,9 @@ class Session:
         total_elapsed = time.time() - total_start
 
         # ── Engram: auto-remember session summary ──
-        if self._engram and self._engram.enabled and not self.is_subagent:
+        # Not after the organization's oversight notice stopped the turn: nothing
+        # of it leaves this computer until the person confirms (lumi/oversight.py).
+        if self._engram and self._engram.enabled and not self.is_subagent and not oversight_stop:
             try:
                 self._engram.session_summary(self.conversation_history)
             except Exception as e:

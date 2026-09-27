@@ -16,6 +16,9 @@ An organization's policy locks ``voice.*`` like any setting, for example
 rules (``Policy.model_allowed``), so a policy that requires zero data
 retention allows only a service that keeps no data. The same policy turns off
 the browser's recognizer, because Lumi can't tell what that service keeps.
+While an organization's oversight notice waits to be confirmed
+(lumi/oversight.py), neither engine may listen: the browser's recognizer
+sends audio to its vendor's service, like a model request.
 """
 
 from __future__ import annotations
@@ -167,7 +170,9 @@ def status(settings: Any) -> dict[str, Any]:
         result["reason"] = (f"{policy.organization} turned dictation off." if result["locked"]
                             else "Dictation is off in Settings > Voice.")
         return result
-    refusal = blocked_reason()
+    from . import oversight
+
+    refusal = blocked_reason() or oversight.refusal("app")
     if refusal:
         result["browser"] = False
         result["browser_reason"] = refusal

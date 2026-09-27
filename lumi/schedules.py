@@ -13,10 +13,13 @@ days and time (this computer's local time) it runs. Schedules live in
 A run is ``lumi run`` (lumi/headless.py) with the schedule's settings, so the
 organization policy, budgets, the audit log, file exclusions, the sandboxes
 and the person's Settings hooks apply as for any unattended run, and nothing
-asks a person. Under an organization's oversight (lumi/oversight.py) a run is
-unattended (``trigger`` ``schedule``): it runs as the computer user who
-confirmed the notice, or under the policy's ``oversight.unattended``, which
-records it with the notice in its result or refuses it. Repository
+asks a person. Under an organization's oversight (lumi/oversight.py) a run
+started by the operating system's scheduler is unattended (``trigger``
+``schedule``) when its environment says so (no terminal, no controlling
+terminal): it runs as the computer user who confirmed the notice, or under
+the policy's ``oversight.unattended``, which records it with the notice in
+its result or refuses it. **Run now** in the app is the person's own action:
+attended, it needs the notice confirmed. Repository
 instructions apply only if the project is trusted in the app; a schedule
 never trusts one itself. A run stops after the schedule's
 ``max_minutes`` (a hook already running finishes first), and a
@@ -60,6 +63,8 @@ MAX_SCHEDULES = 50
 MAX_MINUTES = 720
 MARKER = "# lumi-schedule:"
 CLAIM_ENV = "LUMI_SCHEDULE_CLAIM"
+# Set by Run now (start): a person started the run in the app, so it is attended (organization oversight).
+ATTENDED_ENV = "LUMI_SCHEDULE_ATTENDED"
 _TIME = re.compile(r"^([01]\d|2[0-3]):([0-5]\d)$")
 _lock = threading.Lock()
 
@@ -303,8 +308,10 @@ def _claim(schedule_id: str, *, pid: int = 0, token: str = "") -> bool:
 
 def run(schedule_id: str) -> int:
     """Run a schedule now, keep its result and return ``lumi run``'s exit code."""
-    # Taken out of the environment so the agent's own commands don't inherit it.
+    # Taken out of the environment so the agent's own commands don't inherit them.
     token = os.environ.pop(CLAIM_ENV, "")
+    # Run now in the app (start): someone is there. It can only make a run attended.
+    attended = os.environ.pop(ATTENDED_ENV, "") == "1"
     schedule = get(schedule_id)
     if schedule is None:
         raise ScheduleError("That schedule no longer exists.")
@@ -316,19 +323,20 @@ def run(schedule_id: str) -> int:
     if not _claim(schedule_id, token=token):
         raise ScheduleError("This schedule is already running.")
     try:
-        return _run_claimed(schedule)
+        return _run_claimed(schedule, attended=attended)
     finally:
         _running_file(schedule_id).unlink(missing_ok=True)
 
 
-def _run_claimed(schedule: Schedule) -> int:
+def _run_claimed(schedule: Schedule, *, attended: bool = False) -> int:
     from . import headless
 
     schedule_id = schedule.id
     started = datetime.now(timezone.utc)
     out, err = io.StringIO(), io.StringIO()
     try:
-        code = headless.main(argv_for(schedule), stdin=io.StringIO(""), stdout=out, stderr=err, trigger="schedule")
+        code = headless.main(argv_for(schedule), stdin=io.StringIO(""), stdout=out, stderr=err, trigger="schedule",
+                             attended=attended)
     except Exception as exc:  # keep a record of the failure, whatever it was
         logger.exception("Scheduled run %s failed", schedule_id)
         code, err = 1, io.StringIO(f"{exc.__class__.__name__}: {exc}")
@@ -398,8 +406,9 @@ def start(schedule_id: str, *, settings: Any = None) -> subprocess.Popen:
     # copy of the package "python -m lumi" would find first.
     folder = None if getattr(sys, "frozen", False) else str(Path(__file__).resolve().parent.parent)
     token = uuid.uuid4().hex
+    # The person pressed Run now in the app: the run is attended (organization oversight).
     process = subprocess.Popen([*command(), "schedule", "run", schedule_id], cwd=folder,
-                               env={**os.environ, CLAIM_ENV: token}, stdin=subprocess.DEVNULL,
+                               env={**os.environ, CLAIM_ENV: token, ATTENDED_ENV: "1"}, stdin=subprocess.DEVNULL,
                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **background_process_kwargs())
     try:
         _claim(schedule_id, pid=process.pid, token=token)

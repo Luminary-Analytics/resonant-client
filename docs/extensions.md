@@ -29,7 +29,10 @@ described in [Writing a capability pack](packs.md).
    `python -m pytest`.
 3. Check it as Lumi will: `lumi extension check ~/work/acme-models`. This
    loads the manifest with Lumi's rules, lists the models, and asks the
-   first model a short question.
+   first model a short question. Under an organization's policy the
+   question passes the same gates as any model request: its
+   [oversight notice](organization-oversight.md) must be confirmed and its
+   [DLP rules](dlp.md) apply; the check says when it didn't ask.
 4. Install it: copy the folder into `~/.lumi/packs/`, or push it to a Git
    repository and use **Install from Git** in Settings > Capability packs.
    Review what it runs there and approve it.

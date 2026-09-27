@@ -1133,8 +1133,13 @@ def confirm_oversight(settings) -> bool:
         from .cloud import CloudClient
 
         client = CloudClient(settings)
-    if not oversight.acknowledge(gate.fingerprint, "terminal", notice=gate.text,
-                                 signer=client.sign_as_device if client is not None else None):
+    try:
+        confirmed = oversight.acknowledge(gate.fingerprint, "terminal", notice=gate.text,
+                                          signer=client.sign_as_device if client is not None else None)
+    except oversight.ConfirmationError as exc:
+        _print_refusal(str(exc))
+        return False
+    if not confirmed:
         _print_refusal("The organization's notice changed while you read it; nothing was sent.")
         return False
     if client is not None:

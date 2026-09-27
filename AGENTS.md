@@ -159,13 +159,18 @@ host enrollment and actual packaged/learned-benefit qualification remain open.
   key press (never a status push, a timer, a painted page, a script's click
   or a panel, and focus never moves onto it), a typed yes at
   an interactive terminal, or a gateway chat's button or reply for that
-  chat. It is a record signed with the device key
-  (`CloudClient.sign_as_device`), kept locally and sent in the background
-  to `/api/v1/oversight/acknowledgments`. Only a surface that sets
-  `Session.oversight_unattended` (scheduled tasks, `lumi run` without an
-  interactive terminal) runs unconfirmed, under the policy's
-  `oversight.unattended` (`record` or `block`); every record carries its
-  `trigger` and `unattended`. Anything shared passes
+  chat, always with the notice text it showed. It is a record signed with
+  the device key (`CloudClient.sign_as_device`), kept locally and sent in
+  the background to `/api/v1/oversight/acknowledgments`; a kept record
+  counts only while it verifies with that key and covers the notice in
+  force (fingerprint, the full SHA-256, and the text's SHA-256). Only a
+  surface that sets `Session.oversight_unattended` runs unconfirmed, under
+  the policy's `oversight.unattended` (`record` or `block`): scheduled
+  tasks and `lumi run`, when their environment has no terminal at all
+  (`headless._terminal_attached`); a caller can say someone is there
+  (Run now), never that nobody is. Every record carries its `trigger` and
+  `unattended`. Dictation, Engram writes and `lumi extension check`'s prompt
+  wait for the notice too. Anything shared passes
   `secret_scan.redact_for_sharing` and then the DLP rules (`dlp.shareable`,
   which may withhold it) before it is cut; file contents and tool output
   never leave, and excluded files and their patterns are never named. A flag's `rule` is a label from `security_flags.RULES`, never free

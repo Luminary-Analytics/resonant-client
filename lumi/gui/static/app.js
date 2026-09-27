@@ -4171,6 +4171,11 @@ class LumiApp {
                 this._renderAccountMenu();
                 if (this.currentView === 'settings') this.renderSettingsView();
                 break;
+            case 'voice_status':
+                // Whether dictation may listen now (after the oversight notice was confirmed, say).
+                if (this.settings) this.settings._meta = {...(this.settings._meta || {}), voice: event.data || {}};
+                this._syncDictationButton();
+                break;
             case 'voice.transcript':
             case 'voice.error': {
                 const request = this._voiceRequests?.get(event.request_id);
@@ -5348,7 +5353,7 @@ class LumiApp {
                 MediaRecorder: window.MediaRecorder,
                 Blob: window.Blob,
             },
-            getStatus: () => this.settings?._meta?.voice,
+            getStatus: () => this._dictationStatus(),
             getText: () => composer.value,
             setText: text => {
                 composer.value = text;
@@ -5390,6 +5395,7 @@ class LumiApp {
         btn.addEventListener('pointerdown', event => {
             if (event.button !== 0) return;
             event.preventDefault();  // the composer keeps focus
+            if (this._oversightLocked) return;  // the button is disabled too
             try { btn.setPointerCapture(event.pointerId); } catch (_) { /* released already */ }
             dictation.press();
         });
@@ -5400,7 +5406,7 @@ class LumiApp {
         btn.addEventListener('keydown', event => {
             if ((event.key !== ' ' && event.key !== 'Enter') || event.ctrlKey || event.altKey || event.metaKey) return;
             event.preventDefault();
-            if (!event.repeat) dictation.press();
+            if (!event.repeat && !this._oversightLocked) dictation.press();
         });
         btn.addEventListener('keyup', event => {
             if (event.key !== ' ' && event.key !== 'Enter') return;
@@ -5415,6 +5421,12 @@ class LumiApp {
             if (event.code === 'Space' && event.ctrlKey && event.shiftKey && !event.altKey && !event.metaKey) {
                 if (this.currentView === 'settings') return;
                 event.preventDefault();
+                // Nothing listens while the organization's oversight notice waits: the
+                // webview's recognizer sends audio to its vendor like a model request.
+                if (this._oversightLocked) {
+                    if (!event.repeat) this.showToastMessage('Confirm your organization’s oversight notice above the message box first.');
+                    return;
+                }
                 if (!event.repeat && !shortcutHeld) {
                     shortcutHeld = true;
                     dictation.press();
@@ -5435,6 +5447,17 @@ class LumiApp {
         }, true);
         window.addEventListener('blur', releaseShortcut);
         this._syncDictationButton();
+    }
+
+    /**
+     * Which ways of dictating may listen (lumi/voice.py, settings._meta.voice),
+     * and none while the organization's oversight notice locks the message box.
+     */
+    _dictationStatus() {
+        const voice = this.settings?._meta?.voice;
+        if (!this._oversightLocked) return voice;
+        const reason = 'Confirm your organization’s oversight notice above the message box first.';
+        return {...(voice || {}), browser: false, service_ready: false, browser_reason: reason, reason};
     }
 
     /** The microphone button says whether dictation can run here, and why not. */

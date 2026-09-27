@@ -72,6 +72,17 @@ test('the oversight notice locks the message box until its button confirms it', 
             socket.on('framereceived', frame => { try { received.push(JSON.parse(frame.payload)); } catch {} });
         });
         await page.route('**/*', route => new URL(route.request().url()).hostname === '127.0.0.1' ? route.continue() : route.abort());
+        // The webview's speech recognizer, which would send audio to its vendor: a stand-in that counts starts.
+        await page.addInitScript(() => {
+            window.__recognitions = 0;
+            class Recognition {
+                start() { window.__recognitions += 1; setTimeout(() => this.onstart && this.onstart(), 0); }
+                stop() { setTimeout(() => this.onend && this.onend(), 0); }
+                abort() { setTimeout(() => this.onend && this.onend(), 0); }
+            }
+            window.SpeechRecognition = Recognition;
+            window.webkitSpeechRecognition = Recognition;
+        });
         await page.goto((await (await fetch(info.url + '/__fixture__/launch')).json()).url);
         await page.waitForFunction(() => window.app?.oversightStatus?.required === true);
 
@@ -98,6 +109,13 @@ test('the oversight notice locks the message box until its button confirms it', 
         // Said where the notice is, not as a failed turn to retry.
         assert.equal(await page.locator('.error-block, .task-card').count(), 0);
         await page.evaluate(() => { app.userInput.value = ''; });
+
+        // Dictation's shortcut starts nothing while locked: the recognizer never hears a word.
+        await page.keyboard.press('Control+Shift+Space');
+        await page.waitForTimeout(300);
+        assert.equal(await page.evaluate(() => window.__recognitions), 0);
+        assert.equal(await page.evaluate(() => window.app.settings?._meta?.voice?.browser), false,
+            'the server says dictation waits for the notice too');
 
         // A click a script makes on I've read this confirms nothing: only the person's own does.
         await page.evaluate(() => document.getElementById('oversight-notice-confirm').click());
@@ -168,6 +186,13 @@ test('the oversight notice locks the message box until its button confirms it', 
         // The panel's text waits in the box for the person; confirming sent nothing.
         assert.equal(await page.locator('#user-input').inputValue(), panelText);
         assert.deepEqual(confirmed.requests, []);
+        // Confirmed: the server says dictation may listen, and the shortcut starts the recognizer.
+        await page.waitForFunction(() => window.app.settings?._meta?.voice?.browser === true);
+        await page.keyboard.press('Control+Shift+Space');
+        await page.waitForFunction(() => window.__recognitions === 1);
+        await page.keyboard.press('Escape');
+        await page.waitForFunction(() => window.app._dictation.state === 'idle');
+        assert.equal(await page.locator('#user-input').inputValue(), panelText);
 
         // Now a message reaches the model and is recorded as the app's.
         await page.locator('#user-input').fill('hello after confirming');

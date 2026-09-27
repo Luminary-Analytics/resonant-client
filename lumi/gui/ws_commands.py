@@ -882,21 +882,39 @@ async def _oversight_status(ctx: CommandContext) -> None:
 async def _oversight_notice_shown(ctx: CommandContext) -> None:
     """The person confirmed the oversight notice for this policy (its fingerprint): the message box unlocks.
 
-    The page sends it only from the notice's "I've read this" button, with
-    the notice's text as it showed it. A fingerprint that isn't the policy
-    in force, a text that isn't that policy's notice, or a policy with
-    nowhere to send records confirms nothing: the page gets the current
-    status back and shows that notice instead. The confirmation is signed
-    with this computer's device key and sent to Lumi Cloud in the background.
+    The page sends it only from the notice's "I've read this" button (a
+    click the browser reports as the person's), with the notice's text as it
+    showed it. A fingerprint that isn't the policy in force, a missing text
+    or one that isn't that policy's notice, or a policy with nowhere to send
+    records confirms nothing: the page gets the current status back and
+    shows that notice instead. The confirmation is signed with this
+    computer's device key and sent to Lumi Cloud in the background; a
+    signature that can't be made is said, and confirms nothing.
     """
-    from .. import oversight
+    from .. import oversight, voice
 
     fingerprint = str(ctx.msg.get("fingerprint") or "")
     shown = ctx.msg.get("notice")
     signer = getattr(getattr(ctx.state, "cloud", None), "sign_as_device", None)
-    await asyncio.to_thread(lambda: oversight.acknowledge(
-        fingerprint, "app", notice=str(shown) if isinstance(shown, str) else None, signer=signer))
+    try:
+        await asyncio.to_thread(lambda: oversight.acknowledge(
+            fingerprint, "app", notice=shown if isinstance(shown, str) else None, signer=signer))
+    except oversight.ConfirmationError as exc:
+        await ctx.send({"event": "error", "message": str(exc), "code": oversight.REFUSAL_CODE})
     await ctx.send({"event": "oversight_status", "data": await asyncio.to_thread(oversight.status)})
+    # Dictation follows the notice (voice.status): the page learns whether it may listen now.
+    settings = getattr(ctx.state, "settings", None)
+    if settings is not None:
+        await ctx.send({"event": "voice_status", "data": await asyncio.to_thread(voice.status, settings)})
+
+
+@command("voice_status")
+async def _voice_status(ctx: CommandContext) -> None:
+    """Which ways of dictating Settings, the policy and the oversight notice allow now (lumi/voice.py)."""
+    from .. import voice
+
+    await ctx.send({"event": "voice_status",
+                    "data": await asyncio.to_thread(voice.status, getattr(ctx.state, "settings", None))})
 
 
 async def _oversight_refusal(ctx: CommandContext, trigger: str = "app") -> str:

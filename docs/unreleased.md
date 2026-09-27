@@ -75,6 +75,38 @@ now.
   `headless`, `plan`, `mission`, `team`), `unattended` and `os_user`.
   `unattended` is a version 1 key of the strict parser; an unknown key or
   version still turns oversight off with the reason shown.
+- **Review fixes (September 27, second round)**:
+  - Dictation waited for nothing: Ctrl+Shift+Space started the webview's
+    recognizer (audio to Google, Microsoft or Apple) while the message box
+    was locked. The shortcut and button now do nothing but say why,
+    dictation already listening stops when the box locks, and
+    `voice.status` refuses both engines until the notice is confirmed; the
+    page asks for it again once unlocked.
+  - A session's title could carry what DLP withheld: the fallback title is
+    the first message shortened and capitalized, where DLP's checks miss a
+    cut keyword. Once DLP withheld or changed a message of a session, or a
+    DLP service refused one of its turns, the session's records carry no
+    title from then on.
+  - The app's confirmation needs the notice text the page showed; without
+    it nothing is confirmed.
+  - A turn the notice stopped midway sends Engram no session summary.
+  - A kept confirmation counts only while its signature verifies with this
+    computer's device key and it covers the notice in force, including the
+    SHA-256 of the notice text: a hand-written `notice.json` or `chats.json`
+    counts for nothing, and a changed text (a new Lumi's wording, a renamed
+    organization) asks again. A confirmation that can't be signed confirms
+    nothing and says why; the uploader no longer signs records later.
+  - "Unattended" comes from the run's environment: `lumi run` and scheduled
+    runs are unattended only when none of standard input, output and error
+    is a terminal and there's no controlling terminal (POSIX `/dev/tty`,
+    Windows a console window in an interactive session). **Run now** is
+    attended (`schedule`, `unattended: false`), and a task piped in at a
+    terminal is refused (exit 3) until the notice is confirmed.
+  - `lumi extension check` asks a pack's provider only through the
+    policy's gates: the notice, then DLP.
+  - The notice fingerprint is the full SHA-256 hex digest (64 characters),
+    in step with Lumi Cloud; a chat's I've read this button carries its
+    first 32 characters, which fit Telegram's button data.
 - **Panels (merged from main)**: **I've read this** takes only a click or
   key press the browser reports as the person's (`isTrusted`); a click a
   script makes confirms nothing. A capability pack's panel can add text to

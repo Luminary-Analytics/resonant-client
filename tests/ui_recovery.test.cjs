@@ -2824,6 +2824,27 @@ test('a policy that collects more locks the message box again', () => {
     assert.deepEqual(app.sent, [{command: 'oversight_notice_shown', fingerprint: 'fp-2', notice: PENDING.notice_text}]);
 });
 
+test('nothing dictates while the notice locks the message box, and the page asks again once it unlocks', () => {
+    const {app} = oversightNotice();
+    const cancelled = [];
+    app.settings = {_meta: {voice: {engine: 'auto', browser: true, service_ready: false}}};
+    app._dictation = {state: 'listening', cancel: options => cancelled.push({...options}),  // a copy made here, not in the vm
+        available: () => ({engine: null, reason: ''})};
+    app._applyOversight(PENDING);
+    // Listening stops, and no engine may start: the browser's recognizer included.
+    assert.deepEqual(cancelled, [{focus: false}]);
+    const locked = app._dictationStatus();
+    assert.equal(locked.browser, false);
+    assert.equal(locked.service_ready, false);
+    assert.match(locked.reason, /oversight notice/);
+    assert.equal(app.settings._meta.voice.browser, true, 'the server\'s own status is left as it was');
+    app._dictation.state = 'idle';
+    app._applyOversight({...PENDING, acknowledged: true, required: false});
+    assert.equal(app._dictationStatus().browser, true);
+    // The server's status follows the notice too: the page asks for it again.
+    assert.deepEqual(app.sent, [{command: 'voice_status'}]);
+});
+
 test('a notice that says nothing is collected asks for no confirmation and locks nothing', () => {
     const {app, elements} = oversightNotice();
     app._applyOversight({...PENDING, destination: false, required: false,

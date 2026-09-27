@@ -443,6 +443,11 @@ def main():
 
         from .app import state as app_state
         start_background(app_state.cloud)
+        # Organization oversight records, when a policy asks for them, go to
+        # Lumi Cloud from their own thread (lumi/oversight.py).
+        from lumi import oversight
+
+        oversight.start_uploader(app_state.cloud)
         # Requests from Slack and Teams, once someone turns them on.
         from lumi.remote_tasks import RemoteTasks
         from lumi.remote_tasks import start as start_remote_tasks

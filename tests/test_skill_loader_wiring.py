@@ -180,8 +180,10 @@ class _CapturingIntentService:
         self.captured_text = None
         self.counter = 0
 
-    def start_intent(self, text, *, planner_specialization=None):
+    def start_intent(self, text, *, planner_specialization=None, trigger="plan"):
         self.captured_text = text
+        # An autonomous session's sub-missions are recorded as mission work (lumi/oversight.py).
+        self.captured_trigger = trigger
         self.counter += 1
         return f"intent-{self.counter}"
 
@@ -232,6 +234,7 @@ class TestDispatchItemSkillWiring:
         assert "Do a thing" in svc.captured_text
         assert "Candidate skills" in svc.captured_text
         assert "pinned-ref" in svc.captured_text
+        assert svc.captured_trigger == "mission"
 
     def test_no_skills_means_clean_goal_text(self, state_home, project_dir):
         # No skills seeded — goal text is just the item, no block.

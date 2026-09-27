@@ -7,7 +7,8 @@ this computer and the hosts you allow, and anything else it would have
 reached is refused at once, with the reason.
 
 Offline mode is for air-gapped networks and for organizations that allow no
-traffic to the internet. It works without a license, like the rest of Lumi.
+traffic to the internet. It works without an [offline license](#the-offline-license),
+like the rest of Lumi.
 
 ## Turning it on
 

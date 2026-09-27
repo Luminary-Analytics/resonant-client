@@ -1,3 +1,33 @@
+# Third-party code. This module is a Python port of truncate.ts from
+# pi-coding-agent (npm @mariozechner/pi-coding-agent 0.70.6;
+# packages/coding-agent/src/core/tools/truncate.ts in the pi monorepo,
+# https://github.com/earendil-works/pi, formerly badlogic/pi-mono), which is
+# licensed under the MIT License below. The same text ships in
+# THIRD_PARTY_NOTICES.txt (packaging/third-party-components.json and
+# packaging/licenses/pi-coding-agent-LICENSE.txt); keep this notice with the
+# code.
+#
+# MIT License
+#
+# Copyright (c) 2025 Mario Zechner
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
 """
 Tool-output truncation utilities.
 
@@ -20,8 +50,9 @@ Direction matters:
 - `truncate_line` — bound a single line's character count. Use for grep
   matches where a 100KB line would dominate a result list.
 
-Ported from pi-coding-agent's truncate.ts (MIT, Mario Zechner). Behavior is
-intentionally compatible so output shapes are predictable.
+Ported from pi-coding-agent's truncate.ts (MIT License, Copyright (c) 2025
+Mario Zechner; see the notice above). Behavior is intentionally compatible so
+output shapes are predictable.
 """
 from __future__ import annotations
 

@@ -505,6 +505,15 @@ lumi-smoke variance --spec wordcount --model your-model --n 3
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+Lumi is commercial software: © 2026 Luminary Analytics, all rights reserved,
+licensed under the Lumi End User License Agreement. See [LICENSE](LICENSE).
+Versions 0.6.3 through 0.19.x were published under the MIT License and remain
+under it.
+
+- The [Extension SDK](sdk/) and the [VS Code extension](lumi/code_editors/vscode/)
+  stay under the MIT License, so others can build and ship extensions.
+- Individuals use the app free today (see [Plans](docs/plans.md)). That is a
+  product decision, which the license text doesn't change.
+- Whether this repository stays public hasn't been decided.
 
 Managed previews, named acceptance checks, Kimi effort controls, and sourced project notes are described in [Priority improvements](docs/priority-improvements.md).

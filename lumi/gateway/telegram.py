@@ -114,28 +114,30 @@ class TelegramChannel(ChannelAdapter):
                 ))
 
     def _button(self, query: dict, on_message: Callable[[InboundMessage], None]) -> None:
-        """An Approve or Deny button: answered as ``/approve <id>`` or ``/deny <id>``."""
+        """An Approve, Deny or I've read this button: ``/approve <id>``, ``/deny <id>`` or ``/acknowledge <token>``."""
         chat_id = str(((query.get("message") or {}).get("chat") or {}).get("id", ""))
         action, _, approval_id = str(query.get("data") or "").partition(":")
-        allowed = self._is_allowed(chat_id) and action in ("approve", "deny") and approval_id
+        allowed = self._is_allowed(chat_id) and action in ("approve", "deny", "acknowledge") and approval_id
+        answers = {"approve": "Approved", "deny": "Denied", "acknowledge": "Thanks"}
         try:
             self._call("answerCallbackQuery", callback_query_id=query.get("id"),
-                       text=("Approved" if action == "approve" else "Denied") if allowed else "Not allowed")
+                       text=answers.get(action, "") if allowed else "Not allowed")
         except Exception:
             logger.debug("Could not acknowledge a Telegram button", exc_info=True)
         if not allowed:
-            logger.warning("Ignored an approval button from Telegram chat %s", chat_id)
+            logger.warning("Ignored a button from Telegram chat %s", chat_id)
             return
         on_message(InboundMessage(chat_id=chat_id, sender=_sender(query.get("from")),
                                   text=f"/{action} {approval_id}", channel=self.name))
 
-    def send(self, chat_id: str, text: str) -> None:
+    def send(self, chat_id: str, text: str) -> bool:
         for chunk in _chunk(text, _MAX_MESSAGE_CHARS):
             try:
                 self._call("sendMessage", chat_id=chat_id, text=chunk)
             except Exception:
                 logger.exception("Failed to send Telegram reply to chat %s", chat_id)
-                return
+                return False
+        return True
 
     def ask(self, chat_id: str, text: str, approval_id: str) -> None:
         buttons = [[{"text": "Approve", "callback_data": f"approve:{approval_id}"},
@@ -146,6 +148,18 @@ class TelegramChannel(ChannelAdapter):
         except Exception:
             logger.exception("Failed to send a Telegram approval request to chat %s", chat_id)
             super().ask(chat_id, text, approval_id)
+
+    def notice(self, chat_id: str, text: str, token: str) -> bool:
+        buttons = [[{"text": "I've read this", "callback_data": f"acknowledge:{token}"}]]
+        chunks = _chunk(text, _MAX_MESSAGE_CHARS)
+        try:
+            for chunk in chunks[:-1]:
+                self._call("sendMessage", chat_id=chat_id, text=chunk)
+            self._call("sendMessage", chat_id=chat_id, text=chunks[-1], reply_markup={"inline_keyboard": buttons})
+        except Exception:
+            logger.exception("Failed to send the oversight notice to Telegram chat %s", chat_id)
+            return False
+        return True
 
     def notify_busy(self, chat_id: str) -> None:
         try:

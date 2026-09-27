@@ -13,3 +13,9 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
 packages = ["lumi_extension"]
+
+# The SDK is MIT-licensed, unlike Lumi itself. Its license file sits inside
+# the package, so it travels with every copy: installed, or copied into a
+# pack by sdk/new_pack.py.
+[tool.setuptools.package-data]
+lumi_extension = ["LICENSE"]

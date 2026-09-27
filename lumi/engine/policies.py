@@ -449,6 +449,33 @@ def project_execution_policy(
     return with_organization_rules(merged)
 
 
+def denial_source(policy: ExecutionPolicy, tool_name: str, tool_args: dict) -> str:
+    """Which layer's rule refuses a call, for the security flag it raises (lumi/security_flags.py).
+
+    ``guardrail`` (engine/guardrails.py), ``review_gate``, ``organization``,
+    ``repository``, ``dangerous_command`` (the tiers' refusals of risky shell
+    commands) or ``tier`` (the permission mode's own rules); "" if nothing
+    refuses it.
+    """
+    from .guardrails import blocked_call
+
+    if blocked_call(tool_name, tool_args if isinstance(tool_args, dict) else {}):
+        return "guardrail"
+    first_match = getattr(policy, "first_match", None)  # an embedder's policy may only evaluate
+    rule = first_match(tool_name, tool_args) if callable(first_match) else None
+    if rule is None or getattr(rule, "action", "") != PolicyAction.DENY.value:
+        return ""
+    if rule.source in (ORGANIZATION, REPOSITORY):
+        return rule.source
+    from .review_gate import policy_rules as review_rules
+
+    if rule in review_rules():
+        return "review_gate"
+    if rule in _dangerous_shell_rules():
+        return "dangerous_command"
+    return "tier"
+
+
 def with_organization_rules(policy: ExecutionPolicy) -> ExecutionPolicy:
     """``policy`` with the organization's shell rules (lumi/policy.py) checked first.
 

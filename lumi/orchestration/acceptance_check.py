@@ -560,8 +560,15 @@ class VisionRunner:
         ambiguity → False (defensive: when in doubt, the criterion
         does NOT pass; user can re-run or switch models).
         """
+        from .. import oversight
         from ..dlp import Blocked, check_text
 
+        # Nothing reaches a model before an organization's oversight notice is
+        # confirmed (lumi/oversight.py). [vision] checks run in autonomous
+        # sessions' reflect pass, a mission in the app.
+        refusal = oversight.refusal("mission")
+        if refusal:
+            return False, f"<vision model error: {refusal}>"
         # A model request like any other: the question passes the organization's
         # DLP rules first (the image is outside them); a block means no verdict.
         try:

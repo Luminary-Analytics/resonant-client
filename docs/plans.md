@@ -19,9 +19,15 @@ What leaves the computer:
 - Nothing else is reported to Luminary Analytics. The app's own records stay
   on the computer.
 
-Lumi's source is under the MIT license. The installer ships the licenses of its
-third-party components in `THIRD_PARTY_NOTICES.txt`. **Settings > About Lumi**
-shows the version, this summary and where those notices are.
+Lumi is commercial software: © Luminary Analytics, all rights reserved,
+licensed under the Lumi End User License Agreement. Being free for
+individuals is a product decision, which the license text doesn't change.
+Versions 0.6.3 through 0.19.x were published under the MIT License and remain
+under it. The Extension SDK and the VS Code extension stay under the MIT
+License, so others can build and ship extensions. The installer ships the
+licenses of its third-party components in `THIRD_PARTY_NOTICES.txt`.
+**Settings > About Lumi** shows the version, this summary and where those
+notices are.
 
 ## Teams and organizations (planned)
 

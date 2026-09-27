@@ -128,6 +128,16 @@ class TestComponents:
                 for relative in component.get("license_files", []):
                     assert relative in fetched or (ROOT / relative).is_file(), relative
 
+    def test_ported_code_keeps_its_license(self):
+        # lumi/engine/truncation.py is ported from pi-coding-agent's truncate.ts
+        # (MIT): the notices ship the full license, and the file keeps it too.
+        pi = next(item for item in notices.load_components() if item["name"] == "pi-coding-agent")
+        [(_, text)] = notices.component_texts(pi)
+        assert text.startswith("MIT License\n\nCopyright (c) 2025 Mario Zechner\n")
+        assert "Permission is hereby granted, free of charge" in text
+        source = (ROOT / "lumi" / "engine" / "truncation.py").read_text(encoding="utf-8")
+        assert "Copyright (c) 2025 Mario Zechner" in source and "pi-coding-agent" in source
+
 
 def _some_distributions():
     # A few real packages rather than the whole development environment, which
@@ -142,7 +152,12 @@ class TestNotices:
         assert names == {"httpx", "keyring"}
         text = notices.render(packages, notices.load_components())
         assert text.startswith("Lumi third-party notices")
+        # Lumi's own terms, since the bundle doesn't ship the repository's LICENSE.
+        assert "itself is © Luminary Analytics, all rights reserved" in text
+        assert "the Lumi End User License Agreement." in text
         assert "WinSparkle 0.9.2 — MIT" in text
+        assert "pi-coding-agent 0.70.6 (Ported source code)" in text
+        assert "Copyright (c) 2025 Mario Zechner" in text
         httpx = next(item for item in packages if item["name"] == "httpx")
         assert httpx["texts"], "httpx ships its license file"
         assert f"httpx {httpx['version']} — BSD-3-Clause" in text

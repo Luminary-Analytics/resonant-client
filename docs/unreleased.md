@@ -8,6 +8,20 @@ The heartbeat remains paused. Documentation maintenance does not resume work,
 spending or grants, and changes no native implementation or installed bundle.
 The dated September 15/18 records below are historical.
 
+## September 27 Team: the orchestrator answers workers mid-round (source only, not released)
+
+**Answers in the same round.** Workers could message the orchestrator, but it
+read their questions only when it next planned, after the round. Now, when a
+running worker asks the orchestrator a question or reports a blocker, the
+orchestrator loop starts a short answer turn
+(`coordinator.OrchestratorAnswers`).
+
+- The answer turn replies to each sender with `swarm_send`, so a worker
+  waiting in `swarm_receive` gets its answer while it still runs.
+- It uses up to 2 of the team's unallocated requests, has read access unless
+  writers are running, and proposes no work.
+- The questions still reach the next round's planning input.
+
 ## September 27 Team: the orchestrator applies checked changes (source only, not released)
 
 **Applying checked changes.** A team the orchestrator runs can also **Apply

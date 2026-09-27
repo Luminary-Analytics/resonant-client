@@ -104,13 +104,26 @@ def main() -> None:
                 ]
             autonomous = "--autonomous" in sys.argv[2:]
             if autonomous and not self.stream_count and "Inspect CSV fixture concern 1" in json.dumps(history):
-                # The first worker asks the orchestrator a question on its way.
+                # The first worker asks the orchestrator a question and waits for its answer.
                 self._scripts = [
                     [tool_call("file_read", {"path": "fact.txt"}), done(model=self.model)],
                     [tool_call("swarm_send", {"recipient_attempt_id": "orchestrator", "kind": "question",
                                               "body": "Should the CSV export also be checked for semicolons?",
                                               "command_id": "fixture-question"}), done(model=self.model)],
+                    [tool_call("swarm_receive", {"wait_seconds": 30}), done(model=self.model)],
                     [text_delta("Scripted reader finding: quoted CSV fields preserve commas."), done(model=self.model)],
+                ]
+            if autonomous and not self.stream_count and "Captured answer data:" in json.dumps(history):
+                # The orchestrator's answer turn replies to each question's sender.
+                answer = next(row.get("content", "") for row in history if row.get("role") == "user"
+                              and "Captured answer data:" in str(row.get("content", "")))
+                data = json.loads(answer.split("Captured answer data:\n", 1)[1].split("\n</runtime_message>", 1)[0])
+                self._scripts = [
+                    [tool_call("swarm_send", {"recipient_attempt_id": question["from_attempt_id"], "kind": "answer",
+                                              "body": "No: the export writes commas only, so semicolons need no check.",
+                                              "command_id": f"fixture-answer-{question['sequence']}"})
+                     for question in data["untrusted_questions"]] + [done(model=self.model)],
+                    [text_delta("Answered the worker's question."), done(model=self.model)],
                 ]
             if autonomous and not self.stream_count and "Captured planning data:" in json.dumps(history):
                 planning = next(row.get("content", "") for row in history if row.get("role") == "user"

@@ -69,11 +69,14 @@ test('The orchestrator runs a team from the panel and reports back', {timeout: 9
         assert.deepEqual(starts[0].autonomy,{rounds:2});
         assert.equal(starts[0].plan_mode,'coordinator');
         // The team's own messages, readable in the panel.
+        // The worker waited for its answer, and the orchestrator answered in the same round.
         const summary=page.locator('[data-swarm="messages-summary"]');
-        assert.equal(await summary.innerText(),'Team messages (1)');
+        assert.equal(await summary.innerText(),'Team messages (2)');
         await summary.click();
         await page.getByText('Worker 1 → Orchestrator · Question',{exact:true}).waitFor();
         await page.getByText('Should the CSV export also be checked for semicolons?',{exact:true}).waitFor();
+        await page.getByText('Orchestrator → Worker 1 · Answer',{exact:true}).waitFor();
+        await page.getByText('No: the export writes commas only, so semicolons need no check.',{exact:true}).waitFor();
         const status=await page.locator('[data-swarm="orchestrator-status"]').innerText();
         assert.match(status,/The orchestrator finished the objective\./);
         // The last orchestrator turn reads as its report, and decisions aren't attributed to the owner.
@@ -97,6 +100,8 @@ test('The orchestrator runs a team from the panel and reports back', {timeout: 9
         assert.deepEqual(run.coordinator_proposals.map(row=>row.state),['accepted','accepted']);
         assert.ok(run.check_receipts.length===2&&run.check_receipts.every(row=>row.executor_id.startsWith('autonomy:')));
         assert.equal(evidence.followup_inputs.length,2);
+        // One answer turn, which proposed nothing: the two proposals above are the plan and the report.
+        assert.deepEqual(run.attempts.filter(row=>row.worker_id.startsWith('orchestrator-answer-')).map(row=>row.state),['completed']);
         assert.equal(evidence.followup_inputs[1].untrusted_messages_to_orchestrator.length,1);
         assert.deepEqual(errors,[]);
         fs.writeFileSync(path.join(output,'evidence.json'),JSON.stringify(evidence,null,2));

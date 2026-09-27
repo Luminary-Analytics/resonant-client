@@ -321,6 +321,11 @@ There is no automatic cross-provider fallback or role routing in this workflow.
   messages. The model sees `[REDACTED ...]` instead, and the chat notes what was
   removed. Codex and Claude Code read files with their own tools and are not
   scanned.
+- **Your organization's data loss prevention rules**, when its policy has
+  them, check every request before it goes to a model: matches are recorded,
+  redacted in the copy that's sent, or the request is refused with the rule's
+  name. **Settings > Privacy & security** lists the rules. See
+  [data loss prevention](docs/dlp.md).
 - **Corporate networks:** TLS is verified with your operating system's
   certificate store, so a company root certificate works. Set a proxy and hosts
   that bypass it under **Settings > Connections > Network**, or use

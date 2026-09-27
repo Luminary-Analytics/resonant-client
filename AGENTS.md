@@ -106,6 +106,16 @@ host enrollment and actual packaged/learned-benefit qualification remain open.
   the audit log (`audit.py`); run new entry points through it rather than
   `_run_turn`. Record content only through `audit.content` (capture levels)
   and paths through `audit.name`; never record setting or key values.
+- Every outgoing model request passes the organization's DLP rules (`dlp.py`)
+  on the exact request, after `secret_scan`: `Session._model_stream` and
+  `request_purpose.auxiliary_stream` apply them, and any other call that
+  sends text to a model checks it with `dlp.check_text` (`tests/test_dlp.py`
+  lists every such call). Redact only text, never structure: tool arguments
+  stay valid JSON and signed reasoning is left out, not edited. `dlp.*` audit
+  records and block messages name rules, actions, kinds and counts, never the
+  matched text, and Settings shows rule names, never keywords or patterns. A
+  `dlp` section Lumi can't use refuses requests (`policy.blocked_reason`)
+  while the rest of the policy applies. See [DLP](docs/dlp.md).
 - Model calls outside a turn go through `engine/request_purpose.auxiliary_stream`
   with a purpose, so `usage.py` records them. Prices come from `pricing.py`;
   a model without a known price is unpriced (`None`), never $0. Budgets

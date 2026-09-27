@@ -8,6 +8,82 @@ The heartbeat remains paused. Documentation maintenance does not resume work,
 spending or grants, and changes no native implementation or installed bundle.
 The dated September 15/18 records below are historical.
 
+## September 27 data loss prevention for outgoing content (source only, not released)
+
+**An organization's DLP rules check every request before it leaves for a
+model provider** ([data loss prevention](dlp.md)). A policy's new `dlp`
+section (`"version": 1`) enables built-in detectors and adds rules:
+
+- Detectors: payment card numbers (network prefix and Luhn checked), US Social
+  Security numbers (with separators), IBANs (country length and mod-97
+  checked), the secret scan's credential formats, and email addresses (only
+  when listed).
+- Rules: keywords and phrases (whole words, ignoring case by default) and
+  regular expressions. A pattern that could scan slowly is refused when the
+  policy loads: unbounded or competing repeats, backreferences, matches over
+  256 characters.
+- Each detector or rule flags, redacts (`[REDACTED:<rule>]` in the copy that is
+  sent; the conversation keeps the original) or blocks, optionally for some
+  kinds of content only (prompts, attachments, tool results, instructions,
+  model output).
+- An optional external DLP service gets the text after the built-in
+  redactions and answers allow, redact or block; `on_error` says what a
+  failure does (block by default).
+
+**Where it applies.** `Session._model_stream` (turns in the app, `lumi run`,
+scheduled tasks, the gateway, the terminal UI, sub-agents, specialists and Team
+workers in and out of process) and `request_purpose.auxiliary_stream` (titles,
+compaction, image descriptions, skill extraction, which now goes through it)
+check the exact request, after the secret scan. The planning check, a
+specialist's structured-output repair and SONN employee advice check their
+text with `dlp.check_text`. `tests/test_dlp.py` lists every call that sends
+to a model, so a new one fails until it's covered.
+
+**What people see.**
+- A redaction leaves a quiet notice in the conversation naming the rules and
+  counts.
+- A block fails the turn with a message naming the rule and where it matched,
+  never the content. The entry it came from is left out of later requests, and
+  the failed card offers **Continue** without **Retry**.
+- **Settings > Privacy & security > Organization policy** lists the rules'
+  names, actions and scope, read-only; keywords and patterns never reach the
+  page.
+- A `dlp` section that can't be used (an unknown key, an unsupported version,
+  a refused pattern) refuses every model request with the reason, while the
+  rest of the policy applies (`policy.blocked_reason`).
+
+**Records.** `dlp.finding` (rule, action, content kind, count, purpose,
+provider, model, source) and `dlp.error` in the audit log, never matched text;
+content already recorded for a session and model isn't recorded again.
+
+**Also changed.**
+- Four `secret_scan` patterns scanned some text in quadratic time (50 KB of
+  `-eyJ`, `a.`, `TOKEN` or a private key's BEGIN line repeated took 0.4 to
+  1.8 seconds per pattern). The
+  JSON web token, URL password and `.env` patterns now start only where their
+  run of characters starts, and a private key's body stops at the next BEGIN
+  line. The same inputs take under a millisecond, and the existing secret scan
+  tests pass unchanged.
+
+**Not yet.** Images, dictation audio, tool definitions and what the Codex and
+Claude Code CLIs read themselves aren't checked; sharing, hand-offs, MCP and
+web tool requests aren't model requests and aren't covered; the service can't
+carry a credential.
+
+**Validation.**
+- `tests/test_dlp.py` (143 tests): detectors, rules, the pattern check, strict
+  parsing, every action, scopes, JSON arguments, signed reasoning, turns, tool
+  results, titles, compaction, planning, repair, a guarded worker Session, the
+  Team runtime's in-process worker and a real worker process that loads the
+  policy from `LUMI_POLICY_FILE`, the external service through
+  `httpx.MockTransport`, audit records and a timing check. A megabyte of each
+  of 11 adversarial inputs scans in 32 to 290 ms on the development machine,
+  under load.
+- `tests/dlp_ui.browser.cjs` passed five runs in a row in Edge against the
+  source app, with scripted inference and a fixture policy. It covers the
+  redaction notice, the block with **Continue**, the withheld entry, the audit
+  records and the Settings rows at desktop and phone widths.
+
 ## September 27 Team: a team's results in its chat (source only, not released)
 
 **Use in chat.** The Team panel's **Use in chat** adds `@team:<run id>` to the

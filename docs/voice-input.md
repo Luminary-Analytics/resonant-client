@@ -85,7 +85,10 @@ Organization policy locks these like any other setting (see the
 
 An invalid or expired organization policy blocks both transcription services
 and this window's speech recognition. Automatic mode cannot fall back to a
-browser recognizer while that policy is blocked.
+browser recognizer while that policy is blocked. So does an organization's
+[oversight notice](organization-oversight.md) that hasn't been confirmed:
+nothing listens, from the button or Ctrl+Shift+Space, until the person
+confirms it.
 
 | Setting | Values |
 | --- | --- |

@@ -267,7 +267,9 @@ def test_running_composer_supports_steering_and_visible_queue_state():
     assert "this._steerInterrupted" not in source
     assert handles_event(source, "message.queued")
     assert handles_event(source, "message.started")
-    assert "this.userInput.disabled = false;" in source
+    # A running turn keeps the message box open for steering; only an organization's
+    # oversight notice that isn't confirmed yet locks it (settings_view.js).
+    assert "this.userInput.disabled = Boolean(this._oversightLocked);" in source
     assert "Write a follow-up for the running agent" in source
     assert "Queue follow-up (Enter)" in source
     assert "steer-queue-promote" in source

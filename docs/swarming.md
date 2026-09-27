@@ -95,8 +95,12 @@ orchestrator, and you don't approve each step:
 
 The **Orchestrator** section shows the round, the current step and the final
 report. You can pause, steer or stop the team at any time. The orchestrator
-loop runs in the app that started the team; after a restart, continue the team
-yourself. See `engine/swarming/autopilot.py`.
+loop runs in the app that owns the team. After a restart or a lost host,
+**Recover** and **Continue** the team as for any retained team: the loop then
+resumes from the retained plans. Each accepted plan that started work counts
+as a round, and a report already written finishes the team. A task or turn
+retried before the restart may be retried once more. See
+`engine/swarming/autopilot.py`.
 
 File changes wait for you to check, apply and accept them, unless you also
 turn on **Apply changes that pass every check**, offered when the team has

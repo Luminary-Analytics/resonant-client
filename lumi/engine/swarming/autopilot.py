@@ -106,6 +106,34 @@ class TeamAutopilot:
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
 
+    @classmethod
+    def resumed(cls, runtime: Any, run_id: str, grant: dict[str, Any], snapshot: dict[str, Any]) -> "TeamAutopilot":
+        """The loop for a team its owner continued after the app lost its host.
+
+        Its state comes from the retained plans: each accepted plan that
+        started work was a round. A plan that proposed no work (or a closing
+        turn's rejected proposal) was the final report, so the team finishes.
+        Otherwise, once every round's work is done, the next turn is the closing
+        turn. Retries start fresh: a task or turn retried before may be retried
+        once more.
+        """
+        autopilot = cls(runtime, run_id, rounds=grant["rounds"], apply=grant.get("apply") is True)
+        planned = [row for row in snapshot["coordinator_proposals"] if not any(
+            attempt["id"] == row["attempt_id"] and attempt["worker_id"].startswith(ANSWER_WORKER_PREFIX)
+            for attempt in snapshot["attempts"])]
+        worked = [row for row in planned if row["state"] == "accepted"
+                  and json.loads(row["payload_json"])["plan"]["work_items"]]
+        autopilot.round = max(1, min(len(worked), autopilot.rounds))
+        reports = [row for row in planned if (row["state"] == "accepted" and not json.loads(
+            row["payload_json"])["plan"]["work_items"]) or row["decision_evidence"] == CLOSING_EVIDENCE]
+        if reports:
+            autopilot.final_report = json.loads(reports[-1]["payload_json"])["plan"]["summary"]
+            autopilot.closing = reports[-1]["decision_evidence"] == CLOSING_EVIDENCE
+        elif len(worked) >= autopilot.rounds and any(row["state"] == "pending" for row in planned):
+            autopilot.closing = True  # The pending plan is the closing turn's.
+        autopilot._set("resumed", "The orchestrator loop resumed after the team was continued.")
+        return autopilot
+
     # ── lifecycle ─────────────────────────────────────────────────────────
 
     def start(self) -> None:

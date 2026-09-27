@@ -1226,6 +1226,14 @@ class SwarmRuntime:
                 self._managed_attachments[recovery.run_id] = attachment
                 attachment.start_pump(runner, lambda: store.snapshot(capture.scope, recovery.run_id))
             scheduler.start()
+            # The owner continued a team they let the orchestrator run: its loop
+            # goes on from the retained plans (autopilot.TeamAutopilot.resumed).
+            grant = setup.get("autonomy")
+            previous = self._autopilots.get(recovery.run_id)
+            if grant and (previous is None or not previous.inspect()["active"]):
+                autopilot = self._autopilots[recovery.run_id] = TeamAutopilot.resumed(
+                    self, recovery.run_id, grant, store.snapshot(capture.scope, recovery.run_id))
+                autopilot.start()
 
     def close(self) -> None:
         """Stop only the workers owned by this desktop runtime."""

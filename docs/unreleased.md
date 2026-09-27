@@ -8,6 +8,19 @@ The heartbeat remains paused. Documentation maintenance does not resume work,
 spending or grants, and changes no native implementation or installed bundle.
 The dated September 15/18 records below are historical.
 
+## September 27 Team: the orchestrator loop resumes when the owner continues a team (source only, not released)
+
+**The loop resumes after a continue.** A team its owner let the orchestrator
+run lost that loop with its host: after a restart the owner had to finish the
+team by hand. Now **Continue** on a recovered team resumes the loop
+(`TeamAutopilot.resumed`).
+
+- Its state comes from the retained plans. Each accepted plan that started
+  work was a round, and a report already written finishes the team.
+- A pending plan is decided as the loop would have decided it.
+- Retries start fresh, so a task or turn retried before the restart may be
+  retried once more.
+
 ## September 27 Team: the orchestrator answers workers mid-round (source only, not released)
 
 **Answers in the same round.** Workers could message the orchestrator, but it

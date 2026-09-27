@@ -271,14 +271,15 @@ def test_workflow_owner_observation_is_exact_scoped_idempotent_and_accepts_no_ou
     store, supervisor, authority, observations, takeover, path = fixture
     # This protocol-covered check stopped before it even created a helper.
     replacement = takeover()
-    workflow = IntegrationWorkflow(supervisor, replacement, SimpleNamespace(store=store, repo_key="repo"))
+    workflow = IntegrationWorkflow(supervisor, replacement, SimpleNamespace(
+        store=store, repo_key="repo", waiting_for_repository=lambda thread: False))
     revision = store.snapshot(authority.scope, authority.run_id)["run"]["revision"]
     payload = {"effect_kind": "check", "effect_id": "check", "evidence": "Inspect never-invoked check"}
     try:
         with pytest.raises(ValueError):
             workflow.submit("reconcile_effect", {**payload, "outcome": "passed"}, command_id="forged", expected_revision=revision)
         receipt = workflow.submit("reconcile_effect", payload, command_id="observe", expected_revision=revision)
-        deadline = time.monotonic() + 5
+        deadline = time.monotonic() + 30
         while workflow.inspect(receipt["id"])["state"] in {"queued", "running"} and time.monotonic() < deadline:
             time.sleep(.01)
         assert workflow.inspect(receipt["id"])["state"] == "completed"
@@ -298,8 +299,8 @@ def test_killed_host_leaves_durable_invocation_and_orphan_tree_is_observed_after
     store, supervisor, authority, observations, takeover, path = fixture
     marker = path / "effect-pids.json"
     target = ("import os,subprocess,sys,time,json; from pathlib import Path; "
-              "child=subprocess.Popen([sys.executable,'-I','-S','-c','import time; time.sleep(60)']); "
-              f"Path({str(marker)!r}).write_text(json.dumps([os.getpid(),child.pid])); time.sleep(60)")
+              "child=subprocess.Popen([sys.executable,'-I','-S','-c','import time; time.sleep(600)']); "
+              f"Path({str(marker)!r}).write_text(json.dumps([os.getpid(),child.pid])); time.sleep(600)")
     argv = [sys.executable, "-I", "-S", "-c", target]
     source = Path(__file__).resolve().parents[1]
     # A separate real application host dies without executing its cleanup
@@ -318,14 +319,14 @@ process = ManagedArgvProcess()
 def admitted(child):
     observations.owned(authority, identity, child)
     observations.invoke(authority, identity)
-process.execute({argv!r}, {str(path)!r}, timeout_seconds=60, on_started=admitted)
+process.execute({argv!r}, {str(path)!r}, timeout_seconds=900, on_started=admitted)
 observations.stopped(authority.scope, authority.run_id, identity, process)
 """
     host = subprocess.Popen([sys.executable, "-c", host_code], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
                             **background_process_kwargs(new_process_group=True))
     children = []
     try:
-        deadline = time.monotonic() + 10
+        deadline = time.monotonic() + 60  # the host, its gate and the target start first
         while time.monotonic() < deadline:
             if host.poll() is not None:
                 pytest.fail(f"Fixture host exited before its target ran: {host.stderr.read().decode(errors='replace')}")
@@ -342,7 +343,7 @@ observations.stopped(authority.scope, authority.run_id, identity, process)
         host.wait(timeout=5)
         # No original Python finally or check completion receipt executed.
         assert store.snapshot(authority.scope, authority.run_id)["integration_processes"][0]["state"] == "invoked"
-        deadline = time.monotonic() + 5
+        deadline = time.monotonic() + 30
         while time.monotonic() < deadline:
             inspected = observations.inspect_effect(authority.scope, authority.run_id, "check", "check")
             if inspected["processes"][0]["observation"] == "stopped":

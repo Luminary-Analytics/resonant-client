@@ -1031,7 +1031,7 @@ window.LumiSwarmView = class LumiSwarmView {
             row._eligible = writer.state === 'ready' && attempt?.state === 'submitted' && attempt?.process_state === 'stopped' && item?.state === 'submitted';
         }
         const operations = snapshot.integration_operations || [];
-        nodes['integration-status'].textContent = operations.slice(-5).map(row => `${({prepare_candidate: 'Preparing changes', run_check: 'Verification check', apply: 'Applying changes', reconcile_application: 'Inspecting application'})[row.kind] || 'File integration'}: ${row.state}${row.error ? ' · ' + row.error : ''}`).join(' · ');
+        nodes['integration-status'].textContent = operations.slice(-5).map(row => `${({prepare_candidate: 'Preparing changes', run_check: 'Verification check', apply: 'Applying changes', reconcile_application: 'Inspecting application'})[row.kind] || 'File integration'}: ${row.state}${row.waiting ? ' · waiting for another step on this repository' : ''}${row.error ? ' · ' + row.error : ''}`).join(' · ');
         const candidates = snapshot.integration_candidates || [];
         const shown = new Set(candidates.map(row => row.id));
         for (const [id, row] of this._swarmCandidateRows) {
@@ -1508,6 +1508,7 @@ window.LumiSwarmView = class LumiSwarmView {
 
     _swarmStateLabel(state) {
         return ({running: 'Working', leased: 'Starting', pending: 'Waiting', ready: 'Ready', pausing: 'Pausing', paused: 'Paused', stopping: 'Stopping', stopped: 'Stopped',
+            finalizing: 'Committing its changes', waiting_for_repository: 'Waiting for another step on this repository',
             submitted: 'Awaiting verification', accepted: 'Accepted', completed: 'Complete', cancelled: 'Stopped', failed: 'Needs review', uncertain: 'Needs reconciliation', reconciliation_required: 'Needs reconciliation', recovery_required: 'Recovery needed', unknown: 'Not confirmed'})[state] || 'Not confirmed';
     }
 

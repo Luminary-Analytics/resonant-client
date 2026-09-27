@@ -394,6 +394,59 @@ Python 3.13 venv, `PYTHONNOUSERSITE=1`):
 - Not run: a full local `pytest` (CI runs it), a packaged build, the
   terminal UI and a real Telegram or Slack chat.
 
+## September 27 Team: steadier on a busy machine (source only, not released)
+
+The Team suite (`team-tests.yml`) failed now and then on CI, on different
+tests in each run. Three of the causes were in the runtime, not the tests.
+
+- **Git started before Lumi owned it.** The host started each Git process and
+  then assigned it to a Windows job. A quick read (`git rev-parse`,
+  `git config --list`) could exit first when other threads held the host
+  busy, and assigning an exited process fails with "Access is denied". A
+  writer then failed to commit its result, and checks failed. Git processes,
+  check gates and worker children now start suspended, join their job, then
+  run (`processes.popen_in_kill_job`).
+  - A host that dies between creating such a child and assigning its job
+    would leave the child suspended forever, outside any job, holding its
+    folder. Each child is recorded (pid and creation time, its host's too)
+    until it runs in its job, and the next Lumi process to start one, or a
+    Team recovery, ends a leftover whose host is gone
+    (`processes.reap_orphaned_launches`).
+- **Integration steps gave up on each other after 5 s.** Creating a writer,
+  committing its result, combining, checking and applying take turns on one
+  repository lock, and a check holds it while it runs. When two writers
+  finished together, the second failed if the first's commit took over 5 s.
+  A step now waits its turn, up to 25 minutes (the longest check plus its
+  Git work). The wait ends at once when the step can no longer run:
+  - the run is stopped or its owner's authority is lost;
+  - for a writer's result, the owner cancels that writer; nothing of it is
+    committed afterwards either;
+  - for an application, its approval expires. Apply waits no longer than
+    the approval lasts and checks it again before recording its intent, so
+    an approval that expired while it waited applies nothing.
+  - Reconciling an application may be asked for after Stop, so only a Stop
+    that arrives while it waits ends that wait.
+  The Team panel shows a waiting step: a worker's activity reads "Waiting
+  for another step on this repository", and so does its operation's status.
+- **Stop could end a check with "[Errno 22] Invalid argument".** If the host
+  had already ended a check's process when its input thread wrote to it,
+  Windows failed the write, and the flush when the pipe closed, with EINVAL.
+  That error replaced the Stop. Input a finished process can't read is now
+  discarded.
+- A worker child's allowances bound a stuck child, not a slow one:
+  - 15 s to exit after its closing message (it had 1 s, then it was ended
+    and its work failed);
+  - 60 s to complete its startup handshake (it had 15 s);
+  - 10 s for its output to close after it exits (it had 3 s);
+  - a check gate forwards the last output for up to 10 s (it had 1 s).
+  A child's error now gives its exit code, whether its closing message
+  arrived and whether the host ended it.
+- The tests' waits allow for a loaded runner, and a wait that times out says
+  what the team was doing. Each fixture that ends on its own (a sleep, a
+  timeout) now outlasts every wait that observes it, so the mechanism under
+  test is still what ends it. The benchmark harness keeps the reason for its
+  own stops (`reason` in `observations.json`).
+
 ## September 27 Panels from capability packs (source only, not released)
 
 **Capability packs can add panels.** A pack's `ui_panels` (an id, a title and

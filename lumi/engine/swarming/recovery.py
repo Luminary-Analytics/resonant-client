@@ -16,6 +16,7 @@ import uuid
 
 import psutil
 
+from ...processes import reap_orphaned_launches
 from ..execution_guard import FILE_TOOL_NAMES, SWARM_TOOL_NAMES
 from .models import Command, CommandReceipt, Conflict, RevisionConflict, RunAuthority, Scope, ScopeDenied, require_id
 from .policy import AssignmentGrant
@@ -142,6 +143,9 @@ class SwarmRecovery:
         if type(expected_epoch) is not int or expected_epoch < 1:
             raise ValueError("Recovery requires the observed positive epoch")
         self.supervisor._lease_duration(lease_seconds)
+        # The host being recovered may have died while starting a child, which
+        # then waits suspended outside any job: end such leftovers first.
+        reap_orphaned_launches(force=True)
         with self._lock:
             if self._closed:
                 raise Conflict("Recovery owner is closed")

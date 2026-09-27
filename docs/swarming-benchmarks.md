@@ -189,7 +189,10 @@ The output contains:
 - `protocol.json`: predeclared inputs, settings, schedule and identity hash.
 - Each case's `execution.json`, `run.json`, `runtime-report.json` and
   `observations.json`: assigned scopes, seed revision, request allowances,
-  provider failures, typed errors, confirmed cleanup and interventions.
+  provider failures, typed errors, confirmed cleanup and interventions. When
+  the harness itself stops a case (a participant failed, dispatch stopped, a
+  check failed), `observations.json` gives its `reason`; other errors keep
+  only their type.
 - Each case's `worker-events.json`: the workers' own events (tool calls and
   results, refusals, errors), with keys redacted and long text shortened. It can
   contain fixture file contents and model text; it is for local diagnosis.

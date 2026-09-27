@@ -56,14 +56,16 @@ def snapshot(fixture):
     return supervisor.store.snapshot(authority.scope, authority.run_id)
 
 
-def until(predicate, timeout=20):
+def until(predicate, timeout=20, describe=None):
+    """Wait for a condition; on timeout, say what the fixture was doing (``describe``)."""
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         result = predicate()
         if result:
             return result
         time.sleep(0.01)
-    assert predicate(), "Fixture condition did not become true before timeout"
+    # A string message: pytest shortens any other kind to one line.
+    assert predicate(), "Fixture condition did not become true before timeout" + (f": {describe()}" if describe else "")
 
 
 class Backend(StreamingBackend):
@@ -91,7 +93,7 @@ class GatedBackend(Backend):
     def stream(self, **kwargs):
         try:
             self.entered.set()
-            assert self.release.wait(5), "Fixture provider was not released"
+            assert self.release.wait(60), "Fixture provider was not released"
             yield from super().stream(**kwargs)
         finally:
             self.generator_closed = True
@@ -221,7 +223,7 @@ def test_stop_is_not_blocked_by_scope_preflight_and_denies_the_effect(fixture, m
 
     def slow_scope(guard, name, arguments):
         entered.set()
-        assert release.wait(5), "Fixture scope traversal was not released"
+        assert release.wait(60), "Fixture scope traversal was not released"
         return original(guard, name, arguments)
 
     monkeypatch.setattr(SwarmExecutionGuard, "_tool_scope", slow_scope)

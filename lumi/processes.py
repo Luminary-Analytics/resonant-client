@@ -7,11 +7,13 @@ import sys
 from typing import Any
 
 
-def windows_kill_job(process, *, kill_on_close: bool = True):
+def windows_kill_job(process, *, kill_on_close: bool = True, name=None):
     """Own a process tree until this handle closes, including application exit.
 
     With ``kill_on_close=False`` the job only groups the tree: closing the
-    handle leaves it running, and ``terminate_windows_job`` stops it.
+    handle leaves it running, and ``terminate_windows_job`` stops it. A
+    ``name`` gives the job a system-wide identity; if a job with that name
+    already exists, this refuses instead of joining another owner's job.
     """
     if sys.platform != 'win32':
         return None
@@ -31,9 +33,12 @@ def windows_kill_job(process, *, kill_on_close: bool = True):
     api.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
     api.TerminateJobObject.argtypes = [wintypes.HANDLE, wintypes.UINT]
     api.CloseHandle.argtypes = [wintypes.HANDLE]
-    handle = api.CreateJobObjectW(None, None)
+    handle = api.CreateJobObjectW(None, name)
     if not handle:
         raise ctypes.WinError(ctypes.get_last_error())
+    if name and ctypes.get_last_error() == 183:
+        api.CloseHandle(handle)
+        raise OSError("Owned process job identity already exists")
     info = Extended()
     info.basic.flags = 0x2000 if kill_on_close else 0
     if not api.SetInformationJobObject(handle, 9, ctypes.byref(info), ctypes.sizeof(info)) or not api.AssignProcessToJobObject(handle, int(process._handle)):

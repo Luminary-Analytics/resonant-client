@@ -22,6 +22,12 @@ provider selection, or the [documentation index](docs/README.md) for contributor
 guides. [0.19.1](docs/v0.19.1-release-notes.md) fixes Codex live progress and completion evidence;
 [Unreleased](docs/unreleased.md) tracks subsequent changes.
 
+The source checkout also includes an opt-in [Team preview](docs/swarming.md)
+for scoped workers, reviewed file changes and explicit collaboration. Managed
+teams require separate [operator setup](docs/swarming-managed-setup.md).
+This is not a qualified release; the [swarming evidence ledger](docs/swarming-progress.md)
+tracks packaged checks and the remaining live-provider and deployment gates.
+
 Version 0.19.0 adds a bottom-left SONN account menu, local display
 name, and optional Echo companion. Settings opens a dedicated searchable category
 sidebar with focused pages for preferences, connections, and integrations.

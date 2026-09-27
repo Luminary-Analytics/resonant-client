@@ -20,6 +20,9 @@
          10+) / SF Mono (macOS) / Consolas. -->
     <link rel="stylesheet" href="/static/fonts.css?v={{ asset_version }}">
     <link rel="stylesheet" href="/static/styles.css?v={{ asset_version }}">
+    <link rel="stylesheet" href="/static/swarm_view.css?v={{ asset_version }}">
+    <link rel="stylesheet" href="/static/collaboration_view.css?v={{ asset_version }}">
+    <!-- Syntax highlighting theme -->
     <!-- Syntax highlighting theme (dark); styles.css recolors it for the light theme -->
     <link rel="stylesheet" href="/static/vendor/github-dark-dimmed.min.css?v={{ asset_version }}">
     <!-- Not deferred: resolves "Match system" before the first paint. -->
@@ -320,6 +323,8 @@
                              See docs/long-running-agents.md (Phase 1 UI). -->
                         <div id="chat-header" class="chat-header">
                             <div id="chat-session-title" class="chat-session-title">Lumi</div>
+                            <button type="button" id="swarm-team-button" class="swarm-team-button"
+                                    aria-haspopup="dialog" title="Inspect and manage this session’s team">Team</button>
                             <button type="button" id="employee-task-button" class="mission-toggle" hidden
                                     aria-haspopup="dialog">Employee task</button>
                             <!-- v0.3.3 — surface the active project path so misconfigurations
@@ -797,6 +802,9 @@
     <script src="/static/autonomous_view.js?v={{ asset_version }}"></script>
     <script src="/static/settings_view.js?v={{ asset_version }}"></script>
     <script src="/static/voice_input.js?v={{ asset_version }}"></script>
+    <script src="/static/swarm_view.js?v={{ asset_version }}"></script>
+    <script src="/static/collaboration_view.js?v={{ asset_version }}"></script>
+    <script src="/static/managed_collaboration_view.js?v={{ asset_version }}"></script>
     <script src="/static/run_cards.js?v={{ asset_version }}"></script>
     <script src="/static/employee_tasks.js?v={{ asset_version }}"></script>
     <div class="window-resize-edge window-resize-top" data-resize-edge="top" aria-hidden="true"></div>

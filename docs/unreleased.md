@@ -8,6 +8,100 @@ The heartbeat remains paused. Documentation maintenance does not resume work,
 spending or grants, and changes no native implementation or installed bundle.
 The dated September 15/18 records below are historical.
 
+## September 26–27 the Team (swarming) preview — source only, not released
+
+**Where it came from.** Codex sessions built this on September 26 in the
+primary checkout, on a branch that predated the `lumi` rename (235 commits
+behind main). It was ported onto the `lumi` package on September 27. The
+port:
+
+- renamed the package, `RESONANT_*` variables, `~/.resonant` locations and
+  product names to Lumi's, and keeps the team host id under `state_home()`;
+- merged with main's hooks, TLS options, file exclusions, fallback models and
+  second approvals in `engine/session.py`, `engine/tools.py`, `backends.py`
+  and `engine/compression.py`, and threads `input_origin` through
+  `Session.run`, so team turns stay in the audited path;
+- passes file exclusions, sandbox roots and project trust in guarded tool
+  calls, as ordinary calls do. Before, a worker's search returned an
+  excluded file's contents;
+- gives every worker the project's file exclusions when it starts, in-process
+  and through the child contract (`SwarmRuntime.exclusions_for`);
+- refuses new or changed team work while an organization policy applies,
+  since workers don't follow its model, mode, shell, approval or sharing rules
+  yet (`service.policy_refusal`). Reading, stopping, revoking and recovery
+  stay available;
+- keeps a worker child's host channel off its standard input and output. A git
+  query main now runs each turn inherited the channel and hung the worker on
+  Windows; `handoff._git` also gives git no input;
+- keeps a failed startup discovery from stopping the app. New team work is
+  then refused until a restart;
+- checks that artifact blobs stay in the store by resolving their shard
+  directory and refusing linked blobs. Resolving the blob itself on Windows
+  could keep the `\\?\` prefix while another worker published the same
+  evidence, which read as an escape and failed about one parallel publish in
+  fifty;
+- fetches the pinned ripgrep in CI, which managed searches require (they
+  never use a `rg` from PATH).
+
+See [what the preview follows so far](swarming.md#organization-policy-excluded-files-and-current-limits).
+On the port, the nine source-mode browser tests (`tests/swarm_*.browser.cjs`
+other than the managed and packaged ones) pass in Edge; their fixtures now
+open the page through a one-time launch link. The packaged-candidate, managed
+and PostgreSQL checks described below ran on the pre-rename checkout and
+haven't been repeated.
+
+The new `engine/swarming/` storage foundation records scoped run/attempt identity,
+atomic assignment and request reservations, dispatch intent, durable messages,
+receipt replay, stop state and crash reconciliation. The deterministic supervisor
+adds graph/policy admission, revisions, leases and backed-up schema migration.
+Optional native execution guards bind model input and tool observations to their
+originating attempts and enforce request allowances. Scoped artifacts/mailboxes
+retain exact input-delivery evidence. The default-off [Team preview](swarming.md)
+supports manual investigations or reviewed coordinator plans, scoped isolated
+writers, named candidate checks, reviewed application and separate acceptance.
+The panel exposes team and individual pause/stop, owner guidance with input
+receipts, worker concurrency, observed crash recovery and local metadata reports.
+An explicit follow-up planning request lets the saved coordinator use partial
+findings while independent workers continue. It consumes the remaining team
+allowance and produces a new proposal for separate review before worker dispatch.
+Source browser tests exercise real WebSocket, SQLite and Git paths with controlled
+providers. These changes are not a supported packaged feature. Recovery preserves
+uncertain execution instead of replaying it or refunding unknown use.
+
+Predeclared benchmark fixtures cover independent investigation, two-writer CSV
+export, a serial control and interrupted file effects. Their reference solutions
+validate the acceptance harness; they are not measured model baselines or proof
+of swarming benefit. See [delivery and validation](swarming-progress.md),
+[runtime contracts](swarming-contracts.md) and [benchmark inputs](swarming-benchmarks.md).
+Isolated development candidates exercise scripted readers, writer repair and
+recovery through the actual packaged application. The evidence ledger separates
+these checks from live provider qualification and public release gates.
+
+Managed source execution now connects an explicitly configured desktop to the
+separate governance service through mutual TLS. It enforces online worker,
+request, tool and owner Git/check permissions, shows effective policy and
+metadata, and preserves local Stop and explicit restart reconciliation. Durable
+absence fences prevent a delayed admission from replaying after recovery.
+The service includes tenant permissions, native OIDC sign-in, group provisioning,
+encrypted selected content and an independently credentialed audit archive.
+Actual local PostgreSQL/TLS/browser fixtures exercise these paths; external
+identity and independent-machine operational qualification remain pending.
+An explicit [offline restore workflow](../services/governance/RESTORE.md)
+reconciles archived retention evidence while keeping both source and target
+permanently quarantined. It does not reopen authority or replay provider work.
+Managed sharing terms and message bodies have explicit bilateral hold, release
+and deletion controls. Deleted payloads remain unavailable after quarantined
+restore; causal accounting and already accepted receiver work remain intact.
+
+Personal and managed conversations have separate explicit sharing agreements.
+The owner chooses selected content, the receiver inspects and approves the exact
+terms, and accepting work creates the receiver's own scoped assignment and
+request allowance. Delivery never implies model comprehension or result
+acceptance. Origin Stop or revocation closes future sharing while accepted
+receiver work retains its own lifecycle. Managed desktop sharing controls pass
+actual browser, TLS and database fixtures with scripted inference. See the [managed contract](swarming-managed-collaboration.md)
+and [operator setup](swarming-managed-setup.md).
+
 ## September 26 worktree recovery and integration fixes — source only, not released
 
 The open plan-controls, terminal-session and dictation PRs were integrated

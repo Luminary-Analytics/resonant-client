@@ -63,7 +63,9 @@ jobs:
       - name: Test
         # -q overrides the `-v` in pyproject addopts (CLI args win) to keep the
         # CI log readable; failures still print with --tb=short.
-        run: python -m pytest -q
+        # The Team preview's suite (tests/test_swarm_*.py) runs in team-tests.yml:
+        # it starts real processes and git worktrees and takes ~15 minutes.
+        run: python -m pytest -q --ignore-glob="tests/test_swarm_*.py"
 
       - name: Set up Node for frontend regression checks
         uses: actions/setup-node@v4

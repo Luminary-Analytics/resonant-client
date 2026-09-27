@@ -48,10 +48,30 @@ these services; it is not required for ordinary chat-based coding.
 | Creative editors | `engine/editor_integrations.py`, `engine/mcp.py` | Opt-in bridge profiles, live tool/resource discovery, scene probes, and per-process CLI configuration |
 | Costs and diagnostics | `gui/costs.py`, `gui/diagnostics.py`, `engine/turn_outcomes.py` | Usage/cost display, redacted diagnostics, completion evidence |
 | Durable workers | `engine/agents.py`, `engine/agent_runtime.py`, `engine/worktrees.py` | Worker state, execution, isolated writers |
+| Team preview | `engine/swarming/`, `engine/execution_guard.py`, `gui/swarming.py` | Transactional supervision, captured run ownership, guarded native workers, reviewed integration and explicit collaboration |
 | Context and evidence | `engine/context_broker.py`, `engine/artifacts.py`, `engine/checkpoint_timeline.py`, `engine/flight_recorder.py` | Context attachments, artifacts, rewind, traces |
 | Optional orchestration | `orchestration/`, `gui/autonomous_*.py` | Specialists, plan graphs, autonomous iteration, skills |
 
 Paths in the table are relative to `lumi/`.
+
+The opt-in Team preview owns its graph, request reservations, messages and effect
+receipts in project-owned SQLite state. `SwarmRuntime` captures the session and
+workspace; the deterministic supervisor admits work, while coordinator models
+only propose plans. Native child processes receive scoped contracts and explicit
+models through `BackendSpec`. Writers require isolated worktrees and an exact
+checked candidate before application and separate acceptance. Stop and restart
+retain uncertain requests/effects instead of replaying them.
+
+Managed teams additionally use the separate `services/governance/` PostgreSQL
+service, authenticated host channels and current policy leases. It enforces
+organization permissions, identity/provisioning, quota and audit requirements;
+host credentials stay in the trusted parent process.
+Personal and managed sharing both require explicit disclosure and independently
+owned receiving work. The GUI sends typed commands and renders observed state;
+it does not own admission. See the [runtime contracts](docs/swarming-contracts.md),
+[managed setup](docs/swarming-managed-setup.md), and [evidence ledger](docs/swarming-progress.md).
+These source paths remain an unreleased preview, with live-model and external
+deployment qualification outstanding.
 
 ## GUI and saved-work flow
 

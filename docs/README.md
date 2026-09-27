@@ -50,6 +50,10 @@ guide belongs in that navigation; historical records stay out of it.
 - [Code review: agent changes wait for a named reviewer](code-review.md)
 - [A second person approves risky commands before they run](second-approval.md)
 - [Autonomous sessions (experimental): specs, budgets, spending limits and stop rules](autonomous-sessions.md)
+- [Team preview: investigations, isolated changes, recovery and reports](swarming.md) — source preview, not a qualified release
+- [Team provider eligibility and qualification matrix](swarming-provider-matrix.md)
+- [Managed team operator setup](swarming-managed-setup.md) and [governance operations](../services/governance/OPERATIONS.md)
+- [Personal collaboration](swarming-collaboration.md) and [managed collaboration](swarming-managed-collaboration.md)
 - [Skills and learning](skills.md)
 - [Writing a capability pack: the manifest, hooks, trust and sharing](packs.md)
 - [Extensions: add a model provider with the Extension SDK (manifest, protocol, template, checker)](extensions.md)
@@ -88,6 +92,7 @@ guide belongs in that navigation; historical records stay out of it.
 
 - [Release runbook](../RELEASING.md)
 - [Release pipeline architecture](release-pipeline.md)
+- [Swarming live qualification plan and required environment](swarming-live-qualification.md)
 - [0.19.1 release notes and validation](v0.19.1-release-notes.md)
 - [0.19.0 release notes and validation](v0.19.0-release-notes.md)
 - [0.18.2 release notes and validation](v0.18.2-release-notes.md)
@@ -100,6 +105,20 @@ guide belongs in that navigation; historical records stay out of it.
 - [0.16.0 release notes](v0.16.0-release-notes.md)
 - [September 5 startup evaluation](ui-performance-pass-2026-09-05.md)
 - [September 8 recovery validation](recovery-validation-2026-09-08.md)
+
+## Planning proposals
+
+- [Swarming: product and implementation plan](swarming-plan.md): September 26
+  proposal for local session swarms, durable messaging, supervision, and later
+  enterprise governance. Added to the [feature roadmap](../ROADMAP.md#planned-feature-swarming-2026-09-26)
+  with P0–P7 milestones; P0/P1 foundations are checked and P2–P4 are in progress.
+- [Swarming implementation contracts](swarming-contracts.md): ownership, commands,
+  persistence and validation boundaries; not a release claim.
+- [Swarming delivery/evidence ledger](swarming-progress.md): current work, validation
+  and next steps through the full P0–P7 MVP target.
+- [Swarming benchmark fixtures](swarming-benchmarks.md): predeclared inputs and
+  acceptance harness; no measured model baseline or performance claim.
+- [Swarming terminology](../CONTEXT.md): glossary for the proposal.
 
 ## Historical design and evaluation
 

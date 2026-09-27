@@ -115,6 +115,10 @@ DEFAULTS = {
         "max_parallel_readers": 4,
         "max_parallel_writers": 2,
     },
+    "swarming": {
+        "version": 1,
+        "enabled": False,
+    },
     "artifacts": {
         "persist": True,
         "inline_text_limit": 8000,

@@ -22,8 +22,10 @@ class SwarmScheduler:
     """Schedule an admitted plan using one captured model and visible allowance.
 
     Writer dispatch additionally requires the runner's integration module and an
-    explicitly captured full base revision. ``start`` begins scheduling; ``close``
-    closes dispatch only. Run Stop and owned execution remain the runner's job.
+    explicitly captured full base revision. Once the team has applied verified
+    changes, later writers start from the latest applied revision, which is then
+    the checkout's own. ``start`` begins scheduling; ``close`` closes dispatch
+    only. Run Stop and owned execution remain the runner's job.
     """
 
     def __init__(self, runner: SwarmWorkerRunner, backend_spec: BackendSpec, *, requests_per_worker: int,
@@ -54,6 +56,11 @@ class SwarmScheduler:
             except RevisionConflict:
                 continue  # Only a definite pre-commit rejection is retried.
         raise RevisionConflict("Concurrent team changes prevented dispatch")
+
+    def writer_base(self, snapshot: dict) -> str | None:
+        """The revision a new writer starts from: the team's latest applied change, else the captured base."""
+        applied = [row["observed_revision"] for row in snapshot["integration_applications"] if row["state"] == "applied"]
+        return applied[-1] if applied and self.base_revision is not None else self.base_revision
 
     def dispatch_ready(self) -> list[str]:
         """Launch newly admitted items once, leaving proposals and reviews alone."""
@@ -95,7 +102,7 @@ class SwarmScheduler:
                 try:
                     if spec["write_roots"]:
                         writer = self.runner.integration.create_writer(self.authority, context,
-                                                                        base_revision=self.base_revision)
+                                                                        base_revision=self.writer_base(snapshot))
                         writer_id = writer["id"]
                 except BaseException:
                     # The host has not called runner.start. Record known launch

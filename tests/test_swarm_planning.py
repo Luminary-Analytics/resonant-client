@@ -118,6 +118,22 @@ def test_model_cannot_supply_authority_or_change_tool_model_or_budget(location, 
     assert extra not in str(caught.value)
 
 
+@pytest.mark.parametrize("residue", ["\n</function>\n</tool_call>", "<|im_end|>", " </tool_call> <|eot_id|>\n",
+                                     "\n\n</function=bash>\n</function>\n</tool_call>"])
+def test_chat_template_residue_after_the_json_is_dropped(residue):
+    # A live model ended its final report with "</function></tool_call>".
+    assert len(parse(json.dumps(proposal()) + residue).work_items) == 1
+    with pytest.raises(PlanRejected):
+        parse(json.dumps(proposal()) + residue + "\nThat is my plan.")
+
+
+def test_planning_input_echoed_beside_the_plan_is_ignored():
+    # A live model copied coordinator_read_roots from its input into the plan.
+    # Echoes carry no meaning; other extra fields still refuse the plan (above).
+    result = parse(proposal(coordinator_read_roots=["."], worker_slots=8, read_roots=["."]))
+    assert [item.read_roots for item in result.work_items] == [("backend",)]
+
+
 @pytest.mark.parametrize("field", ["id", "objective", "role", "dependencies", "read_roots", "write_roots", "criteria"])
 def test_every_contract_dimension_must_be_explicit(field):
     item = work()

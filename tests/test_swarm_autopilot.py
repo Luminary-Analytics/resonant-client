@@ -83,6 +83,8 @@ def test_the_orchestrator_plans_runs_its_workers_and_reports_without_owner_steps
     assert {row["executor_id"] for row in run["check_receipts"]} == {"autonomy:fixture-owner"}
     assert all("not reviewed" in row["check_name"] for row in run["check_receipts"])
     assert all(row["state"] == "accepted" for row in run["work_items"])
+    report = service.operate(capture, {"request_id": "report", "action": "export_report", "run_id": run_id})["report"]
+    assert [row["kind"] for row in report["decisions"]] == ["autonomy_grant", "autonomy_grant"]
     # The orchestrator knew it was running the team, and its follow-up saw the findings.
     first, follow_up = backends[0].stream_calls[0]["user_msg"], backends[3].stream_calls[0]["user_msg"]
     assert "You are this team's orchestrator" in first and "If you can already answer the objective" in first
@@ -210,6 +212,10 @@ def test_two_unusable_orchestrator_turns_in_a_row_hand_the_team_back(team):
     coordinators = [row for row in service.operate(capture, {"request_id": "last", "run_id": run_id})["run"]["attempts"]
                     if row["kind"] == "coordinator"]
     assert len(coordinators) == 2 and len(backends) == 2
+    # The retry was told why its first plan was refused, and the first turn wasn't.
+    assert "Your previous plan was refused" not in backends[0].stream_calls[0]["user_msg"]
+    assert ("Your previous plan was refused: Coordinator output must be one strict JSON object"
+            in backends[1].stream_calls[0]["user_msg"])
     assert view["run"]["run"]["state"] == "running" and not view["run"]["coordinator_proposals"]
 
 

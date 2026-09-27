@@ -450,8 +450,8 @@ class SwarmRuntime:
         if autopilot is not None:
             return autopilot.inspect()
         grant = self._setup(store, run_id)[0].get("autonomy")
-        return {"enabled": True, "active": False, "rounds": grant["rounds"], "phase": "stopped",
-                "detail": "The orchestrator loop isn't running on this host. Continue the team yourself.",
+        return {"enabled": True, "active": False, "rounds": grant["rounds"], "apply": grant.get("apply") is True,
+                "phase": "stopped", "detail": "The orchestrator loop isn't running on this host. Continue the team yourself.",
                 "final_report": None} if grant else None
 
     def _planning_view(self, store, run_id, snapshot):
@@ -476,7 +476,7 @@ class SwarmRuntime:
                 "default_requests": min(setup.get("coordinator_requests", 3), remaining) if remaining else 1,
                 "read_roots": roots, "worker_requests": setup.get("worker_requests")}
 
-    def _request_plan(self, capture, message, *, closing=False):
+    def _request_plan(self, capture, message, *, closing=False, retry_reason=""):
         """Admit one explicit fresh planner, then launch outside the UI/control lock.
 
         ``closing`` comes only from the orchestrator loop (autopilot.py): its
@@ -529,7 +529,8 @@ class SwarmRuntime:
             context = AttemptContext(capture.scope, run_id, receipt.result["attempt_id"],
                                      receipt.result["worker_id"], runner.authority.epoch)
             plans = CoordinatorPlans(runner.supervisor, runner.authority, follow_up=True,
-                autonomous=bool(setup.get("autonomy")), closing=closing is True,
+                autonomous=bool(setup.get("autonomy")), closing=closing is True, retry_reason=retry_reason,
+                applies_changes=(setup.get("autonomy") or {}).get("apply") is True,
                 allowed_criteria=frozenset({"owner_review"} | {check["key"] for check in setup.get("checks", [])}))
             spec = copy.deepcopy(pair[0].backend_spec)
         # Stop can close runner admission while slow scope/process setup runs.
@@ -549,19 +550,25 @@ class SwarmRuntime:
         if plan_mode not in {"manual", "coordinator"}:
             raise ValueError("Choose manual investigations or coordinator planning")
         # The owner's autonomy grant (autopilot.py): the orchestrator plans,
-        # dispatches and continues in rounds without approving each step.
+        # dispatches and continues in rounds without approving each step, and
+        # with ``apply`` also applies writers' changes that pass every check.
         autonomy = message.get("autonomy")
         if autonomy is not None:
             if plan_mode != "coordinator":
                 raise ValueError("Only an orchestrator-planned team can run itself")
-            if (type(autonomy) is not dict or set(autonomy) != {"rounds"} or type(autonomy["rounds"]) is not int
-                    or not 1 <= autonomy["rounds"] <= MAX_ROUNDS):
+            if (type(autonomy) is not dict or not {"rounds"} <= set(autonomy) <= {"rounds", "apply"}
+                    or type(autonomy["rounds"]) is not int or not 1 <= autonomy["rounds"] <= MAX_ROUNDS):
                 raise ValueError(f"Let the orchestrator run one to {MAX_ROUNDS} rounds")
+            if type(autonomy.get("apply", False)) is not bool:
+                raise ValueError("Choose whether the orchestrator applies checked changes")
         coordinator_requests = message.get("coordinator_requests", 3)
         worker_requests = message.get("worker_requests", 4)
         requests = message.get("request_limit", 20)
         workers = message.get("max_workers", 2)
         write_roots, checks = self._writer_configuration(message)
+        applies = autonomy is not None and autonomy.get("apply") is True
+        if applies and not write_roots:
+            raise ValueError("Applying checked changes needs writable folders and verification checks")
         managed = self._execution_mode(capture) == "managed"
         if managed and message.get("execution_mode") != "managed":
             raise ScopeDenied("Select managed execution explicitly for each new organization team")
@@ -571,8 +578,8 @@ class SwarmRuntime:
                 raise Conflict(support["reason"])
         if type(objective) is not str or not objective.strip() or len(objective.encode()) > 8192:
             raise ValueError("Describe a team objective of at most 8 KiB")
-        if type(workers) is not int or not 1 <= workers <= 4:
-            raise ValueError("Choose one to four worker slots")
+        if type(workers) is not int or not 1 <= workers <= 8:
+            raise ValueError("Choose one to eight worker slots")
         if plan_mode == "coordinator":
             if tasks not in (None, []):
                 raise ValueError("Coordinator planning begins from the objective; manual tasks require manual mode")
@@ -591,7 +598,8 @@ class SwarmRuntime:
                          "plan_mode": plan_mode,
                          **({"coordinator_requests": coordinator_requests, "worker_requests": worker_requests}
                             if plan_mode == "coordinator" else {}),
-                         **({"autonomy": {"rounds": autonomy["rounds"]}} if autonomy is not None else {}),
+                         **({"autonomy": {"rounds": autonomy["rounds"], **({"apply": True} if applies else {})}}
+                            if autonomy is not None else {}),
                          "max_workers": workers, "model": {"provider": capture.backend_spec.backend_type,
                                                            "model": capture.backend_spec.model}}
         if write_roots:
@@ -688,10 +696,11 @@ class SwarmRuntime:
                 }).result
                 context = AttemptContext(capture.scope, run_id, assigned["attempt_id"], assigned["worker_id"], authority.epoch)
                 runner.start_coordinator(context, capture.backend_spec,
-                    CoordinatorPlans(supervisor, authority, autonomous=autonomy is not None,
+                    CoordinatorPlans(supervisor, authority, autonomous=autonomy is not None, applies_changes=applies,
                                      allowed_criteria=frozenset({"owner_review"} | {check["key"] for check in checks})))
                 if autonomy is not None:
-                    autopilot = self._autopilots[run_id] = TeamAutopilot(self, run_id, rounds=autonomy["rounds"])
+                    autopilot = self._autopilots[run_id] = TeamAutopilot(self, run_id, rounds=autonomy["rounds"],
+                                                                         apply=applies)
                     autopilot.start()
                 return run_id
             self._command(supervisor, authority, "plan", {"work_items": work_items})
@@ -1061,12 +1070,16 @@ class SwarmRuntime:
             writers = {row["id"]: row for row in snapshot["writer_worktrees"]}
             attempts = {row["id"]: row for row in snapshot["attempts"]}
             work = {row["id"]: json.loads(row["specification"]) for row in snapshot["work_items"]}
+            # Writers start from the captured base, or from a revision this
+            # team applied (scheduler.writer_base); nothing else is theirs.
+            bases = {result["writer_base"]["base_revision"]} | {
+                row["observed_revision"] for row in snapshot["integration_applications"] if row["state"] == "applied"}
             mapping = {}
             for identity in identities:
                 writer = writers.get(identity)
                 if writer is None:
                     raise ScopeDenied("Writer result is unavailable in this team")
-                if (writer["base_revision"] != result["writer_base"]["base_revision"]
+                if (writer["base_revision"] not in bases
                         or json.loads(writer["manifest_json"])["target_branch"] != result["writer_base"]["target_branch"]):
                     raise Conflict("Writer input differs from this team's captured Git base or branch")
                 work_id = attempts[writer["attempt_id"]]["work_item_id"]

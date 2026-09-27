@@ -303,3 +303,63 @@ processes and 2 rounds:
     notice, had 3 of 4 workers end uncertain on "Service temporarily
     overloaded". Another attempt had 2 workers use all 8 requests without
     submitting.
+
+### Orchestrated writer teams that apply checked changes, live
+
+September 27, 2026, Nemotron 3 Super on NIM. Each run was headless, with real
+worker processes, 2 rounds and applying on. The project was a throwaway Git
+repository seeded with two defects: `cache.py` compares milliseconds with
+seconds, and `urls.py` encodes a list as one parameter. The owner's check was
+`check_fixes.py`, outside the writers' folders. Each run found a problem, which
+was fixed before the next:
+
+1. **Combining failed.** The orchestrator planned one writer per file, after
+   one refused plan that had copied an input field into it. Both writers fixed
+   their files, but combining failed with Git's `fatal: '$GIT_DIR' too big`:
+   the candidate folder name pushed Git's worktree admin folder past Windows'
+   path limit. Folder names are now short.
+2. **The check was refused.** The combined change passed the check (exit 0),
+   but it was refused as changed input: the check imported the modules and
+   wrote `__pycache__`. Files a check creates no longer count.
+3. **Round 1 worked end to end.** The team combined, checked, applied (a
+   fast-forward) and accepted both writers under the grant, and the owner's
+   check passed on the checkout afterwards. Both round-2 reports were refused:
+   valid JSON followed by `</function></tool_call>`. That residue is now
+   dropped, and retries hear why their plan was refused.
+4. **Completed without the owner.** Round 1 planned on the first try, and
+   both writers' change was combined, checked (exit 0), applied and accepted
+   under the grant. In round 2 one turn was refused (its JSON ended with
+   `</function=bash></function></tool_call>`, a closing tag the residue rule
+   didn't cover yet), and its retry wrote the final report. The team
+   completed in 279 seconds with 29 requests, all settled, and the owner's
+   check passes on the checkout. The report said the orchestrator couldn't
+   run the check itself. Follow-up planning now lists the team's checked
+   changes (`checked_changes`), and the residue rule covers any closing tag.
+
+### Nemotron 3 Super: baseline and a first single-versus-team comparison
+
+September 27, 2026, `nvidia/nemotron-3-super-120b-a12b`, source identity
+`6954f5a`, equal-resource control with 12 requests per case. The benchmark's
+team mode is its fixed split (two readers or two writers, no orchestrator), not
+the orchestrated team above. No benefit threshold was declared, so neither
+study can support a benefit claim, and neither ran to completion: the protocol
+stops a study at its first interrupted case.
+
+- **Single-agent baseline** (180-second deadline, order seed 37). 8 of 12
+  cases ran before an investigation case reached the deadline. 2 were
+  accepted and independently verified: CSV export (1 of 1) and serial control
+  (1 of 2). The investigation (0 of 2) and processor repair (0 of 3) cases
+  failed their checks.
+- **Single versus team** (300-second deadline, order seed 41). 6 of 16 cases
+  ran before a single-agent processor repair reached the deadline: NIM took
+  about a minute per request at the time, 5 requests in 300 seconds. Only one
+  case was verified: a team processor repair (1 of 2).
+  - Team investigation and CSV cases failed in under 40 seconds. In one, a
+    reader assigned only `cache.py` spent all 6 of its requests on reads of
+    other files, each refused with the paths it could read. Its last request
+    was one more read, so it submitted nothing. A Team participant's last
+    request now offers no tools, so it has to answer.
+- **Reading these results.** Model quality and provider latency decided most
+  outcomes, and 14 cases are too few to separate the modes. A rerun with the
+  last-request change, a longer deadline and a declared threshold is still
+  needed.

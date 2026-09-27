@@ -20,12 +20,21 @@ from .policy import AssignmentGrant, ModelSelection, PolicyProfile, SwarmPolicy,
 
 _MAX_BYTES = 65536
 _TOP_FIELDS = {"summary", "use_team", "work_items"}
+# The captured planning data's own field names (coordinator.py). A live model
+# copied coordinator_read_roots into its plan; such echoes carry no meaning
+# and are dropped. Any other extra field still refuses the plan.
+_INPUT_ECHOES = {"objective", "read_roots", "write_roots", "worker_slots", "coordinator_read_roots",
+                 "proposed_work_namespace", "allowed_criteria", "existing_work", "recent_untrusted_findings",
+                 "graph_sha256", "untrusted_messages_to_orchestrator", "checked_changes"}
 _ITEM_FIELDS = {"id", "objective", "role", "dependencies", "read_roots", "write_roots", "criteria"}
 _LOGICAL_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,79}\Z")
 _FENCE = re.compile(r"```(?:json)?\r?\n(.*)\r?\n```\Z", re.DOTALL)
 # One fenced JSON block inside prose ("I found both defects... ```json {...} ```").
 _EMBEDDED_FENCE = re.compile(r"```(?:json)?[ \t]*\r?\n(.*?)\r?\n[ \t]*```", re.DOTALL)
 _FILE_READERS = FILE_TOOL_NAMES - {"artifact_read"}
+# One closing tag or special token at the end of a reply: chat-template residue
+# a live model appended after its JSON (a "}" followed by "</function>" and "</tool_call>").
+_TEMPLATE_TAIL = re.compile(r"(?:</[A-Za-z_][^<>\s]{0,40}>|<\|[^|<>\s]{1,40}\|>)\Z")
 
 
 class PlanRejected(ValueError):
@@ -186,6 +195,11 @@ def parse_plan(
     except UnicodeError as exc:
         raise PlanRejected("A coordinator proposal must be valid UTF-8 text") from exc
     source = text.strip()
+    for _ in range(8):  # Residue only: any other text after the JSON still refuses the plan.
+        tail = _TEMPLATE_TAIL.search(source)
+        if tail is None:
+            break
+        source = source[:tail.start()].rstrip()
     if source.startswith("```"):
         fence = _FENCE.fullmatch(source)
         if fence is None:
@@ -202,7 +216,7 @@ def parse_plan(
     except (json.JSONDecodeError, RecursionError, ValueError) as exc:
         # Do not echo a model response; rejected extras may contain credentials.
         raise PlanRejected("Coordinator output must be one strict JSON object") from exc
-    if type(proposal) is not dict or set(proposal) != _TOP_FIELDS:
+    if type(proposal) is not dict or not _TOP_FIELDS <= set(proposal) <= _TOP_FIELDS | _INPUT_ECHOES:
         raise PlanRejected("Coordinator proposal has missing or unsupported fields")
     summary = _text(proposal["summary"])
     use_team = proposal["use_team"]

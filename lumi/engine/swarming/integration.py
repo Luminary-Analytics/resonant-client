@@ -225,7 +225,11 @@ class SwarmIntegration:
             result = subprocess.CompletedProcess(command, observed.exit_code,
                 observed.stdout.decode("utf-8", "strict"), observed.stderr.decode("utf-8", "strict"))
             if check and result.returncode:
-                raise Conflict("Owned Git operation failed; retained process evidence requires inspection")
+                # Git's first error line says what went wrong (a live run's was
+                # "fatal: '$GIT_DIR' too big"); keep it short and single-line.
+                reason = next((line.strip() for line in result.stderr.splitlines() if line.strip()), "")[:200]
+                raise Conflict(f"Owned Git operation failed (exit {result.returncode}"
+                               f"{': ' + reason if reason else ''}); retained process evidence requires inspection")
             return result
         if not metadata_only and (not args or args[0] not in {"status", "diff"}):
             raise ScopeDenied("Mutating Git commands require captured durable process ownership")
@@ -305,6 +309,16 @@ class SwarmIntegration:
 
     def _clean(self, path: Path) -> bool:
         return not self._git(path, "status", "--porcelain=v1", "-z", "--untracked-files=all").stdout
+
+    def _unchanged(self, path: Path) -> bool:
+        """A candidate still holds exactly its revision's tracked content.
+
+        Its committed revision is what checks verify and what is applied, so
+        files a check creates (bytecode, caches, reports) don't change it: a
+        live team's Python check wrote __pycache__ and was refused as changed
+        input. A modified tracked file still means the check saw other content.
+        """
+        return not self._git(path, "status", "--porcelain=v1", "-z", "--untracked-files=no").stdout
 
     def _path(self, value: str) -> Path:
         original = Path(value)
@@ -436,7 +450,10 @@ class SwarmIntegration:
                         return dict(existing)
                     raise Conflict("Existing writer intent requires explicit inspection, not automatic replay")
                 identity = _id()
-                path = self.root / f"writer-{identity}"
+                # Git names a worktree's admin folder (.git/worktrees/<name>) after
+                # this folder; on Windows a long name can push it past the path
+                # limit ("'$GIT_DIR' too big"), so keep the name short.
+                path = self.root / f"writer-{identity[:16]}"
                 manifest = {"branch": f"codex/swarm-writer-{identity}", "target_branch": target_branch,
                             "target_checkout": target_checkout, "grant": grant.to_dict()}
                 connection.execute("INSERT INTO writer_worktrees(id,run_id,attempt_id,epoch,repo_key,path,base_revision,state,manifest_json,process_protocol) "
@@ -637,7 +654,7 @@ class SwarmIntegration:
                                      "result_revision": writer["result_revision"]} for writer in writers],
                         "checks": [asdict(check) for check in required_checks], "target_branch": branches.pop(),
                         "target_checkout": json.loads(checkouts.pop()), "criterion_checks": mapping}
-            path = self.root / f"candidate-{hashlib.sha256(identity.encode()).hexdigest()}"
+            path = self.root / f"candidate-{hashlib.sha256(identity.encode()).hexdigest()[:16]}"  # See create_writer.
             with self.store._connection(write=True) as connection:
                 self.store._admitting(self.store._authority(connection, authority))
                 existing = connection.execute("SELECT * FROM integration_candidates WHERE id=?", (identity,)).fetchone()
@@ -683,7 +700,7 @@ class SwarmIntegration:
             if record["state"] not in ("ready", "failed", "verified"):
                 raise Conflict("Candidate is unavailable for verification")
             path = self._path(record["path"])
-            if self._head(path) != record["result_revision"] or not self._clean(path):
+            if self._head(path) != record["result_revision"] or not self._unchanged(path):
                 raise Conflict("Check input no longer matches the immutable candidate")
             checks = {item["key"]: item for item in json.loads(record["manifest_json"])["checks"]}
             if check_key not in checks:
@@ -708,7 +725,7 @@ class SwarmIntegration:
                 if observed.interruption is not None:
                     raise observed.interruption
                 self._admit(authority)
-                exact = self._head(path) == record["result_revision"] and self._clean(path)
+                exact = self._head(path) == record["result_revision"] and self._unchanged(path)
                 state = "passed" if observed.exit_code == 0 and observed.output_complete and exact else "failed"
                 if observed.timed_out or observed.cancelled:
                     state = "timed_out" if observed.timed_out else "cancelled"
@@ -798,7 +815,7 @@ class SwarmIntegration:
             if candidate["state"] != "verified":
                 raise Conflict("Only an independently checked exact candidate can be applied")
             path = self._path(candidate["path"])
-            if self._head(path) != candidate["result_revision"] or not self._clean(path):
+            if self._head(path) != candidate["result_revision"] or not self._unchanged(path):
                 raise Conflict("Candidate changed after verification")
             if self._head(self.project) != candidate["base_revision"] or not self._clean(self.project):
                 raise Conflict("Application deferred: user checkout is dirty or its base changed")

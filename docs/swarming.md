@@ -62,8 +62,9 @@ navigation are gated while the client owns active team work.
 Choose one of two planning approaches:
 
 - **Assign investigations myself:** enter focused tasks and readable paths.
-  The UI offers two to four worker slots, defaults to two, and permits up to
-  four tasks, bounded by the selected slots. Tasks begin read only.
+  The UI offers one to eight worker slots, defaults to two, and permits up to
+  eight tasks, bounded by the selected slots. Organization-managed teams keep
+  their policy's limit (at most four). Tasks begin read only.
 - **Ask a coordinator to propose a plan:** enter an objective, coordinator
   allowance and allowance per worker. The coordinator reads within its scope
   and submits a proposal. It does not approve its own plan or task results.
@@ -87,10 +88,32 @@ orchestrator, and you don't approve each step:
   and may not start work; any work it proposes is rejected.
 
 The **Orchestrator** section shows the round, the current step and the final
-report. File changes still wait for you to check, apply and accept them, and
-you can pause, steer or stop the team at any time. The orchestrator loop runs
-in the app that started the team; after a restart, continue the team yourself.
-See `engine/swarming/autopilot.py`.
+report. You can pause, steer or stop the team at any time. The orchestrator
+loop runs in the app that started the team; after a restart, continue the team
+yourself. See `engine/swarming/autopilot.py`.
+
+File changes wait for you to check, apply and accept them, unless you also
+turn on **Apply changes that pass every check**, offered when the team has
+writable folders and verification checks. Then, once a round's writers finish,
+the orchestrator takes the steps you would, through the same integration path:
+
+1. It combines the writers' changes in a separate worktree.
+2. It runs every declared check on the combined change.
+3. When all of them pass, it applies the change to your checkout (a
+   fast-forward from the captured base, never over uncommitted work).
+4. It accepts the writers under your grant. The acceptance is recorded with
+   `autonomy:<owner>`, never as your decision, and an exported report marks it
+   `autonomy_grant`.
+
+Every declared check runs on each round's combined change, so declare checks
+the project should pass after every round (its test suite, a linter), not a
+check that only passes once all of the objective is done. The orchestrator is
+told to put the work a check needs in the same round. A failing check sends
+each writer in the change back once, with the check's output in its retry. Changes that conflict with each other, a step without a
+known outcome, or a checkout that has uncommitted changes or moved hand the team
+back to you; the orchestrator never retries an application. Later writers start
+from the team's latest applied change, so later rounds build on earlier ones.
+Keep the checkout clean and on its branch while such a team runs.
 
 Paths are relative to the project. Separate roots with commas; `.` means the
 project and its descendants. A file can also be a scope root. Absolute paths,

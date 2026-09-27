@@ -8,6 +8,54 @@ The heartbeat remains paused. Documentation maintenance does not resume work,
 spending or grants, and changes no native implementation or installed bundle.
 The dated September 15/18 records below are historical.
 
+## September 27 Team: the orchestrator applies checked changes (source only, not released)
+
+**Applying checked changes.** A team the orchestrator runs can also **Apply
+changes that pass every check**, if it has writable folders and checks.
+
+- After a round's writers finish, the loop combines their changes and runs
+  every declared check on the combined change. When all pass, it applies the
+  change as a fast-forward and accepts the writers under the grant
+  (`accept_writer_under_grant`, recorded as `autonomy:<owner>`). The command is
+  refused unless the owner granted applying.
+- A failing check sends the writers back once with its output. A conflict, a
+  step without a known outcome or a changed checkout hands the team back. An
+  application is never retried.
+- Later writers start from the team's latest applied change (the owner's own
+  applications included), so later rounds build on earlier ones.
+
+**Also.**
+- A Team participant's last model request offers no tools, so it answers. A
+  live NIM worker had spent its last request on one more refused read.
+- Exported reports mark results and changes accepted under the grant as
+  `autonomy_grant`. They were reported as `trusted_check`.
+- The orchestrator loop hands the team back when dispatch stops. Before, it
+  waited with nothing left to start the tasks.
+- Up to eight worker slots.
+- The orchestrator's final report is rendered as sanitized Markdown.
+
+**Fixes from live orchestrated writer runs on NVIDIA NIM.**
+- Candidates couldn't be combined in projects at longer paths on Windows. Git
+  names a worktree's admin folder after its folder (`fatal: '$GIT_DIR' too
+  big`), and the candidate folder name was long. Writer and candidate folders
+  now use 16 hex characters, and a failed Git operation reports Git's first
+  error line.
+- A check may create files in a candidate (bytecode, caches, reports). A
+  Python check that imported the fixed modules had been refused as changed
+  input. A changed tracked file is still refused.
+- Plan parsing now drops two harmless extras. Echoes of the planning input's
+  own field names beside a plan are ignored. Chat-template residue after the
+  JSON (`</function></tool_call>`) is dropped. Other extra fields and prose
+  still refuse the plan.
+- The orchestrator's prompt says that writer tasks name the checks that verify
+  them. A retried turn is told why its plan was refused.
+- Follow-up planning lists the team's combined changes, the checks that ran on
+  each and whether it was applied (`checked_changes`). The orchestrator can
+  then cite results in its report instead of saying it couldn't run checks.
+- With these fixes, a live team completed the objective without the owner: it
+  fixed two seeded defects, applied the checked change, and wrote a correct
+  report (`docs/swarming-benchmarks.md`).
+
 ## September 27 Team: the orchestrator, NVIDIA NIM and the first live runs (source only, not released)
 
 **An orchestrator can run a team.** With a coordinator plan, the owner can

@@ -113,7 +113,12 @@
 .swarm-panel .swarm-orchestrator h4 { margin: 0 0 6px; }
 .swarm-panel .swarm-report { margin: 12px 0 0; }
 .swarm-panel .swarm-report h5 { font-size: 12px; margin: 0 0 6px; }
-.swarm-report-text, .swarm-message-body { white-space: pre-wrap; overflow-wrap: anywhere; }
+.swarm-message-body { white-space: pre-wrap; overflow-wrap: anywhere; }
+.swarm-report-text { overflow-wrap: anywhere; }
+.swarm-panel .swarm-report-text :is(p, ul, ol, pre) { margin: 0 0 8px; }
+.swarm-panel .swarm-report-text :is(ul, ol) { padding-left: 20px; }
+.swarm-panel .swarm-report-text code { font-family: var(--font-mono, monospace); font-size: 12px; }
+.swarm-panel .swarm-report-text pre { overflow-x: auto; padding: 8px; border-radius: 6px; background: var(--bg-input, #111); }
 .swarm-messages ol { list-style: none; padding: 0; margin: 8px 0 0; display: grid; gap: 8px; }
 .swarm-messages li { border-left: 2px solid var(--brand2, #b4aaff); padding: 2px 0 2px 10px; }
 .swarm-panel .swarm-message-heading { color: var(--text-secondary, #aaa); font-size: 11px; margin: 0 0 2px; }

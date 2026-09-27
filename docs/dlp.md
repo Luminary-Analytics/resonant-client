@@ -40,10 +40,13 @@ summaries) and session summaries. Text a block rule matches isn't sent there,
 redactions apply, and a withheld entry (below) never goes into a summary.
 
 They apply to [feedback](feedback.md) sent to Lumi Cloud too (purpose `feedback`): the message and reply-to
-address as `prompt`, the diagnostics as `attachment`. A block refuses the report, redactions apply to what is
-sent, and a reply-to address the rules would change is left out. The copy the dialog offers instead has the
-same redactions, and there's none when a block refused the report. In offline mode a report that can't leave
-is refused before the rules see it.
+address as `prompt`, the diagnostics as mixed content, which every rule checks whatever its scope (the log can
+quote model output). A block refuses the report, redactions apply to what is sent, and a reply-to address the
+rules would change is left out. While the person types, the report shown is checked with the rules on this
+computer only; the service (`dlp.service`) sees a report only when it's sent, and one it changes is shown
+again before it goes. Send checks the reviewed report again, so rules that arrived since, or a policy that
+became unusable, still refuse it. There's no copy of a report the rules refused. In offline mode a report that
+can't leave is refused before the rules see it, and its copy is only what was typed, unchecked.
 
 The check sees each request as it will be sent, after the
 [secret scan](../README.md) has removed saved keys: the instructions (Lumi's

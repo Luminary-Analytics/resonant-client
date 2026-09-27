@@ -1,49 +1,68 @@
-"""Feedback from the app to Lumi Cloud's feedback inbox (docs/feedback.md).
+"""Feedback from the app to a Lumi Cloud's feedback inbox (docs/feedback.md).
 
 Help > Send feedback… (also the command palette, About Lumi and the profile
-menu) opens a dialog whose report goes to ``POST <Lumi Cloud>/api/v1/feedback``
+menu) opens a dialog whose report goes to ``POST <destination>/api/v1/feedback``
 as JSON::
 
     {"kind": "bug" | "idea" | "other", "message": "...", "reply_to": "you@example.com" | null,
      "app": {"version": "...", "channel": "...", "os": "...", "arch": "..."},
      "install_id": "...", "diagnostics": {...} | null}
 
-Lumi Cloud answers 201 ``{"id": ...}``, 400 when it refuses the report, 413
-when it's too large and 429 with ``Retry-After`` when it's busy.
+with the header ``Idempotency-Key: <the report's id>`` (a UUID made when the
+report is written, the same for every try) and, while the person is signed in
+to that very Lumi Cloud, ``Authorization: Bearer <access token>``.
 
+**Delivered** means Lumi Cloud acknowledged this report: 201 (new) or 200 (a
+replay of the same key) whose JSON ``report`` is the key. Anything else,
+such as a captive portal's page, isn't delivered and the report is kept. A
+401 for the token presented is refreshed once where the token was issued
+and tried again; then the report waits for the person to sign in again, and
+never goes anonymously instead. 429 waits out ``Retry-After`` (at most an
+hour, with jitter). 400, 413 and 404 (this Lumi Cloud doesn't take feedback)
+keep the report where the person sees it, with Copy and Discard.
+
+* **Where reports go** (``destination``): ``privacy.feedback_url`` (Settings,
+  or locked by an organization's policy), else the build's own address
+  (``BUILD_DESTINATION``, empty for now), else the Lumi Cloud this computer
+  uses. A report is bound to its destination when it's written: it never goes
+  anywhere else, and one written with no destination waits until the person
+  sends it with the destination shown (``send_held``).
 * **Always sent:** the app's version, update channel, operating system and
-  architecture, and an install id. The id is derived from a random secret
-  made on first use (``feedback/install-id``), separately for each Lumi Cloud
-  and for signed out or each signed-in account (``install_id``): reports sent
-  signed out can't be linked to an account's, nor one Lumi Cloud's to
-  another's.
-* **Diagnostics, only when the person checks them** (``diagnostics``): Python's
-  version, the platform, whether this is a packaged build, the provider type
-  and model in use (never a key), whether offline mode is on, and the end of
-  Lumi's startup log without saved keys, secret-looking values or the home
-  folder. The dialog shows the exact report first (``preview``), and sending
-  uses that previewed report, so what was shown is what goes.
-* **The account, only while the person is signed in** to that very Lumi
-  Cloud: the request then carries their access token, so staff see who sent
-  it. A report written while signed out is never attributed later.
+  architecture, and an install id derived from a random secret made on
+  first use (``feedback/install-id``), separately for each destination and
+  for signed out or each account (``install_id``): reports sent signed out
+  can't be linked to an account's, nor one Lumi Cloud's to another's. The id
+  matches who sends the report at the time it's sent.
+* **Diagnostics, only when the person checks them** and the organization
+  allows (``privacy.feedback_diagnostics``): Python's version, the platform,
+  whether this is a packaged build, the provider type and model in use (never
+  a key), whether offline mode is on, and the end of Lumi's startup log,
+  which can hold parts of conversations, without saved keys, secret-looking
+  values or the home folder. The dialog shows the exact report first
+  (``preview``), and Send sends that previewed report after checking it
+  again, so what was shown is what goes.
+* **The account, only while the person is signed in** to the Lumi Cloud that
+  issued the sign-in (``CloudClient.account_url``) and reports go there.
 
 Before anything leaves the computer, offline mode refuses the report unless
-the Lumi Cloud host is allowed (``offline_refusal``, before anything else
-looks at it). Then ``prepare`` runs ``secret_scan`` with its patterns on over
-every text, and the organization's DLP rules when a policy applies
-(``dlp.check_text``, purpose ``feedback``: the message and reply-to as
-``prompt``, diagnostics as ``attachment``). A refusal says why, and the
-dialog offers the report as text to copy instead (``copy_text``), except when
-DLP refused it.
+the destination is allowed (``offline_refusal``, before anything else looks
+at it; Copy then gives only what the person typed). Then ``prepare`` runs
+``secret_scan`` with its patterns on over every text, the reply-to address
+included, and the organization's DLP rules (``dlp.check_text``, purpose
+``feedback``: the message and reply-to as ``prompt``, diagnostics as
+``mixed``). A draft shown while the person types is checked with the rules on
+this computer only; the organization's DLP service sees a report only when
+the person sends it, and a report it changes is shown again before it goes.
+An organization can turn feedback off (``privacy.feedback``).
 
-Sending uses ``net.client_options`` (proxy, certificates, offline mode). With
-no Lumi Cloud address, or when it can't be reached or is busy, the report
-waits in ``feedback/queue.json`` (at most MAX_QUEUED reports and
-MAX_QUEUE_BYTES, for QUEUE_DAYS) and ``flush``, run by the thread
-``start_background`` starts, sends it later, to the Lumi Cloud it was written
-for. A person sends at most MAX_RECENT reports in RECENT_SECONDS. The audit
-log records ``feedback.sent``, ``feedback.queued``, ``feedback.dropped`` and
-``feedback.refused`` with the kind and size, never the text.
+Sending uses ``net.client_options`` (proxy, certificates, offline mode). A
+report that can't go now waits in ``feedback/queue.json`` (at most MAX_QUEUED
+reports and MAX_QUEUE_BYTES), under a lock every Lumi process on this
+computer takes; ``flush``, run by the thread ``start_background`` starts,
+sends it later. A person sends at most MAX_RECENT reports in RECENT_SECONDS.
+The audit log records ``feedback.sent``, ``feedback.queued``,
+``feedback.held``, ``feedback.dropped`` and ``feedback.refused`` with the kind
+and size, never the text.
 """
 
 from __future__ import annotations
@@ -55,38 +74,53 @@ import json
 import logging
 import os
 import platform
+import random
 import re
 import secrets
 import sys
 import threading
 import time
 import unicodedata
+import uuid
 from collections import OrderedDict
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
+from .file_lock import exclusive
 from .paths import state_home
 
 logger = logging.getLogger(__name__)
 
 ENDPOINT = "/api/v1/feedback"
+INFO_ENDPOINT = "/api/v1/feedback/info"
 FEATURE = "sending feedback"
 PURPOSE = "feedback"
 KINDS = ("bug", "idea", "other")
 KIND_LABELS = {"bug": "Bug", "idea": "Idea", "other": "Other"}
+# This build's own feedback address, used when neither Settings nor the organization names one
+# (privacy.feedback_url). Empty for now: alpha builds set Luminary's Lumi Cloud here once it exists.
+BUILD_DESTINATION = ""
+
+# What the dialog takes.
 MAX_MESSAGE = 5000
-# What Lumi Cloud takes: room for redaction markers, which can be longer than what they replace.
-MAX_SENT_MESSAGE = 8000
 MAX_REPLY_TO = 254
+# What Lumi Cloud takes, enforced here before anything is sent.
+MAX_SENT_MESSAGE = 8000                  # redaction markers can make a message longer than what was typed
+MAX_BODY_BYTES = 64 * 1024               # the request body, UTF-8
+MAX_DIAGNOSTICS_BYTES = 32 * 1024        # the diagnostics object as JSON (Python's default separators), UTF-8
+MAX_SERVER_DIAGNOSTIC_TEXT = 16000       # characters in one diagnostic text
 LOG_TAIL_LINES = 60
 LOG_TAIL_CHARS = 6000
-MAX_DIAGNOSTIC_TEXT = 12000  # after redaction markers; Lumi Cloud takes up to 16,000 characters per text
+MAX_DIAGNOSTIC_TEXT = 12000              # after redaction markers; its end is kept
 _LOG_READ_BYTES = 64 * 1024
 MAX_QUEUED = 20
 MAX_QUEUE_BYTES = 512 * 1024
 QUEUE_DAYS = 30
+MAX_AGE_STEP = 600.0                     # the most one round adds to a waiting report's age (see _age)
 MAX_RECENT, RECENT_SECONDS = 5, 600
 PREVIEW_SECONDS = 900
 MAX_PREVIEWS = 20
@@ -94,8 +128,14 @@ FIRST_TRY_SECONDS = 60.0
 LOOP_SECONDS = 60.0
 RETRY_SECONDS = 600.0
 MAX_BACKOFF_SECONDS = 6 * 3600.0
-MAX_RETRY_AFTER = 24 * 3600
+MAX_RETRY_AFTER = 3600                   # the contract's most; a longer one is clamped
 TIMEOUT_SECONDS = 20.0
+INFO_SECONDS = 600.0
+MAX_OPERATOR = 80
+
+SWITCH = "feedback"                      # privacy.feedback: "on" | "off"
+DIAGNOSTICS = "feedback_diagnostics"     # privacy.feedback_diagnostics: "allowed" | "never"
+ADDRESS = "feedback_url"                 # privacy.feedback_url: "" or a Lumi Cloud address
 
 # Reply-to addresses: a common subset of RFC 5322 in ASCII, one @, and a domain
 # of dot-separated labels ending in letters. Lumi Cloud checks the same rule,
@@ -104,37 +144,60 @@ EMAIL = re.compile(
     r"(?=.{3,254}$)(?!\.)(?!.*\.\.)[A-Za-z0-9._%+'-]{1,64}(?<!\.)@"
     r"(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}")
 INSTALL_ID = re.compile(r"[A-Za-z0-9_-]{16,64}")
-_REPORT_ID = re.compile(r"[A-Za-z0-9_-]{1,64}")
+REPORT_ID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}")
+_SERVER_ID = re.compile(r"[A-Za-z0-9_-]{1,64}")
 _RETRY_AFTER = re.compile(r"[0-9]{1,6}")
 # Bidirectional embeddings, overrides and isolates: they can make text read
 # differently than it's stored. (Left-to-right and right-to-left marks stay.)
 _BIDI_CONTROLS = frozenset({"LRE", "RLE", "PDF", "LRO", "RLO", "LRI", "RLI", "FSI", "PDI"})
-# A sign-in that ended: the report goes without the account. Any other failure to get the token keeps the report.
+# A sign-in that ended: the report goes as the person is at that moment, signed out.
 _SIGNED_OUT = frozenset({"signed_out", "invalid_grant"})
 
-_lock = threading.RLock()          # the files in feedback/, the previews and what's being sent
+# Queue states: "waiting" goes by itself when it's due; "sign_in" when the person signs in again (or Send now);
+# "held" only when the person acts (send it to the destination shown, Copy, Discard).
+WAITING, SIGN_IN, HELD = "waiting", "sign_in", "held"
+_HELD_WHY = {
+    "no_destination": "Written before a feedback address was set. It goes only when you send it to the address shown.",
+    "not_accepting": "This Lumi Cloud doesn't accept feedback.",
+    "too_large": "It's too large for this Lumi Cloud.",
+    "refused": "This Lumi Cloud couldn't take it.",
+    "dlp": "Your organization's data loss prevention rules now keep it on this computer.",
+    "expired": f"It waited {QUEUE_DAYS} days and isn't sent any more.",
+}
+
+_lock = threading.RLock()          # this process's side of the files in feedback/, the previews, what's being sent
 _submit_lock = threading.Lock()    # one report at a time from this app
-_flush_lock = threading.Lock()     # one flush at a time
+_flush_lock = threading.Lock()     # one round of sending at a time
 _wake = threading.Event()
 _transport: Any = None             # tests install an httpx.MockTransport
+_monotonic = time.monotonic        # tests turn the clock
+_run = uuid.uuid4().hex            # this process: backoff deadlines are monotonic within it
 _previews: OrderedDict[str, _Preview] = OrderedDict()
-_sending: set[str] = set()         # waiting reports a flush is sending now; Discard leaves them
+_sending: set[str] = set()         # waiting reports this process is sending now; Discard leaves them
+_info: dict[str, tuple[float, dict]] = {}
 
 
 class FeedbackError(Exception):
     """A report that can't be sent now; ``message`` is for the person, ``code`` says why.
 
     Codes: ``invalid`` (a field, named by ``field``), ``preview`` (review the
-    report again), ``dlp``, ``offline``, ``rate_limited``, ``queue_full`` and
-    ``refused`` (Lumi Cloud won't take it; ``status`` is its answer).
+    report again), ``review`` (checked again at Send, it changed: ``preview``
+    holds the new one to review), ``dlp``, ``offline``, ``disabled`` and
+    ``diagnostics_off`` (the organization's switches), ``rate_limited``,
+    ``queue_full``, and Lumi Cloud's own: ``not_accepting`` (404),
+    ``too_large`` (413) and ``refused`` (``status`` is its answer). ``copy`` is
+    the report as text to offer instead, "" for none.
     """
 
-    def __init__(self, message: str, *, code: str, field: str = "", status: int = 0) -> None:
+    def __init__(self, message: str, *, code: str, field: str = "", status: int = 0, copy: str = "",
+                 preview: dict | None = None) -> None:
         super().__init__(message)
         self.message = message
         self.code = code
         self.field = field
         self.status = status
+        self.copy = copy
+        self.preview = preview
 
     def as_dict(self) -> dict:
         return {"code": self.code, "message": self.message, "field": self.field}
@@ -149,17 +212,23 @@ class _Later(Exception):
         self.retry_after = retry_after
 
 
-@dataclass(frozen=True)
+@dataclass
 class Outcome:
-    """What happened to a report the person sent: ``sent`` (with Lumi Cloud's id) or ``queued``."""
+    """What happened to a report the person sent: ``sent`` (with Lumi Cloud's id) or ``queued``.
+
+    ``notices`` says what the checks changed (secrets removed, a redaction, a
+    reply-to address left out), for the dialog to show with the outcome.
+    """
 
     status: str
     message: str
     id: str = ""
     reason: str = ""
+    notices: list[str] = field(default_factory=list)
 
     def as_dict(self) -> dict:
-        return {"status": self.status, "message": self.message, "id": self.id, "reason": self.reason}
+        return {"status": self.status, "message": self.message, "id": self.id, "reason": self.reason,
+                "notices": list(self.notices)}
 
 
 def set_transport_for_tests(transport: Any) -> None:
@@ -168,12 +237,171 @@ def set_transport_for_tests(transport: Any) -> None:
     _transport = transport
 
 
+def set_clock_for_tests(clock: Any = None, *, run: str = "") -> None:
+    """Use ``clock`` for monotonic time (None: the real one), and ``run`` as this process's id."""
+    global _monotonic, _run
+    _monotonic = clock or time.monotonic
+    _run = run or uuid.uuid4().hex
+
+
 def reset_for_tests() -> None:
     set_transport_for_tests(None)
+    set_clock_for_tests(None)
     with _lock:
         _previews.clear()
         _sending.clear()
+        _info.clear()
     _wake.clear()
+
+
+# ── The organization's switches, and where reports go ──────────────────────
+
+
+def _setting(settings: Any, key: str, default: Any) -> Any:
+    if settings is None:
+        return default
+    try:
+        return settings.get("privacy", key, default)
+    except Exception:  # an unreadable setting is the default
+        return default
+
+
+def _locked(settings: Any, key: str) -> bool:
+    try:
+        return key in (settings.locked_values("privacy") if settings is not None else {})
+    except Exception:
+        return False
+
+
+def validate_policy_settings(settings: dict) -> None:
+    """ValueError for a feedback setting an organization's policy locks to something Lumi can't use."""
+    if f"privacy.{SWITCH}" in settings and settings[f"privacy.{SWITCH}"] not in ("on", "off"):
+        raise ValueError(f"'privacy.{SWITCH}' must be \"on\" or \"off\".")
+    if f"privacy.{DIAGNOSTICS}" in settings and settings[f"privacy.{DIAGNOSTICS}"] not in ("allowed", "never"):
+        raise ValueError(f"'privacy.{DIAGNOSTICS}' must be \"allowed\" or \"never\".")
+    if f"privacy.{ADDRESS}" in settings:
+        value = settings[f"privacy.{ADDRESS}"]
+        if not isinstance(value, str):
+            raise ValueError(f"'privacy.{ADDRESS}' must be a Lumi Cloud address, or \"\" for none.")
+        if value:
+            from .cloud import CloudError, normalize_url
+
+            try:
+                normalize_url(value)
+            except CloudError as exc:
+                raise ValueError(f"'privacy.{ADDRESS}': {exc}") from exc
+
+
+def disabled_reason(settings: Any) -> str:
+    """Why feedback can't be sent at all ("" when it can): the organization, or Settings, turned it off."""
+    if _setting(settings, SWITCH, "on") != "off":
+        return ""
+    if _locked(settings, SWITCH):
+        return "Your organization turned off sending feedback from Lumi."
+    return f"Sending feedback is turned off in Lumi's settings (privacy.{SWITCH})."
+
+
+def diagnostics_refusal(settings: Any) -> str:
+    """Why reports can't include diagnostics ("" when they can)."""
+    if _setting(settings, DIAGNOSTICS, "allowed") != "never":
+        return ""
+    if _locked(settings, DIAGNOSTICS):
+        return "Your organization doesn't allow diagnostics in feedback."
+    return f"Diagnostics in feedback are turned off in Lumi's settings (privacy.{DIAGNOSTICS})."
+
+
+@dataclass(frozen=True)
+class Destination:
+    """Where reports go now: ``url`` ("" for nowhere yet) and what chose it."""
+
+    url: str
+    source: str  # "policy", "setting", "build", "cloud" or ""
+
+
+def cloud_url(cloud: Any) -> str:
+    """The Lumi Cloud address this computer uses, or "" when none is set (or it isn't one Lumi uses)."""
+    from .cloud import CloudError, normalize_url
+
+    raw = str(getattr(cloud, "url", "") or "")
+    if not raw:
+        return ""
+    try:
+        return normalize_url(raw)
+    except CloudError:
+        return ""
+
+
+def destination(cloud: Any, settings: Any = None) -> Destination:
+    """Where a report written now goes: the feedback address, the build's, else this computer's Lumi Cloud."""
+    from .cloud import CloudError, normalize_url
+
+    chosen = str(_setting(settings, ADDRESS, "") or "").strip()
+    if chosen:
+        source = "policy" if _locked(settings, ADDRESS) else "setting"
+        try:
+            return Destination(normalize_url(chosen), source)
+        except CloudError:
+            return Destination("", source)  # an address Lumi wouldn't use counts as none
+    if BUILD_DESTINATION:
+        try:
+            return Destination(normalize_url(BUILD_DESTINATION), "build")
+        except CloudError:
+            logger.warning("This build's feedback address isn't one Lumi can use")
+    url = cloud_url(cloud)
+    return Destination(url, "cloud" if url else "")
+
+
+def _host(url: str) -> str:
+    return urlsplit(url).netloc if url else ""
+
+
+def offline_refusal(url: str) -> str:
+    """Why offline mode keeps a report from ``url``, or "" when it may go (or offline mode is off)."""
+    from . import offline
+
+    if not offline.enabled():
+        return ""
+    if not url:
+        return ("Offline mode: sending feedback needs a Lumi Cloud, and no feedback address is set; set one "
+                "and allow it, or turn offline mode off.")
+    return offline.refusal(url + ENDPOINT, FEATURE)
+
+
+def _account(cloud: Any, url: str) -> tuple[str, str]:
+    """The Lumi Cloud id and email of the person signed in to ``url``, or ("", "").
+
+    A sign-in counts only for the Lumi Cloud that issued it (the client's
+    ``account_url``, recorded when the sign-in completed): when reports go
+    anywhere else, they go without the account, and its token never goes to a
+    host that didn't issue it.
+    """
+    from .cloud import same_address
+
+    if not url:
+        return "", ""
+    try:
+        status = cloud.status()
+        issued = str(getattr(cloud, "account_url", "") or "")
+    except Exception:  # no account is the safe answer to any problem here
+        logger.debug("Couldn't read the Lumi Cloud sign-in for feedback", exc_info=True)
+        return "", ""
+    account = status.get("account") if isinstance(status.get("account"), dict) else {}
+    if not status.get("signed_in") or not account.get("user_id") or not same_address(issued, url):
+        return "", ""
+    return str(account.get("user_id")), str(account.get("email") or "")
+
+
+def _signin_marker(cloud: Any) -> str:
+    """Changes whenever the person signs in again (or their account is refreshed); "" while signed out."""
+    try:
+        status = cloud.status()
+    except Exception:
+        return ""
+    account = status.get("account") if isinstance(status.get("account"), dict) else {}
+    if not status.get("signed_in") or not account.get("user_id"):
+        return ""
+    seen = f"{getattr(cloud, 'account_url', '')}|{account.get('user_id')}|{account.get('refreshed_at') or ''}"
+    return hashlib.sha256(seen.encode("utf-8")).hexdigest()[:24]
 
 
 # ── The form ───────────────────────────────────────────────────────────────
@@ -237,6 +465,17 @@ class Form:
         return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+def _switched_off(form: Form, settings: Any, *, copy: str = "") -> None:
+    """FeedbackError when the organization's switches refuse ``form``."""
+    reason = disabled_reason(settings)
+    if reason:
+        raise FeedbackError(reason, code="disabled", copy=copy)
+    if form.diagnostics:
+        reason = diagnostics_refusal(settings)
+        if reason:
+            raise FeedbackError(reason, code="diagnostics_off", field="include_diagnostics")
+
+
 # ── What is always sent ────────────────────────────────────────────────────
 
 
@@ -280,29 +519,68 @@ def _folder() -> Path:
     return state_home() / "feedback"
 
 
+@contextmanager
+def _state() -> Iterator[None]:
+    """This process's lock, then the one every Lumi process on this computer takes, over feedback/'s files.
+
+    Never taken twice in one thread: the OS lock isn't reentrant.
+    """
+    with _lock:
+        with exclusive(_folder() / ".lock"):
+            yield
+
+
 def _write(path: Path, text: str) -> None:
+    """Replace ``path`` with ``text`` in one step, waiting briefly while another process has it open."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(path.name + f".{os.getpid()}.tmp")
+    temporary = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
     temporary.write_text(text, encoding="utf-8")
-    temporary.replace(path)
+    for attempt in range(40):
+        try:
+            temporary.replace(path)
+            return
+        except PermissionError:  # Windows: a reader has it open for a moment
+            if attempt == 39:
+                temporary.unlink(missing_ok=True)
+                raise
+            time.sleep(0.05)
+
+
+def _read_secret(path: Path) -> str:
+    try:
+        return path.read_text(encoding="ascii").strip()
+    except (OSError, ValueError):
+        return ""
 
 
 def _install_secret() -> str:
-    """This install's random secret, made on first use from nothing on the computer or the account."""
+    """This install's random secret, made on first use from nothing on the computer or the account.
+
+    Made with an exclusive create, so two Lumi processes starting together agree on one.
+    """
     path = _folder() / "install-id"
-    with _lock:
+    value = _read_secret(path)
+    if INSTALL_ID.fullmatch(value):
+        return value
+    with _state():
+        value = _read_secret(path)
+        if INSTALL_ID.fullmatch(value):
+            return value
+        value = secrets.token_urlsafe(32)
+        path.parent.mkdir(parents=True, exist_ok=True)
         try:
-            value = path.read_text(encoding="ascii").strip()
-        except (OSError, ValueError):
-            value = ""
-        if not INSTALL_ID.fullmatch(value):
-            value = secrets.token_urlsafe(32)
-            _write(path, value)
+            with open(path, "x", encoding="ascii") as handle:
+                handle.write(value)
+        except FileExistsError:
+            existing = _read_secret(path)
+            if INSTALL_ID.fullmatch(existing):
+                return existing
+            _write(path, value)  # damaged: replaced, never sent
         return value
 
 
 def install_id(url: str = "", account: str = "") -> str:
-    """The install id a report carries: one for each Lumi Cloud (``url``), and for signed out or each account.
+    """The install id a report carries: one for each destination (``url``), and for signed out or each account.
 
     Derived from the install's secret with HMAC-SHA256, so staff can tell that
     reports came from one install, while an id seen with an account's reports
@@ -343,7 +621,9 @@ def log_tail(settings: Any = None) -> str:
     Uses the diagnostics bundle's redaction (gui/diagnostics.py) over what it
     reads, before cutting it to LOG_TAIL_LINES whole lines and LOG_TAIL_CHARS, so
     a cut never leaves part of a secret that no longer looks like one. The log
-    exists in packaged builds; running from source, this is empty.
+    exists in packaged builds; running from source, this is empty. It can hold
+    parts of conversations (warnings quote model output), so DLP checks it as
+    mixed content.
     """
     from . import secret_scan
     from .gui.diagnostics import MIN_KNOWN_SECRET_LENGTH, redact
@@ -431,11 +711,56 @@ def _map_strings(value: Any, change) -> Any:
     return value
 
 
-def _checked(body: dict, settings: Any) -> Prepared:
-    """``body`` after the secret scan (patterns on) and the organization's DLP rules.
+def _encode(body: dict) -> bytes:
+    return json.dumps(body, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+
+
+def _size(body: dict) -> int:
+    return len(_encode(body))
+
+
+def _diagnostics_bytes(value: dict) -> int:
+    # As Lumi Cloud counts them: json.dumps with its default separators.
+    return len(json.dumps(value, ensure_ascii=False).encode("utf-8"))
+
+
+def _shorter(text: str) -> str:
+    """A log tail without its first line (one line: without its first half)."""
+    _head, newline, rest = text.partition("\n")
+    return rest if newline else text[len(text) // 2:]
+
+
+def _fit(body: dict) -> dict:
+    """``body`` within Lumi Cloud's byte limits: the log tail loses its oldest lines as needed.
+
+    FeedbackError ``invalid`` when the report is too large even so.
+    """
+    value = body.get("diagnostics")
+    if isinstance(value, dict):
+        value = {name: (text[-MAX_SERVER_DIAGNOSTIC_TEXT:] if isinstance(text, str) else text)
+                 for name, text in value.items()}
+        while _diagnostics_bytes(value) > MAX_DIAGNOSTICS_BYTES and value.get("log_tail"):
+            value["log_tail"] = _shorter(value["log_tail"])
+        body = {**body, "diagnostics": value}
+        while _size(body) > MAX_BODY_BYTES and value.get("log_tail"):
+            value = {**value, "log_tail": _shorter(value["log_tail"])}
+            body = {**body, "diagnostics": value}
+        if _diagnostics_bytes(value) > MAX_DIAGNOSTICS_BYTES:
+            raise FeedbackError("The diagnostics are too large to send. Leave them out.", code="invalid",
+                                field="include_diagnostics")
+    if _size(body) > MAX_BODY_BYTES:
+        raise FeedbackError("The report is too large to send. Shorten the message, or leave diagnostics out.",
+                            code="invalid", field="message")
+    return body
+
+
+def _checked(body: dict, settings: Any, *, service: bool = True) -> Prepared:
+    """``body`` after the secret scan (patterns on), the organization's DLP rules and Lumi Cloud's limits.
 
     DLP's block refuses the report (FeedbackError ``dlp``); its redactions
-    apply to what is sent. A reply-to address DLP would change is left out.
+    apply to what is sent. A reply-to address either would change is left
+    out. ``service=False`` applies only the rules on this computer, never the
+    organization's DLP service (a draft the person hasn't chosen to send).
     """
     from collections import Counter
 
@@ -443,40 +768,47 @@ def _checked(body: dict, settings: Any) -> Prepared:
 
     found: Counter = Counter()
     known = _known(settings)
-    scanned = {**body, "message": _scan(body["message"], known, found),
-               "diagnostics": _map_strings(body.get("diagnostics"), lambda text: _scan(text, known, found))}
     notices = []
+    reply_to = body.get("reply_to")
+    if reply_to and _scan(reply_to, known, Counter()) != reply_to:
+        reply_to = None
+        notices.append("The reply-to address looked like a secret, so it was left out.")
+    scanned = {**body, "message": _scan(body["message"], known, found), "reply_to": reply_to,
+               "diagnostics": _map_strings(body.get("diagnostics"), lambda text: _scan(text, known, found))}
     if found:
         total = sum(found.values())
         kinds = ", ".join(kind for kind, _ in found.most_common())
-        notices.append(f"Removed {total} secret{'' if total == 1 else 's'} ({kinds}) from the report.")
+        notices.insert(0, f"Removed {total} secret{'' if total == 1 else 's'} ({kinds}) from the report.")
 
     def check(text: str, kind: str) -> str:
-        return dlp.check_text(text, purpose=PURPOSE, kind=kind, provider="lumi-cloud")
+        return dlp.check_text(text, purpose=PURPOSE, kind=kind, provider="lumi-cloud", service=service)
 
     try:
         message = check(scanned["message"], "prompt")
-        reply_to = scanned.get("reply_to")
         if reply_to and check(reply_to, "prompt") != reply_to:
             reply_to = None
             notices.append("Your organization's data loss prevention rules don't let the reply-to address leave "
                            "this computer, so it was left out.")
-        diagnostics_value = _map_strings(scanned.get("diagnostics"), lambda text: check(text, "attachment"))
+        # A log can quote the model and tool output: every rule checks it, whatever its scope.
+        diagnostics_value = _map_strings(scanned.get("diagnostics"), lambda text: check(text, dlp.MIXED))
     except dlp.Blocked as exc:
         raise FeedbackError(exc.message, code="dlp") from exc
     if len(message) > MAX_SENT_MESSAGE:
         # Redaction markers can be longer than what they replace; Lumi Cloud takes up to MAX_SENT_MESSAGE.
         raise FeedbackError("With secrets and your organization's matches replaced, the message is too long to "
                             "send. Shorten it.", code="invalid", field="message")
-    # The same for a diagnostic text, which the person didn't write: its end is kept (Lumi Cloud takes 16,000).
+    # The same for a diagnostic text, which the person didn't write: its end is kept.
     diagnostics_value = _map_strings(diagnostics_value, lambda text: text[-MAX_DIAGNOSTIC_TEXT:])
     if message != scanned["message"] or diagnostics_value != scanned.get("diagnostics"):
         notices.append("Your organization's data loss prevention rules redacted part of the report.")
-    return Prepared({**scanned, "message": message, "reply_to": reply_to, "diagnostics": diagnostics_value}, notices)
+    fitted = _fit({**scanned, "message": message, "reply_to": reply_to, "diagnostics": diagnostics_value})
+    if isinstance(fitted.get("diagnostics"), dict) and fitted["diagnostics"] != diagnostics_value:
+        notices.append("The oldest lines of the log were left out to keep the report within what Lumi Cloud takes.")
+    return Prepared(fitted, notices)
 
 
 def prepare(form: Form, *, settings: Any = None, provider: str = "", model: str = "", url: str = "",
-            account: str = "") -> Prepared:
+            account: str = "", service: bool = True) -> Prepared:
     """The report ``form`` makes, exactly as it would be sent to ``url`` as ``account`` ("" signed out)."""
     body = {
         "kind": form.kind,
@@ -486,99 +818,80 @@ def prepare(form: Form, *, settings: Any = None, provider: str = "", model: str 
         "install_id": install_id(url, account),
         "diagnostics": diagnostics(settings, provider=provider, model=model) if form.diagnostics else None,
     }
-    return _checked(body, settings)
+    return _checked(body, settings, service=service)
 
 
-def _size(body: dict) -> int:
-    return len(_encode(body))
+# ── Copies ─────────────────────────────────────────────────────────────────
 
 
-def _encode(body: dict) -> bytes:
-    return json.dumps(body, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+def _copy_from_body(body: dict) -> str:
+    app = body.get("app") or {}
+    lines = [f"Lumi feedback: {KIND_LABELS.get(body.get('kind'), 'Other')}", "", str(body.get("message") or ""), ""]
+    if body.get("reply_to"):
+        lines.append(f"Reply to: {body['reply_to']}")
+    if app.get("version"):
+        lines.append(f"Lumi {app['version']} ({app.get('channel')}), {app.get('os')}, {app.get('arch')}")
+    if body.get("diagnostics") is not None:
+        lines += ["", "Diagnostics:", json.dumps(body["diagnostics"], indent=2, ensure_ascii=False)]
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def typed_copy(form_data: Any, settings: Any = None) -> str:
+    """Only what the person typed, as text to paste elsewhere: no diagnostics, and no DLP check.
+
+    For a report that couldn't be prepared at all (offline mode refuses it
+    before anything looks at it). Saved keys and secret-looking values are
+    still taken out, on this computer. "" for a form that isn't filled in.
+    """
+    from collections import Counter
+
+    try:
+        form = Form.read({**(form_data if isinstance(form_data, dict) else {}), "include_diagnostics": False})
+    except FeedbackError:
+        return ""
+    known = _known(settings)
+    lines = [f"Lumi feedback: {KIND_LABELS[form.kind]}", "", _scan(form.message, known, Counter()), ""]
+    if form.reply_to and _scan(form.reply_to, known, Counter()) == form.reply_to:
+        lines.append(f"Reply to: {form.reply_to}")
+    return "\n".join(lines).rstrip() + "\n"
 
 
 # ── Lumi Cloud ─────────────────────────────────────────────────────────────
 
 
-def cloud_url(cloud: Any) -> str:
-    """The Lumi Cloud address reports go to, or "" when none is set (or it isn't one Lumi uses)."""
-    from .cloud import CloudError, normalize_url
-
-    raw = str(getattr(cloud, "url", "") or "")
-    if not raw:
-        return ""
-    try:
-        url = normalize_url(raw)
-        urlsplit(url).port  # noqa: B018 - a port that isn't a number raises ValueError here, not mid-send
-    except (CloudError, ValueError):
-        return ""
-    return url
-
-
-def _host(url: str) -> str:
-    return urlsplit(url).netloc if url else ""
-
-
-def offline_refusal(url: str) -> str:
-    """Why offline mode keeps a report from ``url``, or "" when it may go (or offline mode is off)."""
-    from . import offline
-
-    if not offline.enabled():
-        return ""
-    if not url:
-        return ("Offline mode: sending feedback needs Lumi Cloud, and no Lumi Cloud address is set; set one in "
-                "Settings > Lumi account and allow it, or turn offline mode off.")
-    return offline.refusal(url + ENDPOINT, FEATURE)
-
-
-def _account(cloud: Any, url: str) -> tuple[str, str]:
-    """The Lumi Cloud id and email of the person signed in to ``url``, or ("", "").
-
-    A sign-in counts only for the Lumi Cloud that issued it (the client's
-    ``account_url``, recorded when the sign-in completed): when reports go
-    anywhere else, they go without the account, and its token never goes to a
-    host that didn't issue it.
-    """
-    from .cloud import same_address
-
-    if not url:
-        return "", ""
-    try:
-        status = cloud.status()
-        issued = str(getattr(cloud, "account_url", "") or "")
-    except Exception:  # no account is the safe answer to any problem here
-        logger.debug("Couldn't read the Lumi Cloud sign-in for feedback", exc_info=True)
-        return "", ""
-    account = status.get("account") if isinstance(status.get("account"), dict) else {}
-    if not status.get("signed_in") or not account.get("user_id") or not same_address(issued, url):
-        return "", ""
-    return str(account.get("user_id")), str(account.get("email") or "")
+@dataclass(frozen=True)
+class _Delivered:
+    server_id: str
+    attributed: bool
 
 
 def _retry_after(response: Any) -> float | None:
+    """Lumi Cloud's Retry-After, in ASCII digits only, clamped to an hour, with jitter; None without one."""
     value = str(response.headers.get("retry-after") or "").strip()
-    return float(min(max(int(value), 1), MAX_RETRY_AFTER)) if _RETRY_AFTER.fullmatch(value) else None
+    if not _RETRY_AFTER.fullmatch(value):
+        return None
+    wait = float(min(max(int(value), 1), MAX_RETRY_AFTER))
+    return wait + random.uniform(0, min(60.0, wait / 5))
 
 
 def _refusal(status: int, response: Any) -> str:
-    if status == 413:
-        return "The report is too large for Lumi Cloud. Shorten the message, or leave diagnostics out."
-    if status == 404:
-        return "This Lumi Cloud doesn't take feedback (it answered 404)."
     try:
         data = response.json()
     except ValueError:
         data = {}
     detail = _clip(data.get("error_description"), 300) if isinstance(data, dict) else ""
     if status == 400 and detail:
-        return f"Lumi Cloud refused the report: {detail}"
-    return f"Lumi Cloud refused the report (it answered {status})."
+        return f"Lumi Cloud couldn't take the report: {detail}"
+    return f"Lumi Cloud couldn't take the report (it answered {status})."
 
 
-def _send(cloud: Any, url: str, body: dict, *, attribute: bool) -> tuple[str, bool]:
-    """Post one report: Lumi Cloud's id for it, and whether it went with the account.
+def _send(cloud: Any, url: str, body: dict, report_id: str, *, account: str = "") -> _Delivered:
+    """Post one report to ``url``; Lumi Cloud's id for it, and whether it went with the account.
 
-    ``_Later`` to keep it, FeedbackError when it's refused.
+    ``account`` ("" for none) is the person the report should go as, while
+    they're still the one signed in there: the install id is made to match
+    whoever it goes as. ``_Later`` to keep it, FeedbackError when Lumi Cloud
+    won't take it.
     """
     import httpx
 
@@ -586,42 +899,63 @@ def _send(cloud: Any, url: str, body: dict, *, attribute: bool) -> tuple[str, bo
     from .cloud import CloudError
     from .net import client_options
 
-    headers = {"Content-Type": "application/json", "Accept": "application/json",
-               "User-Agent": f"Lumi/{__version__} ({platform.system()})"}
-    if attribute:
+    token = ""
+    if account:
         try:
-            headers["Authorization"] = f"Bearer {cloud.account_token()}"
+            token = cloud.account_token()
         except CloudError as exc:
             if exc.code not in _SIGNED_OUT:
                 raise _Later("unreachable") from exc  # the token can't be had now: keep the report for later
-            # The sign-in ended meanwhile: the report goes without the account.
-            logger.info("Sending feedback without the account: the sign-in ended")
-    try:
-        with httpx.Client(**client_options(timeout=TIMEOUT_SECONDS, transport=_transport, feature=FEATURE)) as http:
-            response = http.post(url + ENDPOINT, content=_encode(body), headers=headers)
-    except httpx.HTTPError as exc:
-        reason = offline.message_for(exc)
-        if reason:
-            raise FeedbackError(reason, code="offline") from exc
-        raise _Later("unreachable") from exc
-    except (httpx.InvalidURL, ValueError) as exc:  # an address httpx can't use: keep it until it's fixed
-        raise _Later("unreachable") from exc
-    attributed = "Authorization" in headers
+            logger.info("Sending feedback without the account: the person signed out meanwhile")
+    body = {**body, "install_id": install_id(url, account if token else "")}
+    headers = {"Content-Type": "application/json", "Accept": "application/json", "Idempotency-Key": report_id,
+               "User-Agent": f"Lumi/{__version__} ({platform.system()})"}
+    for attempt in (1, 2):
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        try:
+            with httpx.Client(**client_options(timeout=TIMEOUT_SECONDS, transport=_transport, feature=FEATURE)) as http:
+                response = http.post(url + ENDPOINT, content=_encode(body), headers=headers)
+        except httpx.HTTPError as exc:
+            reason = offline.message_for(exc)
+            if reason:
+                raise FeedbackError(reason, code="offline") from exc
+            raise _Later("unreachable") from exc
+        except (httpx.InvalidURL, ValueError) as exc:  # an address httpx can't use: keep it until it's fixed
+            raise _Later("unreachable") from exc
+        if response.status_code == 401 and token and attempt == 1:
+            # The token presented was refused: refresh it once where it was issued, and try again.
+            try:
+                token = cloud.account_token(refresh=True)
+            except CloudError as exc:
+                raise _Later("sign_in") from exc
+            continue
+        break
     status = response.status_code
     if status in (200, 201):
         try:
             answer = response.json()
         except ValueError:
-            answer = {}
-        report = str(answer.get("id") or "") if isinstance(answer, dict) else ""
-        return (report if _REPORT_ID.fullmatch(report) else ""), attributed
+            answer = None
+        if isinstance(answer, dict) and answer.get("report") == report_id:
+            server_id = str(answer.get("id") or "")
+            return _Delivered(server_id if _SERVER_ID.fullmatch(server_id) else "",
+                              attributed=bool(token) and answer.get("account") is True)
+        raise _Later("unconfirmed")  # a page that isn't Lumi Cloud's acknowledgment (a captive portal's, say)
+    if status == 401 and token:
+        raise _Later("sign_in")  # refused even after a refresh: the person signs in again; never sent anonymously
     if status == 429:
-        raise _Later("busy", _retry_after(response) or RETRY_SECONDS)
+        raise _Later("busy", _retry_after(response))
     if status >= 500 or status == 408:
         raise _Later("unreachable")
     if status in (401, 403):
-        # The contract never asks for a sign-in: a Lumi Cloud that does may take it later, so it's kept.
-        raise _Later("unauthorized")
+        raise _Later("unauthorized")  # the contract never asks for a sign-in: tried again after the person signs in
+    if status < 400:
+        raise _Later("unconfirmed")  # 202, 204, a redirect: not Lumi Cloud's acknowledgment
+    if status == 404:
+        raise FeedbackError("This Lumi Cloud doesn't accept feedback.", code="not_accepting", status=404)
+    if status == 413:
+        raise FeedbackError("The report is too large for this Lumi Cloud.", code="too_large", status=413)
     raise FeedbackError(_refusal(status, response), code="refused", status=status)
 
 
@@ -633,32 +967,110 @@ def _record(event: str, body: dict, **extra: Any) -> None:
                  diagnostics=body.get("diagnostics") is not None, **extra)
 
 
+def info(cloud: Any, settings: Any = None) -> dict:
+    """What the destination says about itself (``GET /api/v1/feedback/info``), or {} when it can't be asked.
+
+    Asked only when there is a destination, offline mode allows it and the
+    organization hasn't turned feedback off; kept for INFO_SECONDS. The
+    answer: ``accepting`` and ``operator``, the name of who reads the reports.
+    """
+    import httpx
+
+    from .net import client_options
+
+    target = destination(cloud, settings).url
+    if not target or disabled_reason(settings) or offline_refusal(target):
+        return {}
+    with _lock:
+        cached = _info.get(target)
+    if cached and _monotonic() - cached[0] < INFO_SECONDS:
+        return dict(cached[1])
+    try:
+        with httpx.Client(**client_options(timeout=5.0, transport=_transport, feature=FEATURE)) as http:
+            response = http.get(target + INFO_ENDPOINT, headers={"Accept": "application/json"})
+        answer = response.json() if response.status_code == 200 else None
+    except (httpx.HTTPError, ValueError):
+        answer = None
+    if not isinstance(answer, dict):
+        return {}
+    operator = " ".join(clean_text(answer.get("operator") if isinstance(answer.get("operator"), str) else "")
+                        .split())[:MAX_OPERATOR]
+    result = {"destination": _host(target), "accepting": answer.get("accepting") is not False, "operator": operator}
+    with _lock:
+        _info[target] = (_monotonic(), result)
+    return dict(result)
+
+
 # ── The queue ──────────────────────────────────────────────────────────────
 
 _QUEUED = {
-    "no_cloud": "Saved on this computer. Lumi sends it once a Lumi Cloud address is set in Settings > Lumi account.",
-    "unreachable": ("Lumi Cloud couldn't be reached, so your feedback is saved on this computer. Lumi will send "
-                    "it when it can."),
-    "busy": "Lumi Cloud is busy, so your feedback is saved on this computer. Lumi will send it in a few minutes.",
-    "unauthorized": ("Lumi Cloud didn't accept the report just now, so it's saved on this computer. Lumi will try "
-                     "again later."),
+    "unreachable": "Lumi Cloud couldn't be reached, so your feedback is saved on this computer. Lumi will send "
+                   "it when it can.",
+    "busy": "Lumi Cloud is busy, so your feedback is saved on this computer. Lumi will send it a little later.",
+    "unconfirmed": "Lumi Cloud didn't confirm it got the report (another page answered), so it's saved on this "
+                   "computer. Lumi will try again.",
+    "unauthorized": "Lumi Cloud didn't accept the report just now, so it's saved on this computer. Lumi tries "
+                    "again after you sign in.",
+    "sign_in": "Lumi Cloud didn't accept your sign-in, so your feedback is saved on this computer. Sign in again "
+               "in Settings > Lumi account, and Lumi sends it.",
+    "no_destination": "Saved on this computer. No feedback address is set yet, so it isn't sent: once one is, "
+                      "Send feedback shows where it would go, and it goes only when you send it there.",
 }
-_WHY_QUEUED = {"no_cloud": "No Lumi Cloud address is set", "unreachable": "Lumi Cloud couldn't be reached",
-               "busy": "Lumi Cloud is busy", "unauthorized": "Lumi Cloud didn't accept the report"}
+_WHY_QUEUED = {"no_destination": "No feedback address is set", "unreachable": "Lumi Cloud couldn't be reached",
+               "busy": "Lumi Cloud is busy", "unconfirmed": "Lumi Cloud didn't confirm the report",
+               "unauthorized": "Lumi Cloud didn't accept the report", "sign_in": "Lumi Cloud didn't accept your "
+               "sign-in"}
 
 
 def _queue_path() -> Path:
     return _folder() / "queue.json"
 
 
+def _valid(item: Any) -> bool:
+    """Whether a queue entry holds a report Lumi can send (a damaged one is dropped, never sent)."""
+    if not isinstance(item, dict) or not isinstance(item.get("id"), str) or not REPORT_ID.fullmatch(item["id"]):
+        return False
+    body = item.get("body")
+    if not isinstance(body, dict) or body.get("kind") not in KINDS or not isinstance(body.get("message"), str):
+        return False
+    if item.get("state") not in (WAITING, SIGN_IN, HELD) or not isinstance(item.get("url"), str):
+        return False
+    for name in ("queued_at", "age", "aged_at"):
+        if not isinstance(item.get(name), int | float) or isinstance(item.get(name), bool):
+            return False
+    return True
+
+
 def _load_queue() -> list[dict]:
+    """The waiting reports (under ``_state``); damaged entries are dropped with a record, never stop the rest."""
     try:
         data = json.loads(_queue_path().read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return []
     except (OSError, ValueError):
+        logger.warning("The waiting feedback couldn't be read; it's set aside", exc_info=True)
+        _set_aside()
         return []
     items = data.get("items") if isinstance(data, dict) else None
-    return [item for item in items if isinstance(item, dict) and isinstance(item.get("body"), dict)
-            and item.get("id")] if isinstance(items, list) else []
+    if not isinstance(items, list):
+        _set_aside()
+        return []
+    kept = [item for item in items if _valid(item)]
+    if len(kept) != len(items):
+        from . import audit
+
+        for _ in range(len(items) - len(kept)):
+            audit.record("feedback.dropped", reason="damaged")
+        _save_queue(kept)
+    return kept
+
+
+def _set_aside() -> None:
+    path = _queue_path()
+    try:
+        path.replace(path.with_name(f"queue.damaged.{int(time.time())}.json"))
+    except OSError:
+        logger.warning("Couldn't set the damaged feedback queue aside", exc_info=True)
 
 
 def _save_queue(items: list[dict]) -> None:
@@ -669,143 +1081,230 @@ def _save_queue(items: list[dict]) -> None:
         except OSError:
             logger.warning("Couldn't delete the sent feedback's queue file", exc_info=True)
         return
-    _write(path, json.dumps({"version": 1, "items": items}, ensure_ascii=False))
+    _write(path, json.dumps({"version": 2, "items": items}, ensure_ascii=False))
 
 
 def waiting() -> int:
     """How many reports wait on this computer."""
-    with _lock:
+    with _state():
         return len(_load_queue())
 
 
-def _queue(body: dict, *, reason: str, account: str, url: str, now: float,
-           retry_after: float | None = None) -> Outcome:
+def _backoff(item: dict, retry_after: float | None, attempts: int) -> dict:
+    # A failed try waits RETRY_SECONDS, doubling each time up to MAX_BACKOFF_SECONDS, or Lumi Cloud's Retry-After.
+    wait = retry_after or min(RETRY_SECONDS * 2 ** max(attempts - 1, 0), MAX_BACKOFF_SECONDS)
+    return {"run": _run, "next_mono": _monotonic() + wait}
+
+
+def _keep(report_id: str, body: dict, *, state: str, reason: str, account: str, url: str, now: float,
+          retry_after: float | None = None, marker: str = "") -> Outcome:
+    """Save a report on this computer; FeedbackError ``queue_full`` when there's no room."""
     size = _size(body)
-    with _lock:
+    with _state():
         items = _load_queue()
         full = len(items) >= MAX_QUEUED or sum(int(item.get("size") or 0) for item in items) + size > MAX_QUEUE_BYTES
         if not full:
-            wait = 0.0 if reason == "no_cloud" else (retry_after or RETRY_SECONDS)
-            # ``url`` is where it was written for: it goes there, and to no other Lumi Cloud ("" for the first set).
-            items.append({"id": secrets.token_hex(8), "body": body, "size": size, "queued_at": now,
-                          "next_try": now + wait, "attempts": 0, "account": account, "url": url, "reason": reason})
+            # ``url`` is where it was written for: it goes there and nowhere else ("": nowhere until the person
+            # sends it to a destination they see).
+            item = {"id": report_id, "body": body, "size": size, "url": url, "account": account, "state": state,
+                    "reason": reason, "detail": "", "queued_at": now, "age": 0.0, "aged_at": now, "attempts": 1,
+                    "marker": marker, **_backoff({}, retry_after, 1)}
+            items.append(item)
             _save_queue(items)
     if full:
         _record("feedback.refused", body, reason="queue_full")
-        waiting_now = len(items)
-        raise FeedbackError(f"{_WHY_QUEUED[reason]}, and {waiting_now} report{'' if waiting_now == 1 else 's'} "
-                            f"{'is' if waiting_now == 1 else 'are'} already waiting on this computer, so this one "
-                            "wasn't saved. Copy it instead, or discard the waiting ones.", code="queue_full")
-    _record("feedback.queued", body, reason=reason)
+        count = len(items)
+        raise FeedbackError(f"{_WHY_QUEUED.get(reason, 'It can’t be sent now')}, and {count} report"
+                            f"{'' if count == 1 else 's'} {'is' if count == 1 else 'are'} already waiting on this "
+                            "computer, so this one wasn't saved. Copy it instead, or discard the waiting ones.",
+                            code="queue_full", copy=_copy_from_body(body))
+    _record("feedback.held" if state == HELD else "feedback.queued", body, reason=reason)
     return Outcome("queued", _QUEUED[reason], reason=reason)
 
 
-def discard() -> int:
-    """Delete the waiting reports; how many. One a flush is sending right now can't be taken back and stays."""
-    with _lock:
+def _update(report_id: str, change: dict | None) -> None:
+    """Apply one report's outcome to the queue file (``None`` removes it); under ``_state``."""
+    items = _load_queue()
+    kept = []
+    for item in items:
+        if item["id"] != report_id:
+            kept.append(item)
+        elif change is not None:
+            kept.append({**item, **change})
+    _save_queue(kept)
+
+
+def discard(ids: Any = None) -> int:
+    """Delete waiting reports (all, or those in ``ids``); how many. One being sent right now can't be taken back."""
+    wanted = {str(value) for value in ids} if ids else None
+    with _state():
         items = _load_queue()
-        kept = [item for item in items if item["id"] in _sending]
-        removed = [item for item in items if item["id"] not in _sending]
-        _save_queue(kept)
+        removed = [item for item in items if item["id"] not in _sending
+                   and (wanted is None or item["id"] in wanted)]
+        _save_queue([item for item in items if item not in removed])
     for item in removed:
         _record("feedback.dropped", item["body"], reason="discarded")
     return len(removed)
 
 
-def flush(cloud: Any, settings: Any = None, *, force: bool = False, now: float | None = None) -> dict:
-    """Send the waiting reports that are due (all of them with ``force``); counts of what happened.
+def held_copy(report_id: str) -> str:
+    """A waiting report as text to paste elsewhere; "" when there's none, or DLP keeps it here."""
+    with _state():
+        item = next((entry for entry in _load_queue() if entry["id"] == str(report_id)), None)
+    if item is None or item.get("reason") == "dlp":
+        return ""
+    return _copy_from_body(item["body"])
 
-    A report goes only to the Lumi Cloud it was written for, is checked again
+
+def _age(items: list[dict], now: float) -> list[dict]:
+    """Count the time each report has waited while Lumi ran, and hold those past QUEUE_DAYS.
+
+    Each round adds the wall-clock time since the report was last looked at,
+    at most MAX_AGE_STEP: moving the clock forward (or a computer asleep)
+    adds little, and moving it back adds nothing, so it never wipes the queue.
+    Expired reports are held, not deleted: the person copies or discards them.
+    """
+    changed = []
+    for item in items:
+        delta = now - float(item["aged_at"])
+        item["age"] = float(item["age"]) + min(max(delta, 0.0), MAX_AGE_STEP)
+        item["aged_at"] = now
+        if item["state"] != HELD and item["age"] > QUEUE_DAYS * 86400:
+            item.update(state=HELD, reason="expired", detail="")
+            changed.append(item)
+    for item in changed:
+        _record("feedback.held", item["body"], reason="expired")
+    return items
+
+
+def flush(cloud: Any, settings: Any = None, *, force: bool = False, now: float | None = None,
+          only: Any = None) -> dict:
+    """Send the waiting reports that are due (``force``: without waiting out backoff); counts of what happened.
+
+    A report goes only to the destination it was written for, is checked again
     first (secret scan and DLP, since the rules may have changed), goes with
     the account only when the person who wrote it is still the one signed in
-    there, and is dropped when Lumi Cloud refuses it, DLP blocks it or it has
-    waited QUEUE_DAYS. The first report Lumi Cloud can't take now ends the
-    round, so an unreachable server isn't asked once per report. ``force``
-    (Send now) doesn't wait out backoff, but does wait out a 429's Retry-After.
+    there, and is held for the person when Lumi Cloud or DLP won't take it.
+    The first report Lumi Cloud can't take now ends the round, so an
+    unreachable server isn't asked once per report. ``force`` (Send now)
+    doesn't wait out backoff or a sign-in, but does wait out Retry-After.
+    ``only`` limits the round to those report ids.
     """
     if not _flush_lock.acquire(blocking=False):
-        return {"sent": 0, "dropped": 0, "waiting": waiting(), "busy": True}
+        return {"sent": 0, "held": 0, "waiting": waiting(), "busy": True}
     try:
-        return _flush(cloud, settings, force=force, now=time.time() if now is None else now)
+        return _flush(cloud, settings, force=force, now=time.time() if now is None else now,
+                      only={str(value) for value in only} if only else None)
     finally:
         _flush_lock.release()
 
 
-def _due(item: dict, now: float, force: bool) -> bool:
-    if float(item.get("next_try") or 0) <= now:
+def _due(item: dict, url: str, marker: str, force: bool) -> bool:
+    from .cloud import same_address
+
+    if not item["url"] or not same_address(item["url"], url):
+        return False  # written for another destination (or none): it goes nowhere else
+    if item["state"] == HELD:
+        return force and item.get("reason") == "not_accepting"  # this Lumi Cloud may take feedback now
+    if item["state"] == SIGN_IN:
+        return force or bool(marker and marker != item.get("marker"))
+    if item.get("run") != _run:
+        return True  # another run's backoff: tried at this run's first round
+    if _monotonic() >= float(item.get("next_mono") or 0):
         return True
     return force and item.get("reason") != "busy"
 
 
-def _flush(cloud: Any, settings: Any, *, force: bool, now: float) -> dict:
-    with _lock:
-        items = _load_queue()
+def _flush(cloud: Any, settings: Any, *, force: bool, now: float, only: set | None) -> dict:
+    with _state():
+        items = _age(_load_queue(), now)
+        _save_queue(items)
+    result = {"sent": 0, "held": 0, "waiting": len(items)}
     if not items:
-        return {"sent": 0, "dropped": 0, "waiting": 0}
-    url = cloud_url(cloud)
-    blocked = not url or bool(offline_refusal(url))
-    signed_in_as = _account(cloud, url)[0] if not blocked else ""
-    done: dict[str, str] = {}
-    tried: dict[str, dict] = {}
-    sent: dict[str, tuple[dict, bool]] = {}
-
-    def later(item: dict, reason: str, retry_after: float | None) -> None:
-        attempts = int(item.get("attempts") or 0) + 1
-        # Queued, it waited RETRY_SECONDS; each failed try doubles the wait, up to MAX_BACKOFF_SECONDS.
-        wait = retry_after or min(RETRY_SECONDS * 2 ** attempts, MAX_BACKOFF_SECONDS)
-        tried[item["id"]] = {"attempts": attempts, "next_try": now + wait, "reason": reason}
-
-    try:
-        for item in items:
-            if now - float(item.get("queued_at") or 0) > QUEUE_DAYS * 86400:
-                done[item["id"]] = "expired"
-                continue
-            if blocked or (item.get("url") and item.get("url") != url) or not _due(item, now, force):
-                continue
-            with _lock:
-                if not any(entry["id"] == item["id"] for entry in _load_queue()):
-                    continue  # discarded meanwhile
-                _sending.add(item["id"])
-            try:
-                body = _checked(item["body"], settings).body
-                attribute = bool(item.get("account")) and item.get("account") == signed_in_as
-                _report, attributed = _send(cloud, url, body, attribute=attribute)
-            except _Later as exc:
-                later(item, exc.reason, exc.retry_after)
-                blocked = True
-            except FeedbackError as exc:
-                if exc.code == "offline":
-                    blocked = True  # offline mode came on meanwhile: keep it for later
-                else:
-                    done[item["id"]] = "dlp" if exc.code == "dlp" else "refused"
-            except Exception:  # never lose the round's outcomes to one report
-                logger.exception("Sending a waiting feedback report failed")
-                later(item, "unreachable", None)
-                blocked = True
-            else:
-                done[item["id"]] = "sent"
-                sent[item["id"]] = (body, attributed)
-            finally:
-                with _lock:
-                    _sending.discard(item["id"])
-    finally:
-        with _lock:
-            kept = []
-            for item in _load_queue():
-                if item["id"] in done:
-                    continue
-                item.update(tried.get(item["id"], {}))
-                kept.append(item)
-            _save_queue(kept)
+        return result
+    reason = disabled_reason(settings)
+    if reason:
+        return {**result, "disabled": reason}
+    url = destination(cloud, settings).url
+    if not url or offline_refusal(url):
+        return result
+    signed_in_as = _account(cloud, url)[0]
+    marker = _signin_marker(cloud)
     for item in items:
-        outcome = done.get(item["id"])
-        if outcome == "sent":
-            body, attributed = sent[item["id"]]
-            _record("feedback.sent", body, queued=True, attributed=attributed)
-        elif outcome:
-            _record("feedback.dropped", item["body"], reason=outcome)
-    count = sum(1 for outcome in done.values() if outcome == "sent")
-    return {"sent": count, "dropped": len(done) - count, "waiting": len(kept)}
+        if only is not None and item["id"] not in only:
+            continue
+        if not _due(item, url, marker, force):
+            continue
+        with _state():
+            if not any(entry["id"] == item["id"] for entry in _load_queue()):
+                continue  # discarded meanwhile
+            _sending.add(item["id"])
+        change: dict | None = {}
+        stop = False
+        body = item["body"]
+        try:
+            body = _checked(item["body"], settings).body
+            writer = item.get("account") or ""
+            delivered = _send(cloud, url, body, item["id"], account=writer if writer == signed_in_as else "")
+        except _Later as later:
+            attempts = int(item.get("attempts") or 1) + 1
+            state = SIGN_IN if later.reason in ("sign_in", "unauthorized") else WAITING
+            change = {"state": state, "reason": later.reason, "attempts": attempts, "marker": marker,
+                      **_backoff(item, later.retry_after, attempts)}
+            stop = state == WAITING  # Lumi Cloud can't take reports now: don't ask it once per report
+        except FeedbackError as exc:
+            if exc.code == "offline":
+                change, stop = {}, True  # offline mode came on meanwhile: keep it for later
+            else:
+                reason = exc.code if exc.code in _HELD_WHY else "refused"
+                change = {"state": HELD, "reason": reason, "detail": exc.message[:300]}
+                result["held"] += 1
+                _record("feedback.held", body, reason=reason, **({"status": exc.status} if exc.status else {}))
+        except Exception:  # never lose the round's outcomes to one report
+            logger.exception("Sending a waiting feedback report failed")
+            attempts = int(item.get("attempts") or 1) + 1
+            change = {"reason": "unreachable", "attempts": attempts, **_backoff(item, None, attempts)}
+            stop = True
+        else:
+            change = None
+            result["sent"] += 1
+            _record("feedback.sent", body, queued=True, attributed=delivered.attributed)
+        finally:
+            with _state():
+                _sending.discard(item["id"])
+                if change is None or change:
+                    _update(item["id"], change)
+        if stop:
+            break
+    with _state():
+        result["waiting"] = len(_load_queue())
+    return result
+
+
+def send_held(cloud: Any, settings: Any, report_id: str, shown: str, *, now: float | None = None) -> dict:
+    """Send a report written before a feedback address was set, to the destination the person was shown.
+
+    ``shown`` is the address the dialog displayed; it must still be where
+    reports go, or nothing is sent.
+    """
+    from .cloud import same_address
+
+    url = destination(cloud, settings).url
+    if not url or not same_address(url, shown):
+        raise FeedbackError("Where reports go changed. Check the address shown, then send it again.",
+                            code="preview")
+    refusal = disabled_reason(settings) or offline_refusal(url)
+    if refusal:
+        raise FeedbackError(refusal, code="disabled" if disabled_reason(settings) else "offline")
+    account = _account(cloud, url)[0]  # it goes as whoever is signed in there now (_send makes the id match)
+    with _state():
+        item = next((entry for entry in _load_queue() if entry["id"] == str(report_id)), None)
+        if item is None or item["url"] or item.get("reason") != "no_destination":
+            raise FeedbackError("That report isn't waiting for an address any more.", code="gone")
+        # Bound now to the destination the person was shown.
+        _update(item["id"], {"url": url, "account": account, "state": WAITING, "reason": "unreachable",
+                             "run": _run, "next_mono": 0.0})
+    return flush(cloud, settings, force=True, now=now, only={str(report_id)})
 
 
 # ── Sending ────────────────────────────────────────────────────────────────
@@ -825,48 +1324,79 @@ def _recent_path() -> Path:
 
 
 def _recent(now: float) -> list[float]:
+    """The times of reports sent or kept in the last RECENT_SECONDS (under ``_state``)."""
     try:
         values = json.loads(_recent_path().read_text(encoding="utf-8"))
     except (OSError, ValueError):
         values = []
-    return [float(v) for v in values if isinstance(v, (int, float)) and now - RECENT_SECONDS < float(v) <= now + 60] \
+    return [float(v) for v in values if isinstance(v, int | float) and now - RECENT_SECONDS < float(v) <= now + 60] \
         if isinstance(values, list) else []
 
 
-def preview(cloud: Any, form_data: Any, *, settings: Any = None, provider: str = "", model: str = "",
-            now: float | None = None) -> dict:
-    """The report the form makes, exactly as it would be sent, and where and as whom it would go.
+def _preview_data(preview_id: str, prepared: Prepared, url: str, email: str, *, provisional: bool) -> dict:
+    return {"preview_id": preview_id, "body": prepared.body, "notices": prepared.notices,
+            "destination": _host(url), "account": email, "offline": "", "provisional": provisional}
 
-    Its ``preview_id`` sends this very report (``submit``) while the form, the
-    Lumi Cloud and the account stay as they are. In offline mode a report that
-    couldn't go is refused first, before anything else looks at it.
-    """
-    now = time.time() if now is None else now
-    form = Form.read(form_data)
-    url = cloud_url(cloud)
-    refusal = offline_refusal(url)
-    if refusal:
-        raise FeedbackError(refusal, code="offline")
-    user_id, email = _account(cloud, url)
-    prepared = prepare(form, settings=settings, provider=provider, model=model, url=url, account=user_id)
+
+def _remember(form: Form, prepared: Prepared, url: str, account: str) -> str:
     preview_id = secrets.token_urlsafe(16)
     with _lock:
-        _previews[preview_id] = _Preview(form.digest(), prepared, now, url, user_id)
+        _previews[preview_id] = _Preview(form.digest(), prepared, _monotonic(), url, account)
         while len(_previews) > MAX_PREVIEWS:
             _previews.popitem(last=False)
-    return {"preview_id": preview_id, "body": prepared.body, "notices": prepared.notices,
-            "destination": _host(url), "account": email if user_id else "", "offline": ""}
+    return preview_id
 
 
-def _previewed(preview_id: str, form: Form, now: float, url: str, account: str) -> Prepared:
+def preview(cloud: Any, form_data: Any, *, settings: Any = None, provider: str = "", model: str = "",
+            full: bool = False) -> dict:
+    """The report the form makes, as it would be sent, and where and as whom it would go.
+
+    Its ``preview_id`` sends this very report (``submit``) while the form, the
+    destination and the account stay as they are. Only the rules on this
+    computer check it unless ``full`` asks the organization's DLP service too
+    (``provisional`` says the service will see it at Send). In offline mode a
+    report that couldn't go is refused first, before anything else looks at it.
+    """
+    from . import dlp
+
+    form = Form.read(form_data)
+    _switched_off(form, settings)
+    url = destination(cloud, settings).url
+    refusal = offline_refusal(url)
+    if refusal:
+        raise FeedbackError(refusal, code="offline", copy=typed_copy(form_data, settings))
+    user_id, email = _account(cloud, url)
+    prepared = prepare(form, settings=settings, provider=provider, model=model, url=url, account=user_id,
+                       service=full)
+    preview_id = _remember(form, prepared, url, user_id)
+    return _preview_data(preview_id, prepared, url, email if user_id else "",
+                         provisional=not full and dlp.service_configured())
+
+
+def _reviewed(preview_id: str, form: Form, url: str, account: str, email: str, settings: Any) -> Prepared:
+    """The report the person reviewed, checked again with the rules in force now (and the DLP service).
+
+    FeedbackError ``preview`` when there's no such review or things changed
+    since, ``dlp`` when the rules now refuse it, and ``review`` (with the
+    report as it is now) when the check changed it.
+    """
     with _lock:
         item = _previews.get(str(preview_id or ""))
-    if item is None or now - item.made > PREVIEW_SECONDS or item.digest != form.digest():
+    if item is None or _monotonic() - item.made > PREVIEW_SECONDS or item.digest != form.digest():
         raise FeedbackError("The report changed since you reviewed it. Review what will be sent, then send it.",
                             code="preview")
     if (item.url, item.account) != (url, account):
         raise FeedbackError("Where the report goes, or as whom, changed since you reviewed it. Review it again, "
                             "then send it.", code="preview")
+    rechecked = _checked(item.prepared.body, settings)
+    if rechecked.body != item.prepared.body:
+        again = Prepared(rechecked.body, item.prepared.notices + rechecked.notices)
+        new_id = _remember(form, again, url, account)
+        with _lock:
+            _previews.pop(str(preview_id), None)
+        raise FeedbackError("Your organization's data loss prevention check changed the report. Review it as it "
+                            "is now, then choose Send again.", code="review",
+                            preview=_preview_data(new_id, again, url, email, provisional=False))
     return item.prepared
 
 
@@ -874,98 +1404,98 @@ def submit(cloud: Any, form_data: Any, *, settings: Any = None, provider: str = 
            preview_id: str = "", now: float | None = None) -> Outcome:
     """Send a report now, or keep it to send later; FeedbackError when it can't be either.
 
-    With diagnostics, the report is the one ``preview`` showed (``preview_id``).
+    With diagnostics, the report is the one ``preview`` showed (``preview_id``),
+    checked again first. A FeedbackError's ``copy`` is the report as text to
+    offer instead.
     """
     from . import audit
 
     form = Form.read(form_data)
+    _switched_off(form, settings, copy=typed_copy(form_data, settings))
     with _submit_lock:
         now = time.time() if now is None else now
-        url = cloud_url(cloud)
+        url = destination(cloud, settings).url
         refusal = offline_refusal(url)
         if refusal:
-            # Before anything looks at the report: one that can't leave isn't DLP-checked (docs/feedback.md).
+            # Before anything looks at the report: one that can't leave isn't prepared or DLP-checked.
             audit.record("feedback.refused", kind=form.kind, reason="offline")
-            raise FeedbackError(refusal, code="offline")
-        user_id = _account(cloud, url)[0]
+            raise FeedbackError(refusal, code="offline", copy=typed_copy(form_data, settings))
+        user_id, email = _account(cloud, url)
         try:
-            prepared = _previewed(preview_id, form, now, url, user_id) if form.diagnostics else prepare(
+            prepared = _reviewed(preview_id, form, url, user_id, email, settings) if form.diagnostics else prepare(
                 form, settings=settings, provider=provider, model=model, url=url, account=user_id)
         except FeedbackError as exc:
             if exc.code == "dlp":  # DLP records which rule (dlp.finding); this records that nothing went
                 audit.record("feedback.refused", kind=form.kind, reason="dlp")
             raise
         body = prepared.body
-        with _lock:
+        copy = _copy_from_body(body)
+        with _state():
             recent = _recent(now)
         if len(recent) >= MAX_RECENT:
             _record("feedback.refused", body, reason="rate_limited")
             raise FeedbackError(f"You've sent {MAX_RECENT} reports in the last {RECENT_SECONDS // 60} minutes. Wait a "
-                                "few minutes before sending another, or copy this one.", code="rate_limited")
+                                "few minutes before sending another, or copy this one.", code="rate_limited", copy=copy)
+        report_id = str(uuid.uuid4())
         if not url:
-            outcome = _queue(body, reason="no_cloud", account=user_id, url="", now=now)
+            outcome = _keep(report_id, body, state=HELD, reason="no_destination", account="", url="", now=now)
         else:
             try:
-                report, attributed = _send(cloud, url, body, attribute=bool(user_id))
+                delivered = _send(cloud, url, body, report_id, account=user_id)
             except _Later as later:
-                outcome = _queue(body, reason=later.reason, account=user_id, url=url, now=now,
-                                 retry_after=later.retry_after)
+                state = SIGN_IN if later.reason in ("sign_in", "unauthorized") else WAITING
+                outcome = _keep(report_id, body, state=state, reason=later.reason, account=user_id, url=url,
+                                now=now, retry_after=later.retry_after, marker=_signin_marker(cloud))
             except FeedbackError as exc:
                 _record("feedback.refused", body, reason=exc.code, **({"status": exc.status} if exc.status else {}))
+                exc.copy = exc.copy or copy
                 raise
             else:
-                _record("feedback.sent", body, queued=False, attributed=attributed)
+                _record("feedback.sent", body, queued=False, attributed=delivered.attributed)
                 outcome = Outcome("sent", "Thanks. Your feedback is in Lumi Cloud"
-                                  + (f" (reference {report})." if report else "."), id=report)
-        with _lock:
+                                  + (f" (reference {delivered.server_id})." if delivered.server_id else "."),
+                                  id=delivered.server_id)
+        with _state():
             try:
                 _write(_recent_path(), json.dumps([*_recent(now), now]))
             except OSError:  # the report went, or waits, all the same: don't tell the person it failed
                 logger.warning("Couldn't count a feedback report for the rate limit", exc_info=True)
+        with _lock:
             _previews.pop(str(preview_id or ""), None)
+    outcome.notices = list(prepared.notices)
     if outcome.status == "queued":
         wake()
     return outcome
 
 
-def copy_text(form_data: Any, *, settings: Any = None, provider: str = "", model: str = "",
-              preview_id: str = "") -> str:
-    """The report as text to paste somewhere else when it can't be sent; nothing is sent.
-
-    It's what would have been sent: secrets removed and the organization's DLP
-    rules applied (the previewed report, when there is one). When those rules
-    don't let the report leave, there's no copy either: "".
-    """
-    try:
-        form = Form.read(form_data)
-    except FeedbackError:
-        return ""
-    with _lock:
-        item = _previews.get(str(preview_id or ""))
-    if item is not None and item.digest == form.digest():
-        body = item.prepared.body
-    else:
-        try:
-            body = prepare(form, settings=settings, provider=provider, model=model).body
-        except FeedbackError:
-            return ""
-    app = body["app"]
-    lines = [f"Lumi feedback: {KIND_LABELS[body['kind']]}", "", body["message"], ""]
-    if body.get("reply_to"):
-        lines.append(f"Reply to: {body['reply_to']}")
-    lines.append(f"Lumi {app['version']} ({app['channel']}), {app['os']}, {app['arch']}")
-    if body.get("diagnostics") is not None:
-        lines += ["", "Diagnostics:", json.dumps(body["diagnostics"], indent=2, ensure_ascii=False)]
-    return "\n".join(lines).rstrip() + "\n"
-
-
-def status(cloud: Any) -> dict:
+def status(cloud: Any, settings: Any = None) -> dict:
     """What the dialog shows before anything is sent: where reports go, as whom, and what waits."""
-    url = cloud_url(cloud)
-    user_id, email = _account(cloud, url)
-    return {"destination": _host(url), "configured": bool(url), "account": email if user_id else "",
-            "offline": offline_refusal(url), "waiting": waiting(), "app": app_info(),
-            "limits": {"message": MAX_MESSAGE, "reply_to": MAX_REPLY_TO}}
+    from . import dlp
+    from .cloud import same_address
+
+    target = destination(cloud, settings)
+    user_id, email = _account(cloud, target.url)
+    with _state():
+        items = _load_queue()
+    reports = []
+    sendable = 0
+    for item in items:
+        here = bool(item["url"]) and same_address(item["url"], target.url)
+        if here and item["state"] != HELD:
+            sendable += 1
+        reports.append({
+            "id": item["id"], "kind": item["body"].get("kind"), "written": item.get("queued_at"),
+            "state": item["state"], "reason": item.get("reason") or "", "detail": item.get("detail") or "",
+            "destination": _host(item["url"]), "here": here,
+            "copy": item.get("reason") != "dlp",
+            "send": item.get("reason") == "no_destination" and bool(target.url),
+        })
+    refusal = diagnostics_refusal(settings)
+    return {"destination": _host(target.url), "destination_url": target.url, "source": target.source,
+            "configured": bool(target.url), "account": email if user_id else "", "offline": offline_refusal(target.url),
+            "disabled": disabled_reason(settings), "diagnostics": {"allowed": not refusal, "reason": refusal},
+            "waiting": len(items), "sendable": sendable, "reports": reports, "app": app_info(),
+            "dlp_service": dlp.service_configured(), "limits": {"message": MAX_MESSAGE, "reply_to": MAX_REPLY_TO}}
 
 
 # ── In the background ──────────────────────────────────────────────────────

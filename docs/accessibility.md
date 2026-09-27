@@ -70,11 +70,21 @@
     (`role="status"`), and the report it will send can be scrolled from the
     keyboard. When no report could be made (offline mode), its empty box is
     hidden rather than left as a tab stop. A result that arrives after the
-    dialog closed is shown as a notification.
+    dialog closed is announced through a polite live region outside the
+    dialog (`#feedback-announcer`) as well as shown as a notification, and a
+    refusal from the last time is cleared when the dialog opens again.
+  - Each report waiting on this computer is a list item saying what it waits
+    for, with its own **Copy**, **Send to** and **Discard** buttons named for
+    it ("Discard the bug report"). An organization's switch is said in the
+    dialog's text, not only by a disabled button.
+  - The character counter counts what's sent (an emoji is one character) and
+    turns to the error color over the limit; the message box has no
+    `maxlength`, which browsers count in UTF-16 units.
   - The report, its status line and notices, the error text, the character
-    counter and the destination line measured at least 4.5:1 in both themes.
-    At 375 px the dialog stays on screen with no sideways scrolling, and its
-    buttons are at least 24 px.
+    counter, the destination line, the organization's switch and a waiting
+    report's text measured at least 4.5:1 in both themes. At 375 px the dialog
+    and the waiting reports' list stay on screen with no sideways scrolling,
+    and their buttons are at least 24 px.
 
 ## Fixed during this review
 

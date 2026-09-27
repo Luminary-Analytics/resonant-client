@@ -4030,29 +4030,53 @@ def _feedback_task(work) -> None:
 async def _feedback_state(ctx: CommandContext, **extra: Any) -> None:
     from .. import feedback
 
-    status = await asyncio.to_thread(feedback.status, ctx.state.cloud)
+    status = await asyncio.to_thread(feedback.status, ctx.state.cloud, ctx.state.settings)
     await ctx.send({"event": "feedback_status", "data": {**status, **extra}})
 
 
-async def _feedback_copy(ctx: CommandContext, code: str, form: Any, preview_id: str = "") -> str:
-    """The report as text for Copy to clipboard: none for a form to fix, a stale review, or what DLP refused."""
+async def _feedback_typed_copy(ctx: CommandContext, form: Any) -> str:
+    """Only what the person typed, for a failure where nothing else is safe to offer."""
     from .. import feedback
 
-    if code in ("invalid", "preview", "dlp"):
+    try:
+        return await asyncio.to_thread(feedback.typed_copy, form, ctx.state.settings)
+    except Exception:
+        logger.debug("Couldn't make the feedback copy", exc_info=True)
         return ""
-    return await asyncio.to_thread(feedback.copy_text, form, settings=ctx.state.settings, preview_id=preview_id,
-                                   **_feedback_backend(ctx))
 
 
 @command("feedback_status")
 async def _cmd_feedback_status(ctx: CommandContext) -> None:
-    """The Send feedback dialog: where reports go, as whom, and how many wait on this computer."""
+    """The Send feedback dialog: where reports go, as whom, and what waits on this computer.
+
+    When the dialog opens (``open``), the destination is also asked who reads
+    its reports (``feedback_info``), in the background.
+    """
+    from .. import feedback
+
     await _feedback_state(ctx)
+    if not ctx.msg.get("open"):
+        return
+
+    async def ask() -> None:
+        try:
+            answer = await asyncio.to_thread(feedback.info, ctx.state.cloud, ctx.state.settings)
+        except Exception:
+            logger.debug("Asking the feedback destination about itself failed", exc_info=True)
+            answer = {}
+        if answer:
+            await ctx.send({"event": "feedback_info", "data": answer})
+
+    _feedback_task(ask)
 
 
 @command("feedback_preview")
 async def _cmd_feedback_preview(ctx: CommandContext) -> None:
-    """The report the form makes, exactly as it would be sent (with diagnostics)."""
+    """The report the form makes, exactly as it would be sent (with diagnostics).
+
+    Checked with the rules on this computer only: the organization's DLP
+    service sees a report only when the person sends it.
+    """
     from .. import feedback
 
     form = ctx.msg.get("form")
@@ -4064,7 +4088,7 @@ async def _cmd_feedback_preview(ctx: CommandContext) -> None:
                                            **_feedback_backend(ctx))
         except feedback.FeedbackError as exc:
             await ctx.send({"event": "feedback_preview", "request": request, "error": exc.as_dict(),
-                            "copy_text": await _feedback_copy(ctx, exc.code, form)})
+                            "copy_text": exc.copy})
             return
         except Exception:
             logger.exception("Preparing a feedback report failed")
@@ -4089,17 +4113,12 @@ async def _cmd_feedback_send(ctx: CommandContext) -> None:
             outcome = await asyncio.to_thread(feedback.submit, ctx.state.cloud, form, settings=ctx.state.settings,
                                               preview_id=preview_id, **_feedback_backend(ctx))
         except feedback.FeedbackError as exc:
-            await ctx.send({"event": "feedback_result", "ok": False, **exc.as_dict(),
-                            "copy_text": await _feedback_copy(ctx, exc.code, form, preview_id)})
+            await ctx.send({"event": "feedback_result", "ok": False, **exc.as_dict(), "copy_text": exc.copy,
+                            **({"preview": exc.preview} if exc.preview else {})})
         except Exception:
             logger.exception("Sending feedback failed")
-            copy = ""
-            try:
-                copy = await _feedback_copy(ctx, "error", form, preview_id)
-            except Exception:
-                logger.debug("Couldn't make the feedback copy either", exc_info=True)
             await ctx.send({"event": "feedback_result", "ok": False, "code": "error", "field": "",
-                            "message": _FEEDBACK_FAILED, "copy_text": copy})
+                            "message": _FEEDBACK_FAILED, "copy_text": await _feedback_typed_copy(ctx, form)})
         else:
             await ctx.send({"event": "feedback_result", "ok": True, **outcome.as_dict()})
         await _feedback_state(ctx)
@@ -4109,7 +4128,7 @@ async def _cmd_feedback_send(ctx: CommandContext) -> None:
 
 @command("feedback_flush")
 async def _cmd_feedback_flush(ctx: CommandContext) -> None:
-    """Send now: try every report waiting on this computer."""
+    """Send now: try every report waiting for the destination shown."""
     from .. import feedback
 
     async def run() -> None:
@@ -4117,7 +4136,29 @@ async def _cmd_feedback_flush(ctx: CommandContext) -> None:
             result = await asyncio.to_thread(feedback.flush, ctx.state.cloud, ctx.state.settings, force=True)
         except Exception:
             logger.exception("Sending the waiting feedback failed")
-            result = {"sent": 0, "dropped": 0, "waiting": await asyncio.to_thread(feedback.waiting), "failed": True}
+            result = {"sent": 0, "held": 0, "waiting": await asyncio.to_thread(feedback.waiting), "failed": True}
+        await _feedback_state(ctx, flushed=result)
+
+    _feedback_task(run)
+
+
+@command("feedback_send_held")
+async def _cmd_feedback_send_held(ctx: CommandContext) -> None:
+    """Send a report written before a feedback address was set, to the address the dialog showed."""
+    from .. import feedback
+
+    report_id = str(ctx.msg.get("id") or "")
+    shown = str(ctx.msg.get("destination") or "")
+
+    async def run() -> None:
+        try:
+            result = await asyncio.to_thread(feedback.send_held, ctx.state.cloud, ctx.state.settings, report_id,
+                                             shown)
+        except feedback.FeedbackError as exc:
+            result = {"sent": 0, "held": 0, "error": exc.message}
+        except Exception:
+            logger.exception("Sending a held feedback report failed")
+            result = {"sent": 0, "held": 0, "failed": True}
         await _feedback_state(ctx, flushed=result)
 
     _feedback_task(run)
@@ -4125,10 +4166,22 @@ async def _cmd_feedback_flush(ctx: CommandContext) -> None:
 
 @command("feedback_discard")
 async def _cmd_feedback_discard(ctx: CommandContext) -> None:
-    """Delete the reports waiting on this computer."""
+    """Delete reports waiting on this computer: all of them, or the ``ids`` given."""
     from .. import feedback
 
-    await _feedback_state(ctx, discarded=await asyncio.to_thread(feedback.discard))
+    ids = ctx.msg.get("ids")
+    ids = [str(value) for value in ids] if isinstance(ids, list) else None
+    await _feedback_state(ctx, discarded=await asyncio.to_thread(feedback.discard, ids))
+
+
+@command("feedback_copy_held")
+async def _cmd_feedback_copy_held(ctx: CommandContext) -> None:
+    """A waiting report as text, for Copy to clipboard ("" when there's none to give)."""
+    from .. import feedback
+
+    report_id = str(ctx.msg.get("id") or "")
+    text = await asyncio.to_thread(feedback.held_copy, report_id)
+    await ctx.send({"event": "feedback_copy", "id": report_id, "text": text})
 
 
 @command("folder_dialog")

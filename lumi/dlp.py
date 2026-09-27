@@ -666,16 +666,27 @@ def active() -> DlpPolicy | None:
 
 
 def check_text(text: str, *, purpose: str, kind: str = MIXED, provider: str = "", model: str = "",
-               audit_fields: dict | None = None) -> str:
-    """A single prompt (classification, structured output) as it may be sent; Blocked if it may not."""
+               audit_fields: dict | None = None, service: bool = True) -> str:
+    """A single prompt (classification, structured output) as it may be sent; Blocked if it may not.
+
+    ``service=False`` applies only the rules on this computer, never asking
+    the organization's DLP service: for a draft shown before the person
+    chooses to send it (lumi/feedback.py), which is checked in full when sent.
+    """
     checked = check_request({"user_msg": text}, purpose=purpose, provider=provider, model=model,
-                            audit_fields=audit_fields, message_kind=kind)
+                            audit_fields=audit_fields, message_kind=kind, service=service)
     return checked.request["user_msg"]
+
+
+def service_configured() -> bool:
+    """Whether the rules in force include an external DLP service (``dlp.service``)."""
+    rules = active()
+    return bool(rules is not None and rules.service is not None)
 
 
 def check_request(request: dict, *, purpose: str, provider: str = "", model: str = "",
                   audit_fields: dict | None = None, segments: Any = None,
-                  message_kind: str | None = None) -> Checked:
+                  message_kind: str | None = None, service: bool = True) -> Checked:
     """Apply the organization's DLP rules to one model request before it is sent.
 
     ``request`` holds the backend's keyword arguments (``user_msg``,
@@ -698,7 +709,8 @@ def check_request(request: dict, *, purpose: str, provider: str = "", model: str
         message_kind = "prompt" if purpose in _PROMPT_PURPOSES else MIXED
     context = {"purpose": purpose, "provider": provider, "model": model}
     try:
-        return _check(request, rules, policy.organization, message_kind, segments, audit_fields, context)
+        return _check(request, rules, policy.organization, message_kind, segments, audit_fields, context,
+                      service=service)
     except Blocked:
         raise
     except Exception as exc:  # a check that fails must not let the request through
@@ -709,7 +721,7 @@ def check_request(request: dict, *, purpose: str, provider: str = "", model: str
 
 
 def _check(request: dict, rules: DlpPolicy, organization: str, message_kind: str, segments: Any,
-           audit_fields: dict | None, context: dict) -> Checked:
+           audit_fields: dict | None, context: dict, *, service: bool = True) -> Checked:
     provider, model = context["provider"], context["model"]
     items, lossy = _collect(request, message_kind, segments)
     if sum(len(item.text) for item in items) > MAX_REQUEST_CHARS:
@@ -776,7 +788,7 @@ def _check(request: dict, rules: DlpPolicy, organization: str, message_kind: str
                 if action == "redact":
                     new_redactions[name] += count
 
-    if rules.service is not None:
+    if rules.service is not None and service:
         _ask_service(rules.service, rules.fingerprint, organization, items, texts, dropped, withheld,
                      new_redactions, audit_fields, context)
 

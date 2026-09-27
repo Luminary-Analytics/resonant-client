@@ -417,13 +417,22 @@ host enrollment and actual packaged/learned-benefit qualification remain open.
   `secret_scan` removes saved keys and secret patterns. Keep new event kinds
   out of the copy unless they carry only what the person or Lumi said.
 - Feedback (`feedback.py`, `static/feedback_view.js`, docs/feedback.md) goes
-  to the configured Lumi Cloud's `POST /api/v1/feedback` through
-  `net.client_options`, after `secret_scan` with patterns on and
-  `dlp.check_text` (purpose `feedback`); offline mode refuses it unless the
-  host is allowed. With diagnostics, only the report the dialog showed is
-  sent (its `preview_id`). The account token goes only while the person is
-  signed in, and a queued report only as the account that wrote it. Audit
-  records name the kind and size, never the text, reply-to or install id.
+  to `feedback.destination` (`privacy.feedback_url`, the build's address,
+  else the Lumi Cloud in use) as `POST /api/v1/feedback` with an
+  `Idempotency-Key`, through `net.client_options`, after offline mode (which
+  refuses before anything is prepared; its copy is only what was typed),
+  `secret_scan` with patterns on and `dlp.check_text` (purpose `feedback`,
+  diagnostics as mixed). Drafts use only local rules (`service=False`);
+  Send checks the reviewed report again with the DLP service, and a changed
+  report goes back for review. Only Lumi Cloud's acknowledgment (the key
+  echoed) counts as delivered. A report is bound to its destination when
+  written and goes nowhere else; one written with none waits for
+  `send_held`. The account token goes only to the Lumi Cloud that issued it;
+  a 401 refreshes once, then waits for a sign-in, never anonymous.
+  `privacy.feedback` and `privacy.feedback_diagnostics` are the
+  organization's switches. The queue's read-modify-writes take the lock every
+  Lumi process takes. Audit records name the kind and size, never the text,
+  reply-to or install id.
 - The team library (`team_library.py`) is the organization's published
   skills and prompts, synced from Lumi Cloud into `team/library.json` and
   deleted on sign-out. Team skills are listed for the agent like pack skills

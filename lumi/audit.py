@@ -17,8 +17,8 @@ Event types: ``turn.start``, ``turn.end``, ``model.usage``, ``tool.call``,
 ``dlp.finding`` and ``dlp.error`` (lumi/dlp.py: rule, action, content kind and
 count, never the matched text), ``settings.change``, ``trust.decision``,
 ``budget.warning``, ``budget.approval``, ``budget.block``, ``model.fallback``,
-``feedback.sent``, ``feedback.queued``, ``feedback.refused`` and
-``feedback.dropped`` (lumi/feedback.py: kind and size, never the text) and
+``feedback.sent``, ``feedback.queued``, ``feedback.held``, ``feedback.refused``
+and ``feedback.dropped`` (lumi/feedback.py: kind and size, never the text) and
 ``error``; for organization oversight (lumi/oversight.py)
 ``oversight.notice_shown``, ``oversight.notice_forgotten``,
 ``oversight.unattended_run``, ``oversight.acknowledgment_refused`` and

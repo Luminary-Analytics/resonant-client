@@ -4404,6 +4404,12 @@ class LumiApp {
             case 'feedback_result':
                 this.handleFeedbackResult?.(event);
                 break;
+            case 'feedback_info':
+                this.handleFeedbackInfo?.(event);
+                break;
+            case 'feedback_copy':
+                this.handleFeedbackCopy?.(event);
+                break;
             case 'team_library':
                 this.teamLibrary = event;
                 this._updateTeamPromptsButton();

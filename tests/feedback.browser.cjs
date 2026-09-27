@@ -101,7 +101,9 @@ test('Send feedback: opening it, checking it, what it shows, what goes and what 
         await page.locator('.menubar-action[data-action="send-feedback"]').click();
         await dialog.waitFor();
         assert.equal(await focusedId(page), 'feedback-message');
-        await page.locator('#feedback-destination', {hasText: /^It goes to 127\.0\.0\.1:\d+, without your account\.$/}).waitFor();
+        // Who reads reports there comes from the destination's /api/v1/feedback/info, a moment later.
+        await page.locator('#feedback-destination',
+            {hasText: /^It goes to 127\.0\.0\.1:\d+ \(read by Fixture Operator\), without your account\.$/}).waitFor();
         assert.match(await page.locator('#feedback-always').textContent(),
             /^Always sent: Lumi \S+ \((stable|beta)\), .+, and a random id for this install\.$/);
         assert.equal(await page.locator('#feedback-preview').isVisible(), false);
@@ -165,12 +167,15 @@ test('Send feedback: opening it, checking it, what it shows, what goes and what 
         const done = page.locator('#feedback-done-text');
         await done.waitFor();
         assert.match(await done.textContent(), /^Thanks\. Your feedback is in Lumi Cloud \(reference fbk_0001\)\.$/);
+        // What the checks changed is said with the outcome too.
+        assert.match(await page.locator('#feedback-done-notices').textContent(), /Removed 1 secret \(GitHub token\)/);
         assert.equal(await focusedId(page), 'feedback-done-close');
         let seen = await evidence(info);
         assert.equal(seen.received.length, 1);
         assert.deepEqual(seen.received[0].body, shown, 'what went is what the dialog showed');
         assert.equal(seen.received[0].authorization, false, 'no account token while signed out');
         assert.equal(seen.received[0].content_type, 'application/json');
+        assert.match(seen.received[0].idempotency_key, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
         assert.deepEqual(seen.audit.map(record => [record.type, record.data.kind, record.data.diagnostics, record.data.queued]),
             [['feedback.sent', 'bug', true, false]]);
         for (const text of ['The build button does nothing', 'ada@example.com', shown.install_id]) {
@@ -214,7 +219,7 @@ test('Send feedback: opening it, checking it, what it shows, what goes and what 
         assert.equal(await focusedId(page), 'account-feedback');
         await page.keyboard.press('Enter');
         await dialog.waitFor();
-        await page.locator('#feedback-queue-text', {hasText: '1 report waiting on this computer.'}).waitFor();
+        await page.locator('#feedback-queue-text', {hasText: /^1 report waiting on this computer to go to 127\.0\.0\.1:\d+\.$/}).waitFor();
         await page.locator('#feedback-flush').focus();
         await page.keyboard.press('Enter');
         await page.locator('#feedback-progress', {hasText: 'Sent 1 report.'}).waitFor();
@@ -270,7 +275,15 @@ test('Send feedback: opening it, checking it, what it shows, what goes and what 
         assert.equal(await page.locator('#feedback-preview-body').textContent(), '');
         assert.equal(await page.locator('#feedback-preview-body').isVisible(), false);
         assert.equal(await page.evaluate(() => window.app._feedbackPreviewId), null);
-        await page.locator('#feedback-copy').waitFor();
+        await page.locator('#feedback-copy').focus();
+        await page.keyboard.press('Enter');
+        await page.locator('#feedback-progress', {hasText: /Copied\.|Select the text/}).waitFor();
+        const typedOnly = (await page.locator('#feedback-copy-text').isVisible()
+            ? await page.locator('#feedback-copy-text').inputValue()
+            : await page.evaluate(() => navigator.clipboard.readText())).split('\r\n').join('\n');
+        // Only what was typed: nothing was gathered for a report that couldn't be prepared.
+        assert.match(typedOnly, /^Lumi feedback: Bug\n\nOffline, and this can’t go\.\n/);
+        assert.ok(!typedOnly.includes('Diagnostics') && !typedOnly.includes('uvicorn'), typedOnly);
         seen = await evidence(info);
         assert.equal(seen.received.length, before, 'offline mode sent nothing');
         assert.deepEqual(seen.audit.map(record => [record.type, record.data.reason ?? '']),
@@ -313,11 +326,144 @@ test('Send feedback: opening it, checking it, what it shows, what goes and what 
         await dialog.waitFor({state: 'hidden'});
         assert.equal(await focusedId(page), 'about-send-feedback');
         await post(info, '/__fixture__/offline', {enabled: false});
+        await page.setViewportSize({width: 1280, height: 860});
+        await page.keyboard.press('Escape');  // leave Settings
+        const cloudAddress = `${info.url}/__fixture__/cloud`;
+        await post(info, '/__fixture__/cloud-url', {url: cloudAddress});
+        const openFromPalette = async () => {
+            await page.locator('#user-input').focus();
+            await page.keyboard.press('Control+k');
+            await page.locator('#cmd-palette-input').fill('feedback');
+            await page.locator('.cmd-palette-item', {hasText: 'Send feedback'}).waitFor();
+            await page.keyboard.press('Enter');
+            await dialog.waitFor();
+        };
+
+        step('An organization turns feedback off, then diagnostics: the dialog says so plainly');
+        await post(info, '/__fixture__/policy', {settings: {'privacy.feedback': 'off'}});
+        await openFromPalette();
+        const switchedOff = page.locator('#feedback-disabled');
+        await switchedOff.waitFor();
+        assert.equal(await switchedOff.textContent(), 'Your organization turned off sending feedback from Lumi.');
+        assert.equal(await page.locator('#feedback-send').isDisabled(), true);
+        await page.locator('#feedback-preview').waitFor({state: 'hidden'});  // no report will be made
+        assert.ok(await contrast(page, '#feedback-disabled') >= 4.5);
+        await page.screenshot({path: path.join(output, 'feedback-turned-off.png')});
+        await setTheme(page, 'light');
+        assert.ok(await contrast(page, '#feedback-disabled') >= 4.5);
+        await page.screenshot({path: path.join(output, 'feedback-turned-off-light.png')});
+        await setTheme(page, 'dark');
+        await page.keyboard.press('Escape');
+        await dialog.waitFor({state: 'hidden'});
+        await post(info, '/__fixture__/policy', {settings: {'privacy.feedback_diagnostics': 'never'}});
+        await openFromPalette();
+        await page.locator('#feedback-diagnostics-off', {hasText: /^Your organization doesn.t allow diagnostics in feedback\.$/}).waitFor();
+        assert.equal(await page.locator('#feedback-diagnostics').isDisabled(), true);
+        assert.equal(await page.locator('#feedback-send').isDisabled(), false);
+        await page.keyboard.press('Escape');
+        await dialog.waitFor({state: 'hidden'});
+        await post(info, '/__fixture__/policy', {settings: {}});
+
+        step('Written with no feedback address: kept, and sent only to the address shown, by keyboard');
+        await post(info, '/__fixture__/cloud-url', {url: ''});
+        await openFromPalette();
+        await page.locator('#feedback-destination', {hasText: /No feedback address is set/}).waitFor();
+        await page.keyboard.press('Control+a');  // the draft from the offline step stays in the form: replace it
+        await page.keyboard.type('Written before any address.');
+        await page.keyboard.press('Control+Enter');
+        await page.locator('#feedback-done-text', {hasText: 'No feedback address is set yet'}).waitFor();
+        await page.keyboard.press('Enter');  // Done
+        await dialog.waitFor({state: 'hidden'});
+        const sentBefore = (await evidence(info)).received.length;
+        await post(info, '/__fixture__/cloud-url', {url: cloudAddress});
+        await openFromPalette();
+        const sendHeld = page.getByRole('button', {name: /^Send the bug report to 127\.0\.0\.1:\d+$/});
+        await sendHeld.waitFor();
+        assert.match(await page.locator('#feedback-held').textContent(), /written before a feedback address was set/);
+        assert.equal((await evidence(info)).received.length, sentBefore, 'nothing went by itself');
+        await sendHeld.focus();
+        await page.keyboard.press('Enter');
+        await page.locator('#feedback-progress', {hasText: 'Sent 1 report.'}).waitFor();
+        seen = await evidence(info);
+        assert.equal(seen.received.at(-1).body.message, 'Written before any address.');
+        assert.deepEqual(seen.queue, []);
+
+        step('Lumi Cloud stops taking feedback (404): the report stays, with Copy and Discard, also at 375 px');
+        await post(info, '/__fixture__/cloud-mode', {mode: 'down'});
+        await page.locator('#feedback-message').focus();
+        await page.keyboard.type('Kept when refused.');
+        await page.keyboard.press('Control+Enter');
+        await page.locator('#feedback-done-text', {hasText: "couldn't be reached"}).waitFor();
+        await page.locator('#feedback-another').click();
+        await post(info, '/__fixture__/cloud-mode', {mode: 'notfound'});
+        await page.locator('#feedback-flush').focus();
+        await page.keyboard.press('Enter');
+        await page.locator('#feedback-progress', {hasText: '1 report couldn’t be delivered: see below.'}).waitFor();
+        const held = page.locator('#feedback-held li');
+        await held.first().waitFor();
+        assert.match(await held.first().textContent(), /doesn’t accept feedback/);
+        const heldDark = await contrast(page, '.feedback-held-text');
+        await setTheme(page, 'light');
+        const heldLight = await contrast(page, '.feedback-held-text');
+        await page.screenshot({path: path.join(output, 'feedback-held-light.png')});
+        await setTheme(page, 'dark');
+        for (const ratio of [heldDark, heldLight]) assert.ok(ratio >= 4.5, `contrast ${ratio.toFixed(2)}:1`);
+        await page.setViewportSize({width: 375, height: 740});
+        await page.waitForTimeout(200);
+        const heldFit = await page.evaluate(() => ({page: document.documentElement.scrollWidth, width: window.innerWidth,
+            right: document.querySelector('#feedback-held').getBoundingClientRect().right}));
+        assert.ok(heldFit.page <= heldFit.width && heldFit.right <= heldFit.width + 0.5, JSON.stringify(heldFit));
+        for (const box of await page.locator('#feedback-held button').all()) {
+            const size = await box.boundingBox();
+            assert.ok(size.width >= 24 && size.height >= 24, JSON.stringify(size));
+        }
+        await page.screenshot({path: path.join(output, 'feedback-held-375.png')});
+        await page.setViewportSize({width: 1280, height: 860});
+        await page.getByRole('button', {name: 'Copy the bug report'}).focus();
+        await page.keyboard.press('Enter');
+        await page.locator('#feedback-progress', {hasText: /Copied\.|Select the text/}).waitFor();
+        const heldText = (await page.locator('#feedback-copy-text').isVisible()
+            ? await page.locator('#feedback-copy-text').inputValue()
+            : await page.evaluate(() => navigator.clipboard.readText())).split('\r\n').join('\n');
+        assert.match(heldText, /^Lumi feedback: Bug\n\nKept when refused\.\n/);
+        page.once('dialog', prompt => prompt.accept());
+        await page.getByRole('button', {name: 'Discard the bug report'}).click();
+        await page.locator('#feedback-progress', {hasText: 'Deleted 1 waiting report.'}).waitFor();
+        assert.deepEqual((await evidence(info)).queue, []);
+        await page.keyboard.press('Escape');
+        await dialog.waitFor({state: 'hidden'});
+
+        step('An outcome that arrives after the dialog closed is announced');
+        await post(info, '/__fixture__/cloud-mode', {mode: 'slow'});
+        await openFromPalette();
+        await page.keyboard.type('Closed before the answer.');
+        await page.keyboard.press('Control+Enter');
+        await page.keyboard.press('Escape');
+        await dialog.waitFor({state: 'hidden'});
+        await page.locator('#feedback-announcer', {hasText: /^Thanks\. Your feedback is in Lumi Cloud \(reference fbk_\d+\)\.$/}).waitFor();
+        assert.equal(await page.locator('#feedback-announcer').getAttribute('aria-live'), 'polite');
+        await post(info, '/__fixture__/cloud-mode', {mode: 'up'});
+
+        step('Signed in to another Lumi Cloud: Settings says so, and never uses that sign-in here');
+        await post(info, '/__fixture__/signed-in-elsewhere', {});
+        await page.keyboard.press('Control+Comma');
+        const account = page.locator('#settings-nav-lumi_account');
+        await account.waitFor();
+        await account.focus();
+        await page.keyboard.press('Enter');
+        const elsewhere = page.locator('.settings-row', {hasText: 'Signed in to other.example.test as ada@example.com'});
+        await elsewhere.waitFor();
+        assert.match(await elsewhere.textContent(), /never sends it to another Lumi Cloud, so you count as signed out here/);
+        await page.screenshot({path: path.join(output, 'signed-in-elsewhere.png')});
+        await page.getByRole('button', {name: 'Sign out of other.example.test'}).click();
+        await elsewhere.waitFor({state: 'detached'});
+        await page.keyboard.press('Escape');
 
         step('No page errors, and nothing but the reports left the app');
         const final = await evidence(info);
         assert.equal(final.live_cloud_called, false);
-        assert.equal(final.received.length, 3);
+        assert.deepEqual(final.received.map(item => item.status), [201, 503, 201, 201, 503, 404, 201]);
+        assert.equal(new Set(final.received.map(item => item.idempotency_key)).size, 5, 'a retry uses its report’s key');
         assert.deepEqual(errors, []);
         fs.writeFileSync(path.join(output, 'evidence.json'), JSON.stringify({final, steps}, null, 2));
         console.log(`evidence: ${output}`);

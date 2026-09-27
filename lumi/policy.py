@@ -547,6 +547,13 @@ def parse(data: Any, *, source: str, trusted_keys: dict[str, str] | None = None,
                           "machine policy's 'cloud' section (only 'cloud.remote_tasks' may be locked).")
     if "cloud.remote_tasks" in settings and not isinstance(settings["cloud.remote_tasks"], bool):
         raise PolicyError("'cloud.remote_tasks' must be true or false.")
+    from .feedback import validate_policy_settings as validate_feedback_settings
+
+    try:
+        # privacy.feedback, privacy.feedback_diagnostics and privacy.feedback_url (lumi/feedback.py)
+        validate_feedback_settings(settings)
+    except ValueError as exc:
+        raise PolicyError(str(exc)) from exc
     from .offline_rules import validate_policy_settings as validate_offline_settings
     from .update_channels import validate_policy_settings
 

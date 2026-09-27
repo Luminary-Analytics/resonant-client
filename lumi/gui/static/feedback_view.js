@@ -7,11 +7,16 @@
  * returns the report exactly as it would be sent (feedback_preview). This view
  * shows that report, and Send passes its preview_id, so what was shown is what
  * goes. Any change to the form makes the shown report stale, and Send waits
- * for a fresh one.
+ * for a fresh one. A draft is checked with the rules on this computer only;
+ * the organization's DLP service sees it when the person sends it, and a
+ * report it changes comes back to be reviewed again (code "review").
  *
- * A refusal (offline mode, DLP, too many reports, a full queue, or Lumi Cloud
- * saying no) is shown with its reason, and Copy to clipboard offers the
- * report as text instead.
+ * A refusal (offline mode, DLP, the organization's switch, too many reports, a
+ * full queue, or Lumi Cloud saying no) is shown with its reason, and Copy to
+ * clipboard offers the report as text instead when there's one to give.
+ * Reports waiting on this computer are listed with what they wait for, and
+ * Copy, Discard or (written before an address was set) Send to the address
+ * shown. An outcome that arrives after the dialog closed is announced.
  *
  * window.LumiFeedback holds the checks and wording, so tests can run them
  * without a page (tests/feedback_view.test.cjs). LumiFeedbackView is mixed
@@ -21,6 +26,7 @@
     'use strict';
 
     const KINDS = ['bug', 'idea', 'other'];
+    const KIND_LABELS = {bug: 'Bug', idea: 'Idea', other: 'Other'};
     const MAX_MESSAGE = 5000;
     const MAX_REPLY_TO = 254;
     // lumi/feedback.py's EMAIL, so the dialog can say what's wrong before anything is sent.
@@ -30,6 +36,28 @@
 
     const number = value => Number(value || 0).toLocaleString('en-US');
     const plural = (count, word) => `${number(count)} ${word}${Number(count) === 1 ? '' : 's'}`;
+
+    /**
+     * Text as lumi/feedback.py's clean_text sends it: line breaks as newlines, no control characters but
+     * tabs and line breaks, no bidirectional controls or lone surrogates, and no space at either end.
+     */
+    function cleanText(value) {
+        const kept = [];
+        for (const ch of String(value ?? '').replace(/\r\n?/g, '\n')) {
+            const cp = ch.codePointAt(0);
+            if (ch === '\n' || ch === '\t') kept.push(ch);
+            else if (cp === 0x2028 || cp === 0x2029) kept.push('\n');
+            else if (cp < 0x20 || (cp >= 0x7F && cp <= 0x9F) || (cp >= 0xD800 && cp <= 0xDFFF)) continue;
+            else if ((cp >= 0x202A && cp <= 0x202E) || (cp >= 0x2066 && cp <= 0x2069)) continue;
+            else kept.push(ch);
+        }
+        return kept.join('').trim();
+    }
+
+    /** Characters as Lumi counts them: code points of the text as sent, not UTF-16 units. */
+    function characters(value) {
+        return Array.from(cleanText(value)).length;
+    }
 
     /** The form as lumi/feedback.py reads it, and what's wrong with it: {form, errors, ok}. */
     function check(fields) {
@@ -42,10 +70,9 @@
         };
         const errors = {};
         if (!form.kind) errors.kind = 'Choose Bug, Idea or Other.';
-        const message = form.message.trim();
-        // Characters as Python counts them (code points), not UTF-16 units.
-        if (!message) errors.message = 'Write what happened, or what you’d like.';
-        else if (Array.from(message).length > MAX_MESSAGE) errors.message = `Keep the message to ${number(MAX_MESSAGE)} characters.`;
+        const length = characters(form.message);
+        if (!length) errors.message = 'Write what happened, or what you’d like.';
+        else if (length > MAX_MESSAGE) errors.message = `Keep the message to ${number(MAX_MESSAGE)} characters.`;
         if (form.reply_to && (form.reply_to.length > MAX_REPLY_TO || !EMAIL.test(form.reply_to))) {
             errors.reply_to = 'Enter an email address such as you@example.com, or leave it empty.';
         }
@@ -53,7 +80,7 @@
     }
 
     function countLabel(message) {
-        return `${number(Array.from(String(message ?? '')).length)} / ${number(MAX_MESSAGE)}`;
+        return `${number(characters(message))} / ${number(MAX_MESSAGE)}`;
     }
 
     /** The report as the dialog shows it: the JSON Lumi sends, indented. */
@@ -66,26 +93,63 @@
         return `Always sent: Lumi ${app.version} (${app.channel}), ${app.os}, ${app.arch}, and a random id for this install.`;
     }
 
-    /** Where a report goes, and as whom, before anything is sent. */
-    function destination(status) {
+    /** Where a report goes, who reads it there, and as whom, before anything is sent. */
+    function destination(status, about) {
         const s = status || {};
+        if (s.disabled) return '';
         if (s.offline) return s.offline;
         if (!s.destination) {
-            return 'No Lumi Cloud address is set, so your report waits on this computer until one is (Settings > Lumi account).';
+            return 'No feedback address is set, so a report waits on this computer until one is, and then goes only when you send it there.';
         }
-        return s.account ? `It goes to ${s.destination} as ${s.account}.` : `It goes to ${s.destination}, without your account.`;
+        const info = about && about.destination === s.destination ? about : null;
+        const where = `${s.destination}${info && info.operator ? ` (read by ${info.operator})` : ''}`;
+        const chosen = s.source === 'policy' ? ', set by your organization' : '';
+        const as = s.account ? `${chosen ? ',' : ''} as ${s.account}` : ', without your account';
+        const refusing = info && info.accepting === false ? ' This Lumi Cloud says it doesn’t accept feedback now, so a report would wait on this computer.' : '';
+        return `It goes to ${where}${chosen}${as}.${refusing}`;
     }
 
     function previewMeta(data) {
         const d = data || {};
         if (d.offline) return d.offline;
-        const where = d.destination ? `To ${d.destination}` : 'Kept on this computer until a Lumi Cloud address is set';
-        return `${where}, ${d.account ? `as ${d.account}` : 'without your account'}.`;
+        const where = d.destination ? `To ${d.destination}` : 'Kept on this computer until a feedback address is set';
+        const service = d.provisional ? ' Your organization’s data loss prevention service checks it when you send it.' : '';
+        return `${where}, ${d.account ? `as ${d.account}` : 'without your account'}.${service}`;
     }
 
-    function queueText(count) {
+    function queueText(count, where) {
         const n = Number(count || 0);
-        return n > 0 ? `${plural(n, 'report')} waiting on this computer.` : '';
+        if (n <= 0) return '';
+        return `${plural(n, 'report')} waiting on this computer${where ? ` to go to ${where}` : ''}.`;
+    }
+
+    /** What a report waiting on this computer waits for (lumi/feedback.status's reports). */
+    function heldText(report, status) {
+        const r = report || {};
+        const s = status || {};
+        const when = r.written ? new Date(r.written * 1000).toLocaleString() : '';
+        const what = `${KIND_LABELS[r.kind] || 'Other'} report${when ? `, written ${when}` : ''}`;
+        let why;
+        if (r.reason === 'no_destination') {
+            why = s.destination ? `written before a feedback address was set. It goes only if you send it to ${s.destination}.`
+                : 'written before a feedback address was set. It stays here until one is.';
+        } else if (r.state === 'sign_in') {
+            why = r.reason === 'sign_in' ? `${r.destination} didn’t accept your sign-in. Sign in again in Settings > Lumi account, and it goes.`
+                : `waiting for you to sign in to ${r.destination}.`;
+        } else if (r.state !== 'held' && !r.here) {
+            why = `waiting for ${r.destination || 'its feedback address'}, where it was written to go.`;
+        } else if (r.reason === 'not_accepting') {
+            why = `${r.destination} doesn’t accept feedback. Send now tries again.`;
+        } else if (r.reason === 'too_large') {
+            why = `too large for ${r.destination}.`;
+        } else if (r.reason === 'dlp') {
+            why = 'your organization’s data loss prevention rules now keep it on this computer.';
+        } else if (r.reason === 'expired') {
+            why = 'it waited 30 days and isn’t sent any more.';
+        } else {
+            why = `${r.destination || 'Lumi Cloud'} couldn’t take it${r.detail ? `: ${r.detail}` : '.'}`;
+        }
+        return `${what}: ${why}`;
     }
 
     /** What Send now did: counts from lumi/feedback.flush. */
@@ -93,11 +157,13 @@
         const r = result || {};
         if (r.busy) return 'Lumi is already sending the waiting reports.';
         if (r.failed) return 'Lumi couldn’t send the waiting reports. It will try again later.';
+        if (r.error) return r.error;
+        if (r.disabled) return r.disabled;
         const parts = [];
         if (r.sent) parts.push(`Sent ${plural(r.sent, 'report')}.`);
-        if (r.dropped) parts.push(`${plural(r.dropped, 'report')} couldn’t be sent and ${Number(r.dropped) === 1 ? 'was' : 'were'} removed.`);
-        if (r.waiting) parts.push(`${plural(r.waiting, 'report')} still waiting: Lumi Cloud can’t take ${Number(r.waiting) === 1 ? 'it' : 'them'} now.`);
-        return parts.join(' ') || 'Nothing is waiting.';
+        if (r.held) parts.push(`${plural(r.held, 'report')} couldn’t be delivered: see below.`);
+        if (!parts.length) parts.push(r.waiting ? 'Nothing could be sent now.' : 'Nothing is waiting.');
+        return parts.join(' ');
     }
 
     const byId = id => document.getElementById(id);
@@ -110,9 +176,13 @@
             this._feedbackReturnFocus = returnFocus || document.activeElement;
             this._wireFeedbackDialog(dialog);
             this._showFeedbackForm();
+            // A refusal, its copy and a note were about the dialog as it was last time.
+            this._hideFeedbackAlert();
+            this._feedbackNote('');
+            this._feedbackInfo = null;
             this._feedbackSignature = JSON.stringify(this._feedbackFields());
             dialog.style.display = 'flex';
-            this.send({command: 'feedback_status'});
+            this.send({command: 'feedback_status', open: true});
             this._feedbackCountChanged();
             if (byId('feedback-diagnostics')?.checked) this._requestFeedbackPreview();
             byId('feedback-message')?.focus();
@@ -169,7 +239,27 @@
             on('feedback-discard', 'click', () => {
                 const count = Number(this._feedbackStatus?.waiting || 0);
                 if (!count || !window.confirm(`Delete ${plural(count, 'report')} waiting on this computer? They won’t be sent.`)) return;
+                this._feedbackDiscardAll = true;
                 this.send({command: 'feedback_discard'});
+            });
+            // One waiting report's own buttons (the list is redrawn with each status).
+            on('feedback-held', 'click', event => {
+                const button = event.target?.closest?.('button[data-held-action]');
+                if (!button) return;
+                const id = button.dataset.id;
+                const action = button.dataset.heldAction;
+                if (action === 'copy') {
+                    this.send({command: 'feedback_copy_held', id});
+                } else if (action === 'discard') {
+                    if (!window.confirm('Delete this report? It won’t be sent.')) return;
+                    this._feedbackDiscardAll = false;
+                    this.send({command: 'feedback_discard', ids: [id]});
+                } else if (action === 'send') {
+                    const where = this._feedbackStatus?.destination_url || '';
+                    if (!where) return;
+                    this._feedbackNote(`Sending it to ${this._feedbackStatus.destination}…`);
+                    this.send({command: 'feedback_send_held', id, destination: where});
+                }
             });
         }
 
@@ -203,13 +293,16 @@
                 kind: kind ? kind.value : '',
                 message: byId('feedback-message')?.value || '',
                 reply_to: byId('feedback-reply-to')?.value || '',
-                include_diagnostics: !!byId('feedback-diagnostics')?.checked,
+                include_diagnostics: !!byId('feedback-diagnostics')?.checked && !byId('feedback-diagnostics')?.disabled,
             };
         }
 
         _feedbackCountChanged() {
             const count = byId('feedback-message-count');
-            if (count) count.textContent = countLabel(byId('feedback-message')?.value);
+            if (!count) return;
+            const value = byId('feedback-message')?.value;
+            count.textContent = countLabel(value);
+            count.classList?.toggle('is-over', characters(value) > MAX_MESSAGE);
         }
 
         _feedbackEdited(event) {
@@ -289,6 +382,17 @@
             if (done) done.hidden = true;
         }
 
+        /** Said to screen readers even when the dialog is closed: an outcome that arrived late. */
+        _announceFeedback(text) {
+            const region = byId('feedback-announcer');
+            if (region) {
+                region.textContent = '';
+                // A change after clearing, so the same words are read again.
+                setTimeout(() => { region.textContent = text; }, 50);
+            }
+            this.showToastMessage?.(text);
+        }
+
         // ── The report, as it will be sent ─────────────────────────────────
 
         _scheduleFeedbackPreview() {
@@ -297,7 +401,7 @@
             // An answer on its way describes the form as it was: drop it when it comes.
             this._feedbackPreviewRequest = (this._feedbackPreviewRequest || 0) + 1;
             const section = byId('feedback-preview');
-            const wanted = !!byId('feedback-diagnostics')?.checked;
+            const wanted = this._feedbackFields().include_diagnostics;
             if (section) section.hidden = !wanted;
             if (!wanted) return;
             const meta = byId('feedback-preview-meta');
@@ -328,24 +432,12 @@
             this.send({command: 'feedback_preview', request: this._feedbackPreviewRequest, form});
         }
 
-        handleFeedbackPreview(event) {
-            if (!this._feedbackOpen() || event?.request !== this._feedbackPreviewRequest) return;  // an older form's report
-            if (!byId('feedback-diagnostics')?.checked) return;
+        /** Show a report to review: its JSON, where it goes and what the checks changed. */
+        _showFeedbackReport(data) {
             const meta = byId('feedback-preview-meta');
             const body = byId('feedback-preview-body');
             const notices = byId('feedback-preview-notices');
             if (notices) notices.replaceChildren();
-            if (event.error) {
-                this._feedbackPreviewId = null;
-                // No report was made: no empty box to tab to, and the reason is in the alert or on the field.
-                if (meta) meta.textContent = event.error.code === 'invalid' ? 'Fill in the form to see the report.'
-                    : 'Nothing to show: this report can’t be sent now.';
-                if (body) { body.textContent = ''; body.hidden = true; }
-                if (event.error.code === 'invalid') this._showFeedbackFieldErrors({[event.error.field || 'message']: event.error.message});
-                else this._showFeedbackRefusal(event.error.message, event.copy_text);
-                return;
-            }
-            const data = event.data || {};
             this._feedbackPreviewId = data.preview_id || null;
             if (meta) meta.textContent = previewMeta(data);
             if (body) {
@@ -358,6 +450,25 @@
                 item.textContent = text;
                 notices?.appendChild(item);
             }
+        }
+
+        handleFeedbackPreview(event) {
+            if (!this._feedbackOpen() || event?.request !== this._feedbackPreviewRequest) return;  // an older form's report
+            if (!this._feedbackFields().include_diagnostics) return;
+            const meta = byId('feedback-preview-meta');
+            const body = byId('feedback-preview-body');
+            if (event.error) {
+                this._feedbackPreviewId = null;
+                byId('feedback-preview-notices')?.replaceChildren();
+                // No report was made: no empty box to tab to, and the reason is in the alert or on the field.
+                if (meta) meta.textContent = event.error.code === 'invalid' ? 'Fill in the form to see the report.'
+                    : 'Nothing to show: this report can’t be sent now.';
+                if (body) { body.textContent = ''; body.hidden = true; }
+                if (event.error.code === 'invalid') this._showFeedbackFieldErrors({[event.error.field || 'message']: event.error.message});
+                else this._showFeedbackRefusal(event.error.message, event.copy_text);
+                return;
+            }
+            this._showFeedbackReport(event.data || {});
             if (this._feedbackAwaitingReview) {
                 this._feedbackAwaitingReview = false;
                 this._feedbackNote('This is the report Send sends. Review it, then choose Send.');
@@ -368,6 +479,7 @@
 
         _sendFeedback() {
             if (this._feedbackSending) return;
+            if (this._feedbackStatus?.disabled) return;
             const {form, errors, ok} = check(this._feedbackFields());
             this._showFeedbackFieldErrors(errors);
             if (!ok) return;
@@ -389,29 +501,43 @@
         handleFeedbackResult(event) {
             this._feedbackSending = false;
             const button = byId('feedback-send');
-            if (button) { button.disabled = false; button.textContent = 'Send'; }
+            if (button) { button.disabled = !!this._feedbackStatus?.disabled; button.textContent = 'Send'; }
             this._feedbackNote('');
             if (!event) return;
             if (event.ok) {
                 this._resetFeedbackForm();
                 const done = byId('feedback-done');
                 const text = byId('feedback-done-text');
+                const notices = byId('feedback-done-notices');
                 const form = byId('feedback-form');
                 if (form) form.hidden = true;
                 // Shown before its text is set, so the status line is announced.
                 if (done) done.hidden = false;
                 if (text) text.textContent = event.message || 'Sent.';
+                if (notices) {
+                    notices.replaceChildren();
+                    for (const line of Array.isArray(event.notices) ? event.notices : []) {
+                        const item = document.createElement('li');
+                        item.textContent = line;
+                        notices.appendChild(item);
+                    }
+                }
                 if (this._feedbackOpen()) byId('feedback-done-close')?.focus();
-                else this.showToastMessage?.(event.message || 'Sent.');
+                else this._announceFeedback([event.message || 'Sent.', ...(event.notices || [])].join(' '));
                 return;
             }
             if (!this._feedbackOpen()) {
                 // Closed while it was on its way: the refusal still reaches the person.
-                this.showToastMessage?.(event.message || 'The report couldn’t be sent.');
+                this._announceFeedback(event.message || 'The report couldn’t be sent.');
                 return;
             }
-            if (event.code === 'invalid') {
-                this._showFeedbackFieldErrors({[event.field || 'message']: event.message});
+            if (event.code === 'invalid' || event.code === 'diagnostics_off') {
+                this._showFeedbackFieldErrors({[event.field === 'include_diagnostics' ? 'message' : (event.field || 'message')]: event.message});
+            } else if (event.code === 'review' && event.preview) {
+                // Checked again at Send, it changed: shown as it is now, and sent only when chosen again.
+                this._showFeedbackReport(event.preview);
+                this._feedbackNote(event.message);
+                byId('feedback-preview-body')?.focus();
             } else if (event.code === 'preview') {
                 this._feedbackAwaitingReview = true;
                 this._feedbackNote(event.message);
@@ -446,8 +572,7 @@
             this._showFeedbackFieldErrors({});
         }
 
-        async _copyFeedback() {
-            const text = this._feedbackCopyText;
+        async _copyText(text) {
             if (!text) return;
             const area = byId('feedback-copy-text');
             try {
@@ -461,31 +586,109 @@
             }
         }
 
+        _copyFeedback() {
+            return this._copyText(this._feedbackCopyText);
+        }
+
+        /** A waiting report's text, asked for by its Copy button. */
+        handleFeedbackCopy(event) {
+            if (!this._feedbackOpen()) return;
+            if (event?.text) this._copyText(event.text);
+            else this._feedbackNote('That report can’t be copied.');
+        }
+
+        /** Who reads reports at the destination (GET /api/v1/feedback/info), shown beside it. */
+        handleFeedbackInfo(event) {
+            this._feedbackInfo = event?.data || null;
+            const where = byId('feedback-destination');
+            if (where && this._feedbackStatus) where.textContent = destination(this._feedbackStatus, this._feedbackInfo);
+        }
+
         handleFeedbackStatus(event) {
             const data = event?.data || {};
             this._feedbackStatus = data;
             const where = byId('feedback-destination');
-            if (where) where.textContent = destination(data);
+            if (where) where.textContent = destination(data, this._feedbackInfo);
             const always = byId('feedback-always');
             if (always) always.textContent = alwaysSent(data.app);
-            const count = Number(data.waiting || 0);
-            const queue = byId('feedback-queue');
-            if (queue) queue.hidden = count <= 0;
-            const text = byId('feedback-queue-text');
-            if (text) text.textContent = queueText(count);
-            const flush = byId('feedback-flush');
-            if (flush) {
-                flush.disabled = !data.destination || !!data.offline;
-                flush.removeAttribute('aria-busy');
+            // The organization's switches, said plainly.
+            const off = byId('feedback-disabled');
+            if (off) { off.textContent = data.disabled || ''; off.hidden = !data.disabled; }
+            const send = byId('feedback-send');
+            if (send && !this._feedbackSending) send.disabled = !!data.disabled;
+            const allowed = !data.diagnostics || data.diagnostics.allowed !== false;
+            const box = byId('feedback-diagnostics');
+            if (box) {
+                box.disabled = !allowed || !!data.disabled;
+                if (!allowed) box.checked = false;
             }
+            const hint = byId('feedback-diagnostics-off');
+            if (hint) { hint.textContent = allowed ? '' : (data.diagnostics.reason || ''); hint.hidden = allowed; }
+            if (!allowed || data.disabled) {
+                // No report will be made: no "What Lumi will send", and an answer on its way is dropped.
+                const section = byId('feedback-preview');
+                if (section) section.hidden = true;
+                clearTimeout(this._feedbackPreviewTimer);
+                this._feedbackPreviewRequest = (this._feedbackPreviewRequest || 0) + 1;
+                this._feedbackPreviewId = null;
+            }
+            this._renderFeedbackQueue(data);
             this._feedbackFlushing = false;
             if (data.flushed) this._feedbackNote(flushText(data.flushed));
             if (typeof data.discarded === 'number') {
                 let note = data.discarded ? `Deleted ${plural(data.discarded, 'waiting report')}.` : 'Nothing was deleted.';
-                if (count) note += ` ${plural(count, 'report')} ${count === 1 ? 'was' : 'were'} already being sent.`;
+                // After Discard all, what's left was on its way and can't be taken back.
+                const left = Number(data.waiting || 0);
+                if (this._feedbackDiscardAll && left) note += ` ${plural(left, 'report')} ${left === 1 ? 'was' : 'were'} already being sent.`;
                 this._feedbackNote(note);
             }
             this._keepFeedbackFocus();
+        }
+
+        /** The reports waiting on this computer: those for the address shown, and each other one with its buttons. */
+        _renderFeedbackQueue(data) {
+            const reports = Array.isArray(data.reports) ? data.reports : [];
+            const sendable = Number(data.sendable || 0);
+            const others = reports.filter(r => !(r.here && r.state !== 'held'));
+            const queue = byId('feedback-queue');
+            if (queue) queue.hidden = reports.length === 0;
+            const text = byId('feedback-queue-text');
+            if (text) text.textContent = sendable ? queueText(sendable, data.destination) : (reports.length ? queueText(reports.length) : '');
+            const flush = byId('feedback-flush');
+            if (flush) {
+                flush.hidden = !sendable && !reports.some(r => r.here && r.reason === 'not_accepting');
+                flush.disabled = !data.destination || !!data.offline || !!data.disabled;
+                flush.removeAttribute('aria-busy');
+            }
+            const list = byId('feedback-held');
+            if (!list) return;
+            list.replaceChildren();
+            for (const report of others) {
+                const item = document.createElement('li');
+                const line = document.createElement('span');
+                line.className = 'feedback-held-text';
+                line.textContent = heldText(report, data);
+                item.appendChild(line);
+                const actions = document.createElement('span');
+                actions.className = 'feedback-held-actions';
+                const add = (action, label, name) => {
+                    const button = document.createElement('button');
+                    button.type = 'button';
+                    button.className = 'btn-sm';
+                    button.dataset.heldAction = action;
+                    button.dataset.id = report.id;
+                    button.textContent = label;
+                    button.setAttribute('aria-label', name);
+                    actions.appendChild(button);
+                };
+                const what = `the ${(KIND_LABELS[report.kind] || 'Other').toLowerCase()} report`;
+                if (report.send && data.destination && !data.offline && !data.disabled) add('send', `Send to ${data.destination}`, `Send ${what} to ${data.destination}`);
+                if (report.copy) add('copy', 'Copy', `Copy ${what}`);
+                add('discard', 'Discard', `Discard ${what}`);
+                item.appendChild(actions);
+                list.appendChild(item);
+            }
+            list.hidden = others.length === 0;
         }
 
         /** Focus stays in the open dialog: when the control that had it is hidden or disabled, the message box takes it. */
@@ -494,15 +697,15 @@
             const dialog = byId('feedback-dialog');
             const active = document.activeElement;
             if (active && active !== document.body && dialog.contains(active) && !active.disabled
-                && !active.closest('[hidden]')) return;
+                && !active.closest('[hidden]') && active.isConnected !== false) return;
             const form = byId('feedback-form');
             (form && !form.hidden ? byId('feedback-message') : byId('feedback-done-close'))?.focus();
         }
     }
 
     window.LumiFeedback = Object.freeze({
-        KINDS, MAX_MESSAGE, MAX_REPLY_TO, check, countLabel, previewText, alwaysSent, destination, previewMeta,
-        queueText, flushText,
+        KINDS, MAX_MESSAGE, MAX_REPLY_TO, check, cleanText, characters, countLabel, previewText, alwaysSent,
+        destination, previewMeta, queueText, heldText, flushText,
     });
     window.LumiFeedbackView = LumiFeedbackView;
 })();

@@ -3,12 +3,15 @@
 Home, settings and Lumi's startup log live under the folder given as the first
 argument; no model is called, and only loopback connections are allowed. Lumi
 Cloud is a route on this same server (``/__fixture__/cloud``, the address
-settings give Lumi Cloud), which answers POST /api/v1/feedback as Lumi Cloud
-does, or 503 while ``/__fixture__/cloud-mode`` says it's down.
-``/__fixture__/evidence`` returns what that route received, the reports
-waiting on this computer and the audit log's feedback records, so the check
-can compare them with what the dialog showed. Never a qualification against a
-real Lumi Cloud.
+settings give Lumi Cloud), which answers POST /api/v1/feedback as the feedback
+contract says (201 acknowledging the report's Idempotency-Key, 200 for a
+replay) and GET /api/v1/feedback/info, unless ``/__fixture__/cloud-mode`` says
+it's down (503), doesn't take feedback (404) or is slow. ``/__fixture__/policy``
+sets an organization policy's ``settings``, and ``/__fixture__/signed-in-elsewhere``
+a sign-in another Lumi Cloud issued. ``/__fixture__/evidence`` returns what the
+route received, the reports waiting on this computer and the audit log's
+feedback records, so the check can compare them with what the dialog showed.
+Never a qualification against a real Lumi Cloud.
 """
 from __future__ import annotations
 
@@ -101,18 +104,46 @@ def main() -> None:
     state.detect_backends = lambda *args, **kwargs: None
 
     received: list[dict] = []
+    kept: dict[str, str] = {}  # Idempotency-Key -> Lumi Cloud's id
     mode = {"cloud": "up"}
 
     async def cloud_feedback(request):
-        """Lumi Cloud's POST /api/v1/feedback: 201 with an id, or 503 while it's down."""
+        """Lumi Cloud's POST /api/v1/feedback, as the contract says; 503 down, 404 not taking feedback."""
+        import asyncio
+
         body = await request.body()
-        status = 503 if mode["cloud"] == "down" else 201
+        key = request.headers.get("idempotency-key", "")
+        status = {"down": 503, "notfound": 404}.get(mode["cloud"], 200 if key in kept else 201)
         received.append({"status": status, "authorization": bool(request.headers.get("authorization")),
-                         "content_type": request.headers.get("content-type"), "body": json.loads(body)})
+                         "content_type": request.headers.get("content-type"), "idempotency_key": key,
+                         "body": json.loads(body)})
         if status == 503:
             return JSONResponse({"error": "unavailable"}, status_code=503)
-        return JSONResponse({"id": f"fbk_{sum(1 for item in received if item['status'] == 201):04d}"},
-                            status_code=201)
+        if status == 404:
+            return JSONResponse({"detail": "Not Found"}, status_code=404)
+        if mode["cloud"] == "slow":
+            await asyncio.sleep(1.5)
+        kept.setdefault(key, f"fbk_{len(kept) + 1:04d}")
+        return JSONResponse({"id": kept[key], "report": key, "account": bool(request.headers.get("authorization"))},
+                            status_code=status)
+
+    async def cloud_info(request):
+        return JSONResponse({"accepting": mode["cloud"] != "notfound", "operator": "Fixture Operator"})
+
+    async def set_policy(request):
+        from lumi import policy as fixture_policy
+
+        chosen = (await request.json()).get("settings") or {}
+        fixture_policy.set_for_tests(fixture_policy.parse({"schema": "lumi.policy/v1", "organization": "Fixture Co",
+                                                           "settings": chosen}, source="fixture") if chosen else None)
+        return JSONResponse({"settings": chosen})
+
+    async def signed_in_elsewhere(request):
+        state.cloud.settings.set("api_keys", "lumi_cloud_refresh", "fixture-refresh-token-of-another-cloud")
+        state.cloud.settings.update_section("cloud", {
+            "account_url": "https://other.example.test",
+            "account": {"user_id": "usr_other", "email": "ada@example.com", "organizations": []}})
+        return JSONResponse(state.cloud.status())
 
     async def set_mode(request):
         mode["cloud"] = (await request.json()).get("mode", "up")
@@ -152,6 +183,9 @@ def main() -> None:
         Route("/__fixture__/launch", fixture_launch),
         Route("/__fixture__/evidence", evidence),
         Route("/__fixture__/cloud/api/v1/feedback", cloud_feedback, methods=["POST"]),
+        Route("/__fixture__/cloud/api/v1/feedback/info", cloud_info, methods=["GET"]),
+        Route("/__fixture__/policy", set_policy, methods=["POST"]),
+        Route("/__fixture__/signed-in-elsewhere", signed_in_elsewhere, methods=["POST"]),
         Route("/__fixture__/cloud-mode", set_mode, methods=["POST"]),
         Route("/__fixture__/cloud-url", set_url, methods=["POST"]),
         Route("/__fixture__/offline", set_offline, methods=["POST"]),

@@ -811,7 +811,8 @@
                 <button type="button" id="feedback-dialog-close" class="dialog-btn-close" aria-label="Close" title="Close">×</button>
             </div>
             <form id="feedback-form" class="dialog-body feedback-form" novalidate>
-                <p id="feedback-dialog-intro" class="share-note">Tell Luminary what went wrong or what would help. <span id="feedback-destination"></span></p>
+                <p id="feedback-dialog-intro" class="share-note">Report a problem or suggest an idea. <span id="feedback-destination"></span></p>
+                <p id="feedback-disabled" class="feedback-alert" role="status" hidden></p>
                 <fieldset class="feedback-kinds">
                     <legend class="share-label">What is it?</legend>
                     <label class="feedback-kind"><input type="radio" name="feedback-kind" id="feedback-kind-bug" value="bug" checked> Bug</label>
@@ -820,7 +821,7 @@
                     <span id="feedback-kind-error" class="feedback-error" hidden></span>
                 </fieldset>
                 <label class="share-label" for="feedback-message">Message</label>
-                <textarea id="feedback-message" class="handoff-note feedback-message" rows="6" maxlength="5000" required aria-describedby="feedback-message-error feedback-message-count"></textarea>
+                <textarea id="feedback-message" class="handoff-note feedback-message" rows="6" required aria-describedby="feedback-message-error feedback-message-count"></textarea>
                 <div class="feedback-field-foot">
                     <span id="feedback-message-error" class="feedback-error" hidden></span>
                     <span id="feedback-message-count" class="feedback-count">0 / 5,000</span>
@@ -829,8 +830,9 @@
                 <input id="feedback-reply-to" class="settings-input feedback-reply-to" type="email" inputmode="email" autocomplete="email" maxlength="254" spellcheck="false" aria-describedby="feedback-reply-to-error feedback-reply-to-hint">
                 <span id="feedback-reply-to-error" class="feedback-error" hidden></span>
                 <p id="feedback-reply-to-hint" class="share-note feedback-hint">Only if you’d like an answer.</p>
-                <label class="feedback-check" for="feedback-diagnostics"><input type="checkbox" id="feedback-diagnostics" aria-describedby="feedback-diagnostics-hint"> Include diagnostics</label>
-                <p id="feedback-diagnostics-hint" class="share-note feedback-hint">Python and platform versions, the provider type and model (never keys), offline mode, and the end of Lumi’s log with keys, secrets and your home folder removed. You see the whole report before it’s sent.</p>
+                <label class="feedback-check" for="feedback-diagnostics"><input type="checkbox" id="feedback-diagnostics" aria-describedby="feedback-diagnostics-hint feedback-diagnostics-off"> Include diagnostics</label>
+                <p id="feedback-diagnostics-hint" class="share-note feedback-hint">Python and platform versions, the provider type and model (never keys), offline mode, and the end of Lumi’s log. The log can include parts of recent conversations and file names; saved keys, secret-looking values and your home folder are taken out. You see the whole report before it’s sent.</p>
+                <p id="feedback-diagnostics-off" class="share-note feedback-hint" hidden></p>
                 <p id="feedback-always" class="share-note feedback-hint"></p>
                 <section id="feedback-preview" class="feedback-preview" aria-labelledby="feedback-preview-title" hidden>
                     <h3 id="feedback-preview-title" class="share-label">What Lumi will send</h3>
@@ -841,7 +843,8 @@
                 <div id="feedback-queue" class="feedback-queue" hidden>
                     <span id="feedback-queue-text"></span>
                     <button type="button" id="feedback-flush" class="dialog-btn deny">Send now</button>
-                    <button type="button" id="feedback-discard" class="dialog-btn deny">Discard</button>
+                    <button type="button" id="feedback-discard" class="dialog-btn deny">Discard all</button>
+                    <ul id="feedback-held" class="feedback-held" aria-label="Reports waiting on this computer" hidden></ul>
                 </div>
                 <p id="feedback-alert" class="feedback-alert" role="alert" hidden></p>
                 <textarea id="feedback-copy-text" class="handoff-note feedback-copy-text" readonly hidden aria-label="Your report as text"></textarea>
@@ -854,6 +857,7 @@
             </form>
             <div id="feedback-done" class="dialog-body feedback-done" hidden>
                 <p id="feedback-done-text" class="feedback-done-text" role="status"></p>
+                <ul id="feedback-done-notices" class="feedback-notices"></ul>
                 <div class="dialog-actions">
                     <button type="button" id="feedback-another" class="dialog-btn deny">Send another</button>
                     <button type="button" id="feedback-done-close" class="dialog-btn allow" aria-describedby="feedback-done-text">Done</button>
@@ -861,6 +865,9 @@
             </div>
         </div>
     </div>
+
+    <!-- Send feedback's outcome when it arrives after the dialog closed (feedback_view.js). -->
+    <p id="feedback-announcer" class="sr-only" role="status" aria-live="polite"></p>
 
     <!-- ═══ Command Palette ═══ -->
     <div id="command-palette" class="cmd-palette-overlay" data-start-hidden role="dialog" aria-modal="true" aria-label="Command palette">

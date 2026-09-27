@@ -152,6 +152,13 @@ DEFAULTS = {
         "audit_log": True,
         "audit_capture": "metadata",
         "audit_retention_days": 365,
+        # Send feedback (lumi/feedback.py): "on" or "off"; diagnostics in it
+        # "allowed" or "never"; and where reports go ("" for the build's
+        # feedback address, else the Lumi Cloud this computer uses). An
+        # organization's policy can lock each.
+        "feedback": "on",
+        "feedback_diagnostics": "allowed",
+        "feedback_url": "",
     },
     # Live OpenTelemetry export of the audit records (OTLP/HTTP JSON). The
     # collector token, if any, is api_keys.otlp.

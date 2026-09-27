@@ -215,6 +215,12 @@ def test_a_later_round_writer_starts_from_the_applied_change(team):
     assert (project / "src" / "value.txt").read_text() == "verified change\n"
     assert (project / "src" / "other.txt").read_text() == "second\n"
     assert len(run["writer_acceptances"]) == 2
+    # Round 2's orchestrator saw round 1's applied change and the check that passed on it.
+    prompt = backends[2].stream_calls[0]["user_msg"]
+    planning = json.loads(prompt.split("Captured planning data:\n", 1)[1].split("\n</runtime_message>", 1)[0])
+    assert [(change["state"], change["checks"]) for change in planning["checked_changes"]] == [
+        ("applied", [{"check": "value-check", "exit_code": 0, "state": "passed"}])]
+    assert "cite those results" in prompt
 
 
 def test_without_the_apply_grant_writers_wait_for_the_owner(team):

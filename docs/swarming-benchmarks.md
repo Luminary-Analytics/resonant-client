@@ -304,6 +304,38 @@ processes and 2 rounds:
     overloaded". Another attempt had 2 workers use all 8 requests without
     submitting.
 
+### Orchestrated writer teams that apply checked changes, live
+
+September 27, 2026, Nemotron 3 Super on NIM. Each run was headless, with real
+worker processes, 2 rounds and applying on. The project was a throwaway Git
+repository seeded with two defects: `cache.py` compares milliseconds with
+seconds, and `urls.py` encodes a list as one parameter. The owner's check was
+`check_fixes.py`, outside the writers' folders. Each run found a problem, which
+was fixed before the next:
+
+1. **Combining failed.** The orchestrator planned one writer per file, after
+   one refused plan that had copied an input field into it. Both writers fixed
+   their files, but combining failed with Git's `fatal: '$GIT_DIR' too big`:
+   the candidate folder name pushed Git's worktree admin folder past Windows'
+   path limit. Folder names are now short.
+2. **The check was refused.** The combined change passed the check (exit 0),
+   but it was refused as changed input: the check imported the modules and
+   wrote `__pycache__`. Files a check creates no longer count.
+3. **Round 1 worked end to end.** The team combined, checked, applied (a
+   fast-forward) and accepted both writers under the grant, and the owner's
+   check passed on the checkout afterwards. Both round-2 reports were refused:
+   valid JSON followed by `</function></tool_call>`. That residue is now
+   dropped, and retries hear why their plan was refused.
+4. **Completed without the owner.** Round 1 planned on the first try, and
+   both writers' change was combined, checked (exit 0), applied and accepted
+   under the grant. In round 2 one turn was refused (its JSON ended with
+   `</function=bash></function></tool_call>`, a closing tag the residue rule
+   didn't cover yet), and its retry wrote the final report. The team
+   completed in 279 seconds with 29 requests, all settled, and the owner's
+   check passes on the checkout. The report said the orchestrator couldn't
+   run the check itself. Follow-up planning now lists the team's checked
+   changes (`checked_changes`), and the residue rule covers any closing tag.
+
 ### Nemotron 3 Super: baseline and a first single-versus-team comparison
 
 September 27, 2026, `nvidia/nemotron-3-super-120b-a12b`, source identity

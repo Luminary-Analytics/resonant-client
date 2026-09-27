@@ -488,6 +488,14 @@ def status() -> dict:
     except Exception as exc:  # the page still shows the policy's error elsewhere
         logger.exception("Oversight status failed")
         info = {"configured": False, "active": False, "required": False, "error": str(exc)}
+    # A policy that can't be used isn't one that stopped asking for oversight (as offline mode, which it keeps
+    # on with no hosts, isn't off): Settings says so, never "off", with what waits here (_unusable_policy).
+    info["policy_unusable"] = _unusable_policy()
+    try:
+        info["acknowledgments_waiting"] = acknowledgments_waiting()
+    except sqlite3.Error:
+        logger.warning("Couldn't count the confirmations waiting", exc_info=True)
+        info["acknowledgments_waiting"] = 0
     info["queue"] = queue_status()
     info["flags"] = [{**flag, "rule_text": rule_text(flag.get("rule"))} for flag in recent_flags(50)]
     return info
@@ -1832,11 +1840,23 @@ _uploader: _Uploader | None = None
 
 
 def start_uploader(client: Any) -> None:
-    """Send queued records and confirmations to Lumi Cloud from a background thread (once per process)."""
+    """Send queued records and confirmations to Lumi Cloud from a background thread (once per process).
+
+    When offline mode changes what Lumi can reach (turned off, or Lumi Cloud's
+    host allowed), what waits goes at once, not after the wait that follows a
+    refusal.
+    """
     global _uploader
+    from . import offline
+
     with _lock:
         if _uploader is None:
             _uploader = _Uploader(client)
+    offline.add_listener(_reach_changed)
+
+
+def _reach_changed(config: Any) -> None:
+    wake(urgent=True)
 
 
 def wake(*, urgent: bool = False) -> None:

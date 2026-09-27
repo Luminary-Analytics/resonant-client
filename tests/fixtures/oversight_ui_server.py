@@ -7,8 +7,8 @@ panel ("Notice probe") whose script tries what a hostile panel would against
 the notice: click its button in the page, forge bridge requests, open the
 app's socket, and add text to the locked message box. The shipped template,
 app, WebSocket handlers, oversight module and Session run as they do in the
-app; nothing leaves the loopback. Never a live-model or packaged-desktop
-qualification.
+app; nothing leaves the loopback (the uploader starts only once offline mode
+refuses Lumi Cloud). Never a live-model or packaged-desktop qualification.
 """
 from __future__ import annotations
 
@@ -158,7 +158,7 @@ def main() -> None:
     from starlette.responses import JSONResponse
     from starlette.routing import Route
 
-    from lumi import oversight, policy
+    from lumi import offline, oversight, policy
     from lumi.engine import Session
     from lumi.engine.capability_packs import CapabilityPackManager, approve_pack
     from lumi.gui import app as gui
@@ -207,11 +207,26 @@ def main() -> None:
             "notice": notice, "signature_verifies": verifies,
             "upload": oversight.acknowledgment_upload(str((notice or {}).get("id") or "")),
             "records": oversight.queued_records(), "status": oversight.status(),
+            "offline": offline.current().enabled,
         })
 
     async def forget(request):
         oversight.forget_notice("Browser fixture: show the notice again")
         return JSONResponse({"forgotten": True})
+
+    async def start_uploading(request):
+        # The app's uploader (lumi/gui/server.py starts it with the app), here only once offline mode is on:
+        # offline mode refuses Lumi Cloud first, so cloud.example.test is never looked up.
+        if not offline.current().enabled:
+            return JSONResponse({"error": "Turn offline mode on first."}, status_code=409)
+        oversight.start_uploader(state.cloud)
+        oversight.wake(urgent=True)
+        return JSONResponse({"started": True})
+
+    async def unusable(request):
+        # As a machine policy that can't be read: policy.load reports an error.
+        policy.set_for_tests(None, error="The fixture machine policy is not valid JSON.")
+        return JSONResponse({"unusable": True})
 
     async def shutdown(request):
         server.should_exit = True
@@ -225,6 +240,8 @@ def main() -> None:
 
     gui.app.routes.extend([Route("/__fixture__/launch", fixture_launch), Route("/__fixture__/evidence", evidence),
                            Route("/__fixture__/forget", forget, methods=["POST"]),
+                           Route("/__fixture__/upload", start_uploading, methods=["POST"]),
+                           Route("/__fixture__/unusable", unusable, methods=["POST"]),
                            Route("/__fixture__/shutdown", shutdown, methods=["POST"])])
     listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     listener.bind(("127.0.0.1", 0))

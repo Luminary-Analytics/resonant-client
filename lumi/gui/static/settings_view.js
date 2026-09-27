@@ -800,6 +800,18 @@ class LumiSettingsView {
                 <div class="settings-row-hint">${where}</div>${flag.excerpt ? `<div class="settings-row-hint oversight-excerpt">${esc(flag.excerpt)}</div>` : ''}</div></li>`;
         }).join('');
         const flagList = flags ? `<ul class="oversight-flags">${flags}</ul>` : '<p class="editor-help">None.</p>';
+        if (s.policy_unusable) {
+            // A policy that can't be used isn't one that stopped asking for oversight (as offline mode, which it
+            // keeps on with no hosts, isn't off): never "Off", and what waits here stays, unsent (lumi/oversight.py).
+            const records = Number(q.pending) || 0;
+            const confirmations = Number(s.acknowledgments_waiting) || 0;
+            const waiting = [records ? `${records} record${records === 1 ? '' : 's'}` : '',
+                confirmations ? `${confirmations} confirmation${confirmations === 1 ? '' : 's'} of the notice` : '']
+                .filter(Boolean).join(' and ');
+            const kept = waiting ? ` ${waiting} ${records + confirmations === 1 ? 'waits' : 'wait'} here, unsent, until then.` : '';
+            return `<p class="editor-error" id="org-oversight-start" tabindex="-1" role="status">Your organization’s policy can’t be used, so Lumi can’t tell what it asks to share. ${esc(s.policy_unusable)} Lumi sends no model requests until it’s fixed.${kept}</p>
+                ${flags ? `<h4 class="settings-subheading">Earlier security flags</h4>${flagList}` : ''}`;
+        }
         if (!s.configured) {
             // A policy whose oversight section this Lumi can't honor turns it off, and says so.
             const off = s.policy_error

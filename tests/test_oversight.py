@@ -1697,9 +1697,35 @@ class TestOfflineMode:
         assert oversight.queue_status()["pending"] == 1 and oversight.queue_status()["discarded"] == 0
         assert "can be used" in oversight.queue_status()["last_error"]
         assert oversight.acknowledgments_waiting() == 1
+        # Settings says so, never "off": the policy's error, and what waits here.
+        status = oversight.status()
+        assert status["configured"] is False and status["policy_unusable"] == broken.error
+        assert status["acknowledgments_waiting"] == 1 and status["queue"]["pending"] == 1
         monkeypatch.setattr(policy, "load", good)
         assert oversight.upload_pending(client) == "idle"
         assert len(client.acknowledgments) == 1 and len(client.events) == 1
+
+    def test_a_change_in_what_lumi_can_reach_sends_what_waits_at_once(self, monkeypatch):
+        from lumi import offline
+
+        woken = []
+
+        class Uploader:
+            def __init__(self, client):
+                pass
+
+            def wake(self, *, urgent=False):
+                woken.append(urgent)
+
+        monkeypatch.setattr(offline, "_listeners", list(offline._listeners))
+        monkeypatch.setattr(oversight, "_uploader", None)
+        monkeypatch.setattr(oversight, "_Uploader", Uploader)
+        oversight.start_uploader(object())
+        offline.set_for_tests(enabled=True)
+        offline.set_for_tests(enabled=True, allowed_hosts=("cloud.example.test",))
+        offline.reset_for_tests()
+        # Each change cuts the wait that follows a refusal, even while sending backs off.
+        assert woken == [True, True, True]
 
     def test_an_extension_check_under_offline_mode_asks_nothing(self, org, tmp_path):
         from lumi import offline

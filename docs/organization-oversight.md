@@ -407,12 +407,16 @@ of an output are searched.
 
 With [offline mode](offline.md) on and Lumi Cloud's host not allowed, Lumi
 Cloud is out of reach: confirmations and records wait in the queue, kept,
-and Settings shows each waiting with offline mode's reason; they go once
-Lumi Cloud can be reached. A policy that can't be used (which keeps offline
-mode on with no hosts, and refuses every model request) isn't a policy that
-stopped asking for oversight: nothing queued is deleted, and nothing is sent
-until it can be used again. Dictation stays off under both, and `lumi
-extension check` asks a pack's provider nothing.
+and Settings shows each waiting with offline mode's reason. Turning offline
+mode off, or allowing Lumi Cloud's host, sends them at once rather than
+after the wait that follows a refusal. A policy that can't be used (which
+keeps offline mode on with no hosts, and refuses every model request) isn't
+a policy that stopped asking for oversight: nothing queued is deleted,
+nothing is sent until it can be used again, and Settings never says
+oversight is off. It says the policy can't be used, so Lumi can't tell what
+it asks to share, and how many records and confirmations wait. Dictation
+stays off under both, and `lumi extension check` asks a pack's provider
+nothing.
 
 Records go only to the Lumi Cloud of the organization whose policy asks for
 them: the policy must come from that Lumi Cloud (signed and verified for

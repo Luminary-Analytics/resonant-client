@@ -153,6 +153,11 @@ host enrollment and actual packaged/learned-benefit qualification remain open.
   feed needs the user's go-ahead. Signing secrets (EdDSA, Apple, Authenticode)
   go only to release.yml's jobs in the `release` environment, never to a
   workflow pull requests run; a Developer ID certificate is an update key too.
+  Authenticode goes through `.github/actions/authenticode-sign` and
+  `packaging/sign_windows.ps1`, which decides and checks (Valid and
+  timestamped). Azure Artifact Signing signs with a short-lived OIDC sign-in:
+  only release.yml's `release` job may have `id-token: write`, never a job
+  that runs tests or installs packages from PyPI.
 - Offline mode (`offline.py`, docs/offline.md): every outbound connection Lumi
   makes goes through the central check, and only this computer and
   `offline.allowed_hosts` are reachable. Build HTTP clients with

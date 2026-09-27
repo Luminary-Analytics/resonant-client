@@ -18,6 +18,9 @@ lumi/gui/static/vendor/
 # Sparkle.framework for the macOS app's updates, fetched + SHA-256 verified
 # by packaging/fetch_sparkle.sh. Same reasoning again.
 packaging/sparkle/
+# Microsoft's Artifact Signing client (the signtool dlib), fetched and hash-checked by
+# packaging/fetch_artifact_signing.ps1 when a release signs with Azure. Same reasoning again.
+packaging/artifact-signing/
 
 # Virtual environments
 .venv/

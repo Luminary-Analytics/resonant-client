@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 import json
-import os
 import re
-import subprocess
 import sys
 import tomllib
 from importlib import metadata
@@ -222,40 +220,6 @@ class TestSbom:
         assert ripgrep["licenses"] == [{"expression": "MIT OR Unlicense"}]
 
 
-@pytest.mark.skipif(sys.platform != "win32", reason="Authenticode signing runs on Windows")
-def test_signing_without_credentials_warns_and_continues(tmp_path):
-    target = tmp_path / "lumi.exe"
-    target.write_bytes(b"MZ")
-    env = {key: value for key, value in os.environ.items()
-           if key not in {"WINDOWS_SIGN_PFX_BASE64", "WINDOWS_SIGN_PFX_PASSWORD", "WINDOWS_SIGN_COMMAND"}}
-    result = subprocess.run(
-        ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
-         str(PACKAGING / "sign_windows.ps1"), "-Files", str(target)],
-        capture_output=True, text=True, timeout=120, env=env,
-    )
-    assert result.returncode == 0, result.stderr
-    assert "Not Authenticode-signed" in result.stdout
-    assert target.read_bytes() == b"MZ"
-
-
-@pytest.mark.skipif(sys.platform != "win32", reason="Authenticode signing runs on Windows")
-def test_signing_required_without_credentials_fails_the_release(tmp_path):
-    # Once a certificate exists, WINDOWS_SIGNING_REQUIRED turns losing it into a failed release.
-    target = tmp_path / "lumi.exe"
-    target.write_bytes(b"MZ")
-    env = {key: value for key, value in os.environ.items()
-           if key not in {"WINDOWS_SIGN_PFX_BASE64", "WINDOWS_SIGN_PFX_PASSWORD", "WINDOWS_SIGN_COMMAND"}}
-    env["WINDOWS_SIGNING_REQUIRED"] = "true"
-    result = subprocess.run(
-        ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
-         str(PACKAGING / "sign_windows.ps1"), "-Files", str(target)],
-        capture_output=True, text=True, timeout=120, env=env,
-    )
-    assert result.returncode != 0
-    assert "WINDOWS_SIGNING_REQUIRED" in result.stdout + result.stderr
-    assert target.read_bytes() == b"MZ"
-
-
 def _jobs(workflow: str) -> dict[str, str]:
     """Each job's text in a workflow file, by name."""
     text = (ROOT / ".github" / "workflows" / workflow).read_text(encoding="utf-8")
@@ -280,8 +244,74 @@ def test_gh_pages_is_published_byte_for_byte_and_checked_before_it_is_pushed():
     assert "scripts/rehearse_pages_publish.py" in rehearsal
 
 
-def test_no_workflow_asks_for_an_oidc_token():
-    # A cloud role that trusts the release environment's identity is only as
-    # safe as that environment's tag rule (docs/release-pipeline.md).
-    for workflow in (ROOT / ".github" / "workflows").glob("*.yml"):
-        assert "id-token" not in workflow.read_text(encoding="utf-8"), workflow.name
+WORKFLOWS = ROOT / ".github" / "workflows"
+SIGNING_ACTION = ROOT / ".github" / "actions" / "authenticode-sign" / "action.yml"
+
+
+# The permission itself, in a job's or a workflow's permissions (comments may mention it).
+OIDC_PERMISSION = re.compile(r"^\s*id-token\s*:", re.M)
+
+
+def test_only_the_windows_release_job_can_ask_for_an_oidc_token():
+    # The Azure identity that signs as Luminary Analytics trusts GitHub's OIDC
+    # subject for the release environment; any job that could get a token in
+    # that environment could sign anything (docs/release-pipeline.md).
+    found = {}
+    for path in [*WORKFLOWS.glob("*.yml"), *(ROOT / ".github" / "actions").rglob("*.yml")]:
+        count = len(OIDC_PERMISSION.findall(path.read_text(encoding="utf-8")))
+        if count:
+            found[path.name] = count
+    assert found == {"release.yml": 1}
+    header, _, _ = (WORKFLOWS / "release.yml").read_text(encoding="utf-8").partition("\njobs:\n")
+    assert not OIDC_PERMISSION.search(header)  # never for the whole workflow
+    jobs = _jobs("release.yml")
+    assert [name for name, job in jobs.items() if OIDC_PERMISSION.search(job)] == ["release"]
+    release = jobs["release"]
+    assert "environment: release" in release and "      id-token: write" in release
+    # The tests and the packages they install from PyPI run elsewhere, without it.
+    assert "pytest" not in release and "pip install" not in release
+    assert "pip install" in jobs["build"] and not re.search(r"^\s*environment\s*:", jobs["build"], re.M)
+
+
+def test_every_action_is_pinned_to_a_commit():
+    files = [WORKFLOWS / name for name in ("release.yml", "build-macos.yml", "build-check.yml")] + [SIGNING_ACTION]
+    for path in files:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if "uses:" not in line or line.strip().startswith("#"):
+                continue
+            action = line.split("uses:", 1)[1].strip()
+            if action.startswith("./"):
+                continue
+            assert re.fullmatch(r"[\w.-]+/[\w./-]+@[0-9a-f]{40} # v\d+(\.\d+)*", action), (path.name, action)
+
+
+def test_the_release_signs_all_three_files_through_the_signing_action():
+    release = _jobs("release.yml")["release"]
+    assert "sign_windows.ps1" not in release  # only through the action, which decides and checks
+    uses = release.count("uses: ./.github/actions/authenticode-sign")
+    assert uses == 3
+    for target in ("files: dist/lumi/lumi.exe", "files: dist/installer/lumi-${{ steps.version.outputs.version }}.msi",
+                   "files: dist/installer/lumi-setup-${{ steps.version.outputs.version }}.exe"):
+        assert target in release, target
+    # The Azure identity and account are variables: no secret signs with Azure.
+    for name in ("AZURE_CLIENT_ID", "AZURE_TENANT_ID", "AZURE_SUBSCRIPTION_ID", "ARTIFACT_SIGNING_ENDPOINT",
+                 "ARTIFACT_SIGNING_ACCOUNT", "ARTIFACT_SIGNING_PROFILE"):
+        assert release.count(f"${{{{ vars.{name} }}}}") == 3, name
+        assert f"secrets.{name}" not in release, name
+    # lumi.exe is signed before the installer wraps it, the installer before its EdDSA signature.
+    assert release.index("files: dist/lumi/lumi.exe") < release.index("Build installer with Inno Setup")
+    assert release.index("lumi-setup-${{ steps.version.outputs.version }}.exe\n") < release.index(
+        "Sign installer with EdDSA")
+
+
+def test_the_signing_action_signs_in_to_azure_only_when_it_is_configured():
+    action = SIGNING_ACTION.read_text(encoding="utf-8")
+    login = action.index("uses: azure/login@")
+    condition = action.rindex("if:", 0, login)
+    assert "inputs.azure-client-id != '' && inputs.azure-tenant-id != ''" in action[condition:login]
+    assert "Why there's no Azure sign-in" in action  # the reason, when it's skipped
+    assert "ARTIFACT_SIGNING_SIGNED_IN: ${{ steps.azure.outcome == 'success' }}" in action
+    # The dry run runs the same action as a pull request can: no identity, no token.
+    dry_run = _jobs("build-check.yml")["signing-dry-run"]
+    assert dry_run.count("uses: ./.github/actions/authenticode-sign") == 3
+    assert "azure-client-id:" not in dry_run and not OIDC_PERMISSION.search(dry_run)

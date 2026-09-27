@@ -8,6 +8,56 @@ The heartbeat remains paused. Documentation maintenance does not resume work,
 spending or grants, and changes no native implementation or installed bundle.
 The dated September 15/18 records below are historical.
 
+## September 27 Windows signing through Azure Artifact Signing (source only, not released)
+
+The release can Authenticode-sign `lumi.exe`, the MSI and the installer with
+Azure Artifact Signing (formerly Trusted Signing), with no stored secret. It
+stays off until the owner configures it; until then a release is unsigned,
+with a warning, exactly as before. See
+[Azure Artifact Signing](release-pipeline.md#azure-artifact-signing).
+
+- **A short-lived sign-in instead of a secret.** Before each file, the new
+  `.github/actions/authenticode-sign` exchanges the release job's GitHub OIDC
+  token for an Azure sign-in (`azure/login`, pinned), when the release
+  environment's `AZURE_CLIENT_ID` and `AZURE_TENANT_ID` variables are set; the
+  log says why when it isn't. `packaging/sign_windows.ps1` still decides and
+  checks: a third signer beside a PFX and a command, used when
+  `ARTIFACT_SIGNING_ENDPOINT`, `ARTIFACT_SIGNING_ACCOUNT` and
+  `ARTIFACT_SIGNING_PROFILE` are set. signtool signs through Microsoft's dlib
+  (`packaging/fetch_artifact_signing.ps1`: `Microsoft.ArtifactSigning.Client`
+  1.0.128, pinned by SHA-256), which may use only that Azure CLI sign-in, and
+  Microsoft's timestamp server.
+- **Every signature must be timestamped** as well as `Valid`, whichever the
+  signer: an Artifact Signing certificate lasts about three days.
+- **Configured means configured.** A signer set up in part, two signers at
+  once, an account without the sign-in (or the other way round), and a
+  failed or unstamped signature fail the release; `WINDOWS_SIGNING_REQUIRED`
+  still fails one with no signer at all.
+- **Only the signing job can get an OIDC token.** The Windows release is two
+  jobs now: `build` runs the tests, which install packages from PyPI, and
+  builds the bundle, with no secret, token or environment; `release`, in the
+  `release` environment, signs, packages and publishes, and is the only job
+  with `id-token: write`. A test fails if any other job, workflow or action
+  asks for it, or if an action isn't pinned to a commit.
+- **Protect the environment first.** The docs give the owner's steps in
+  order: the `v*` tag rule and the owner as required reviewer on `release`
+  before the app registration's federated credential
+  (`repo:Luminary-Analytics/resonant-client:environment:release`, audience
+  `api://AzureADTokenExchange`), then the "Artifact Signing Certificate Profile
+  Signer" role on the certificate profile, then the six variables. The
+  subject to use after an opt-in to immutable OIDC subjects, or a rename, is
+  there too.
+- **Checked without credentials.** `build-check.yml`'s `signing-dry-run`
+  runs the same action as a pull request can: the sign-in is skipped with
+  its reason, the file is untouched, an account without a sign-in and
+  required signing with no signer both fail, and the client's pinned hash
+  matches NuGet's package. `tests/test_sign_windows.py` runs every signer's
+  path with a stand-in signtool, in Windows PowerShell and PowerShell 7.
+
+Not verified: a real signature. Nothing has signed through Azure yet, because
+the account, its identity validation and the certificate profile are still
+being set up.
+
 ## September 27 macOS alpha: Sparkle updates and release publishing (source only, not released)
 
 The macOS app now updates itself, and a release tag publishes it beside the

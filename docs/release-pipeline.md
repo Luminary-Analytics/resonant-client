@@ -7,9 +7,12 @@ not permanent thresholds or guarantees.
 ## Source to installer
 
 `.github/workflows/tests.yml` checks pushed/PR source; `build-check.yml` checks
-Windows packaging. A `v*.*.*` tag starts `release.yml` on a Windows runner.
-The release workflow checks the tag against `__version__`, installs test
-dependencies, runs Ruff and pytest, then invokes `scripts/build_clean.ps1`.
+Windows packaging. A `v*.*.*` tag starts `release.yml` on Windows runners. Its
+`build` job checks the tag against `__version__`, installs test dependencies,
+runs Ruff and pytest, then invokes `scripts/build_clean.ps1`, and hands the
+bundle to the `release` job, which signs, packages and publishes it. `build`
+has no secret, no OIDC token and no environment: the test run installs
+packages from PyPI, and nothing it runs may reach a signing identity.
 
 The clean build creates a temporary virtual environment, installs
 `packaging/requirements-release.txt` with `--require-hashes` and then the local
@@ -58,26 +61,51 @@ the release workflow's executable smoke test alone does not perform them.
 
 ## Authenticode
 
-`packaging/sign_windows.ps1` signs `lumi.exe` before Inno Setup packages it, and
-the installer before its EdDSA signature is computed, so the update feed signs
-the final bytes. It verifies each signature afterwards. It uses one of:
+The `release` job signs three files with Authenticode, Windows' publisher
+signature (SmartScreen, company policies): `lumi.exe` before Inno Setup
+packages it, the MSI, and the installer before its EdDSA signature is
+computed, so the update feed signs the final bytes. Each goes through
+`.github/actions/authenticode-sign`, and `packaging/sign_windows.ps1` decides
+how to sign and checks the result: every signature must be `Valid`
+(`Get-AuthenticodeSignature`) and timestamped. One signer at a time:
 
+- **Azure Artifact Signing** (formerly Trusted Signing), the one Lumi means to
+  use. The variables `ARTIFACT_SIGNING_ENDPOINT`, `ARTIFACT_SIGNING_ACCOUNT`
+  and `ARTIFACT_SIGNING_PROFILE` name the account and certificate profile, and
+  `AZURE_CLIENT_ID`, `AZURE_TENANT_ID` and `AZURE_SUBSCRIPTION_ID` the identity
+  that signs. No secret exists anywhere: before each file, the action's
+  `azure/login` step exchanges the job's short-lived GitHub OIDC token for an
+  Azure sign-in (logged out when the job ends). signtool then signs through
+  Microsoft's dlib, which may use only that sign-in
+  (`packaging/fetch_artifact_signing.ps1`: the NuGet package
+  `Microsoft.ArtifactSigning.Client` 1.0.128, checked against its SHA-256
+  before anything is extracted), and timestamps with Microsoft's server
+  (`http://timestamp.acs.microsoft.com`). The profile's certificates last
+  about three days, so the timestamp is what keeps a signature valid.
+  [Setting it up](#azure-artifact-signing) takes the owner's steps below.
 - `WINDOWS_SIGN_PFX_BASE64` and `WINDOWS_SIGN_PFX_PASSWORD` secrets (in the
   [release environment](#the-release-environment)): a
   code-signing certificate exported as PFX, signed with signtool and an RFC 3161
   timestamp (`WINDOWS_SIGN_TIMESTAMP_URL` overrides the DigiCert default).
-- A `WINDOWS_SIGN_COMMAND` repository variable: a command with `{file}` for a
-  cloud or hardware signer set up by an earlier workflow step. Certificates
-  issued since June 2023 keep their keys in hardware, so a new certificate
-  normally takes this form:
-  - Azure Trusted Signing through signtool's `/dlib`;
-  - DigiCert KeyLocker;
-  - SSL.com eSigner.
+- A `WINDOWS_SIGN_COMMAND` variable: a command with `{file}` for another
+  cloud or hardware signer set up by an earlier workflow step, such as
+  DigiCert KeyLocker or SSL.com eSigner.
 
-Without either, the release continues unsigned and the run shows a warning,
-until the repository variable `WINDOWS_SIGNING_REQUIRED` is `true`: set it once
-a certificate exists, and a lost secret fails the release instead of shipping
-unsigned files.
+With none configured the release behaves as before: it continues unsigned
+and the run shows a warning, until the variable `WINDOWS_SIGNING_REQUIRED` is
+`true`; set it once signing works, and losing the signer fails the release
+instead of shipping unsigned files. A signer configured in part, two signers
+at once, an Artifact Signing account without the Azure sign-in (or a sign-in
+without an account), and a signature that fails or has no timestamp always
+fail the release.
+
+`build-check.yml`'s `signing-dry-run` job runs the same action as a pull
+request can, with no identity, token or secret: the Azure sign-in is skipped
+and the log says why, the file is left as it was, and an account without a
+sign-in, or required signing with no signer, fails. It also checks the
+signing client's pinned hash against the package NuGet serves.
+`tests/test_sign_windows.py` runs `sign_windows.ps1` with a stand-in signtool
+for every signer, in Windows PowerShell and PowerShell 7.
 
 ## macOS
 
@@ -136,8 +164,8 @@ refusal is an `update.refused` record. Two limits remain:
 ## The release environment
 
 Every job that can sign an update runs in the `release` environment: the
-Windows `release` job (the EdDSA key and the Authenticode secrets), `macos`
-(the Apple secrets) and `publish-macos` (the EdDSA key). Workflows that
+Windows `release` job (the EdDSA key, and Authenticode's Azure identity or
+secrets), `macos` (the Apple secrets) and `publish-macos` (the EdDSA key). Workflows that
 pull requests start (`build-check.yml`, `build-macos.yml`, `tests.yml`) get no
 signing secret: a pull request runs the workflow files from its own branch,
 so anything they are given could be read out. Their macOS builds are signed ad
@@ -163,21 +191,28 @@ the owner configures it (Settings › Environments › `release`):
    `APPLE_API_ISSUER_ID` or `APPLE_ID`, `APPLE_TEAM_ID`, `APPLE_APP_PASSWORD`;
    `WINDOWS_SIGN_PFX_BASE64`, `WINDOWS_SIGN_PFX_PASSWORD`. The variables
    (`WINDOWS_SIGN_COMMAND`, `MACOS_SIGNING_REQUIRED`,
-   `WINDOWS_SIGNING_REQUIRED`) can stay repository variables.
-3. Optionally, **required reviewers**, so a person approves each release run.
+   `WINDOWS_SIGNING_REQUIRED`) can stay repository variables. Azure Artifact
+   Signing needs no secret; its six variables belong to the environment too
+   ([below](#azure-artifact-signing)).
+3. **Required reviewers:** the owner, so a person approves each release run.
+   Optional until an OIDC identity trusts the environment; required from then
+   on (below).
 
 All of this is free for a public repository. A private one needs GitHub Team
 or Enterprise for environments, their secrets and the tag rule, and
 Enterprise for required reviewers; make the repository private only on such a
 plan, or the release jobs lose the protection above. Keep the name `release`:
-the AWS release role is to trust GitHub's OIDC subject
-`repo:Luminary-Analytics/resonant-client:environment:release`, so the same
-environment and tag rule gate it too. Put the `v*` tag rule in place before
-any role trusts that identity: while the environment is unprotected, a job
-from any branch can enter it and get the identity. No workflow asks for an
-OIDC token (`permissions: id-token: write`) today, and
-`tests/test_release_supply_chain.py` keeps it that way; the change that adds
-one must come after the tag rule.
+Azure Artifact Signing's identity trusts GitHub's OIDC subject
+`repo:Luminary-Analytics/resonant-client:environment:release` (and the AWS
+release role is to trust the same one), so this environment's rules gate
+them too. Put the `v*` tag rule and the required reviewer in place before any
+credential trusts that subject: while the environment is unprotected, a job
+from any branch a collaborator pushes can name it, get a token with that
+subject, and sign any file as Luminary Analytics. Only `release.yml`'s
+`release` job may ask for a token (`permissions: id-token: write`), never the
+whole workflow and never the `build` job, which runs the tests and the
+packages they install from PyPI; `tests/test_release_supply_chain.py` fails if
+any other job, workflow or action asks.
 
 The workflow is hardened in the same spirit:
 
@@ -193,6 +228,73 @@ The workflow is hardened in the same spirit:
   overwrite what the other published. GitHub keeps one waiting job per group:
   a third arrival (two tags pushed together) cancels the waiting one, which
   then needs a rerun; the lease still keeps anything from being overwritten.
+
+## Azure Artifact Signing
+
+The certificate profile signs as Luminary Analytics for whoever holds a GitHub
+OIDC token with the trusted subject, so the order matters. With the Artifact
+Signing account, its identity validation and a Public Trust certificate
+profile created:
+
+1. **Protect the `release` environment first** (Settings › Environments ›
+   `release`): *Deployment branches and tags* › *Selected branches and tags*
+   with the one tag rule `v*`, and **Required reviewers** with the owner.
+   Do this before step 3: until then any job that names the environment gets
+   a token the credential would trust.
+2. **Create the app registration** (Microsoft Entra ID › App registrations ›
+   New registration, e.g. `lumi-release-signing`, single tenant, no redirect
+   URI), and its service principal. Note the Application (client) ID and the
+   Directory (tenant) ID. Add no client secret or certificate: nothing needs
+   one. From the CLI:
+   `az ad app create --display-name lumi-release-signing`, then
+   `az ad sp create --id <client id>`.
+3. **Add a federated credential** to it (Certificates & secrets › Federated
+   credentials › Add credential › *GitHub Actions deploying Azure resources*:
+   organization `Luminary-Analytics`, repository `resonant-client`, entity
+   type *Environment*, environment `release`). That's issuer
+   `https://token.actions.githubusercontent.com`, subject
+   `repo:Luminary-Analytics/resonant-client:environment:release` and
+   audience `api://AzureADTokenExchange`. From the CLI:
+
+   ```sh
+   az ad app federated-credential create --id <client id> --parameters '{"name": "lumi-release", "issuer": "https://token.actions.githubusercontent.com", "subject": "repo:Luminary-Analytics/resonant-client:environment:release", "audiences": ["api://AzureADTokenExchange"]}'
+   ```
+4. **Assign the "Artifact Signing Certificate Profile Signer" role** to that
+   service principal on the certificate profile alone, the narrowest scope:
+
+   ```sh
+   az role assignment create --assignee <client id> --role "Artifact Signing Certificate Profile Signer" --scope "/subscriptions/<subscription id>/resourceGroups/<resource group>/providers/Microsoft.CodeSigning/codeSigningAccounts/<account name>/certificateProfiles/<profile name>"
+   ```
+5. **Fill in the variables** of the `release` environment (Environment
+   variables, not secrets: none of them is one):
+
+   | Variable | Value |
+   |---|---|
+   | `ARTIFACT_SIGNING_ENDPOINT` | The account's regional endpoint, as its Overview shows it, e.g. `https://eus.codesigning.azure.net` |
+   | `ARTIFACT_SIGNING_ACCOUNT` | The Artifact Signing account's name |
+   | `ARTIFACT_SIGNING_PROFILE` | The certificate profile's name |
+   | `AZURE_CLIENT_ID` | The app registration's Application (client) ID |
+   | `AZURE_TENANT_ID` | The Directory (tenant) ID |
+   | `AZURE_SUBSCRIPTION_ID` | The subscription the signing account is in |
+
+   For example
+   `gh variable set ARTIFACT_SIGNING_ENDPOINT --env release --body "https://eus.codesigning.azure.net" --repo Luminary-Analytics/resonant-client`.
+6. **Release a beta**, and check the installer and MSI (Properties › Digital
+   Signatures: Luminary Analytics, with a timestamp from Microsoft). Then set
+   `WINDOWS_SIGNING_REQUIRED` to `true`.
+
+If the sign-in fails because the identity sees no subscription (its only
+role is on the certificate profile), leave `AZURE_SUBSCRIPTION_ID` empty: the
+action then signs in to the tenant alone, which is all signing needs. The
+`azure/login` step prints the subject it presented, for comparing with the
+credential's.
+
+**If the subject changes.** Should resonant-client be opted into GitHub's
+immutable OIDC subjects, or renamed, the subject becomes
+`repo:Luminary-Analytics@105687258/resonant-client@1182612108:environment:release`
+(the organization's and the repository's IDs). Change the federated
+credential's subject at the same time, or signing stops: nothing else trusts
+the old one.
 
 ## Publishing gh-pages byte for byte
 
@@ -330,7 +432,8 @@ ordinary CI. Keep mocked wire-contract tests distinct from live model evidence.
 | `scripts/lock_release.py`, `packaging/*requirements*` | Hash-pinned release and CI-tool dependencies |
 | `packaging/audit_locks.py`, `.github/workflows/dependency-audit.yml` | Vulnerability audit of every pin |
 | `packaging/third_party_notices.py`, `packaging/third-party-components.json` | Notices, license gate, SBOM additions |
-| `packaging/sign_windows.ps1` | Authenticode signing when configured |
+| `.github/actions/authenticode-sign/action.yml`, `packaging/sign_windows.ps1` | Authenticode signing: the Azure sign-in (OIDC), the signer's choice and each signature's check |
+| `packaging/fetch_artifact_signing.ps1` | Microsoft's Artifact Signing client (the signtool dlib), pinned by SHA-256 |
 | `packaging/check_bundle.py`, `packaging/bundle-policy.json` | Bundle contents and size gate |
 | `packaging/installer.iss` | Windows installer (EXE) |
 | `packaging/lumi.wxs`, `packaging/build_msi.ps1` | MSI for device management |

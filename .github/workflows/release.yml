@@ -4,13 +4,16 @@ name: Release
 # Tag-only — never on plain commits to main, never on branches.
 #
 # What this workflow does end-to-end:
-#   1. Builds the PyInstaller bundle for the tagged version from the
-#      hash-pinned packaging/requirements-release.txt, with third-party
-#      notices and a CycloneDX SBOM
-#   2. Authenticode-signs lumi.exe, wraps the bundle into an Inno Setup
-#      installer (lumi-setup-X.Y.Z.exe) and, for stable tags, an MSI for device
-#      management (lumi-X.Y.Z.msi), and Authenticode-signs both when signing
-#      credentials are configured (packaging/sign_windows.ps1)
+#   1. Job `build`, with no secret and no OIDC token: lint and tests, then the
+#      PyInstaller bundle for the tagged version from the hash-pinned
+#      packaging/requirements-release.txt, with third-party notices and a
+#      CycloneDX SBOM, handed to the next job as an artifact
+#   2. Job `release`: Authenticode-signs lumi.exe, wraps the bundle into an
+#      Inno Setup installer (lumi-setup-X.Y.Z.exe) and, for stable tags, an MSI
+#      for device management (lumi-X.Y.Z.msi), and Authenticode-signs both when
+#      a signer is configured (.github/actions/authenticode-sign, then
+#      packaging/sign_windows.ps1): Azure Artifact Signing with a short-lived
+#      OIDC sign-in, or a PFX or command
 #   3. Signs the installer with the EdDSA private key (from EDDSA_PRIVATE_KEY secret)
 #   4. Creates a GitHub Release with the installer, SBOM and notices
 #   5. Copies the installer to the GitHub Pages site (downloads/vX.Y.Z/),
@@ -36,6 +39,10 @@ name: Release
 # Hardening (docs/release-pipeline.md#the-release-environment):
 #   - Jobs that use the EdDSA key or the Apple or Windows signing secrets run
 #     in the `release` environment, which the owner restricts to v* tags.
+#   - Only the `release` job may ask for an OIDC token (id-token: write), for
+#     the Azure sign-in Artifact Signing uses; the Azure identity trusts only
+#     this environment's subject. The tests, and every package they install
+#     from PyPI, run in `build`, which has no token, secret or environment.
 #   - Only the two publishing jobs get contents: write; the macOS build reads.
 #     Checkouts that never push keep no credentials.
 #   - The jobs that write gh-pages share one concurrency group and push with a
@@ -59,15 +66,14 @@ permissions:
   contents: read
 
 jobs:
-  release:
+  build:
+    # Lint, tests and the unsigned bundle. No secret, no OIDC token and no
+    # environment: the test run installs packages from PyPI, and nothing it
+    # runs may reach a signing identity.
     runs-on: windows-latest
     timeout-minutes: 30
-    environment: release
     permissions:
-      contents: write   # creates the Release and pushes gh-pages
-    concurrency:
-      group: release-gh-pages
-      cancel-in-progress: false
+      contents: read
 
     steps:
       - name: Checkout main
@@ -148,17 +154,77 @@ jobs:
           }
           Write-Host "Smoke test passed: $output"
 
+      - name: Keep the bundle for the release job
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: lumi-windows-bundle
+          path: |
+            dist/lumi/
+            dist/lumi-${{ steps.version.outputs.version }}-sbom.cdx.json
+            dist/lumi-${{ steps.version.outputs.version }}-THIRD_PARTY_NOTICES.txt
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    # Signs, packages and publishes what `build` made. Its steps run only code
+    # from this repository and pinned actions and tools: this job holds the
+    # EdDSA key and the Azure signing identity.
+    needs: build
+    runs-on: windows-latest
+    timeout-minutes: 30
+    environment: release
+    permissions:
+      contents: write   # creates the Release and pushes gh-pages
+      id-token: write   # the Azure sign-in for Authenticode (OIDC); no other job may have it
+    concurrency:
+      group: release-gh-pages
+      cancel-in-progress: false
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Extract version from tag
+        id: version
+        shell: bash
+        run: |
+          VERSION="${GITHUB_REF#refs/tags/v}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Releasing $VERSION"
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.13'
+
+      - name: Fetch the bundle
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: lumi-windows-bundle
+          path: dist
+
       # Authenticode is Windows' publisher signature (SmartScreen, company
-      # policies); EdDSA below is the update feed's. Unsigned, with a warning,
-      # until a certificate is configured: see docs/release-pipeline.md.
+      # policies); EdDSA below is the update feed's. The action decides from
+      # the release environment's variables and secrets: Azure Artifact
+      # Signing, a PFX or a command, or unsigned with a warning until one is
+      # configured (docs/release-pipeline.md). Each signing signs in to Azure
+      # afresh, so a sign-in never outlives GitHub's short-lived token.
       - name: Authenticode-sign lumi.exe
-        shell: pwsh
-        env:
-          WINDOWS_SIGN_PFX_BASE64: ${{ secrets.WINDOWS_SIGN_PFX_BASE64 }}
-          WINDOWS_SIGN_PFX_PASSWORD: ${{ secrets.WINDOWS_SIGN_PFX_PASSWORD }}
-          WINDOWS_SIGN_COMMAND: ${{ vars.WINDOWS_SIGN_COMMAND }}
-          WINDOWS_SIGNING_REQUIRED: ${{ vars.WINDOWS_SIGNING_REQUIRED }}
-        run: ./packaging/sign_windows.ps1 -Files "dist/lumi/lumi.exe"
+        uses: ./.github/actions/authenticode-sign
+        with:
+          files: dist/lumi/lumi.exe
+          azure-client-id: ${{ vars.AZURE_CLIENT_ID }}
+          azure-tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          azure-subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+          artifact-signing-endpoint: ${{ vars.ARTIFACT_SIGNING_ENDPOINT }}
+          artifact-signing-account: ${{ vars.ARTIFACT_SIGNING_ACCOUNT }}
+          artifact-signing-profile: ${{ vars.ARTIFACT_SIGNING_PROFILE }}
+          pfx-base64: ${{ secrets.WINDOWS_SIGN_PFX_BASE64 }}
+          pfx-password: ${{ secrets.WINDOWS_SIGN_PFX_PASSWORD }}
+          command: ${{ vars.WINDOWS_SIGN_COMMAND }}
+          required: ${{ vars.WINDOWS_SIGNING_REQUIRED }}
 
       # NOTE: windows-latest GitHub-hosted runners ship Inno Setup pre-installed
       # (v6.7+ as of late 2025). No need to install — the "Build installer" step
@@ -192,23 +258,35 @@ jobs:
 
       - name: Authenticode-sign the MSI
         if: ${{ !contains(steps.version.outputs.version, '-') }}
-        shell: pwsh
-        env:
-          WINDOWS_SIGN_PFX_BASE64: ${{ secrets.WINDOWS_SIGN_PFX_BASE64 }}
-          WINDOWS_SIGN_PFX_PASSWORD: ${{ secrets.WINDOWS_SIGN_PFX_PASSWORD }}
-          WINDOWS_SIGN_COMMAND: ${{ vars.WINDOWS_SIGN_COMMAND }}
-          WINDOWS_SIGNING_REQUIRED: ${{ vars.WINDOWS_SIGNING_REQUIRED }}
-        run: ./packaging/sign_windows.ps1 -Files "dist/installer/lumi-${{ steps.version.outputs.version }}.msi"
+        uses: ./.github/actions/authenticode-sign
+        with:
+          files: dist/installer/lumi-${{ steps.version.outputs.version }}.msi
+          azure-client-id: ${{ vars.AZURE_CLIENT_ID }}
+          azure-tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          azure-subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+          artifact-signing-endpoint: ${{ vars.ARTIFACT_SIGNING_ENDPOINT }}
+          artifact-signing-account: ${{ vars.ARTIFACT_SIGNING_ACCOUNT }}
+          artifact-signing-profile: ${{ vars.ARTIFACT_SIGNING_PROFILE }}
+          pfx-base64: ${{ secrets.WINDOWS_SIGN_PFX_BASE64 }}
+          pfx-password: ${{ secrets.WINDOWS_SIGN_PFX_PASSWORD }}
+          command: ${{ vars.WINDOWS_SIGN_COMMAND }}
+          required: ${{ vars.WINDOWS_SIGNING_REQUIRED }}
 
       # Before the EdDSA signature, so the update feed signs the final bytes.
       - name: Authenticode-sign the installer
-        shell: pwsh
-        env:
-          WINDOWS_SIGN_PFX_BASE64: ${{ secrets.WINDOWS_SIGN_PFX_BASE64 }}
-          WINDOWS_SIGN_PFX_PASSWORD: ${{ secrets.WINDOWS_SIGN_PFX_PASSWORD }}
-          WINDOWS_SIGN_COMMAND: ${{ vars.WINDOWS_SIGN_COMMAND }}
-          WINDOWS_SIGNING_REQUIRED: ${{ vars.WINDOWS_SIGNING_REQUIRED }}
-        run: ./packaging/sign_windows.ps1 -Files "dist/installer/lumi-setup-${{ steps.version.outputs.version }}.exe"
+        uses: ./.github/actions/authenticode-sign
+        with:
+          files: dist/installer/lumi-setup-${{ steps.version.outputs.version }}.exe
+          azure-client-id: ${{ vars.AZURE_CLIENT_ID }}
+          azure-tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          azure-subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+          artifact-signing-endpoint: ${{ vars.ARTIFACT_SIGNING_ENDPOINT }}
+          artifact-signing-account: ${{ vars.ARTIFACT_SIGNING_ACCOUNT }}
+          artifact-signing-profile: ${{ vars.ARTIFACT_SIGNING_PROFILE }}
+          pfx-base64: ${{ secrets.WINDOWS_SIGN_PFX_BASE64 }}
+          pfx-password: ${{ secrets.WINDOWS_SIGN_PFX_PASSWORD }}
+          command: ${{ vars.WINDOWS_SIGN_COMMAND }}
+          required: ${{ vars.WINDOWS_SIGNING_REQUIRED }}
 
       - name: Sign installer with EdDSA
         id: sign

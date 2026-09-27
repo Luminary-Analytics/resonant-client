@@ -129,17 +129,19 @@ profile maker has no license-key option yet.
   programs with a version resource laid out as Inno Setup writes it, and the
   policy tests run the standard-library MDM profile maker without httpx.
 - The full suite on Windows, isolated home, `PYTHONPATH` set to the checkout
-  for child processes, rebased on `main` at 8e0ef2e: 5,830 passed, 7 skipped,
-  4 failed. Three (`test_swarm_main_integration.py`'s two cases and
-  `test_swarm_process_workers.py::test_managed_reader_uses_owned_child_and_durable_primary_result`)
-  fail the same way on unmodified `main` here: their workers search with the
-  pinned ripgrep that CI fetches. The fourth,
-  `test_swarm_argv_process.py::test_timeout_and_stop_terminate_descendants_without_claiming_success[timeout]`,
-  gives its child one second to start a grandchild; it ran out of time under
-  this machine's load and passes on its own (7 of 7). Rebased again on
-  a6e00e8, the offline, update, license, policy, dictation, connection,
-  sign-in, pull request, pack, browser and Team policy and chat test files:
-  578 passed, 1 skipped. Node UI tests: 128 passed; ruff clean.
+  for child processes, with `main` at 6b00ca9 (DLP, panels) merged: 6,153
+  passed, 7 skipped, 6 failed, 11 errors. Five of the failures fail the same
+  way on unmodified `main` (6b00ca9) here: `test_swarm_main_integration.py`'s
+  two cases and
+  `test_swarm_process_workers.py::test_managed_reader_uses_owned_child_and_durable_primary_result`,
+  whose workers search with the pinned ripgrep that CI fetches, and two that
+  give a child process about a second under this machine's load
+  (`test_swarm_argv_process.py::test_timeout_and_stop_terminate_descendants_without_claiming_success[timeout]`,
+  `test_swarm_integration.py::test_check_timeout_stops_owned_process_and_retains_failed_candidate`).
+  The sixth (`test_swarm_integration.py::test_foreign_approval_scope_and_wrong_revision_are_rejected`:
+  Windows refused a job-object assignment) and the 11 errors
+  (`test_swarm_benchmark_runner.py`'s shared study reached its deadline) pass
+  when their files run on their own. Node UI tests: 147 passed; ruff clean.
 - The installer version reader matches Windows' own `FileVersionInfo` for
   Lumi installers built locally with Inno Setup 6 from
   `packaging/installer.iss` (0.21.0 and 0.22.0-beta.1, before and after the
@@ -160,7 +162,11 @@ profile maker has no license-key option yet.
   scrolls sideways; no page errors and no request beyond 127.0.0.1. A second
   run under a policy with `"*.com"`, 4 of 4: both connections hidden with the
   policy note, the status "On, set by your organization's policy" with the
-  policy error, the switch turned off with Space leaves it on, no errors.
+  policy error, the switch turned off with Space leaves it on, no errors. A
+  third, with the repository's panels fixture, 7 of 7: an open panel closes
+  with the reason when offline mode turns on, the palette and View offer no
+  panel and opening one is refused, it's offered again once offline mode is
+  off, and nothing reached the fixture's canary.
 - Not exercised: an air-gapped computer, a real Chrome started with the
   offline switches (including `<-loopback>`), installing a real signed
   installer from a file, a frozen build, macOS and Linux.

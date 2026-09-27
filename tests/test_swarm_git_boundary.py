@@ -4,6 +4,7 @@ from pathlib import Path
 import os
 import subprocess
 import sys
+import time
 
 import pytest
 
@@ -52,6 +53,25 @@ def test_executable_filters_never_run_during_writer_or_candidate_effects(setup, 
     setup[3].apply(setup[2], candidate["id"], approval=approved(setup, candidate))
     assert (project / "a.txt").read_text() == "new-a\n"
     assert not marker.exists()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows job objects own the host's Git processes")
+def test_quick_git_reads_are_owned_even_when_the_host_assigns_their_job_late(setup, monkeypatch):
+    # With other threads holding the GIL, the host could reach the job
+    # assignment only after a quick `git rev-parse` or `git config --list` had
+    # exited, and assigning an exited process fails: "[WinError 5] Access is
+    # denied" failed writer finalization and checks on CI. Git now starts
+    # suspended inside its job, so a late assignment only delays it.
+    from lumi import processes
+    assign = processes.windows_kill_job
+
+    def late(process, **kwargs):
+        time.sleep(.5)  # far longer than these reads take
+        return assign(process, **kwargs)
+    monkeypatch.setattr(processes, "windows_kill_job", late)
+    integration, project, base = setup[3], setup[4], setup[5]
+    assert integration._git(project, "rev-parse", "HEAD").stdout.strip() == base
+    assert integration._git(project, "status", "--porcelain").stdout == ""  # also reads config through git_bytes
 
 
 def test_custom_merge_driver_is_rejected_without_execution(setup, tmp_path):

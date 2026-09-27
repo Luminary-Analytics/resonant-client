@@ -16,14 +16,22 @@ from lumi.engine.swarming.workflow import DispatchClosed, IntegrationWorkflow
 from tests.test_swarm_integration import command, finish, git, setup as integration_setup, writers  # noqa: F401
 
 
-def wait_for(predicate, *, timeout=10):
+def wait_for(predicate, *, timeout=60, describe=None):
+    # Operations run Git and checks through owned processes: seconds each on
+    # a loaded runner. On failure, say where the operation got to.
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         result = predicate()
         if result:
             return result
         time.sleep(.01)
-    pytest.fail("Fixture operation did not reach its observed state")
+    pytest.fail("Fixture operation did not reach its observed state" + (f": {describe()}" if describe else ""))
+
+
+def progress(workflow, operation):
+    """An operation's state and error, for a wait that timed out."""
+    row = workflow.inspect(operation["id"])
+    return {key: row[key] for key in ("kind", "state", "active", "error")}
 
 
 @pytest.fixture
@@ -47,7 +55,7 @@ def submit(workflow, kind, payload, *, key):
 
 def settled(workflow, operation):
     return wait_for(lambda: (row if row["state"] not in {"queued", "running"} else None)
-                    if (row := workflow.inspect(operation["id"])) else None)
+                    if (row := workflow.inspect(operation["id"])) else None, describe=lambda: progress(workflow, operation))
 
 
 def prepared(workflow, payload):
@@ -197,7 +205,7 @@ def test_reopened_workflow_never_replays_an_unobserved_dispatch_and_blocks_termi
     monkeypatch.setattr(workflow, "_run", lambda record: None)
     revision = store.snapshot(authority.scope, authority.run_id)["run"]["revision"]
     operation = workflow.submit("prepare_candidate", payload, command_id="prepare", expected_revision=revision)
-    wait_for(lambda: not workflow.inspect(operation["id"])["active"])
+    wait_for(lambda: not workflow.inspect(operation["id"])["active"], describe=lambda: progress(workflow, operation))
     reopened = IntegrationWorkflow(supervisor, authority, integration)
     try:
         repeated = reopened.submit("prepare_candidate", payload, command_id="prepare", expected_revision=revision)
@@ -336,7 +344,7 @@ def test_fenced_operation_with_terminal_effect_receipt_reconciles_without_reexec
         raise sqlite3.OperationalError("Fixture lost workflow observation acknowledgement")
     monkeypatch.setattr(workflow, "_finish", missing_ack)
     operation = submit(workflow, "prepare_candidate", payload, key="prepare")
-    wait_for(lambda: not workflow.inspect(operation["id"])["active"])
+    wait_for(lambda: not workflow.inspect(operation["id"])["active"], describe=lambda: progress(workflow, operation))
     original = store.snapshot(authority.scope, authority.run_id)
     assert original["integration_candidates"][0]["state"] == "ready"
     assert original["integration_operations"][0]["state"] == "running"
@@ -385,7 +393,7 @@ def test_check_after_takeover_uses_cleanup_evidence_and_never_owner_prose_as_pas
             connection.execute("UPDATE integration_checks SET process_protocol=0")
     store.clock = lambda: 1031
     replacement = supervisor.acquire(authority.scope, authority.run_id, expected_epoch=1, supervisor_id="replacement", command_id="takeover")
-    wait_for(lambda: not workflow.inspect(operation["id"])["active"])
+    wait_for(lambda: not workflow.inspect(operation["id"])["active"], describe=lambda: progress(workflow, operation))
     observer = IntegrationWorkflow(supervisor, replacement, integration)
     try:
         observed = submit(observer, "reconcile_operation", {"operation_id": operation["id"],

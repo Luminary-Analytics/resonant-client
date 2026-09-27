@@ -64,9 +64,33 @@ def operate(desktop, run_id, action, request_id, **payload):
                                     "expected_revision": revision, **payload})["run"]
 
 
+# Creating a writer's worktree, running its worker and committing its result
+# go through owned Git processes: seconds each on a loaded runner.
+PIPELINE_SECONDS = 90
+
+
+def progress(desktop, run_id):
+    """Where the run got to, for a wait that timed out: its state, each
+    attempt, writer and worker (with its error) and each operation."""
+    service = desktop[0]
+    current = view(desktop, run_id)
+    runner = service._runners.get(run_id, (None, None))[1]
+    return {"run": current["run"]["state"],
+            "attempts": [(row["state"], row["process_state"]) for row in current["attempts"]],
+            "writers": [row["state"] for row in current["writer_worktrees"]],
+            "workers": [(row["state"], row["error"]) for row in (runner.inspect_all() if runner else [])],
+            "operations": [(row["kind"], row["state"], row["error"]) for row in current["integration_operations"]]}
+
+
+def submitted(desktop, run_id):
+    until(lambda: len(view(desktop, run_id)["submissions"]) == 1, timeout=PIPELINE_SECONDS,
+          describe=lambda: progress(desktop, run_id))
+
+
 def settled(desktop, run_id):
     until(lambda: bool(view(desktop, run_id)["integration_operations"]) and all(
-        row["state"] not in {"queued", "running"} for row in view(desktop, run_id)["integration_operations"]), timeout=15)
+        row["state"] not in {"queued", "running"} for row in view(desktop, run_id)["integration_operations"]),
+        timeout=PIPELINE_SECONDS, describe=lambda: progress(desktop, run_id))
     return view(desktop, run_id)
 
 
@@ -99,7 +123,7 @@ def test_writer_changes_combine_under_a_long_project_path(desktop):
     # paths pass everywhere, and this one passes where PATH_MAX is large.
     service, capture, project, _ = desktop
     run_id = service.operate(capture, request())["run"]["run"]["id"]
-    until(lambda: len(view(desktop, run_id)["submissions"]) == 1, timeout=15)
+    submitted(desktop, run_id)
     writer = view(desktop, run_id)["writer_worktrees"][0]
     operate(desktop, run_id, "prepare_candidate", "prepare", writer_ids=[writer["id"]])
     current = settled(desktop, run_id)
@@ -111,7 +135,7 @@ def test_writer_reaches_exact_reviewed_application_and_preserves_dirty_checkout(
     original = git(project, "rev-parse", "HEAD")
     run_id = service.operate(capture, request())["run"]["run"]["id"]
     service.operate(capture, request())  # Exact setup retry never dispatches again.
-    until(lambda: len(view(desktop, run_id)["submissions"]) == 1, timeout=15)
+    submitted(desktop, run_id)
     current = view(desktop, run_id)
     (project / "personal.txt").write_text("my unfinished work\n")
     assert len(instances) == 1
@@ -167,7 +191,7 @@ def test_recovered_writer_git_discovery_cannot_block_stop(desktop, monkeypatch):
     now = [time.time()]
     service._store(capture).clock = lambda: now[0]
     run_id = service.operate(capture, request())["run"]["run"]["id"]
-    until(lambda: len(view(desktop, run_id)["submissions"]) == 1, timeout=15)
+    submitted(desktop, run_id)
     old = service._runners[run_id][1]
     old._maintenance_stop.set()
     old._maintenance.join(timeout=1)

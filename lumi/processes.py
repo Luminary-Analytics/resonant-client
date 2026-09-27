@@ -48,6 +48,53 @@ def windows_kill_job(process, *, kill_on_close: bool = True, name=None):
     return (api, handle)
 
 
+def popen_in_kill_job(args, *, kill_on_close: bool = True, name=None, **popen_kwargs):
+    """Start a process that runs none of its code outside its job: ``(process, job)``.
+
+    Assigning the job after ``Popen`` returns races a short-lived child. Once
+    the child has exited, AssignProcessToJobObject fails with "Access is
+    denied", and on a loaded host, where other threads hold the GIL between
+    ``Popen`` and the assignment, a quick ``git`` read often exits first. So on
+    Windows the process starts suspended, joins the job, then resumes; anything
+    it starts is inside the job from the first instruction. Elsewhere there is
+    no job (``None``); callers own POSIX trees through their process group.
+    """
+    if sys.platform != "win32":
+        return subprocess.Popen(args, **popen_kwargs), None
+    popen_kwargs["creationflags"] = popen_kwargs.get("creationflags", 0) | 0x4  # CREATE_SUSPENDED
+    process = subprocess.Popen(args, **popen_kwargs)
+    job = None
+    try:
+        job = windows_kill_job(process, kill_on_close=kill_on_close, name=name)
+        _resume_suspended(process)
+    except BaseException:
+        # Suspended, so it has run nothing; a job without kill-on-close would
+        # not stop it on close, so terminate it directly.
+        process.kill()
+        process.wait(timeout=5)
+        close_windows_job(job)
+        for stream in (process.stdin, process.stdout, process.stderr):
+            if stream is not None:
+                stream.close()
+        raise
+    return process, job
+
+
+def _resume_suspended(process) -> None:
+    """Resume the only thread of a process created with CREATE_SUSPENDED.
+
+    ``subprocess`` closes the primary thread handle, so this resumes through
+    the process handle (NtResumeProcess, which psutil's ``resume`` also uses).
+    """
+    import ctypes
+    ntdll = ctypes.WinDLL("ntdll")
+    ntdll.NtResumeProcess.argtypes = [ctypes.c_void_p]
+    ntdll.NtResumeProcess.restype = ctypes.c_long
+    status = ntdll.NtResumeProcess(ctypes.c_void_p(int(process._handle)))
+    if status < 0:
+        raise OSError(f"Could not resume the suspended process (NTSTATUS {status & 0xFFFFFFFF:#010x})")
+
+
 def terminate_windows_job(job, exit_code: int = 1):
     """Stop every process in the job now."""
     if job:

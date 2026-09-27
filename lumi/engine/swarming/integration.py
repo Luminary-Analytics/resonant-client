@@ -21,7 +21,7 @@ from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from typing import Any, Iterator
 
-from lumi.processes import background_process_kwargs, close_windows_job, windows_kill_job
+from lumi.processes import background_process_kwargs, close_windows_job, popen_in_kill_job
 
 from ..artifacts import project_state_dir
 from .argv_process import ArgvResult, ManagedArgvProcess, effect_support
@@ -112,7 +112,7 @@ class SwarmIntegration:
 
     def capture_base(self) -> dict[str, str]:
         """Capture clean committed input without modifying the checkout."""
-        with self._repository_lock():
+        with self._repository_lock(timeout=5):
             if not self._clean(self.project):
                 raise Conflict("Writer baseline requires a clean committed checkout; existing work is preserved")
             branch = self._branch(self.project)
@@ -233,12 +233,10 @@ class SwarmIntegration:
             return result
         if not metadata_only and (not args or args[0] not in {"status", "diff"}):
             raise ScopeDenied("Mutating Git commands require captured durable process ownership")
-        process = subprocess.Popen(command, cwd=cwd, env=environment, stdin=subprocess.DEVNULL,
-                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-                                   encoding="utf-8", errors="strict", **background_process_kwargs(new_process_group=True))
-        job = None
+        process, job = popen_in_kill_job(command, cwd=cwd, env=environment, stdin=subprocess.DEVNULL,
+                                         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                                         encoding="utf-8", errors="strict", **background_process_kwargs(new_process_group=True))
         try:
-            job = windows_kill_job(process)
             stdout, stderr = process.communicate(timeout=60)
             result = subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
         finally:
@@ -258,15 +256,25 @@ class SwarmIntegration:
             raise Conflict(result.stderr.strip() or "Git operation failed")
         return result
 
+    # How long an operation waits for another to release the repository. The
+    # holder runs Git through owned gates (seconds each on a loaded machine),
+    # and a check holds it for its whole run, up to 1200 s. So two writers
+    # finishing together, or a writer finishing during a check, wait their
+    # turn. The bound only catches a stuck holder; a waiter whose own run is
+    # stopping, or has lost its authority, stops waiting at once.
+    LOCK_WAIT_SECONDS = 1500.0
+
     @contextmanager
-    def _repository_lock(self, timeout: float = 5) -> Iterator[None]:
+    def _repository_lock(self, timeout: float | None = None, *,
+                         authority: RunAuthority | None = None) -> Iterator[None]:
         """Coordinate this module across processes without an in-memory lock."""
+        timeout = self.LOCK_WAIT_SECONDS if timeout is None else timeout
         handle = self._lock_path.open("a+b")
         handle.seek(0, os.SEEK_END)
         if handle.tell() == 0:
             handle.write(b"0")
             handle.flush()
-        deadline = time.monotonic() + timeout
+        started = checked = time.monotonic()
         try:
             while True:
                 try:
@@ -279,8 +287,13 @@ class SwarmIntegration:
                         fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
                     break
                 except OSError as exc:
-                    if time.monotonic() >= deadline:
-                        raise Conflict("Another integration operation owns this repository") from exc
+                    now = time.monotonic()
+                    if now - started >= timeout:
+                        raise Conflict("Another integration operation owns this repository "
+                                       f"(waited {now - started:.0f} s)") from exc
+                    if authority is not None and now - checked >= .5:
+                        checked = now
+                        self._still_waiting(authority)
                     time.sleep(0.02)
             try:
                 yield
@@ -367,6 +380,17 @@ class SwarmIntegration:
             run = self.store._authority(connection, authority)
             self.store._admitting(run)
 
+    def _still_waiting(self, authority: RunAuthority) -> None:
+        """End a wait for the repository once its run is stopping or its authority is gone.
+
+        A pause does not end it: the operation checks admission as usual once
+        it holds the repository.
+        """
+        with self.store._connection() as connection:
+            run = self.store._authority(connection, authority)
+        if run["stop_requested"] or run["state"] in ("stopping", "cancelled", "failed", "completed"):
+            raise AdmissionClosed(f"Run admission is closed: {run['state']}")
+
     def _record(self, authority: RunAuthority, table: str, identity: str) -> dict[str, Any]:
         with self.store._connection() as connection:
             self.store._authority(connection, authority)
@@ -428,7 +452,7 @@ class SwarmIntegration:
         self._require_writer_support()
         self.store._same_run(authority, context)
         self._revision(base_revision)
-        with self._repository_lock():
+        with self._repository_lock(authority=authority):
             self._admit(authority)
             if self._head(self.project) != base_revision or not self._clean(self.project):
                 raise Conflict("Writer baseline requires the clean checkout at its disclosed pinned revision")
@@ -541,7 +565,7 @@ class SwarmIntegration:
     def finalize_writer(self, authority: RunAuthority, context: AttemptContext, writer_id: str) -> dict[str, Any]:
         """Commit a scoped immutable result, preserving rejected work for review."""
         self.store._same_run(authority, context)
-        with self._repository_lock():
+        with self._repository_lock(authority=authority):
             record = self._record(authority, "writer_worktrees", writer_id)
             if record["attempt_id"] != context.attempt_id:
                 raise ScopeDenied("Writer does not belong to this attempt")
@@ -609,7 +633,7 @@ class SwarmIntegration:
         mapping = json.loads(_json(criterion_checks)) if criterion_checks is not None else {}
         if not isinstance(mapping, dict) or any(not isinstance(value, dict) for value in mapping.values()):
             raise ValueError("Criterion checks must map work IDs to criterion/check names")
-        with self._repository_lock():
+        with self._repository_lock(authority=authority):
             self._admit(authority)
             writers = [self._record(authority, "writer_worktrees", writer_id) for writer_id in writer_ids]
             if any(writer["state"] != "ready" for writer in writers):
@@ -694,7 +718,7 @@ class SwarmIntegration:
         self._require_writer_support()
         identity = receipt_id or _id()
         require_id(identity)
-        with self._repository_lock():
+        with self._repository_lock(authority=authority):
             record = self._record(authority, "integration_candidates", candidate_id)
             self._admit(authority)
             if record["state"] not in ("ready", "failed", "verified"):
@@ -810,7 +834,7 @@ class SwarmIntegration:
         require_id(approval.id)
         if approval.expires_at <= self.store.clock():
             raise Conflict("Application approval has expired")
-        with self._repository_lock():
+        with self._repository_lock(authority=authority):
             self._admit(authority)
             candidate = self._record(authority, "integration_candidates", candidate_id)
             if (approval.expected_base, approval.target_revision) != (candidate["base_revision"], candidate["result_revision"]):
@@ -876,6 +900,8 @@ class SwarmIntegration:
         A current recovery owner may record a historical epoch's observed ref.
         This acknowledges an already observed effect and grants no new effect.
         """
+        # Recovery reconciles while the run is not admitting new work, so this
+        # wait does not end on the run's state; the authority check below does.
         with self._repository_lock():
             with self.store._connection() as connection:
                 self.store._authority(connection, authority)

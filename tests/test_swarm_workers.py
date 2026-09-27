@@ -56,14 +56,16 @@ def snapshot(fixture):
     return supervisor.store.snapshot(authority.scope, authority.run_id)
 
 
-def until(predicate, timeout=20):
+def until(predicate, timeout=20, describe=None):
+    """Wait for a condition; on timeout, say what the fixture was doing (``describe``)."""
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         result = predicate()
         if result:
             return result
         time.sleep(0.01)
-    assert predicate(), "Fixture condition did not become true before timeout"
+    # A string message: pytest shortens any other kind to one line.
+    assert predicate(), "Fixture condition did not become true before timeout" + (f": {describe()}" if describe else "")
 
 
 class Backend(StreamingBackend):

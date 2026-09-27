@@ -94,13 +94,25 @@ def runner(fixture, backend):
                              backend_factory=lambda spec: backend, writer_process_factory=None)
 
 
+def explain(runtime):
+    """Each worker's state and error and the last events, as one string: a CI
+    log shows only a line of any longer, non-string assertion message."""
+    polled = runtime.poll(limit=1000)
+    return json.dumps({"workers": [{key: row[key] for key in ("state", "error", "alive", "termination_recorded")}
+                                   for row in polled["workers"]],
+                       "last_events": [{key: value for key, value in event.items() if key in {"event", "message", "error", "outcome"}}
+                                       for event in polled["events"]][-12:]}, default=str)
+
+
 def finished(runtime, context):
-    deadline = time.monotonic() + 30
+    # A writer's worker runs, then its result is committed through owned Git
+    # processes: seconds each on a loaded runner.
+    deadline = time.monotonic() + 90
     while time.monotonic() < deadline:
         if not runtime.inspect(context.attempt_id)["alive"]:
             return
         time.sleep(.01)
-    raise AssertionError(runtime.poll())
+    raise AssertionError(explain(runtime))
 
 
 def snapshot(fixture):
@@ -121,7 +133,7 @@ def test_model_file_write_and_edit_finalize_to_checked_candidate_without_touchin
         runtime.start(context, BackendSpec("ollama", "chosen"), writer_id=writer["id"])
         finished(runtime, context)
         status = runtime.inspect(context.attempt_id)
-        assert status["state"] == "submitted", runtime.poll()
+        assert status["state"] == "submitted", explain(runtime)
         assert backend.closed and backend._supervised_single_request
         assert "swarm_submit" not in backend.tool_names
         state = snapshot(fixture)

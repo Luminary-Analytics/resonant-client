@@ -20,7 +20,7 @@ import uuid
 
 import psutil
 
-from ...processes import background_process_kwargs, close_windows_job, windows_kill_job
+from ...processes import background_process_kwargs, close_windows_job, popen_in_kill_job
 from ...events import EngineEvent
 from ..execution_guard import ExecutionGuardError, RequestRefused, ToolScopeRefused
 from .processes import job_name
@@ -137,6 +137,15 @@ class ManagedWorkerProcess:
     the bundled entry point; neither model nor UI supplies an executable.
     """
 
+    # Wall-clock allowances that bound a stuck child, not a slow one. Starting
+    # Python and importing the engine took over 10 s with the CPU shared four
+    # ways, and a child that has sent its closing message still has to finish
+    # interpreter shutdown before its exit status exists. Stop never waits on
+    # these: cancellation terminates the tree after ``cancel_grace``.
+    STARTUP_SECONDS = 60.0
+    EXIT_AFTER_CLOSE_SECONDS = 15.0
+    OUTPUT_CLOSE_AFTER_EXIT_SECONDS = 10.0
+
     def __init__(self, *, command: Sequence[str] | None = None, cancel_grace: float = 1.0) -> None:
         if type(cancel_grace) not in (int, float) or not math.isfinite(cancel_grace) or not 0 <= cancel_grace <= 5:
             raise ValueError("Worker cancellation grace must be between zero and five seconds")
@@ -151,6 +160,8 @@ class ManagedWorkerProcess:
         self._read_thread: threading.Thread | None = None
         self._write_thread: threading.Thread | None = None
         self._closed = False
+        self._terminating = False
+        self._ended_by_host = False
         self.cleanup_confirmed = False
         self.exit_code: int | None = None
         self.launch_token = uuid.uuid4().hex
@@ -172,7 +183,7 @@ class ManagedWorkerProcess:
                 if frame is None:
                     return
         except BaseException as exc:
-            self._receive(("fault", type(exc).__name__))
+            self._receive(("fault", f"reading: {type(exc).__name__}"))
 
     def _receive(self, value) -> None:
         # A full event queue must not leave a transport thread blocked after
@@ -196,7 +207,13 @@ class ManagedWorkerProcess:
                 self.process.stdin.write(value)
                 self.process.stdin.flush()
         except BaseException as exc:
-            self._receive(("fault", type(exc).__name__))
+            if self._terminating:
+                # The host is ending this tree, so the child's input may already
+                # be gone; Windows reports that write as EINVAL (bpo-19612), not
+                # BrokenPipeError. An undelivered frame is then expected, and the
+                # run loop observes the end itself, from EOF and the exit status.
+                return
+            self._receive(("fault", f"writing: {type(exc).__name__}"))
 
     def _send(self, **value) -> None:
         try:
@@ -207,14 +224,15 @@ class ManagedWorkerProcess:
     def _spawn(self) -> None:
         if self.process is not None:
             raise ExecutionGuardError("A worker process cannot be launched twice")
-        self.process = subprocess.Popen(self.command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+        # The child starts inside its job (and waits for init besides), so no
+        # backend or tool can run before its process tree is owned. A
+        # job-assignment failure never falls back.
+        self.process, self._job = popen_in_kill_job(self.command, name=job_name(self.launch_token),
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL, cwd=str(Path(__file__).resolve().parents[3]), bufsize=65536,
             env={key: value for key, value in os.environ.items() if not key.upper().startswith("PYTHON")},
             **background_process_kwargs(new_process_group=True))
         try:
-            # Child waits for init, so no backend or tool can run before its
-            # process tree is owned. A job-assignment failure never falls back.
-            self._job = windows_kill_job(self.process, name=job_name(self.launch_token))
             self.created_at = psutil.Process(self.process.pid).create_time()
         except BaseException:
             self.process.kill()
@@ -228,6 +246,9 @@ class ManagedWorkerProcess:
     def _terminate_tree(self) -> None:
         if self.process is None:
             return
+        self._terminating = True
+        # Whether the host, rather than the child itself, ended the root.
+        self._ended_by_host = self._ended_by_host or self.process.poll() is None
         if self._job:
             import ctypes
             from ctypes import wintypes
@@ -300,8 +321,9 @@ class ManagedWorkerProcess:
                     cancel_since = cancel_since or time.monotonic()
                     if time.monotonic() - cancel_since >= self.cancel_grace:
                         self._terminate_tree()
-                if not initialized and time.monotonic() - started > 15:
-                    raise ExecutionGuardError("Worker process did not complete its startup handshake")
+                if not initialized and time.monotonic() - started > self.STARTUP_SECONDS:
+                    raise ExecutionGuardError("Worker process did not complete its startup handshake within "
+                                              f"{self.STARTUP_SECONDS:g} s")
                 try:
                     response = responses.get_nowait()
                 except queue.Empty:
@@ -318,13 +340,16 @@ class ManagedWorkerProcess:
                             break
                         # A descendant may retain stdout after the root exits.
                         self._terminate_tree()
-                        if time.monotonic() - exit_since > 3:
+                        if time.monotonic() - exit_since > self.OUTPUT_CLOSE_AFTER_EXIT_SECONDS:
                             raise ExecutionGuardError("Worker output closure was not observed after process exit")
-                    if saw_eof and eof_since is not None and time.monotonic() - eof_since > 1:
+                    if (saw_eof and eof_since is not None
+                            and time.monotonic() - eof_since > self.EXIT_AFTER_CLOSE_SECONDS):
+                        # Only a child that sent its closing message is still
+                        # here: output without it is terminated at EOF below.
                         self._terminate_tree()
                     continue
                 if kind == "fault":
-                    raise ExecutionGuardError("Worker protocol transport failed")
+                    raise ExecutionGuardError(f"Worker protocol transport failed ({value})")
                 if value is None:
                     saw_eof = True
                     eof_since = time.monotonic()
@@ -380,7 +405,11 @@ class ManagedWorkerProcess:
                     raise ExecutionGuardError("Worker protocol message is invalid")
             self.exit_code = self.process.wait(timeout=5)
             if not child_closed or self.exit_code != 0:
-                raise ExecutionGuardError("Worker process ended without a clean completed protocol; reconcile in-flight work")
+                # Say what was observed, so a failure explains itself.
+                raise ExecutionGuardError(
+                    "Worker process ended without a clean completed protocol; reconcile in-flight work "
+                    f"(exit code {self.exit_code}, closing message {'received' if child_closed else 'missing'}"
+                    f"{', ended by the host' if self._ended_by_host else ''})")
         finally:
             self.close()
 
@@ -413,5 +442,14 @@ class ManagedWorkerProcess:
                     thread.join(timeout=.5)
             if self.process is not None:
                 for stream in (self.process.stdin, self.process.stdout):
-                    if stream is not None:
+                    if stream is None:
+                        continue
+                    try:
                         stream.close()
+                    except OSError:
+                        # Closing the input flushes frames the child can no
+                        # longer read: after it exits, Windows fails that write
+                        # with EINVAL (errno 22), elsewhere BrokenPipeError. The
+                        # handle is closed regardless, and the tree's end was
+                        # observed above from the job, not from this pipe.
+                        pass

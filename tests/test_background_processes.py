@@ -57,3 +57,38 @@ def test_main_tool_runner_combines_hidden_window_and_process_group_policy(tmp_pa
     else:
         assert options.get("start_new_session", False) is (not owned_group)
     assert options["stdin"] == (subprocess.DEVNULL if owned_group else None)
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows job objects")
+def test_popen_in_kill_job_owns_a_quick_child_and_its_descendants_despite_a_late_assignment(monkeypatch):
+    # Assigning a job after Popen returns loses to a child that exits first
+    # ("Access is denied"), and whatever the child started meanwhile is
+    # outside the job. A suspended start leaves nothing to race.
+    import time
+
+    import psutil
+
+    hidden = processes.background_process_kwargs(new_process_group=True)
+    assign = processes.windows_kill_job
+    finished = subprocess.Popen([sys.executable, "-c", "pass"], **hidden)
+    finished.wait(timeout=60)
+    with pytest.raises(PermissionError):
+        assign(finished)
+
+    def late(process, **kwargs):
+        time.sleep(.5)  # the child below would have started its own and exited by now
+        return assign(process, **kwargs)
+    monkeypatch.setattr(processes, "windows_kill_job", late)
+    code = ("import subprocess, sys; "
+            "print(subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'], stdin=subprocess.DEVNULL, "
+            "stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).pid)")
+    process, job = processes.popen_in_kill_job([sys.executable, "-c", code], stdout=subprocess.PIPE, text=True, **hidden)
+    try:
+        output, _ = process.communicate(timeout=60)
+        assert process.returncode == 0
+        descendant = psutil.Process(int(output))
+        assert descendant.is_running()
+    finally:
+        processes.close_windows_job(job)  # kill-on-close ends everything in the job
+    descendant.wait(timeout=30)
+    assert not descendant.is_running()

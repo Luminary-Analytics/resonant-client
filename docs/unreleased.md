@@ -8,6 +8,37 @@ The heartbeat remains paused. Documentation maintenance does not resume work,
 spending or grants, and changes no native implementation or installed bundle.
 The dated September 15/18 records below are historical.
 
+## September 27 Team: steadier on a busy machine (source only, not released)
+
+The Team suite (`team-tests.yml`) failed now and then on CI, on different
+tests in each run. Three of the causes were in the runtime, not the tests.
+
+- **Git started before Lumi owned it.** The host started each Git process and
+  then assigned it to a Windows job. A quick read (`git rev-parse`,
+  `git config --list`) could exit first when other threads held the host
+  busy, and assigning an exited process fails with "Access is denied". A
+  writer then failed to commit its result, and checks failed. Git processes,
+  check gates and worker children now start suspended, join their job, then
+  run (`processes.popen_in_kill_job`).
+- **Integration steps gave up on each other after 5 s.** Creating a writer,
+  committing its result, combining, checking and applying take turns on one
+  repository lock, and a check holds it while it runs. When two writers
+  finished together, the second failed if the first's commit took over 5 s.
+  A step now waits its turn, up to 25 minutes (the longest check plus its
+  Git work), and stops waiting as soon as its run is stopped.
+- **Stop could end a check with "[Errno 22] Invalid argument".** If the host
+  had already ended a check's process when its input thread wrote to it,
+  Windows failed the write, and the flush when the pipe closed, with EINVAL.
+  That error replaced the Stop. Input a finished process can't read is now
+  discarded.
+- A worker child had 1 s after closing its output to exit, or it was ended
+  and its work failed; it now has 15 s. Its startup has 60 s (it had 15 s).
+  A child's error now gives its exit code, whether its closing message
+  arrived and whether the host ended it.
+- The tests' waits allow for a loaded runner, and a wait that times out says
+  what the team was doing. The benchmark harness keeps the reason for its
+  own stops (`reason` in `observations.json`).
+
 ## September 27 Team: a team's results in its chat (source only, not released)
 
 **Use in chat.** The Team panel's **Use in chat** adds `@team:<run id>` to the

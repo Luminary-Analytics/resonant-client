@@ -9,6 +9,7 @@ import signal
 import subprocess
 import sys
 import threading
+import time
 
 from ...processes import background_process_kwargs
 from .process_worker import PROTOCOL_VERSION, encode_frame, read_frame, stdio_pipes
@@ -91,8 +92,12 @@ def main() -> int:
         for thread in readers:
             thread.start()
         code = process.wait()
+        # Forwarding the last output waits on the host reading it, which can
+        # take seconds on a busy machine; 1 s could report complete output as
+        # incomplete. A descendant holding a pipe open still leaves it so.
+        deadline = time.monotonic() + 10
         for thread in readers:
-            thread.join(timeout=1)
+            thread.join(timeout=max(0, deadline - time.monotonic()))
         with write_lock:
             stop_output.set()
         complete = all(not thread.is_alive() for thread in readers)

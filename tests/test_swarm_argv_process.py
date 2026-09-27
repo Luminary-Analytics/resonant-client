@@ -65,11 +65,13 @@ def test_timeout_and_stop_terminate_descendants_without_claiming_success(tmp_pat
     def check():
         if cause == "stop" and pid_file.exists():
             raise AdmissionClosed("Fixture Stop")
+    # The timeout counts from before the gate starts: it must cover the gate,
+    # the target and its child starting (1 s did not, on a loaded runner).
     result = process.execute([sys.executable, "-c", code], tmp_path,
-                             timeout_seconds=1 if cause == "timeout" else 10, cancel_check=check)
+                             timeout_seconds=10 if cause == "timeout" else 60, cancel_check=check)
     assert result.cancelled and result.timed_out == (cause == "timeout")
     assert process.cleanup_confirmed and not process.alive
-    assert pid_file.exists()
+    assert pid_file.exists(), "The target had not started its child when the gate stopped it"
     pid = int(pid_file.read_text())
     assert not psutil.pid_exists(pid) or psutil.Process(pid).status() == psutil.STATUS_ZOMBIE
 
@@ -92,12 +94,12 @@ def test_parent_pipe_eof_stops_effect_on_supported_process_group(tmp_path):
     worker = threading.Thread(target=execute)
     worker.start()
     try:
-        deadline = time.monotonic() + 4
-        while not pid_file.exists() and time.monotonic() < deadline:
+        deadline = time.monotonic() + 60  # the gate and its target start first
+        while not pid_file.exists() and time.monotonic() < deadline and worker.is_alive():
             time.sleep(.02)
-        assert pid_file.exists()
+        assert pid_file.exists(), (result, failure)
         process.process.stdin.close()
-        worker.join(timeout=5)
+        worker.join(timeout=30)
         assert not worker.is_alive() and process.cleanup_confirmed
         assert failure or result[0].exit_code != 0
         pid = int(pid_file.read_text())
@@ -105,7 +107,7 @@ def test_parent_pipe_eof_stops_effect_on_supported_process_group(tmp_path):
     finally:
         if process.alive:
             process.close()
-        worker.join(timeout=5)
+        worker.join(timeout=30)
 
 
 def test_unsupported_host_denies_before_any_process_launch(tmp_path, monkeypatch):

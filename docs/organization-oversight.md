@@ -211,7 +211,8 @@ A scheduled task (`lumi schedule run`, trigger `schedule`) and `lumi run`
 (trigger `headless`) have nobody to show the notice to when **their
 environment** says so: none of standard input, output and error is a
 terminal, and the process has no controlling terminal (POSIX: `/dev/tty`
-doesn't open; Windows: no console window in an interactive session). What
+doesn't open; Windows: no console window in an interactive session, and only
+a console handle counts as a terminal, not the `NUL` device). What
 started the run can't say that nobody is there; the app's **Run now** says
 the opposite, since the person is in the app, and its run is recorded as
 `schedule` with `unattended: false` and needs the notice confirmed like any

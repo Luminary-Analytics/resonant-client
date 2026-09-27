@@ -9,6 +9,7 @@ import base64
 import hashlib
 import io
 import json
+import os
 import re
 import sys
 import threading
@@ -1504,6 +1505,9 @@ class TestUnattended:
         assert headless._terminal_attached(io.StringIO(), _Terminal())
         monkeypatch.setattr(headless, "_controlling_terminal", lambda: True)
         assert headless._terminal_attached(io.StringIO(), io.StringIO())
+        # The null device isn't a terminal, though Windows' isatty says so.
+        with open(os.devnull, encoding="utf-8") as null:
+            assert not headless._is_terminal(null)
         # POSIX: whether /dev/tty opens.
         opened, closed = [], []
         assert headless._posix_tty(opener=lambda path, flags: opened.append(path) or 99, closer=closed.append)

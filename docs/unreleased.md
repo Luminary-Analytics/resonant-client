@@ -54,8 +54,12 @@ Validation on September 27, 2026:
   user refusals and from injection in a file; `lumi run`'s notice; the
   queue's bound, retries, refusals, halving and deletion; and joining the
   fake Lumi Cloud of `tests/test_cloud.py`, sending a turn, then leaving.
-- Full `pytest`: 4,699 passed, 5 skipped. `ruff`, `node --check` and the
-  node UI tests pass.
+- Full `pytest` before rebasing on the Team preview (#88): 4,699 passed, 5
+  skipped. After: 5,580 passed, 7 skipped, 8 failed, all Team preview
+  process tests. Five start child Pythons that need the `lumi` package
+  installed (as CI installs it) and pass with `PYTHONPATH` set; three fail
+  the same way on unmodified `origin/main` on this computer. `ruff`,
+  `node --check` and the node UI tests pass.
 - In the browser pane, against an isolated fixture (a copied source tree, a
   throwaway home, an Ollama stub and a stub Lumi Cloud, with a machine
   policy that enrolled the computer): the notice appeared above the message
@@ -70,9 +74,14 @@ Validation on September 27, 2026:
   four flags. At 375 px the notice wraps with no horizontal scroll; its
   text contrast is 13.4:1 (dark) and 14.1:1 (light). The real `~/.resonant`
   and Credential Manager were unchanged.
-- Not run: a packaged build, a real Lumi Cloud (see its own pull request),
-  the terminal UI and gateway notices in a real terminal, and screen
-  readers.
+- End to end with Lumi Cloud's oversight branch running locally: the
+  fixture app enrolled with an enrollment token's machine policy,
+  downloaded and verified the published oversight policy, showed the
+  notice with the organization's own words, and its two turns (six
+  records) appeared on the portal's Team activity, Conversations and
+  Security flags pages, messages redacted as above.
+- Not run: a packaged build, a deployed Lumi Cloud, the terminal UI and
+  gateway notices in a real terminal, and screen readers.
 
 ## September 26–27 the Team (swarming) preview — source only, not released
 

@@ -782,8 +782,11 @@ class SwarmStore:
         self._admitting(self._run(connection, context.scope, context.run_id))
         if sender["state"] not in ("leased", "running"):
             raise Conflict("Sender attempt is no longer active")
+        # A running participant, or an orchestrator (coordinator) whose turn has
+        # ended: its next round reads the message as planning input.
         recipient = connection.execute(
-            "SELECT id FROM attempts WHERE run_id=? AND id=? AND epoch=? AND state IN ('leased','running')",
+            "SELECT id FROM attempts WHERE run_id=? AND id=? AND epoch=? "
+            "AND (state IN ('leased','running') OR kind='coordinator')",
             (context.run_id, recipient_attempt_id, context.epoch),
         ).fetchone()
         if recipient is None:

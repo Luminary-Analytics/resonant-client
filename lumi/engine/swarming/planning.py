@@ -201,9 +201,11 @@ def parse_plan(
     raw_items = proposal["work_items"]
     if type(use_team) is not bool:
         raise PlanRejected("The team choice must be an explicit boolean")
-    if type(raw_items) is not list or not 1 <= len(raw_items) <= 256:
+    # A follow-up (namespace) may propose no more work: the objective is met,
+    # and its summary is the final report. A first plan always proposes work.
+    if type(raw_items) is not list or len(raw_items) > 256 or (not raw_items and namespace is None):
         raise PlanRejected("A coordinator plan must contain 1 to 256 work items")
-    if not use_team and len(raw_items) != 1:
+    if raw_items and not use_team and len(raw_items) != 1:
         raise PlanRejected("A serial recommendation requires exactly one work item")
     specifications: dict[str, tuple[dict[str, Any], AssignmentGrant]] = {}
     for item in raw_items:

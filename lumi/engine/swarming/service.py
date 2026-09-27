@@ -21,6 +21,7 @@ from . import AttemptContext, Command, Scope, SwarmStore, SwarmSupervisor
 from .coordinator import CoordinatorPlans
 from . import collaboration_desktop, managed_collaboration_desktop
 from . import connections as team_connections
+from .autopilot import MAX_ROUNDS, TeamAutopilot
 from .integration import CheckSpec, SwarmIntegration
 from .models import Conflict, IdempotencyConflict, RevisionConflict, ScopeDenied, SwarmError, require_id
 from .policy import PolicyProfile, normalize_scopes, team_provider
@@ -40,7 +41,7 @@ _FIELDS |= {"model_request_id", "action_id", "outcome", "used", "retry_work_item
 _FIELDS |= {"write_roots", "checks", "writer_ids", "candidate_id", "check_key", "expected_base",
             "target_revision", "approval_id", "work_item_id", "operation_id", "text", "effect_kind", "effect_id"}
 _FIELDS |= {"before_run_id", "limit", "artifact_id", "offset"}
-_FIELDS |= {"read_roots"}
+_FIELDS |= {"read_roots", "autonomy"}
 _FIELDS |= {"execution_mode"}
 _FIELDS |= {"managed_epoch", "kind", "process_id", "local_id"}
 _FIELDS |= collaboration_desktop.FIELDS
@@ -116,6 +117,8 @@ class SwarmRuntime:
         self._stores: dict[str, SwarmStore] = {}
         self._runners: dict[str, tuple[CapturedSession, SwarmWorkerRunner]] = {}
         self._schedulers: dict[str, SwarmScheduler] = {}
+        # Orchestrator loops for teams whose owner granted autonomy at start.
+        self._autopilots: dict[str, TeamAutopilot] = {}
         self._workflows: dict[str, Any] = {}
         self._candidate_details: dict[tuple[str, str], dict[str, Any]] = {}
         self._closed = False
@@ -424,10 +427,23 @@ class SwarmRuntime:
                 "execution_mode": self._execution_mode(capture), "managed": self._managed_view(capture, run_id),
                 "run": snapshot,
                 "coordinator_planning": self._planning_view(store, run_id, snapshot) if snapshot else None,
+                "autonomy": self._autonomy_view(store, run_id),
                 "collaboration": collaboration_desktop.view(store, capture.scope, run_id) if run_id and capture.scope.tenant_id == f"personal:{capture.scope.owner_id}" else None,
                 "managed_collaboration": self._managed_sharing[run_id].view() if run_id in self._managed_sharing else managed_collaboration_desktop.historical_view(store, capture.scope, run_id),
                 "events": [asdict(event) for event in store.events(capture.scope, run_id, after=after)] if run_id else [],
                 "message": unavailable or "Workers share scoped findings and isolated changes. Submitted results await independent review."}
+
+    def _autonomy_view(self, store, run_id):
+        """The orchestrator loop's status, or the retained grant once this host no longer runs it."""
+        if not run_id:
+            return None
+        autopilot = self._autopilots.get(run_id)
+        if autopilot is not None:
+            return autopilot.inspect()
+        grant = self._setup(store, run_id)[0].get("autonomy")
+        return {"enabled": True, "active": False, "rounds": grant["rounds"], "phase": "stopped",
+                "detail": "The orchestrator loop isn't running on this host. Continue the team yourself.",
+                "final_report": None} if grant else None
 
     def _planning_view(self, store, run_id, snapshot):
         setup, _ = self._setup(store, run_id)
@@ -451,8 +467,12 @@ class SwarmRuntime:
                 "default_requests": min(setup.get("coordinator_requests", 3), remaining) if remaining else 1,
                 "read_roots": roots, "worker_requests": setup.get("worker_requests")}
 
-    def _request_plan(self, capture, message):
-        """Admit one explicit fresh planner, then launch outside the UI/control lock."""
+    def _request_plan(self, capture, message, *, closing=False):
+        """Admit one explicit fresh planner, then launch outside the UI/control lock.
+
+        ``closing`` comes only from the orchestrator loop (autopilot.py): its
+        last turn writes the final report and may not start more work.
+        """
         message = copy.deepcopy(message)
         with self._lock:
             allowed = {"command", "action", "project", "session_id", "run_id", "request_id", "expected_revision",
@@ -500,6 +520,7 @@ class SwarmRuntime:
             context = AttemptContext(capture.scope, run_id, receipt.result["attempt_id"],
                                      receipt.result["worker_id"], runner.authority.epoch)
             plans = CoordinatorPlans(runner.supervisor, runner.authority, follow_up=True,
+                autonomous=bool(setup.get("autonomy")), closing=closing is True,
                 allowed_criteria=frozenset({"owner_review"} | {check["key"] for check in setup.get("checks", [])}))
             spec = copy.deepcopy(pair[0].backend_spec)
         # Stop can close runner admission while slow scope/process setup runs.
@@ -518,6 +539,15 @@ class SwarmRuntime:
         plan_mode = message.get("plan_mode", "manual")
         if plan_mode not in {"manual", "coordinator"}:
             raise ValueError("Choose manual investigations or coordinator planning")
+        # The owner's autonomy grant (autopilot.py): the orchestrator plans,
+        # dispatches and continues in rounds without approving each step.
+        autonomy = message.get("autonomy")
+        if autonomy is not None:
+            if plan_mode != "coordinator":
+                raise ValueError("Only an orchestrator-planned team can run itself")
+            if (type(autonomy) is not dict or set(autonomy) != {"rounds"} or type(autonomy["rounds"]) is not int
+                    or not 1 <= autonomy["rounds"] <= MAX_ROUNDS):
+                raise ValueError(f"Let the orchestrator run one to {MAX_ROUNDS} rounds")
         coordinator_requests = message.get("coordinator_requests", 3)
         worker_requests = message.get("worker_requests", 4)
         requests = message.get("request_limit", 20)
@@ -552,6 +582,7 @@ class SwarmRuntime:
                          "plan_mode": plan_mode,
                          **({"coordinator_requests": coordinator_requests, "worker_requests": worker_requests}
                             if plan_mode == "coordinator" else {}),
+                         **({"autonomy": {"rounds": autonomy["rounds"]}} if autonomy is not None else {}),
                          "max_workers": workers, "model": {"provider": capture.backend_spec.backend_type,
                                                            "model": capture.backend_spec.model}}
         if write_roots:
@@ -648,8 +679,11 @@ class SwarmRuntime:
                 }).result
                 context = AttemptContext(capture.scope, run_id, assigned["attempt_id"], assigned["worker_id"], authority.epoch)
                 runner.start_coordinator(context, capture.backend_spec,
-                    CoordinatorPlans(supervisor, authority,
+                    CoordinatorPlans(supervisor, authority, autonomous=autonomy is not None,
                                      allowed_criteria=frozenset({"owner_review"} | {check["key"] for check in checks})))
+                if autonomy is not None:
+                    autopilot = self._autopilots[run_id] = TeamAutopilot(self, run_id, rounds=autonomy["rounds"])
+                    autopilot.start()
                 return run_id
             self._command(supervisor, authority, "plan", {"work_items": work_items})
             if integration:
@@ -738,6 +772,8 @@ class SwarmRuntime:
                 getattr(runner, action)(command_id=message["request_id"], expected_revision=message["expected_revision"])
                 if action == "stop" and run_id in self._schedulers:
                     self._schedulers[run_id].close()
+                if action == "stop" and run_id in self._autopilots:
+                    self._autopilots[run_id].close()
             elif action in {"pause_worker", "resume_worker", "cancel_worker", "steer_worker"}:
                 if pair is None:
                     raise Conflict("Individual controls require this team's current execution host")
@@ -1135,6 +1171,8 @@ class SwarmRuntime:
         self._observer_stop.set()
         if self._observer is not None:
             self._observer.join(timeout=1)
+        for autopilot in tuple(self._autopilots.values()):
+            autopilot.close()
         for scheduler in tuple(self._schedulers.values()):
             scheduler.close()
         for workflow in tuple(self._workflows.values()):

@@ -94,6 +94,16 @@ class SwarmMailbox:
         with self.store._connection(write=True) as connection:
             self._active(connection)
             previous = self.store._duplicate(connection, self.context.run_id, actor, command_id, payload)
+            if previous is None and recipient_attempt_id == "orchestrator":
+                # The team's latest orchestrator turn; a finished one keeps the
+                # message for the next round's planning input (coordinator.py).
+                latest = connection.execute(
+                    "SELECT id FROM attempts WHERE run_id=? AND epoch=? AND kind='coordinator' "
+                    "AND id!=? ORDER BY rowid DESC LIMIT 1",
+                    (self.context.run_id, self.context.epoch, self.context.attempt_id)).fetchone()
+                if latest is None:
+                    raise ScopeDenied("This team has no orchestrator to message")
+                recipient_attempt_id = latest["id"]
             if previous is not None:
                 return Message(**previous)
             row = connection.execute(

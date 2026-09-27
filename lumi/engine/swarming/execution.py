@@ -20,6 +20,7 @@ import uuid
 
 from ..execution_guard import (
     FILE_TOOL_NAMES, SWARM_TOOL_NAMES, WRITE_TOOL_NAMES, ExecutionGuardError, ObservationOutcome, RequestPurpose,
+    ToolScopeRefused,
 )
 from .artifacts import SwarmArtifacts
 from .models import AdmissionClosed, AttemptContext, Command, Conflict, RevisionConflict, RunAuthority, ScopeDenied, require_id
@@ -425,17 +426,32 @@ class SwarmExecutionGuard:
                 # Tree traversal stays outside SQLite locks so stop/lease
                 # commands remain writable while a search scope is inspected.
                 self._validate_writer()
-                self._tool_scope(name, arguments)
-                with self.store._connection() as connection:
-                    self._live(connection)
-                    self._request(connection, request_id, for_tool=True)
-                    if name == "artifact_read":
-                        self.artifacts._authorized(connection, self.context, arguments["artifact_id"])
-            except AdmissionClosed:
+                try:
+                    self._tool_scope(name, arguments)
+                    with self.store._connection() as connection:
+                        self._live(connection)
+                        self._request(connection, request_id, for_tool=True)
+                        if name == "artifact_read":
+                            self.artifacts._authorized(connection, self.context, arguments["artifact_id"])
+                except ScopeDenied as exc:
+                    # A path outside the assignment or an undisclosed artifact:
+                    # nothing was admitted, so refuse this call and keep the
+                    # worker running. It hears why and can narrow the call.
+                    self._refused(request_id, name, str(exc))
+                    raise ToolScopeRefused(str(exc)) from None
+            except (AdmissionClosed, ToolScopeRefused):
                 raise  # Nothing was admitted; resume can repeat this preflight.
             except BaseException:
                 self.closed = True
                 raise
+
+    def _refused(self, request_id: str, name: str, reason: str) -> None:
+        """Keep a refused call visible in the run's history; it has no receipt."""
+        with self.store._connection(write=True) as connection:
+            self._live(connection)
+            self.store._event(connection, self.context.run_id, "tool_refused", {
+                "attempt_id": self.context.attempt_id, "request_id": request_id,
+                "tool": name, "reason": reason[:500]})
 
     def begin_tool(
         self, request_id: str, call_id: str, name: str,

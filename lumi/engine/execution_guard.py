@@ -25,6 +25,16 @@ class ExecutionGuardError(RuntimeError):
     """Admission is closed or its durable outcome cannot be established."""
 
 
+class ToolScopeRefused(ExecutionGuardError):
+    """One tool call was refused before admission; admission stays open.
+
+    Nothing ran and no receipt exists, so the model hears the reason as the
+    call's error result and may narrow it, as with an ordinary sandbox denial.
+    Only lexical scope, sandbox and allowlist checks raise it: lost admission,
+    integrity and persistence failures still close the boundary.
+    """
+
+
 class ExecutionGuard(Protocol):
     """Trusted, attempt-bound persistence interface; never model-supplied."""
 
@@ -86,6 +96,10 @@ class ExecutionBoundary:
         self.closed = True
         raise ExecutionGuardError(message)
 
+    def refuse(self, message: str) -> None:
+        """Refuse one tool call before admission, leaving the boundary open."""
+        raise ToolScopeRefused(message)
+
     def ensure_open(self) -> None:
         """Prevent later work after denial, uncertainty or failed persistence."""
         if self.closed:
@@ -107,6 +121,8 @@ class ExecutionBoundary:
         # retry a callback: its commit may have succeeded before an I/O failure.
         try:
             return getattr(self.guard, method)(*args, **kwargs)
+        except ToolScopeRefused:
+            raise  # Refused before admission: nothing ran, so nothing to reconcile.
         except Exception as exc:
             self.closed = True
             raise ExecutionGuardError(f"Execution guard {method} failed: {exc}") from exc
@@ -218,7 +234,7 @@ class ExecutionBoundary:
         """Check all names before hooks and special handlers can execute."""
         self.ensure_open()
         if name not in self.file_tools | self.runtime_tools or (allowed_names is not None and name not in allowed_names):
-            self.reject(f"Tool '{name}' is outside this guarded session's explicit allowlist")
+            self.refuse(f"Tool '{name}' is outside this guarded session's explicit allowlist")
         if self.request_id not in self._completed_requests:
             self.reject("Tools require a durably completed originating model request")
         self._persist("check_tool", self.request_id, name, copy.deepcopy(arguments))

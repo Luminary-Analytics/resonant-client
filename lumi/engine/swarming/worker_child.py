@@ -12,7 +12,8 @@ from typing import Any
 
 from ...gui.runtime import BackendSpec, bind_sonn_conversation
 from ..exclusions import ExclusionRules
-from ..execution_guard import ExecutionGuardError, FILE_TOOL_NAMES, SWARM_TOOL_NAMES, WRITE_TOOL_NAMES
+from ..execution_guard import (ExecutionGuardError, FILE_TOOL_NAMES, SWARM_TOOL_NAMES, ToolScopeRefused,
+                               WRITE_TOOL_NAMES)
 from ..sandbox import PathSandbox
 from ..session import Session
 from ..tools import AGENT_TOOLS, ToolResult
@@ -84,6 +85,8 @@ class _Channel:
                 if response["id"] != identity:
                     raise ExecutionGuardError("Worker host response identity does not match")
                 if response["ok"] is not True:
+                    if type(response.get("refused")) is str and response["refused"]:
+                        raise ToolScopeRefused(response["refused"][:500])
                     raise ExecutionGuardError(str(response.get("error") or "Worker operation denied"))
                 return response.get("result")
             raise ExecutionGuardError("Worker host response was not observed")

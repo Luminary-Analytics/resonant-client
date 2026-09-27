@@ -78,6 +78,14 @@ def entries(guard, kind):
     return [entry for entry in guard.records if entry["kind"] == kind]
 
 
+def assert_refused(events):
+    """The call was refused before running and reported as its denied result."""
+    refusals = [event for event in events if event.get("event") == "tool.result" and event.get("denied")
+                and str(event.get("output", "")).startswith("Refused before running:")]
+    assert refusals, "the refusal must reach the model as the call's result"
+    assert not any(event.get("code") == "execution_guard_blocked" for event in events)
+
+
 @pytest.mark.parametrize("name,args", [
     ("task", {"prompt": "spawn", "agent_type": "build"}),
     ("task_batch", {"tasks": [{"prompt": "spawn"}]}),
@@ -99,7 +107,7 @@ def test_forged_special_tools_are_rejected_before_hooks(tmp_path, name, args):
             return HookResult()
 
     events = list(session.run("Inspect files"))
-    assert any(event.get("code") == "execution_guard_blocked" for event in events)
+    assert_refused(events)
     assert hook_calls == []
     assert not entries(guard, "tool.begin")
     assert not list(tmp_path.iterdir())
@@ -145,7 +153,7 @@ def test_permission_callback_changes_are_rechecked(tmp_path, monkeypatch):
         return True
 
     events = list(session.run("Inspect files", on_permission=permission))
-    assert any(event.get("code") == "execution_guard_blocked" for event in events)
+    assert_refused(events)
     assert not entries(guard, "tool.begin")
 
 
@@ -445,7 +453,7 @@ def test_unregistered_runtime_handler_cannot_be_invented(tmp_path):
     backend = StreamingBackend(events=[tool_call("swarm_status", {}), done()])
     session = make_session(tmp_path, backend, guard)
     events = list(session.run("Inspect status"))
-    assert any(event.get("code") == "execution_guard_blocked" for event in events)
+    assert_refused(events)
     assert not entries(guard, "tool.begin")
 
 

@@ -107,6 +107,7 @@ class SparkleUpdater:
         self._last_check: float | None = None
         self._info: dict[str, Any] = {}
         self._pumping = False  # run_until turns the run loop (browser mode)
+        self._download_failure_recorded = False  # Sparkle reports it twice: as itself, then as the abort
         self._lock = threading.Lock()
         self.started = False
 
@@ -193,6 +194,9 @@ class SparkleUpdater:
 
     def aborted(self, domain: str, code: int) -> None:
         """Sparkle stopped a check or an install with an error."""
+        if self._download_failure_recorded:
+            self._download_failure_recorded = False
+            return  # the failed download that download_failed just recorded
         if domain == ERROR_DOMAIN:
             return  # Lumi's own refusal (offline mode): no check was made
         if domain == SPARKLE_ERROR_DOMAIN and code == SU_NO_UPDATE:
@@ -203,7 +207,9 @@ class SparkleUpdater:
         self._record("update.check", result="error", code=int(code))
 
     def download_failed(self, version: str, code: int) -> None:
+        """The update's download failed; Sparkle then aborts with the same error, which isn't recorded again."""
         self._record("update.check", result="error", stage="download", to_version=version, code=int(code))
+        self._download_failure_recorded = True
 
     def download_cancelled(self) -> None:
         self._record("update.cancelled")

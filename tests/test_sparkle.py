@@ -265,6 +265,7 @@ class TestInstallingAnUpdate:
         engine.choice(sparkle.CHOICE_INSTALL, "0.21.0")  # recorded when it installs
         engine.download_cancelled()
         engine.download_failed("0.21.0", 2001)
+        engine.aborted(sparkle.SPARKLE_ERROR_DOMAIN, 2001)  # Sparkle's abort after that failure: once is enough
         engine.will_install("0.21.0")
         got = [(r["type"], r["data"].get("result"), r["data"].get("to_version")) for r in records()]
         assert got == [

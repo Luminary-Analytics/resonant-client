@@ -1,8 +1,16 @@
 """
-WinSparkle auto-updater — ctypes wrapper around WinSparkle.dll.
+Automatic updates: WinSparkle on Windows, Sparkle 2 on macOS.
 
-Architecture
-------------
+On Windows this is a ctypes wrapper around WinSparkle.dll (below). On macOS
+the same functions drive Sparkle.framework through PyObjC (lumi/sparkle.py):
+the same EdDSA key (Sparkle's ``SUPublicEDKey``), the same feed choice from
+the mode, channel and pin (macOS reads its own feed files), the same audit
+records, the same wait while an agent turn runs, and the same stop when
+offline mode comes on. Only the desktop app starts Sparkle, on the main
+thread; running from source never loads either updater.
+
+Architecture (Windows)
+----------------------
 - The bundled WinSparkle.dll lives next to the .exe in the PyInstaller
   one-folder layout (or under sys._MEIPASS in one-file mode).
 - We call WinSparkle's C API via ctypes — no external Python dep.
@@ -34,9 +42,10 @@ Usage
     init_updater()                # called once at startup (safe no-op if DLL missing)
     check_for_updates_now()       # menu / button trigger for explicit check
 
-If WinSparkle.dll isn't present, the copy runs from source (unless
-LUMI_UPDATER_FROM_SOURCE=1), or it isn't Windows, every function becomes a
-no-op. The app still works, just without auto-update.
+If WinSparkle.dll (or on macOS Sparkle.framework) isn't present, the copy
+runs from source (unless LUMI_UPDATER_FROM_SOURCE=1, which tries WinSparkle
+only), or it's Linux, every function becomes a no-op. The app still works,
+just without auto-update.
 """
 
 from __future__ import annotations
@@ -46,8 +55,10 @@ import logging
 import os
 import sys
 from pathlib import Path
+from typing import Any, Callable
 
 from lumi import __version__
+from lumi import update_channels
 from lumi.update_channels import UpdatePreferences, read as read_update_preferences
 
 logger = logging.getLogger(__name__)
@@ -58,7 +69,10 @@ logger = logging.getLogger(__name__)
 # The matching private key lives at ~/.lumi/keys/eddsa_priv.key on the
 # developer's machine and is used by the release CI to sign every installer.
 # Rotating this key requires a coordinated push: new pubkey here + new privkey
-# in CI secret + signed first-update at the new key.
+# in CI secret + signed first-update at the new key. The macOS build copies it
+# into Lumi.app's Info.plist as Sparkle's SUPublicEDKey (packaging/lumi.spec),
+# so the same key signs the Windows installer and the macOS disk image; an
+# unsigned (ad hoc) Mac app has no other way to trust an update.
 EDDSA_PUBLIC_KEY = "HgNb0s7xavpa1bFyX/8B24AnuUdgekpvgO6HQU+zv8k="
 
 # Still the pre-rebrand Pages address on purpose: every installed SONN Client
@@ -68,6 +82,10 @@ EDDSA_PUBLIC_KEY = "HgNb0s7xavpa1bFyX/8B24AnuUdgekpvgO6HQU+zv8k="
 # redirect Pages project sites after a rename). This is the stable feed; the
 # beta channel and pinned release lines have their own (lumi/update_channels.py).
 APPCAST_URL = "https://luminary-analytics.github.io/resonant-client/appcast.xml"
+# The macOS app's stable feed, which lists disk images: Lumi.app's SUFeedURL
+# (packaging/lumi.spec). The delegate in lumi/sparkle.py answers with the
+# channel's or pin's feed instead.
+MACOS_APPCAST_URL = "https://luminary-analytics.github.io/resonant-client/appcast-macos.xml"
 COMPANY_NAME = "Luminary Analytics"
 APP_NAME = "Lumi"
 
@@ -83,10 +101,12 @@ UPDATE_CHECK_INTERVAL_SEC = 24 * 60 * 60
 # ---- DLL loading -------------------------------------------------------------
 
 _dll: ctypes.CDLL | None = None
+# macOS: Sparkle (lumi/sparkle.SparkleUpdater), while it may check.
+_sparkle: Any = None
 _initialized = False
 # The update settings applied at startup; a change in Settings waits for a restart.
 _preferences: UpdatePreferences | None = None
-# Offline mode came on while WinSparkle ran, so it was stopped; it starts again after a restart.
+# Offline mode came on while the updater ran, so it was stopped; it starts again after a restart.
 _stopped_for_offline = False
 
 # WinSparkle calls these from its own threads, never the main one.
@@ -194,6 +214,28 @@ def _load_dll() -> ctypes.CDLL | None:
     return dll
 
 
+def _load_sparkle() -> Any:
+    """Sparkle for this macOS app (lumi/sparkle.py), not yet started; None elsewhere.
+
+    Only the packaged Lumi.app: Sparkle updates the app bundle it runs in, and
+    from source that would be Python's own. LUMI_UPDATER_FROM_SOURCE doesn't
+    change that.
+    """
+    if update_channels.platform_name() != "macos":
+        return None
+    if not getattr(sys, "frozen", False):
+        logger.debug("Running from source; Sparkle stays off")
+        return None
+    from lumi import sparkle
+
+    framework = sparkle.framework_path()
+    if framework is None:
+        logger.warning("Sparkle.framework not found in Lumi.app; auto-update disabled")
+        return None
+    return sparkle.SparkleUpdater(framework, record=_record, turn_running=_turn_running,
+                                  close_app=lambda: _host.get("shutdown"))
+
+
 def set_host(*, busy=None, shutdown=None) -> None:
     """How the running app reports work in progress and closes itself for an update.
 
@@ -219,14 +261,18 @@ def _record(event_type: str, **fields) -> None:
         logger.debug("Couldn't record %s", event_type, exc_info=True)
 
 
-def _can_shutdown() -> int:
-    """1 if the installer may close Lumi now; 0 while an agent turn runs."""
+def _turn_running() -> bool:
+    """Whether an agent turn runs now; True when the app can't say, so the turn is kept."""
     busy = _host.get("busy")
     try:
-        running = bool(busy()) if callable(busy) else False
+        return bool(busy()) if callable(busy) else False
     except Exception:
-        running = True  # unsure: keep the turn, the person can install later
-    if running:
+        return True  # unsure: keep the turn, the person can install later
+
+
+def _can_shutdown() -> int:
+    """1 if the installer may close Lumi now; 0 while an agent turn runs."""
+    if _turn_running():
         _record("update.deferred", reason="an agent turn is running")
         return 0
     return 1
@@ -272,20 +318,25 @@ def _register_callbacks(dll) -> None:
 # ---- Public API --------------------------------------------------------------
 
 
+def _active() -> bool:
+    return _dll is not None or _sparkle is not None
+
+
 def init_updater(preferences: UpdatePreferences | None = None) -> bool:
     """
-    Initialize WinSparkle and start its background update-check thread.
+    Initialize WinSparkle and start its background update-check thread, or
+    on macOS start Sparkle (which must happen on the main thread).
 
-    Safe to call multiple times — idempotent. Safe on non-Windows or when
-    the DLL isn't bundled — becomes a no-op. With the update mode ``off``
-    WinSparkle isn't loaded at all, so nothing checks or prompts.
+    Safe to call multiple times — idempotent. Safe on Linux or when the DLL
+    or framework isn't bundled — becomes a no-op. With the update mode
+    ``off`` neither updater is loaded at all, so nothing checks or prompts.
 
-    Returns True if WinSparkle is now active, False if disabled/unavailable.
+    Returns True if an updater is now active, False if disabled/unavailable.
     """
     global _dll, _initialized, _preferences
 
     if _initialized:
-        return _dll is not None
+        return _active()
 
     _initialized = True
     try:
@@ -297,9 +348,11 @@ def init_updater(preferences: UpdatePreferences | None = None) -> bool:
         logger.info("Updates are off%s", f" (managed by {_preferences.managed_by})" if _preferences.managed_by else "")
         return False
     if _preferences.offline:
-        # Not loaded at all: WinSparkle connects from native code, outside Lumi's own check.
+        # Not loaded at all: WinSparkle and Sparkle connect from native code, outside Lumi's own check.
         logger.info("Not checking for updates: %s", _preferences.offline)
         return False
+    if update_channels.platform_name() == "macos":
+        return _init_sparkle(_preferences)
     _dll = _load_dll()
     if _dll is None:
         return False
@@ -334,6 +387,16 @@ def init_updater(preferences: UpdatePreferences | None = None) -> bool:
         return False
 
 
+def _init_sparkle(preferences: UpdatePreferences) -> bool:
+    """Start Sparkle for this macOS app; see lumi/sparkle.py."""
+    global _sparkle
+    engine = _load_sparkle()
+    if engine is None or not engine.start(preferences):
+        return False
+    _sparkle = engine
+    return True
+
+
 def check_for_updates_now(silent: bool = False) -> bool:
     """
     Trigger an immediate update check.
@@ -343,9 +406,13 @@ def check_for_updates_now(silent: bool = False) -> bool:
         "Check for updates" actions.
     silent=True: only show UI if an update is found. Use for automatic
         background re-checks.
+
+    On macOS Sparkle checks on the main thread, whichever thread asks.
     """
     if not _initialized:
         init_updater()
+    if _sparkle is not None:
+        return _sparkle.check(user_initiated=not silent)
     if _dll is None:
         logger.debug("Update check requested but WinSparkle is unavailable or updates are off")
         return False
@@ -361,12 +428,27 @@ def check_for_updates_now(silent: bool = False) -> bool:
         return False
 
 
+def _unavailable_reason(prefs: UpdatePreferences) -> str:
+    """Why this copy doesn't update itself, for Settings; "" when it does or updates are off."""
+    if _active() or prefs.mode == "off" or prefs.offline or _stopped_for_offline:
+        return ""
+    if not getattr(sys, "frozen", False):
+        return "This copy runs from source, so it doesn't update itself."
+    if prefs.platform == "linux":
+        return ("Lumi doesn't update itself on Linux: your package manager does, or a new AppImage or "
+                "tarball.")
+    return "Lumi's updater didn't start, so this copy doesn't update itself. The startup log says why."
+
+
 def status() -> dict:
     """What Settings shows: the update settings in effect and the last check.
 
     ``pending`` holds settings saved since startup, which apply after a
     restart; ``available`` is False when this copy can't update itself
-    (running from source, not on Windows, or updates are off).
+    (running from source, on Linux, or updates are off), and then
+    ``unavailable`` says why. ``engine`` names the updater (``winsparkle`` or
+    ``sparkle``); on macOS ``sparkle`` reports what Sparkle read at start,
+    such as the feed it resolved.
     """
     if not _initialized:
         init_updater()
@@ -382,27 +464,36 @@ def status() -> dict:
             last_check = value if value > 0 else None
         except (OSError, AttributeError, ValueError):
             last_check = None
+    elif _sparkle is not None:
+        last_check = _sparkle.last_check()
     # Only what changes behavior counts: with updates off, or a pin that
     # makes the channel moot, a saved change isn't waiting for anything.
     def effect(prefs: UpdatePreferences) -> tuple:
         return ("off",) if prefs.mode == "off" else (prefs.mode, prefs.feed_url)
 
     changed = effect(saved) != effect(active)
-    # Offline mode applies now, not after a restart: it stops WinSparkle when it comes on.
-    return {**active.as_dict(), "offline": saved.offline, "version": __version__, "available": _dll is not None,
-            "last_check": last_check, "pending": saved.as_dict() if changed else None,
-            # Offline mode kept or stopped WinSparkle this run, and no longer does.
-            "restart_to_check": ((_stopped_for_offline or bool(active.offline)) and not saved.offline
-                                 and saved.mode != "off")}
+    engine = "winsparkle" if _dll is not None else "sparkle" if _sparkle is not None else ""
+    # Offline mode applies now, not after a restart: it stops the updater when it comes on.
+    result = {**active.as_dict(), "offline": saved.offline, "version": __version__, "available": _active(),
+              "engine": engine, "unavailable": _unavailable_reason(active),
+              "last_check": last_check, "pending": saved.as_dict() if changed else None,
+              # Offline mode kept or stopped the updater this run, and no longer does.
+              "restart_to_check": ((_stopped_for_offline or bool(active.offline)) and not saved.offline
+                                   and saved.mode != "off")}
+    if _sparkle is not None:
+        result["sparkle"] = _sparkle.status()
+    return result
 
 
 def apply_offline_mode() -> str:
-    """Stop WinSparkle at once if offline mode now keeps it from the update site; returns why, or "".
+    """Stop the updater at once if offline mode now keeps it from the update site; returns why, or "".
 
     Called when Settings (or the policy) changes offline mode. Turning it off
     again takes effect at the next start, like the other update settings.
+    WinSparkle is cleaned up; Sparkle can't be, so its delegate refuses every
+    later check and download (lumi/sparkle.SparkleUpdater.stop).
     """
-    global _dll, _stopped_for_offline
+    global _dll, _sparkle, _stopped_for_offline
     try:
         reason = read_update_preferences().offline
     except Exception:
@@ -417,13 +508,36 @@ def apply_offline_mode() -> str:
         _dll = None
         _stopped_for_offline = True
         logger.info("Stopped checking for updates: %s", reason)
+    if reason and _sparkle is not None:
+        _sparkle.stop(reason)
+        # Its delegate keeps it alive (lumi/sparkle._KEEP), refusing, for the rest of the run.
+        _sparkle = None
+        _stopped_for_offline = True
     return reason
 
 
+def run_main_loop(done: Callable[[], bool]) -> bool:
+    """Browser mode's wait on macOS: turn the main run loop until ``done()`` while Sparkle runs.
+
+    Sparkle's timers and the checks other threads hand it run on the main
+    thread, which in browser mode would otherwise just wait for the server.
+    Returns False at once, doing nothing, when no updater needs the loop.
+    """
+    engine = _sparkle
+    if engine is None or not getattr(engine, "started", False):
+        return False
+    try:
+        engine.run_until(done)
+    except Exception:  # Ctrl+C (KeyboardInterrupt) still reaches the caller
+        logger.exception("Turning the run loop failed; waiting without it")
+        return False
+    return True
+
+
 def reset_for_tests() -> None:
-    """Forget the startup state (tests only). From source WinSparkle never loads."""
-    global _dll, _initialized, _preferences, _stopped_for_offline
-    _dll, _initialized, _preferences, _stopped_for_offline = None, False, None, False
+    """Forget the startup state (tests only). From source neither updater loads."""
+    global _dll, _sparkle, _initialized, _preferences, _stopped_for_offline
+    _dll, _sparkle, _initialized, _preferences, _stopped_for_offline = None, None, False, None, False
     _callbacks.clear()
     set_host()
 
@@ -433,7 +547,8 @@ def cleanup_updater() -> None:
     Stop WinSparkle's background thread cleanly. Call on app shutdown.
 
     Optional — if the process exits without this, WinSparkle will be torn
-    down by the OS. But calling it is the polite move.
+    down by the OS. But calling it is the polite move. Sparkle has nothing
+    to stop: it ends with the process.
     """
     global _dll, _initialized
 

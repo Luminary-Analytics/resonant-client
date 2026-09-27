@@ -108,3 +108,48 @@ def test_the_msi_is_hosted_beside_the_installer_and_offered_to_administrators(tm
     assert (site / "downloads" / "v0.21.0" / "lumi-0.21.0.msi").read_bytes() == b"msi 0.21.0"
     page = (site / "index.html").read_text(encoding="utf-8")
     assert 'href="downloads/v0.21.0/lumi-0.21.0.msi"' in page and "msiexec /i" in page
+
+
+def _disk_image(tmp_path: Path, version: str) -> Path:
+    path = tmp_path / "dist" / f"lumi-{version}.dmg"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(f"disk image {version}".encode())
+    return path
+
+
+def test_the_disk_image_joins_its_release_and_the_page_offers_both(tmp_path):
+    pages = _load()
+    site = tmp_path / "site"
+    site.mkdir()
+    pages.publish(site, _installer(tmp_path, "0.21.0"), "0.21.0")
+    windows_only = (site / "index.html").read_text(encoding="utf-8")
+    assert "macOS" not in windows_only and "appcast-macos.xml" not in windows_only
+    target = pages.publish(site, _disk_image(tmp_path, "0.21.0"), "0.21.0", platform="macos")
+    assert target == site / "downloads" / "v0.21.0" / "lumi-0.21.0.dmg"
+    assert (site / "downloads" / "v0.21.0" / "lumi-setup-0.21.0.exe").exists()
+    page = (site / "index.html").read_text(encoding="utf-8")
+    assert 'href="downloads/v0.21.0/lumi-setup-0.21.0.exe">Download Lumi 0.21.0 for Windows' in page
+    assert 'href="downloads/v0.21.0/lumi-0.21.0.dmg">Download Lumi 0.21.0 for macOS' in page
+    assert 'href="appcast.xml"' in page and 'href="appcast-macos.xml"' in page
+    # Not notarized: the page says how to open it the first time.
+    assert "Open Anyway" in page and "Privacy &amp; Security" in page
+    pages.publish(site, _disk_image(tmp_path, "0.21.0"), "0.21.0", platform="macos", notarized=True)
+    assert "Open Anyway" not in (site / "index.html").read_text(encoding="utf-8")
+
+
+def test_the_macos_package_is_offered_to_administrators_and_betas_leave_the_page(tmp_path):
+    pages = _load()
+    site = tmp_path / "site"
+    site.mkdir()
+    pages.publish(site, _installer(tmp_path, "0.21.0"), "0.21.0")
+    package = tmp_path / "dist" / "lumi-0.21.0.pkg"
+    package.write_bytes(b"pkg 0.21.0")
+    pages.publish(site, _disk_image(tmp_path, "0.21.0"), "0.21.0", extras=[package], platform="macos")
+    page = (site / "index.html").read_text(encoding="utf-8")
+    assert 'href="downloads/v0.21.0/lumi-0.21.0.pkg"' in page and "sudo installer -pkg" in page
+    pages.publish(site, _installer(tmp_path, "0.22.0-beta.1"), "0.22.0-beta.1")
+    pages.publish(site, _disk_image(tmp_path, "0.22.0-beta.1"), "0.22.0-beta.1", platform="macos")
+    assert (site / "downloads" / "v0.22.0-beta.1" / "lumi-0.22.0-beta.1.dmg").exists()
+    assert (site / "index.html").read_text(encoding="utf-8") == page
+    with pytest.raises(ValueError, match="linux"):
+        pages.publish(site, _disk_image(tmp_path, "0.22.0"), "0.22.0", platform="linux")

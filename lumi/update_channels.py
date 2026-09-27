@@ -12,8 +12,11 @@ Settings > Updates, or an organization policy, sets three values:
   channel.
 
 Each channel and release line has its own feed beside the installers on the
-update site; ``packaging/update_appcast.py`` writes them. WinSparkle takes a
-feed URL, not a filter, so choosing the feed is how the choice is enforced.
+update site; ``packaging/update_appcast.py`` writes them. WinSparkle and
+Sparkle take a feed URL, not a filter, so choosing the feed is how the choice
+is enforced. macOS has feeds of its own (``appcast-macos.xml`` and so on,
+listing disk images), so the Windows feeds every installed copy polls keep
+their addresses and contents; ``platform_name`` picks the set.
 
 A copy installed from the MSI package (packaging/lumi.wxs), the macOS
 installer package (packaging/macos_pkg.py) or a Linux .deb or .rpm
@@ -29,10 +32,10 @@ constructing a ``SettingsManager``, which would write the file and move keys
 into the credential store before the app has started.
 
 In offline mode (lumi/offline.py) the update site is reachable only when it
-is an allowed host; otherwise ``offline`` says why and WinSparkle isn't
-loaded, so nothing checks or downloads. Updates then come from a file
-(lumi/update_file.py). Turning offline mode on stops a running WinSparkle at
-once (``updater.apply_offline_mode``).
+is an allowed host; otherwise ``offline`` says why and neither WinSparkle nor
+Sparkle is loaded, so nothing checks or downloads. Updates then come from a
+file (lumi/update_file.py). Turning offline mode on stops a running updater
+at once (``updater.apply_offline_mode``).
 """
 
 from __future__ import annotations
@@ -49,6 +52,9 @@ from typing import Any
 FEED_BASE = "https://luminary-analytics.github.io/resonant-client/"
 MODES = ("automatic", "manual", "off")
 CHANNELS = ("stable", "beta")
+# Which feeds a copy reads: macOS reads its own; Windows, and Linux (which
+# never updates itself), the feeds every earlier install polls.
+PLATFORMS = ("windows", "macos", "linux")
 DEFAULTS = {"mode": "automatic", "channel": "stable", "pin": ""}
 # Packages that update the copy they installed, by their install marker's name:
 # where the copy came from, and what updates it.
@@ -117,10 +123,19 @@ def installed_by(executable: str | None = None) -> str:
     return ""
 
 
-def feed_name(channel: str, pin: str) -> str:
+def platform_name() -> str:
+    """The feeds this copy reads: ``macos``, ``windows``, or ``linux``."""
+    if sys.platform == "darwin":
+        return "macos"
+    return "windows" if sys.platform == "win32" else "linux"
+
+
+def feed_name(channel: str, pin: str, platform: str = "windows") -> str:
+    """The feed file for a channel or pin: ``appcast.xml`` and its kin, or the macOS ones."""
+    prefix = "appcast-macos" if platform == "macos" else "appcast"
     if pin:
-        return f"appcast-{pin}.xml"
-    return "appcast-beta.xml" if channel == "beta" else "appcast.xml"
+        return f"{prefix}-{pin}.xml"
+    return f"{prefix}-beta.xml" if channel == "beta" else f"{prefix}.xml"
 
 
 @dataclass(frozen=True)
@@ -135,10 +150,12 @@ class UpdatePreferences:
     problems: tuple[str, ...] = field(default=())  # stored values that were ignored, and why
     installed_by: str = ""  # a MANAGED_INSTALLERS name: that updates this copy
     offline: str = ""  # why offline mode keeps the updater from the update site, or ""
+    # Whose feeds (PLATFORMS): the running copy's unless a caller says otherwise.
+    platform: str = field(default_factory=lambda: platform_name())
 
     @property
     def feed_url(self) -> str:
-        return FEED_BASE + feed_name(self.channel, self.pin)
+        return FEED_BASE + feed_name(self.channel, self.pin, self.platform)
 
     def describe(self) -> str:
         """A short phrase for the feed, e.g. "the 0.20 release line"."""
@@ -149,7 +166,8 @@ class UpdatePreferences:
     def as_dict(self) -> dict[str, Any]:
         return {"mode": self.mode, "channel": self.channel, "pin": self.pin, "feed": self.feed_url,
                 "describe": self.describe(), "managed_by": self.managed_by, "locked": list(self.locked),
-                "problems": list(self.problems), "installed_by": self.installed_by, "offline": self.offline}
+                "problems": list(self.problems), "installed_by": self.installed_by, "offline": self.offline,
+                "platform": self.platform}
 
 
 def read(settings_path: Path | None = None, policy_state: Any = None,
@@ -189,16 +207,17 @@ def read(settings_path: Path | None = None, policy_state: Any = None,
     source = installed_by() if installer is None else installer
     if source in MANAGED_INSTALLERS:
         values["mode"] = "off"
+    platform = platform_name()
     offline_reason = ""
     if values["mode"] != "off":
         from . import offline
 
-        offline_reason = offline.refusal(FEED_BASE + feed_name(values["channel"], values["pin"]), "the update check",
-                                         offline.read(path, state))
+        offline_reason = offline.refusal(FEED_BASE + feed_name(values["channel"], values["pin"], platform),
+                                         "the update check", offline.read(path, state))
     return UpdatePreferences(mode=values["mode"], channel=values["channel"], pin=values["pin"],
                              managed_by=policy.organization if (policy and locked) else "",
                              locked=tuple(sorted(locked)), problems=tuple(problems), installed_by=source,
-                             offline=offline_reason)
+                             offline=offline_reason, platform=platform)
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -48,6 +48,16 @@
       "platforms": ["win32"]
     },
     {
+      "name": "Sparkle",
+      "version": "2.10.0",
+      "license": "MIT AND BSD-2-Clause AND Zlib",
+      "url": "https://sparkle-project.org/",
+      "purl": "pkg:github/sparkle-project/Sparkle@2.10.0",
+      "license_files": ["packaging/sparkle/LICENSE"],
+      "note": "macOS update checks (Sparkle.framework in Lumi.app). Includes bsdiff (BSD-2-Clause), sais-lite (MIT), orlp/ed25519 (Zlib) and SUSignatureVerifier (BSD-2-Clause), whose notices are in its license file. Fetched and SHA-256 verified by packaging/fetch_sparkle.sh.",
+      "platforms": ["darwin"]
+    },
+    {
       "name": "marked",
       "version": "12.0.2",
       "license": "MIT",

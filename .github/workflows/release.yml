@@ -19,6 +19,19 @@ name: Release
 #      a beta tag (vX.Y.Z-beta.N) to the beta feed only
 #   6. Publishes gh-pages as one fresh commit. WinSparkle in installed copies
 #      picks up the release within 24h (or on next launch if the check is stale)
+#
+# macOS, alongside (jobs `macos` and `publish-macos`):
+#   7. Builds Lumi.app with Sparkle, the DMG and the PKG (packaging/build_macos.sh)
+#      on Apple silicon. With the Apple secrets (docs/macos.md) they are signed
+#      with the Developer ID, notarized and stapled; without them the app is
+#      signed ad hoc, and the run, the release and the download page say it
+#      isn't notarized.
+#   8. Once the Windows job has published, signs the DMG with the same EdDSA
+#      key, adds the DMG and PKG to the GitHub Release, copies the DMG to the
+#      Pages site beside the installer and adds it to the macOS feeds
+#      (appcast-macos*.xml; the Windows feeds are left as they are). Sparkle in
+#      installed Macs picks it up within 24h.
+#   A failed macOS build doesn't hold the Windows release back; rerun its jobs.
 
 on:
   push:
@@ -260,4 +273,228 @@ jobs:
           git diff --cached --quiet && exit 0  # nothing changed, e.g. retry of an existing release
           tree=$(git write-tree)
           commit=$(git commit-tree "$tree" -m "release: Lumi ${{ steps.version.outputs.version }} installer and appcast")
+          git push --force origin "$commit:refs/heads/gh-pages"
+
+  macos:
+    # Lumi.app in a DMG (Sparkle updates it from the macOS feeds) and a PKG for
+    # device management, built on Apple silicon by packaging/build_macos.sh.
+    runs-on: macos-latest
+    timeout-minutes: 60
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      notarized: ${{ steps.status.outputs.notarized }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Extract version from tag
+        id: version
+        shell: bash
+        run: |
+          VERSION="${GITHUB_REF#refs/tags/v}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Building the macOS release $VERSION"
+
+      - name: Sanity check — tag matches __version__
+        shell: bash
+        run: |
+          PKG_VERSION=$(python3 -c "import re,pathlib;m=re.search(r'__version__\\s*=\\s*\"([^\"]+)\"',pathlib.Path('lumi/__init__.py').read_text());print(m.group(1))")
+          if [ "$PKG_VERSION" != "${{ steps.version.outputs.version }}" ]; then
+            echo "::error::Tag version (${{ steps.version.outputs.version }}) does not match lumi/__init__.py __version__ ($PKG_VERSION)"
+            exit 1
+          fi
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          cache: 'pip'
+
+      - name: Install the pinned SBOM tools
+        run: python3 -m pip install --require-hashes -r packaging/tools-requirements.txt
+
+      # Signed with the Developer ID, notarized and stapled when these secrets
+      # exist (RELEASING.md, docs/macos.md); otherwise signed ad hoc.
+      - name: Build Lumi.app, the DMG and the PKG
+        env:
+          MACOS_SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
+          MACOS_SIGN_P12_BASE64: ${{ secrets.MACOS_SIGN_P12_BASE64 }}
+          MACOS_SIGN_P12_PASSWORD: ${{ secrets.MACOS_SIGN_P12_PASSWORD }}
+          MACOS_INSTALLER_IDENTITY: ${{ secrets.MACOS_INSTALLER_IDENTITY }}
+          APPLE_API_KEY_BASE64: ${{ secrets.APPLE_API_KEY_BASE64 }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: bash packaging/build_macos.sh --sbom "dist/lumi-${{ steps.version.outputs.version }}-macos-sbom.cdx.json"
+
+      - name: Smoke-test the app
+        env:
+          LUMI_KEYCHAIN: 'off'
+        run: |
+          set -euo pipefail
+          export HOME="$(mktemp -d)"
+          app="dist/Lumi.app/Contents/MacOS/lumi"
+          "$app" --version | tee version.txt
+          grep -qx "lumi ${{ steps.version.outputs.version }}" version.txt
+          "$app" --print-pubkey | tee pubkey.txt
+          test "EDDSA_PUBLIC_KEY=$(plutil -extract SUPublicEDKey raw dist/Lumi.app/Contents/Info.plist)" = "$(sed -n 1p pubkey.txt)"
+          test -x dist/Lumi.app/Contents/Frameworks/Sparkle.framework/Versions/B/Autoupdate
+          "$app" updates | tee updates.json
+          python3 -c 'import json; s = json.load(open("updates.json")); assert s["platform"] == "macos" and s["installed_by"] == "", s'
+
+      - name: Record whether the DMG is notarized
+        id: status
+        run: |
+          dmg="dist/installer/lumi-${{ steps.version.outputs.version }}.dmg"
+          if xcrun stapler validate "$dmg" >/dev/null 2>&1; then
+            echo "notarized=true" >> "$GITHUB_OUTPUT"
+            echo "The DMG is signed with the Developer ID, notarized and stapled."
+          else
+            echo "notarized=false" >> "$GITHUB_OUTPUT"
+            echo "::warning title=macOS build not notarized::Lumi.app is signed ad hoc, not with a Developer ID, and the DMG isn't notarized. macOS won't open it until each tester chooses Open Anyway in System Settings > Privacy & Security. Add the Apple secrets in RELEASING.md to sign and notarize."
+          fi
+
+      - name: Gather the release files
+        run: |
+          set -euo pipefail
+          v="${{ steps.version.outputs.version }}"
+          mkdir -p release
+          cp "dist/installer/lumi-$v.dmg" "dist/installer/lumi-$v.pkg" "dist/lumi-$v-macos-sbom.cdx.json" release/
+          cp "$(find dist/Lumi.app -name THIRD_PARTY_NOTICES.txt | head -1)" "release/lumi-$v-macos-THIRD_PARTY_NOTICES.txt"
+          ls -l release
+
+      - name: Keep them for the publishing job
+        uses: actions/upload-artifact@v4
+        with:
+          name: lumi-macos-release
+          path: release/
+          if-no-files-found: error
+          retention-days: 7
+
+  publish-macos:
+    # After the Windows job, which creates the GitHub Release and pushes
+    # gh-pages; this adds to both. On Windows, so winsparkle-tool signs the
+    # DMG exactly as it signs the installer, with the same key.
+    needs: [release, macos]
+    runs-on: windows-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Fetch the macOS release files
+        uses: actions/download-artifact@v4
+        with:
+          name: lumi-macos-release
+          path: release
+
+      # After notarization and stapling (the macos job), so the signature
+      # covers the DMG's final bytes, as Sparkle downloads them.
+      - name: Sign the DMG with EdDSA
+        id: sign
+        shell: pwsh
+        env:
+          EDDSA_PRIVATE_KEY: ${{ secrets.EDDSA_PRIVATE_KEY }}
+        run: |
+          if (-not $env:EDDSA_PRIVATE_KEY) {
+              throw "EDDSA_PRIVATE_KEY repo secret is not set."
+          }
+          $keyPath = "$env:RUNNER_TEMP\eddsa_priv.key"
+          $env:EDDSA_PRIVATE_KEY | Out-File -Encoding ascii -NoNewline $keyPath
+          $tool = "packaging/winsparkle/WinSparkle-0.9.2/bin/winsparkle-tool.exe"
+          $dmg = "release/lumi-${{ needs.macos.outputs.version }}.dmg"
+          $signature = & $tool sign --private-key-file $keyPath $dmg
+          if ($LASTEXITCODE -ne 0) {
+              throw "winsparkle-tool sign failed with exit code $LASTEXITCODE"
+          }
+          $signature = "$signature".Trim()
+          # Check it with the key Lumi.app is built with (its SUPublicEDKey), as Sparkle will.
+          $source = Get-Content -Raw "lumi/updater.py"
+          if ($source -notmatch '(?m)^EDDSA_PUBLIC_KEY = "([^"]+)"') {
+              throw "EDDSA_PUBLIC_KEY not found in lumi/updater.py"
+          }
+          & $tool verify --public-key $Matches[1] --signature $signature $dmg
+          if ($LASTEXITCODE -ne 0) {
+              throw "The DMG's signature doesn't verify with the app's key: the EDDSA_PRIVATE_KEY secret doesn't match lumi/updater.py"
+          }
+          Write-Host "EdDSA signature: $($signature.Substring(0, [Math]::Min(20, $signature.Length)))..."
+          echo "signature=$signature" >> $env:GITHUB_OUTPUT
+
+      - name: Add the macOS files to the GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          files: |
+            release/lumi-${{ needs.macos.outputs.version }}.dmg
+            release/lumi-${{ needs.macos.outputs.version }}.pkg
+            release/lumi-${{ needs.macos.outputs.version }}-macos-sbom.cdx.json
+            release/lumi-${{ needs.macos.outputs.version }}-macos-THIRD_PARTY_NOTICES.txt
+
+      - name: Say on the release that the macOS build isn't notarized
+        if: ${{ needs.macos.outputs.notarized != 'true' }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          append_body: true
+          body: |
+
+            **macOS:** this build isn't notarized by Apple yet. The first time you open Lumi, macOS says it can't check it for malicious software; choose Done, then **System Settings › Privacy & Security › Open Anyway**, and confirm. Updates install without asking again. See docs/macos.md.
+
+      - name: Checkout gh-pages branch
+        uses: actions/checkout@v4
+        with:
+          ref: gh-pages
+          path: gh-pages-checkout
+
+      - name: Publish the DMG and its feeds to the Pages site
+        shell: pwsh
+        run: |
+          $owner = "${{ github.repository_owner }}".ToLowerInvariant()
+          $repo = "${{ github.event.repository.name }}"
+          $pages = "https://$owner.github.io/$repo"
+          $version = "${{ needs.macos.outputs.version }}"
+          $dmg = "release/lumi-$version.dmg"
+          $extras = @()
+          # Stable releases also host the PKG for Mac administrators, as they do the MSI.
+          if (-not $version.Contains("-")) { $extras = @("--extra", "release/lumi-$version.pkg") }
+          $notarized = @()
+          if ("${{ needs.macos.outputs.notarized }}" -eq "true") { $notarized = @("--notarized") }
+          python packaging/publish_pages.py `
+              --site "gh-pages-checkout" `
+              --installer $dmg `
+              --version $version `
+              --platform macos @extras @notarized
+          if ($LASTEXITCODE -ne 0) { throw "publish_pages.py failed" }
+
+          $notes = "<p>Lumi $version for macOS. See <a href=`"$pages/`">$pages/</a>.</p>"
+          python packaging/update_appcast.py `
+              --version $version `
+              --installer $dmg `
+              --signature "${{ steps.sign.outputs.signature }}" `
+              --notes $notes `
+              --site "gh-pages-checkout" `
+              --download-base "$pages/downloads" `
+              --platform macos
+          if ($LASTEXITCODE -ne 0) { throw "update_appcast.py failed" }
+
+      # One fresh commit again, on top of what the Windows job published.
+      - name: Push the Pages site
+        shell: bash
+        working-directory: gh-pages-checkout
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --quiet && exit 0  # nothing changed, e.g. retry of an existing release
+          tree=$(git write-tree)
+          commit=$(git commit-tree "$tree" -m "release: Lumi ${{ needs.macos.outputs.version }} for macOS, disk image and appcast")
           git push --force origin "$commit:refs/heads/gh-pages"

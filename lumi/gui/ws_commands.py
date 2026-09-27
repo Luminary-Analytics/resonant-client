@@ -3617,7 +3617,7 @@ def _update_check_message(info: dict, started: bool) -> str:
     if info.get("offline"):
         return f"{info['offline']} To update, install one from a file under Settings > Updates."
     if not started:
-        return "This copy of Lumi doesn't update itself (it runs from source or outside Windows)."
+        return info.get("unavailable") or "This copy of Lumi doesn't update itself (it runs from source or on Linux)."
     message = f"Checking {info.get('describe') or 'for updates'}."
     if pending:
         message += " Your changed update settings apply after Lumi restarts."

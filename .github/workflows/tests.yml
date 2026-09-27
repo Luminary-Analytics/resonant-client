@@ -27,7 +27,7 @@ concurrency:
 
 jobs:
   pytest:
-    # windows-latest matches the platform Lumi actually ships on, and the
+    # windows-latest matches the platform Lumi mostly ships on, and the
     # platform-sensitive parts of the harness (subprocess-tree cancellation,
     # path validation, the grep/glob tools) behave differently elsewhere.
     runs-on: windows-latest
@@ -74,3 +74,44 @@ jobs:
 
       - name: Test draft recovery and appearance
         run: node --test tests/ui_recovery.test.cjs tests/appearance.test.cjs tests/autonomous_view.test.cjs tests/vscode_extension.test.cjs tests/voice_input.test.cjs tests/extension_panels.test.cjs
+
+  pytest-macos:
+    # The updater's macOS paths on the platform they're for (lumi/sparkle.py,
+    # tests/test_sparkle.py): PyObjC's view of the delegate and, with the
+    # pinned framework packaging/fetch_sparkle.sh fetches, Sparkle itself
+    # reading a feed update_appcast.py wrote. Plus the feed, Pages and PKG
+    # tests they build on. The full suite stays on Windows (above).
+    runs-on: macos-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          cache: 'pip'
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[all,dev]"
+
+      - name: Fetch the pinned Sparkle
+        run: bash packaging/fetch_sparkle.sh "$RUNNER_TEMP/sparkle"
+
+      - name: Test the updater on macOS
+        env:
+          LUMI_KEYCHAIN: 'off'
+          LUMI_TEST_SPARKLE_FRAMEWORK: ${{ runner.temp }}/sparkle/Sparkle.framework
+        run: |
+          set -o pipefail
+          export HOME="$(mktemp -d)"
+          unset LUMI_STATE_HOME
+          python -m pytest -q -rs tests/test_sparkle.py 2>&1 | tee pytest-sparkle.log
+          # None of these may be skipped here: they are the evidence for PyObjC and Sparkle.
+          if grep -q "SKIPPED" pytest-sparkle.log; then echo "Sparkle tests were skipped on macOS"; exit 1; fi
+          python -m pytest -q -rs tests/test_updates.py tests/test_update_feeds.py tests/test_publish_pages.py \
+            tests/test_macos_pkg.py

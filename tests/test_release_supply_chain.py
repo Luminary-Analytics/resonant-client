@@ -106,12 +106,27 @@ class TestComponents:
         assert f"@fontsource/inter@{components['Inter']['version']}/" in web
         assert components["ripgrep"]["version"] in ripgrep
         assert f"WinSparkle-{components['WinSparkle']['version']}" in spec
+        sparkle = (PACKAGING / "fetch_sparkle.sh").read_text(encoding="utf-8")
+        mac = {item["name"]: item for item in notices.load_components(platform="darwin")}
+        assert f'SPARKLE_VERSION="{mac["Sparkle"]["version"]}"' in sparkle
+        assert mac["Sparkle"]["purl"].endswith("@" + mac["Sparkle"]["version"])
+        # Only the macOS build ships it, and only the Windows build WinSparkle.
+        assert "Sparkle" not in {item["name"] for item in notices.load_components(platform="win32")}
+        assert "WinSparkle" not in mac
+
+    def test_the_sparkle_download_is_pinned_by_hash(self):
+        script = (PACKAGING / "fetch_sparkle.sh").read_text(encoding="utf-8")
+        assert re.search(r'^SPARKLE_SHA256="[0-9a-f]{64}"$', script, re.M)
+        # Verified before extraction, and the build fails on a mismatch.
+        assert script.index("shasum -a 256") < script.index("tar -xJf")
+        assert "exit 1" in script[script.index("shasum -a 256"):script.index("tar -xJf")]
 
     def test_license_files_exist_or_are_fetched(self):
-        fetched = {"packaging/ripgrep/LICENSE-MIT", "packaging/ripgrep/UNLICENSE"}
-        for component in notices.load_components():
-            for relative in component.get("license_files", []):
-                assert relative in fetched or (ROOT / relative).is_file(), relative
+        fetched = {"packaging/ripgrep/LICENSE-MIT", "packaging/ripgrep/UNLICENSE", "packaging/sparkle/LICENSE"}
+        for platform in ("win32", "darwin", "linux"):
+            for component in notices.load_components(platform=platform):
+                for relative in component.get("license_files", []):
+                    assert relative in fetched or (ROOT / relative).is_file(), relative
 
 
 def _some_distributions():

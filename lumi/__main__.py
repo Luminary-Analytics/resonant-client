@@ -82,9 +82,26 @@ def _managed_startup_arguments(arguments):
 # somewhere readable. Rotated only by hand for now (single file appends).
 #
 # Only fires when frozen + at least one stream is None — leaves dev runs
-# (`python -m lumi`) untouched so output still hits the terminal.
+# (`python -m lumi`) untouched so output still hits the terminal. On macOS an
+# app opened from Finder, the Dock or `open` gets streams open on /dev/null
+# instead of none, so those count too: without this a Mac tester's startup
+# errors would go nowhere.
+
+
+def _goes_nowhere(stream) -> bool:
+    """A missing stream, or on macOS one open on /dev/null (what LaunchServices gives an app)."""
+    if stream is None:
+        return True
+    if sys.platform != "darwin":
+        return False
+    try:
+        return os.path.samestat(os.fstat(stream.fileno()), os.stat(os.devnull))
+    except (OSError, ValueError, AttributeError):
+        return False
+
+
 if getattr(sys, "frozen", False) and (
-    sys.stdout is None or sys.stderr is None or sys.stdin is None
+    _goes_nowhere(sys.stdout) or _goes_nowhere(sys.stderr) or sys.stdin is None
 ):
     _log_dir = str(state_home() / "logs")
     try:
@@ -98,15 +115,34 @@ if getattr(sys, "frozen", False) and (
         # If we can't open the log file (read-only home, weird perms),
         # fall back to NUL — better silently-broken than crashing on stderr.
         _log_file = open(os.devnull, "w", encoding="utf-8")
-    if sys.stdout is None:
+    if _goes_nowhere(sys.stdout):
         sys.stdout = _log_file
-    if sys.stderr is None:
+    if _goes_nowhere(sys.stderr):
         sys.stderr = _log_file
     if sys.stdin is None:
         sys.stdin = open(os.devnull, "r", encoding="utf-8")
 
 
+def _opened_as_mac_app(argv=None, *, platform=None, frozen=None, terminal=None) -> bool:
+    """Lumi.app opened from Finder, the Dock, `open` or Sparkle's relaunch: the GUI, not the terminal UI.
+
+    Those launches pass no arguments (old macOS versions add a ``-psn_…``
+    process serial number) and no terminal. The same executable run in
+    Terminal without arguments is the terminal UI, as ``lumi.exe`` is. The
+    keyword arguments stand in for this process's own facts in tests.
+    """
+    if (sys.platform if platform is None else platform) != "darwin":
+        return False
+    if not (getattr(sys, "frozen", False) if frozen is None else frozen):
+        return False
+    arguments = [a for a in (sys.argv if argv is None else argv)[1:] if not a.startswith("-psn_")]
+    return not arguments and not (os.isatty(0) if terminal is None else terminal)
+
+
 def main():
+    if _opened_as_mac_app():
+        sys.argv = [sys.argv[0], "gui"]
+
     # Surface --version / -V before any other dispatch so it works without
     # loading the heavier TUI / GUI subsystems.
     if len(sys.argv) > 1 and sys.argv[1] in ("--version", "-V"):
@@ -117,9 +153,10 @@ def main():
     # diagnosing "improperly signed" update errors (verifies the key the
     # binary will check against matches the key used to sign updates).
     if len(sys.argv) > 1 and sys.argv[1] == "--print-pubkey":
-        from lumi.updater import EDDSA_PUBLIC_KEY, APPCAST_URL
+        from lumi.updater import APPCAST_URL, EDDSA_PUBLIC_KEY, MACOS_APPCAST_URL
         print(f"EDDSA_PUBLIC_KEY={EDDSA_PUBLIC_KEY}")
-        print(f"APPCAST_URL={APPCAST_URL}")
+        # The stable feed this build reads; macOS has its own (disk images).
+        print(f"APPCAST_URL={MACOS_APPCAST_URL if sys.platform == 'darwin' else APPCAST_URL}")
         return
 
     # Reading the usage records and unattended runs need neither the
@@ -161,17 +198,20 @@ def main():
         print("Managed setup failed. Verify the protected configuration and certificate files.", file=sys.stderr)
         raise SystemExit(2) from None
 
-    # Kick off the WinSparkle background updater. No-op on non-Windows or
-    # when the DLL isn't bundled (dev runs from source). Fire-and-forget;
-    # WinSparkle owns its own thread and surfaces a native dialog only when
-    # a newer version is found in the appcast.
-    try:
-        from lumi.updater import init_updater
-        init_updater()
-    except Exception:
-        # Updater failures must never block app startup.
-        import logging
-        logging.getLogger(__name__).exception("Updater init failed (non-fatal)")
+    # Kick off the WinSparkle background updater. No-op on Linux or when the
+    # DLL isn't bundled (dev runs from source). Fire-and-forget; WinSparkle
+    # owns its own thread and surfaces a native dialog only when a newer
+    # version is found in the appcast. On macOS only the app starts Sparkle,
+    # here on the main thread: it runs its checks and windows on the app's
+    # run loop, which the terminal UI and the chat gateway don't turn.
+    if sys.platform != "darwin" or (len(sys.argv) > 1 and sys.argv[1] == "gui"):
+        try:
+            from lumi.updater import init_updater
+            init_updater()
+        except Exception:
+            # Updater failures must never block app startup.
+            import logging
+            logging.getLogger(__name__).exception("Updater init failed (non-fatal)")
 
     # Check for GUI subcommand before parsing full args
     if len(sys.argv) > 1 and sys.argv[1] == "gui":

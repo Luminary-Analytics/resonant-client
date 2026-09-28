@@ -85,7 +85,8 @@ first-run changes follow separately.
   startup log tags that launch `[gui <pid>]`. Any argument, or any redirected
   stream, keeps the command line's behavior.
 - **Command-line text.** `lumi --help` lists the commands and no longer says
-  "Ollama-only since v0.4.0". An installed copy without `WinSparkle.dll` says
+  "Ollama-only since v0.4.0"; the terminal UI's hints name `lumi`, not
+  `resonant`. An installed copy without `WinSparkle.dll` says
   its update component is missing and to reinstall, in Settings > Updates and
   Help > Check for Updates (the updater's `unavailable` reason, which said the
   updater didn't start) and in `lumi updates` (`"updater": "missing: ..."`).

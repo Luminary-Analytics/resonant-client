@@ -1631,8 +1631,8 @@ Terminal UI examples:
         _print(f"    [{C_DIM}]Checked: {_esc(ollama_url)}[/{C_DIM}]")
         console.print()
         console.print(f"  [{C_DIM}]Start Ollama or specify a different URL:[/{C_DIM}]")
-        console.print(f"    [{C_TEXT}]ollama serve  # then re-run resonant[/{C_TEXT}]")
-        console.print(f"    [{C_TEXT}]resonant --ollama-url http://<host>:11434[/{C_TEXT}]")
+        console.print(f"    [{C_TEXT}]ollama serve  # then run lumi again[/{C_TEXT}]")
+        console.print(f"    [{C_TEXT}]lumi --ollama-url http://<host>:11434[/{C_TEXT}]")
         console.print()
         return
 
@@ -1997,8 +1997,8 @@ Terminal UI examples:
                 console.print(f"    [{C_TEXT}]/quit[/{C_TEXT}]             [{C_MUTED}]exit[/{C_MUTED}]")
                 console.print()
                 console.print(f"  [{C_BRAND2}]Architecture[/{C_BRAND2}]")
-                console.print(f"    [{C_TEXT}]resonant[/{C_TEXT}]                  [{C_MUTED}]embedded engine + TUI[/{C_MUTED}]")
-                console.print(f"    [{C_TEXT}]resonant-gui[/{C_TEXT}]              [{C_MUTED}]desktop GUI (recommended)[/{C_MUTED}]")
+                console.print(f"    [{C_TEXT}]lumi[/{C_TEXT}]                      [{C_MUTED}]embedded engine + TUI[/{C_MUTED}]")
+                console.print(f"    [{C_TEXT}]lumi gui[/{C_TEXT}]                  [{C_MUTED}]desktop GUI (recommended)[/{C_MUTED}]")
                 console.print()
                 console.print(f"  [{C_BRAND2}]Tips[/{C_BRAND2}]")
                 console.print(f'    [{C_MUTED}]Ask naturally — "Build a REST API with auth"[/{C_MUTED}]')

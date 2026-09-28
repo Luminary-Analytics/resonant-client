@@ -166,6 +166,31 @@ def test_build_this_roadmap_outside_full_auto_leaves_the_mission_in_drafting():
     assert advanced == [] and intents.started == []
 
 
+def test_an_autonomous_session_outside_full_auto_neither_starts_nor_resumes(monkeypatch):
+    from lumi.gui import app as gui_app
+    from tests.gui_access import LocalClient
+
+    started = []
+    monkeypatch.setattr(gui_app, "_start_autonomous_mission", lambda **kwargs: started.append(kwargs))
+    monkeypatch.setattr(gui_app, "_resume_autonomous_mission", lambda **kwargs: started.append(kwargs))
+    mission = SimpleNamespace(id="s1", title="Counter", mission_state={"phase": "drafting"})
+    monkeypatch.setattr(gui_app.state, "permission_mode", "auto-edit")
+    monkeypatch.setattr(gui_app.state.project, "current_session", mission)
+    with LocalClient(gui_app.app) as client:
+        with client.websocket_connect("/ws") as websocket:
+            websocket.send_json({"command": "mission_dispatch_autonomous", "spec_markdown": "## Final spec",
+                                 "time_budget": "4h"})
+            dispatch = websocket.receive_json()
+            # Refused before the switch to the interrupted session's conversation.
+            websocket.send_json({"command": "autonomous_mission_resume", "intent_id": "auto-1", "session_id": "s-other"})
+            resume = websocket.receive_json()
+    assert dispatch["source"] == "mission_dispatch" and dispatch["code"] == "needs_full_auto"
+    assert dispatch["message"].startswith("An autonomous session runs in Full-auto")
+    assert (resume["source"], resume["intent_id"], resume["session_id"]) == ("autonomous_resume", "auto-1", "s-other")
+    assert resume["code"] == "needs_full_auto" and resume["can_switch"] is True
+    assert started == [] and gui_app.state.project.current_session is mission
+
+
 class _Manager:
     def __init__(self, orchestrated):
         self._orchestrated = orchestrated

@@ -1246,8 +1246,23 @@ class LumiApp {
         // A menu of radio items (WAI-ARIA menu button): Enter, Space or the
         // arrow keys open it on the current mode, arrows move, Escape returns.
         const options = () => [...permMenu.querySelectorAll('.perm-option')].filter(option => !option.hidden);
+        // At narrow widths the composer's footer scrolls sideways and clips what
+        // opens above it, this menu included: place it from the toggle's
+        // position on the screen instead.
+        const place = () => {
+            for (const side of ['position', 'left', 'bottom', 'maxWidth']) permMenu.style[side] = '';
+            const footer = permToggle.closest('.input-footer');
+            if (!footer || getComputedStyle(footer).overflowY === 'visible') return;
+            const rect = permToggle.getBoundingClientRect();
+            permMenu.style.maxWidth = `${window.innerWidth - 16}px`;
+            const width = Math.min(permMenu.offsetWidth || 280, window.innerWidth - 16);
+            permMenu.style.position = 'fixed';
+            permMenu.style.left = `${Math.max(8, Math.min(rect.left, window.innerWidth - width - 8))}px`;
+            permMenu.style.bottom = `${window.innerHeight - rect.top + 8}px`;
+        };
         const setOpen = (open, {focus = null} = {}) => {
             permMenu.classList.toggle('open', open);
+            if (open) place();
             permToggle.setAttribute('aria-expanded', open ? 'true' : 'false');
             if (open && focus) {
                 const items = options();
@@ -1678,6 +1693,7 @@ class LumiApp {
     // ── Send Message ────────────────────────────────────────────
 
     _prepareTurnUI(text, images = []) {
+        this._agentRunRefused = false;
         if (this._renderTimer) {
             clearTimeout(this._renderTimer);
             this._renderTimer = null;
@@ -2169,7 +2185,9 @@ class LumiApp {
         text = (text || '').trim();
         if (!text) return;
         this.send({ command: 'intent_start', text });
-        this._beginPlanRun(text);
+        const run = this._beginPlanRun(text);
+        // A plan refused before it starts closes the tab it opened (_failStartingPlan).
+        run.openedPreview = !this.previewOpen;
         this.showStatusMessage('Intent dispatched — plan-graph populating in the preview panel.');
         this.openPlanTab(true);
     }
@@ -8373,8 +8391,10 @@ class LumiApp {
         if (!pending.length || !refusal.test(message)) return false;
         const run = pending.shift();
         const needsFullAuto = event.code === 'needs_full_auto';
-        run.error = needsFullAuto ? String(event.detail || message) : message;
+        // The notice below the status explains; the status only names the reason.
+        run.error = needsFullAuto ? 'It needs Full-auto.' : message;
         this._setPlanStatus(run, 'not_started');
+        if (needsFullAuto && run.openedPreview && this.previewOpen) this.closePreviewPanel();
         if (needsFullAuto && run.card?.el) {
             run.card.el.querySelector('.full-auto-notice')?.remove();
             const notice = this._fullAutoNotice(event, () => {
@@ -8388,6 +8408,7 @@ class LumiApp {
             }, 'Switch to Full-auto and start the plan');
             run.card.statusEl.after(notice);
             notice.querySelector('button')?.focus({preventScroll: true});
+            this.scrollToBottom();
         }
         return true;
     }
@@ -9967,6 +9988,8 @@ class LumiApp {
         }
         const text = this._pendingTurnText;
         this._pendingTurnText = '';
+        // Its card shows the reason without Retry or Continue (run_cards.js).
+        this._agentRunRefused = true;
         this.clearTerminals();
         this.setRunning(false);
         this._restoreRefusedText(text);

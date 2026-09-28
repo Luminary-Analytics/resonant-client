@@ -1496,7 +1496,8 @@ window.LumiSwarmView = class LumiSwarmView {
         nodes.enabled.disabled = !online || busy || !available;
         nodes.start.disabled = !online || busy || !available || !this._swarmState?.enabled || Boolean(run) || selectedElsewhere;
         nodes['execution-mode'].disabled = !online || busy || Boolean(run) || selectedElsewhere;
-        nodes['allow-writes'].disabled = !online || busy || Boolean(run);
+        // Writer teams need Git (_swarmRenumberTasks says so beside the switch).
+        nodes['allow-writes'].disabled = !online || busy || Boolean(run) || Boolean(this._gitMissingCopy?.());
         nodes.pause.hidden = !run || recoveryNeeded || run.state !== 'running';
         nodes.resume.hidden = !run || recoveryNeeded || run.state !== 'paused';
         nodes.stop.hidden = !run || (recoveryNeeded && !recoveryOwned) || Boolean(run.stop_requested) || ['completed', 'cancelled', 'failed', 'stopping'].includes(run.state);

@@ -519,7 +519,10 @@ class LumiRunCards {
             summary.appendChild(review);
         }
 
-        if (['incomplete', 'failed', 'changed_unverified'].includes(outcome) && !this._replay) {
+        // A message the server refused before any turn started is back in the
+        // message box (app.js _endRefusedTurn): nothing here to retry or continue.
+        const refusedTurn = outcome === 'failed' && Boolean(this._agentRunRefused);
+        if (['incomplete', 'failed', 'changed_unverified'].includes(outcome) && !this._replay && !refusedTurn) {
             const actions = document.createElement('span');
             actions.className = 'task-recovery-actions';
             // The organization's DLP rules refused the request (lumi/dlp.py): sending

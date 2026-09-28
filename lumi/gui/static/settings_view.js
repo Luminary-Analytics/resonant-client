@@ -1570,7 +1570,7 @@ class LumiSettingsView {
         const found = this.backends?.ollama;
         const count = n => `${n} chat model${n === 1 ? '' : 's'}`;
         let status;
-        if (check?.error) status = check.saved ? check.error : `${check.error} Nothing was saved.`;
+        if (check?.error) status = check.saved ? `Saved ${check.url || 'the address'}. ${check.error}` : `${check.error} Nothing was saved.`;
         else if (check?.status === 'ready') status = check.saved
             ? `Connected to ${check.url} · ${count(check.model_count)}. Choose one in the model menu.`
             : `Ollama answered at ${check.url} with ${count(check.model_count)}. Save to use this address.`;

@@ -97,6 +97,7 @@ window.LumiSwarmView = class LumiSwarmView {
             <button type="button" data-swarm="stop" class="swarm-stop">Stop team</button><button type="button" data-swarm="recover">Take over expired team</button>
             <button type="button" data-swarm="complete">Complete team</button>
             <button type="button" data-swarm="export-report">Export run report</button>
+            <button type="button" data-swarm="use-in-chat" title="Add this team's report and accepted results to your message as context. Nothing is sent.">Use in chat</button>
             <button type="button" data-swarm="new-team">New team</button></div>
             <form data-swarm="concurrency-form" class="swarm-concurrency" hidden><label>Active worker limit<select data-swarm="worker-limit" aria-label="Active worker limit" required></select></label>
             <p data-swarm="worker-count" class="swarm-help" role="status"></p><p class="swarm-help">Existing workers finish; this limits new assignments. The coordinator is counted separately.</p>
@@ -104,7 +105,8 @@ window.LumiSwarmView = class LumiSwarmView {
             <section data-swarm="orchestrator" class="swarm-orchestrator" hidden aria-labelledby="swarm-orchestrator-title"><h4 id="swarm-orchestrator-title">Orchestrator</h4>
             <p data-swarm="orchestrator-status" role="status"></p>
             <section data-swarm="orchestrator-report" class="swarm-report" hidden aria-labelledby="swarm-report-title"><h5 id="swarm-report-title">Final report</h5>
-            <p data-swarm="orchestrator-report-text" class="swarm-report-text"></p></section></section>
+            <p data-swarm="orchestrator-report-text" class="swarm-report-text"></p>
+            <p data-swarm="orchestrator-record" class="swarm-help"></p></section></section>
             <form data-swarm="followup-form" class="swarm-task" hidden aria-labelledby="swarm-followup-title"><h4 id="swarm-followup-title">Follow-up planning</h4>
             <p class="swarm-help">Ask the coordinator to propose additional work from retained findings. Existing workers continue. Review the new proposal before approving any additional workers.</p>
             <div class="swarm-fields"><label>Follow-up coordinator allowance<input data-swarm="followup-requests" type="number" min="1" max="1000" step="1" required></label>
@@ -158,8 +160,9 @@ window.LumiSwarmView = class LumiSwarmView {
                 this._swarmPoll = null;
                 this._swarmPending = null;
                 this._swarmDialog = null;
-                document.getElementById('swarm-team-button')?.focus();
+                (this._swarmReturnFocus || document.getElementById('swarm-team-button'))?.focus();
             }
+            this._swarmReturnFocus = null;
         });
         nodes.enabled.addEventListener('change', () => this.requestSwarm('configure', {enabled: nodes.enabled.checked}));
         nodes['execution-mode'].addEventListener('change', () => {
@@ -240,6 +243,7 @@ window.LumiSwarmView = class LumiSwarmView {
             nodes[action].addEventListener('click', () => this.requestSwarm(action));
         }
         nodes['export-report'].addEventListener('click', () => this.requestSwarm('export_report'));
+        nodes['use-in-chat'].addEventListener('click', () => this._swarmUseInChat());
         nodes['worker-limit'].addEventListener('input', () => {
             this._swarmConcurrencyDirty = true;
             this._renderSwarmControls();
@@ -1027,7 +1031,7 @@ window.LumiSwarmView = class LumiSwarmView {
             row._eligible = writer.state === 'ready' && attempt?.state === 'submitted' && attempt?.process_state === 'stopped' && item?.state === 'submitted';
         }
         const operations = snapshot.integration_operations || [];
-        nodes['integration-status'].textContent = operations.slice(-5).map(row => `${({prepare_candidate: 'Preparing changes', run_check: 'Verification check', apply: 'Applying changes', reconcile_application: 'Inspecting application'})[row.kind] || 'File integration'}: ${row.state}${row.error ? ' · ' + row.error : ''}`).join(' · ');
+        nodes['integration-status'].textContent = operations.slice(-5).map(row => `${({prepare_candidate: 'Preparing changes', run_check: 'Verification check', apply: 'Applying changes', reconcile_application: 'Inspecting application'})[row.kind] || 'File integration'}: ${row.state}${row.waiting ? ' · waiting for another step on this repository' : ''}${row.error ? ' · ' + row.error : ''}`).join(' · ');
         const candidates = snapshot.integration_candidates || [];
         const shown = new Set(candidates.map(row => row.id));
         for (const [id, row] of this._swarmCandidateRows) {
@@ -1413,6 +1417,8 @@ window.LumiSwarmView = class LumiSwarmView {
         nodes['new-team'].hidden = !run || !['completed', 'cancelled', 'failed'].includes(run.state);
         nodes['export-report'].hidden = !run;
         nodes['export-report'].disabled = !online || busy;
+        // Only this conversation's own personal teams can be attached (gui/swarming.py).
+        nodes['use-in-chat'].hidden = !run || this._swarmExecutionMode === 'managed';
         const concurrencyDisabled = !online || busy || recoveryNeeded || !['running', 'pausing', 'paused'].includes(run?.state)
             || !this._swarmConcurrencyCap;
         nodes['worker-limit'].disabled = concurrencyDisabled;
@@ -1502,6 +1508,7 @@ window.LumiSwarmView = class LumiSwarmView {
 
     _swarmStateLabel(state) {
         return ({running: 'Working', leased: 'Starting', pending: 'Waiting', ready: 'Ready', pausing: 'Pausing', paused: 'Paused', stopping: 'Stopping', stopped: 'Stopped',
+            finalizing: 'Committing its changes', waiting_for_repository: 'Waiting for another step on this repository',
             submitted: 'Awaiting verification', accepted: 'Accepted', completed: 'Complete', cancelled: 'Stopped', failed: 'Needs review', uncertain: 'Needs reconciliation', reconciliation_required: 'Needs reconciliation', recovery_required: 'Recovery needed', unknown: 'Not confirmed'})[state] || 'Not confirmed';
     }
 
@@ -1525,6 +1532,25 @@ window.LumiSwarmView = class LumiSwarmView {
         select.value = [...select.options].some(option => option.value === kept) ? kept : '';
     }
 
+    /** Add the selected team to the message as ``@team:<run>`` context (engine/context_broker.py); nothing is sent. */
+    _swarmUseInChat() {
+        const run = this._swarmState?.run?.run;
+        if (!run?.id || !this.userInput) return;
+        const mention = `@team:${run.id}`;
+        const current = this.userInput.value;
+        if (!current.split(/\s+/).includes(mention)) {
+            const joiner = current && !/\s$/.test(current) ? ' ' : '';
+            // The trailing space keeps the @-file picker from opening on the mention.
+            this.userInput.value = `${current}${joiner}${mention} `;
+            this.userInput.dispatchEvent(new Event('input', {bubbles: true}));
+        }
+        this._swarmReturnFocus = this.userInput;
+        this._swarmDialog?.close();
+        const end = this.userInput.value.length;
+        this.userInput.setSelectionRange(end, end);
+        this.showToastMessage?.('Added this team’s report and accepted results to your message. Send when you’re ready.');
+    }
+
     /** What a coordinator attempt is for: an owner-reviewed proposal, an orchestrator's plan, or its answers. */
     _swarmTurnPurpose(attempt) {
         if (!this._swarmState?.autonomy) return 'Propose investigations for owner review';
@@ -1545,6 +1571,13 @@ window.LumiSwarmView = class LumiSwarmView {
         nodes['orchestrator-status'].textContent = `${turn}${applies} · ${autonomy.detail || ''}`;
         const report = autonomy.final_report || '';
         nodes['orchestrator-report'].hidden = !report;
+        // What Lumi recorded, beside what the model wrote: a live report claimed
+        // questions nobody asked (chat_context.team_record).
+        const record = this._swarmState?.team_record;
+        const plural = (count, word) => `${count} ${word}${count === 1 ? '' : 's'}`;
+        nodes['orchestrator-record'].textContent = record
+            ? `Recorded by Lumi: ${record.accepted} of ${plural(record.tasks, 'task')} accepted, ${plural(record.questions, 'question')} to the orchestrator and ${plural(record.answers, 'answer')}, ${plural(record.applied, 'change')} applied. The report above is the orchestrator’s own words.`
+            : '';
         if (report === nodes['orchestrator-report-text'].dataset.source) return;
         nodes['orchestrator-report-text'].dataset.source = report;
         // The report is model output: render its Markdown only through the

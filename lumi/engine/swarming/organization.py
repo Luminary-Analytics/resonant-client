@@ -7,6 +7,9 @@ conversation and organization-managed teams stay refused (``unsupported_refusal`
 
 - **The preview itself.** A policy that locks ``swarming.enabled`` off stops
   every team's new work, not only new teams (``preview_refusal``).
+- **Oversight.** While the policy's oversight is in force, no participant or
+  model request starts before the person confirmed its notice on this
+  computer (``oversight.refusal``, lumi/oversight.py), as in a chat turn.
 - **Models.** Each model the team runs (the orchestrator's and, when the owner
   chose one, the workers') passes ``Policy.model_allowed``, zero-retention
   rules included, when the team starts and before each participant starts.
@@ -281,9 +284,15 @@ class TeamGovernance:
         Budgets aren't part of it (``dispatch_refusal``): they stop model
         requests, not the owner's reviews, checks or applications.
         """
+        from ... import oversight
         from ...policy import blocked_reason
 
         reason = blocked_reason()
+        if reason:
+            return reason
+        # Organization oversight (lumi/oversight.py): no participant or model
+        # request starts before the person confirmed the notice in force.
+        reason = oversight.refusal("team")
         if reason:
             return reason
         if self.kind != PERSONAL:

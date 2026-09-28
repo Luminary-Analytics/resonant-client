@@ -35,6 +35,7 @@ these services; it is not required for ordinary chat-based coding.
 | Configuration | `gui/settings.py`, `network_defaults.py`, `gui/project_instructions.py` | Settings, endpoint resolution, layered repository instructions |
 | Client security | `engine/exclusions.py`, `gui/workspace_trust.py`, `gui/retention.py` | File exclusion rules, trust for repository content, transcript retention |
 | Organization policy | `policy.py`, `packaging/policy/` | Machine policy sources, signatures, locked settings and allowlists |
+| Data loss prevention | `dlp.py`, `dlp_detectors.py` | The policy's `dlp` rules on every outgoing model request (`Session._model_stream`, `auxiliary_stream`, `dlp.check_text`), and on what goes to Engram: text normalized, then linear-time detectors and checked patterns, flag/redact/block, the optional external service, `dlp.*` audit records. Backends are `@dlp.guard_backend`: while a policy applies they refuse a request that didn't come through `dlp.send` |
 | Audit log | `audit.py`, `file_lock.py` | Hash-chained local records of every turn's events (recorded by `Session.run`), capture levels, OTLP export |
 | Model routing | `engine/model_roles.py`, `capabilities.py` | Role models, fallback chains (`Session._next_fallback`), capability inference with policy overrides |
 | GitHub | `engine/github_tools.py` | Pull request tools over the REST API: read reviews, checks and job logs; open, comment, update. Token from Settings or `GITHUB_TOKEN` |
@@ -42,6 +43,7 @@ these services; it is not required for ordinary chat-based coding.
 | Terminal UI | `tui.py` | `lumi` with no subcommand: Ollama models, a session scoped as `lumi run`'s (`headless.scope_session`) with the person's Settings hooks, approval prompts in the terminal |
 | Usage and prices | `usage.py`, `pricing.py`, `budgets.py`, `gui/costs.py`, `engine/request_purpose.py` | One record per model call (turns in `Session.run`, auxiliary requests in `auxiliary_stream`), price resolution, budgets checked before each model request, daily totals, `lumi usage` |
 | Network and secrets | `net.py`, `secrets_store.py`, `secret_scan.py` | Proxy and OS certificate store, keys in the OS credential store, clean child environments, secrets removed before model requests |
+| Offline mode | `offline.py`, `offline_rules.py`, `net.py` (`client_options`), `license.py`, `update_file.py` | Only this computer and allowed hosts reachable: the check Lumi's HTTP clients run per request (`client_options`), refusals for providers, tools and Lumi's Chrome, a backstop on Python's socket lookups for the rest; a policy that can't be used keeps it on; signed offline licenses; updates installed from a verified file, versioned by the signed installer |
 | Desktop UI | `gui/templates/index.html`, `gui/static/app.js`, `gui/static/styles.css` | Sidebar, composer, model picker, command palette, shell |
 | Settings UI | `gui/static/settings_view.js` | Connection flows, API keys, preferences |
 | Project resources | `engine/previews.py`, `engine/project_memory.py` | Managed preview servers, sourced project notes |

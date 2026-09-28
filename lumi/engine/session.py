@@ -30,7 +30,7 @@ from ..backends import (
     EVENT_BACKEND_STATUS,
     EVENT_EXTERNAL_TOOL,
 )
-from .. import secret_scan
+from .. import dlp, secret_scan
 from ..events import EngineEvent, make_event
 from ..content import build_user_content
 from .tools import (
@@ -77,6 +77,30 @@ class ToolBoundaryViolation(Exception):
     """A tool call escaped the active session's execution boundary."""
 
 
+class ExcludedPathViolation(ToolBoundaryViolation):
+    """A tool call reached a file Lumi never reads (engine/exclusions.py); ``rule`` says which rule."""
+
+    def __init__(self, message: str, rule: Any = None) -> None:
+        super().__init__(message)
+        self.rule = rule
+
+
+# What the engine tells the model when the person answers Deny; the app and
+# the terminal UI recognise it (USER_DENIAL_OUTPUT there).
+USER_DENIAL = "Tool execution denied by user."
+
+
+def _permission_denial_source(denial: str) -> str:
+    """Who refused a call at the approval step, for ``denied_by`` on its result (lumi/security_flags.py)."""
+    if denial == USER_DENIAL:
+        return "user"
+    if denial.startswith("Tool execution denied by permission hook"):
+        return "permission_hook"
+    if denial.startswith("Blocked by policy:"):
+        return "policy"
+    return "unanswered"
+
+
 # ── Doom Loop Detection ────────────────────────────────────────────────
 # Repetition signals are advisory only. They can redirect an unproductive
 # model, but never terminate a run that may be doing valid long-horizon work.
@@ -120,6 +144,17 @@ _CORE_TOOL_DESCRIPTIONS = {
     "search_tools": "Load a specialized tool by capability when the core tools are insufficient.",
     "await_user": "Ask one genuinely blocking question; include and recommend an option when possible.",
 }
+
+
+def _prefixed(stream, first: tuple[str, dict]):
+    """Yield ``first``, then ``stream``'s events; closing this closes ``stream``."""
+    try:
+        yield first
+        yield from stream
+    finally:
+        close = getattr(stream, "close", None)
+        if callable(close):
+            close()
 
 
 def _message_text(message: dict) -> str:
@@ -658,6 +693,18 @@ class Session:
         self.project_content_trusted = True
         # The saved conversation's id, for the audit log (set by the app).
         self.audit_session_id = ""
+        # What the person typed for the next turn, when the model gets it
+        # wrapped (the app's sprint harness); organization oversight
+        # (lumi/oversight.py) shares this, not the wrapper. One turn only.
+        self.display_prompt: Optional[str] = None
+        # What starts this session's turns, for organization oversight
+        # (lumi/oversight.py TRIGGERS; "" means worked out from
+        # audit_session_id), and whether nobody is there to be shown its
+        # notice. Only a surface that sets ``oversight_unattended`` runs
+        # without the person's confirmation, under the policy's
+        # ``oversight.unattended``; every other turn needs it.
+        self.oversight_trigger: str = ""
+        self.oversight_unattended: bool = False
         self.event_logger = None  # EventLogger, set externally for JSONL logging
         self.agent_registry: Optional[AgentRegistry] = None
         self.agent_id: str = ""
@@ -689,6 +736,10 @@ class Session:
         self._windowed_cycle_nudged: bool = False
         self._read_result_cache: dict[str, dict[str, object]] = {}
         self._last_checkpoint_tool_call: str = ""
+        # The kinds of content the turn's instructions are made of, in order
+        # ((kind, text) pairs, see _run_turn), so DLP rules scoped to
+        # attachments or instructions (lumi/dlp.py) apply to the right parts.
+        self._dlp_segments: Optional[list[tuple[str, str]]] = None
 
     @property
     def is_subagent(self) -> bool:
@@ -1031,15 +1082,34 @@ class Session:
 
     def should_plan(self, user_msg: str) -> bool:
         """Use a quick LLM classification to decide if this request needs planning."""
+        from .. import offline
+
+        if offline.backend_refusal(self.backend):
+            # Nothing goes to a provider offline mode can't reach (a CLI
+            # adapter's classify would start its own program); the turn itself
+            # reports the refusal.
+            return False
         try:
             self._guarded_no_hooks()
             if not callable(getattr(self.backend, "classify", None)):
                 return False  # Unsupported classification does not reserve or start a request.
-            prompt = self._CLASSIFY_PROMPT.format(user_msg=user_msg)
-            result = (
-                self._execution_boundary.classify(self.backend, prompt, max_tokens=20)
-                if self._execution_boundary else self.backend.classify(prompt, max_tokens=20)
+            # Nothing reaches a model before an organization's oversight notice is
+            # confirmed (lumi/oversight.py): no planning, and the turn's own
+            # refusal (Session.run) says why. It comes before DLP, as in a turn.
+            if self._oversight_checkpoint():
+                return False
+            # The prompt carries the person's message, so DLP checks it like a turn;
+            # a block skips planning, and the turn's own request reports it.
+            prompt = dlp.check_text(
+                self._CLASSIFY_PROMPT.format(user_msg=user_msg), purpose="planning", kind="prompt",
+                provider=str(getattr(self.backend, "name", "") or ""),
+                model=str(getattr(self.backend, "model", "") or ""), audit_fields=self._audit_fields(),
             )
+            with dlp.permit():  # the prompt passed the check above
+                result = (
+                    self._execution_boundary.classify(self.backend, prompt, max_tokens=20)
+                    if self._execution_boundary else self.backend.classify(prompt, max_tokens=20)
+                )
             return "COMPLEX" in result.upper()
         except ExecutionGuardError:
             raise
@@ -1049,25 +1119,57 @@ class Session:
             return False  # On failure, skip planning
 
     def _model_stream(self, *, purpose="primary", backend=None, **kwargs):
-        """Account for native model input without changing provider identity."""
+        """Account for native model input without changing provider identity.
+
+        The organization's DLP rules (lumi/dlp.py) see the request exactly as
+        it will be sent and may redact a copy of it; ``dlp.Blocked`` means
+        nothing was sent (the history entries it came from are marked, so
+        later requests leave them out).
+        """
         backend = backend or self.backend
+        # Offline mode first (lumi/offline.py): a provider this computer may not
+        # reach gets nothing, not even a DLP check, also when offline mode was
+        # turned on during the turn or the request goes to another backend.
+        from .. import offline
+
+        refusal = offline.backend_refusal(backend)
+        if refusal:
+            return iter([(EVENT_ERROR, {"message": refusal})])
         if self._execution_boundary:
             self._guarded_no_hooks()
+        try:
+            checked = dlp.check_request(
+                kwargs, purpose=purpose, provider=str(getattr(backend, "name", "") or ""),
+                model=str(getattr(backend, "model", "") or ""), audit_fields=self._audit_fields(),
+                segments=self._dlp_segments if purpose == "primary" else None,
+            )
+        except dlp.Blocked as exc:
+            if kwargs.get("conversation_history") is self.conversation_history:
+                dlp.mark_withheld(self.conversation_history, exc.entries)
+            raise
+        kwargs = checked.request
+        if self._execution_boundary:
             # Providers consume the captured request, not the live history that
             # steering, GUI callbacks or another thread can modify after commit.
             captured = copy.deepcopy({key: value for key, value in kwargs.items() if key != "cancel_event"})
             kwargs = {**captured, **({"cancel_event": kwargs["cancel_event"]} if "cancel_event" in kwargs else {})}
         def invoke():
             if purpose == "primary":
-                return backend.stream(**kwargs)
-            from .request_purpose import auxiliary_stream
+                return dlp.send(backend.stream, **kwargs)
+            from .request_purpose import send_checked
             # A guarded request's usage is recorded by its execution guard's
             # owner (engine/swarming/organization.py), not a second time here.
-            return auxiliary_stream(backend, purpose, record=self._execution_boundary is None, **kwargs)
+            return send_checked(backend, purpose, record=self._execution_boundary is None, **kwargs)
         if self._execution_boundary is None:
-            return invoke()
-        inputs = {key: value for key, value in kwargs.items() if key != "cancel_event"}
-        return self._execution_boundary.stream(backend, purpose=purpose, inputs=inputs, invoke=invoke)
+            stream = invoke()
+        else:
+            inputs = {key: value for key, value in kwargs.items() if key != "cancel_event"}
+            stream = self._execution_boundary.stream(backend, purpose=purpose, inputs=inputs, invoke=invoke)
+        if checked.notice:
+            # A quiet marker: the person should know the model saw a changed copy.
+            return _prefixed(stream, (EVENT_BACKEND_STATUS, {
+                "kind": "dlp_redacted", "message": checked.notice, "rules": dict(checked.redacted)}))
+        return stream
 
     def _guarded_no_hooks(self) -> None:
         """Unqualified lifecycle hooks cannot create effects outside receipts."""
@@ -1385,7 +1487,7 @@ class Session:
                          decision="approved" if approved else "denied", policy_prompt=policy_prompt)
             if approved:
                 return True, "", tool_args
-            return False, "Tool execution denied by user.", tool_args
+            return False, USER_DENIAL, tool_args
         approved, denial, prepared = self._permission_hook_decision(tool_name, tool_args, call_id)
         audit.record("approval", **self._audit_fields(), tool=tool_name, call_id=call_id, by="hook",
                      decision="approved" if approved else "denied", policy_prompt=policy_prompt)
@@ -1521,6 +1623,13 @@ class Session:
                 "Computer use is turned off (Settings > Privacy & security, or your "
                 "organization's policy)."
             )
+        # Offline mode keeps the network tools offered, and refuses what they
+        # can't reach with the reason (lumi/offline.py).
+        from .. import offline
+
+        offline_refusal = offline.tool_refusal(tool_name, tool_args)
+        if offline_refusal:
+            raise ToolBoundaryViolation(offline_refusal)
         prepared = dict(tool_args)
         working_dir = self.project_path or os.getcwd()
 
@@ -1537,7 +1646,7 @@ class Session:
                     self.sandbox.validate_path(local)
                 rule = self.exclusions.match(local) if self.exclusions else None
                 if rule:
-                    raise ToolBoundaryViolation(self.exclusions.refusal(local, rule))
+                    raise ExcludedPathViolation(self.exclusions.refusal(local, rule), rule)
 
         if tool_name == "batch":
             calls = prepared.get("calls", [])
@@ -1631,7 +1740,7 @@ class Session:
                 else self.exclusions.match(target)
             )
             if rule:
-                raise ToolBoundaryViolation(self.exclusions.refusal(target, rule))
+                raise ExcludedPathViolation(self.exclusions.refusal(target, rule), rule)
 
         return prepared
 
@@ -1830,9 +1939,14 @@ class Session:
         Every event the loop yields passes through here, so the usage records
         (lumi/usage.py) and the audit log (lumi/audit.py) see model calls,
         tool calls and results, file changes, redactions and errors from GUI,
-        gateway and worker turns alike.
+        gateway and worker turns alike. So does organization oversight
+        (lumi/oversight.py): while an organization's policy has it in force,
+        a turn whose person hasn't confirmed its notice is refused here
+        before anything reaches a model (``oversight.admit``, asked again
+        before each model request), and an admitted turn is recorded for
+        the organization's Lumi Cloud.
         """
-        from .. import audit
+        from .. import audit, oversight
 
         started = time.time()
         # Budgets count this turn's priced spend and key per-turn approvals.
@@ -1855,8 +1969,19 @@ class Session:
         outcome = "completed"
         written_paths: dict[str, str] = {}
         trace = self._begin_trace_turn()
-        turn = self._run_turn(user_msg, on_permission, on_choice, on_user_input, images,
-                              input_origin=input_origin)
+        # Organization oversight (never raises): a person who hasn't confirmed
+        # the notice in force gets a refusal and nothing reaches a model.
+        admission = oversight.admit(self)
+        if admission.refusal:
+            self.display_prompt = None
+            tracker = None
+            turn = self._oversight_refused(admission.refusal)
+        else:
+            # None unless the organization's policy records this turn.
+            tracker = oversight.begin_turn(self, user_msg, images=len(images or ()), input_origin=input_origin,
+                                           admission=admission)
+            turn = self._run_turn(user_msg, on_permission, on_choice, on_user_input, images,
+                                  input_origin=input_origin)
         try:
             for event in turn:
                 # A delegated worker's events, passed on for display, were
@@ -1868,6 +1993,9 @@ class Session:
                         # Names this turn's trace, so a client can open it.
                         event = {**event, "trace": trace}
                     self._observe_event(event, common, written_paths)
+                if tracker is not None:
+                    # After _observe_event, which prices the call (cost_usd).
+                    tracker.observe(event)
                 yield event
         except GeneratorExit:
             outcome = "stopped"
@@ -1883,14 +2011,30 @@ class Session:
             if self.cancel_requested:
                 outcome = "cancelled"
             audit.record("turn.end", **common, outcome=outcome, elapsed=round(time.time() - started, 3))
+            if tracker is not None:
+                tracker.finish(outcome)
+
+    def _oversight_checkpoint(self) -> str:
+        """Why organization oversight stops this turn before its next model request, or ''."""
+        from .. import oversight
+
+        return oversight.admit(self).refusal
+
+    @staticmethod
+    def _oversight_refused(message: str) -> Iterator[dict]:
+        """A turn organization oversight refused (lumi/oversight.py): nothing reaches a model or the history."""
+        from ..oversight import REFUSAL_CODE
+
+        yield make_event(EngineEvent.ERROR, message=message, code=REFUSAL_CODE)
 
     def _next_fallback(self, error: str) -> Iterator[dict]:
         """Switch to the next usable fallback model; returns whether it did.
 
         A fallback the organization's policy doesn't allow, or one a budget
-        can't price, is skipped, as is one whose backend can't be built.
+        can't price, is skipped, as is one whose backend can't be built or
+        that offline mode can't reach.
         """
-        from .. import audit, budgets
+        from .. import audit, budgets, offline
         from ..policy import current as current_policy
 
         try:
@@ -1914,6 +2058,8 @@ class Session:
                 backend = factory()
             except Exception as exc:
                 logger.info("Fallback %s unavailable: %s", label, exc)
+                continue
+            if offline.backend_refusal(backend):
                 continue
             self.backend = backend
             short = str(error or "").strip().splitlines()[0][:160] if str(error or "").strip() else "an error"
@@ -2173,6 +2319,15 @@ class Session:
         if refusal:
             yield make_event(EngineEvent.ERROR, message=refusal)
             return
+        # Offline mode (lumi/offline.py): a provider this computer may not
+        # reach, or one whose own process Lumi can't check (Codex, Claude Code,
+        # extensions), is refused before anything is sent.
+        from .. import offline
+
+        refusal = offline.backend_refusal(self.backend)
+        if refusal:
+            yield make_event(EngineEvent.ERROR, message=refusal, code="offline")
+            return
         refusal = self._budget_refusal(backend_name, str(last_done_model or ""))
         if refusal:
             yield make_event(EngineEvent.ERROR, message=refusal, code="budget_exceeded", recoverable=True)
@@ -2277,6 +2432,7 @@ class Session:
         model_requests = 0
         request_limit_reached = False
         budget_stop = ""
+        oversight_stop = ""
         implementation_started = False
         cli_tool_starts = {}
 
@@ -2458,12 +2614,18 @@ class Session:
         # prompt byte-stable across every tool step.
         turn_context = ""
         turn_sources: dict[str, str] = {}
+        # What each part of turn_context is, for DLP rules scoped by kind:
+        # notes and memory are instructions, indexed code is file contents
+        # (tool_result), @mentions are attachments.
+        context_segments: list[tuple[str, str]] = []
         if self.project_path and self.project_content_trusted:
             try:
                 from .project_memory import ProjectMemory
                 notes = ProjectMemory(self.project_path).context(user_msg)
                 if notes:
-                    turn_context += '\n\n--- PROJECT MEMORY ---\n' + notes + '\n--- END PROJECT MEMORY ---'
+                    block = '\n\n--- PROJECT MEMORY ---\n' + notes + '\n--- END PROJECT MEMORY ---'
+                    turn_context += block
+                    context_segments.append(("instructions", block))
                     turn_sources['project_memory'] = notes
             except (OSError, ValueError) as exc:
                 logger.warning('Project memory unavailable: %s', exc)
@@ -2474,7 +2636,9 @@ class Session:
                 from ..team_library import team_notes_context
                 team_notes = team_notes_context(self.project_path, user_msg)
                 if team_notes:
-                    turn_context += '\n\n--- TEAM PROJECT NOTES ---\n' + team_notes + '\n--- END TEAM PROJECT NOTES ---'
+                    block = '\n\n--- TEAM PROJECT NOTES ---\n' + team_notes + '\n--- END TEAM PROJECT NOTES ---'
+                    turn_context += block
+                    context_segments.append(("instructions", block))
                     turn_sources['team_notes'] = team_notes
             except (OSError, ValueError) as exc:
                 logger.warning('Team project notes unavailable: %s', exc)
@@ -2483,6 +2647,7 @@ class Session:
                 memory_context = self._engram.get_context_for_prompt(user_msg) or ""
                 turn_context += memory_context
                 if memory_context:
+                    context_segments.append(("instructions", memory_context))
                     turn_sources["memory"] = memory_context
             except Exception as e:
                 logger.warning(f"Engram recall failed: {e}")
@@ -2491,6 +2656,7 @@ class Session:
                 rag_context = self._codebase_index.get_context_for_prompt(user_msg) or ""
                 turn_context += rag_context
                 if rag_context:
+                    context_segments.append(("tool_result", rag_context))
                     turn_sources["rag"] = rag_context
             except Exception as e:
                 logger.warning(f"RAG context failed: {e}")
@@ -2500,6 +2666,7 @@ class Session:
                 skill_text = getattr(skill_context, "block", skill_context) or ""
                 turn_context += skill_text
                 if skill_text:
+                    context_segments.append(("instructions", skill_text))
                     turn_sources["skills"] = skill_text
             except Exception as e:
                 logger.warning(f"Interactive skill lookup failed: {e}")
@@ -2517,6 +2684,7 @@ class Session:
                 explicit_context = self.context_broker.render(explicit_items)
                 turn_context += explicit_context
                 if explicit_context:
+                    context_segments.append(("attachment", explicit_context))
                     turn_sources["explicit"] = explicit_context
                     for item in explicit_items:
                         turn_sources[f"attachment:{item.id}"] = item.content
@@ -2533,19 +2701,24 @@ class Session:
         # Freeze the provider prefix for the entire model/tool loop. Volatile
         # state belongs in append-only messages; rebuilding or reordering the
         # system/tool prefix forces local models to prefill it again.
-        base_instructions = get_system_instructions(
+        system_instructions = get_system_instructions(
             plan_mode=self.plan_mode,
             project_instructions=self.project_instructions,
             working_directory=self.project_path or os.getcwd(),
             model_name=backend_model,
             prompt_role=self.prompt_role,
             role_instructions=self.role_instructions,
-        ) + turn_context
+        )
+        base_instructions = system_instructions + turn_context
+        dlp_segments = [("instructions", system_instructions), *context_segments]
         from .editor_integrations import workflow_instructions
         editor_context = workflow_instructions(getattr(self, "_settings_ref", None))
         if editor_context:
-            base_instructions += "\n\n--- CREATIVE EDITORS ---\n" + editor_context + "\n--- END CREATIVE EDITORS ---"
+            block = "\n\n--- CREATIVE EDITORS ---\n" + editor_context + "\n--- END CREATIVE EDITORS ---"
+            base_instructions += block
+            dlp_segments.append(("instructions", block))
         self._active_instructions = base_instructions
+        self._dlp_segments = dlp_segments
 
         while True:
             if self.max_model_requests is not None and model_requests >= self.max_model_requests:
@@ -2553,6 +2726,12 @@ class Session:
                 break
             budget_stop = yield from self._budget_checkpoint(on_user_input)
             if budget_stop:
+                break
+            # Organization oversight, again before every model request: a
+            # policy that arrives mid-turn with a notice the person hasn't
+            # confirmed stops the turn here (lumi/oversight.py).
+            oversight_stop = self._oversight_checkpoint()
+            if oversight_stop:
                 break
             if self.max_steps is not None and iteration >= self.max_steps:
                 step_limit_reached = True
@@ -2867,6 +3046,18 @@ class Session:
             except KeyboardInterrupt:
                 self.cancel()
                 yield from self._cancelled_events(total_start, exec_step)
+                return
+            except dlp.Blocked as exc:
+                # Nothing was sent, and another model would get the same content:
+                # no fallback or retry. The message names rules, never content.
+                model_requests -= 1  # it never left, so it isn't a request made
+                terminal_error = exc.message
+                yield make_event(EngineEvent.ERROR, message=exc.message, code=exc.code)
+                elapsed = time.time() - total_start
+                yield make_event(EngineEvent.SESSION_END,
+                                total_elapsed=elapsed,
+                                total_steps=exec_step,
+                                **completion_payload(elapsed, exec_step))
                 return
             except Exception as e:
                 terminal_error = f"Stream error: {e}"
@@ -3187,7 +3378,7 @@ class Session:
                         yield make_event(EngineEvent.TOOL_RESULT,
                                         name=fn_name, call_id=call_id,
                                         output=result_output, is_error=False,
-                                        denied=True, elapsed=0.0)
+                                        denied=True, elapsed=0.0, denied_by="hook")
                         self.conversation_history.append({
                             "role": "tool_call", "name": fn_name,
                             "arguments": fn_args_str, "call_id": call_id,
@@ -3210,17 +3401,21 @@ class Session:
                 # Execution policy check (declarative rules, evaluated first)
                 policy_prompt = False
                 if self.execution_policy:
-                    from .policies import PolicyAction
+                    from .policies import PolicyAction, denial_source
                     policy_action = self.execution_policy.evaluate(fn_name, fn_args)
                     policy_prompt = policy_action == PolicyAction.PROMPT
                     if policy_action == PolicyAction.DENY:
                         turn_failed_tools.append(fn_name)
                         reason = self.execution_policy.get_reason(fn_name, fn_args)
                         result_output = f"Blocked by policy: {reason or 'denied'}"
+                        # Which layer refused it (the guardrails, the
+                        # organization, the repository...), for security flags.
                         yield make_event(EngineEvent.TOOL_RESULT,
                                         name=fn_name, call_id=call_id,
                                         output=result_output, is_error=True,
-                                        denied=True, elapsed=0.0)
+                                        denied=True, elapsed=0.0,
+                                        denied_by=denial_source(self.execution_policy, fn_name, fn_args),
+                                        denied_rule=reason)
                         self.conversation_history.append({
                             "role": "tool_call", "name": fn_name,
                             "arguments": fn_args_str, "call_id": call_id,
@@ -3247,7 +3442,8 @@ class Session:
                     yield make_event(EngineEvent.TOOL_RESULT,
                                     name=fn_name, call_id=call_id,
                                     output=result_output, is_error=False,
-                                    denied=True, elapsed=0.0)
+                                    denied=True, elapsed=0.0,
+                                    denied_by=_permission_denial_source(str(denial or "")))
                     self.conversation_history.append({
                         "role": "tool_call", "name": fn_name,
                         "arguments": fn_args_str, "call_id": call_id,
@@ -3293,7 +3489,8 @@ class Session:
                     if approval.state != "approved":
                         turn_failed_tools.append(fn_name)
                         yield make_event(EngineEvent.TOOL_RESULT, name=fn_name, call_id=call_id,
-                                         output=approval.message, is_error=False, denied=True, elapsed=0.0)
+                                         output=approval.message, is_error=False, denied=True, elapsed=0.0,
+                                         denied_by="second_approval", denied_rule=approval.state)
                         self.conversation_history.append({
                             "role": "tool_call", "name": fn_name,
                             "arguments": fn_args_str, "call_id": call_id,
@@ -3607,10 +3804,18 @@ class Session:
                     except (SandboxViolation, ToolBoundaryViolation) as exc:
                         turn_failed_tools.append(fn_name)
                         result_output = f"Blocked by tool boundary: {exc}"
+                        # An excluded file's flag says only whose rule it was
+                        # (organization policy, Settings, .lumiignore): a
+                        # pattern can be a file's name (lumi/security_flags.py).
+                        excluded = isinstance(exc, ExcludedPathViolation)
+                        rule = getattr(exc, "rule", None)
                         yield make_event(EngineEvent.TOOL_RESULT,
                                         name=fn_name, call_id=call_id,
                                         output=result_output, is_error=True,
-                                        denied=True, elapsed=0.0)
+                                        denied=True, elapsed=0.0,
+                                        denied_by=("exclusion" if excluded else "sandbox"
+                                                   if isinstance(exc, SandboxViolation) else "boundary"),
+                                        denied_rule=str(getattr(rule, "source", "") or "") if excluded else "")
                         self.conversation_history.append({
                             "role": "tool_call", "name": fn_name,
                             "arguments": fn_args_str, "call_id": call_id,
@@ -4036,7 +4241,9 @@ class Session:
         total_elapsed = time.time() - total_start
 
         # ── Engram: auto-remember session summary ──
-        if self._engram and self._engram.enabled and not self.is_subagent:
+        # Not after the organization's oversight notice stopped the turn: nothing
+        # of it leaves this computer until the person confirms (lumi/oversight.py).
+        if self._engram and self._engram.enabled and not self.is_subagent and not oversight_stop:
             try:
                 self._engram.session_summary(self.conversation_history)
             except Exception as e:
@@ -4048,6 +4255,11 @@ class Session:
 
         if budget_stop:
             yield make_event(EngineEvent.ERROR, message=budget_stop, code="budget_exceeded", recoverable=True)
+
+        if oversight_stop:
+            from ..oversight import REFUSAL_CODE
+
+            yield make_event(EngineEvent.ERROR, message=oversight_stop, code=REFUSAL_CODE)
 
         if request_limit_reached:
             terminal_error = (

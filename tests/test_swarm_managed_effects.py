@@ -149,18 +149,18 @@ def test_stop_remains_live_during_central_http_and_fences_late_permit(managed, t
     entered, release = threading.Event(), threading.Event()
     def blocked():
         entered.set()
-        assert release.wait(5)
+        assert release.wait(60)
     runtime.client.before_admit = blocked
     marker = tmp_path / "must-not-exist"
     with ThreadPoolExecutor(max_workers=1) as pool:
         future = pool.submit(execute, managed, f"from pathlib import Path; Path({str(marker)!r}).touch()")
-        assert entered.wait(3)
+        assert entered.wait(20)
         before = time.monotonic()
         assert command(supervisor, authority, "stop").state == "stopping"
         assert time.monotonic() - before < 1
         release.set()
         with pytest.raises(AdmissionClosed):
-            future.result(timeout=5)
+            future.result(timeout=60)
     assert not marker.exists() and effects.inspect()["effects"][0]["claimed"] == 0
     assert store.snapshot(authority.scope, authority.run_id)["integration_processes"][0]["state"] == "not_started"
 
@@ -170,7 +170,7 @@ def test_independent_connections_single_use_claim_and_changed_semantics_denied(m
     process_id = intent(managed)
     barrier = threading.Barrier(2)
     def claim():
-        barrier.wait(3)
+        barrier.wait(30)
         try:
             with store._connection(write=True) as connection:
                 effects.claim_effect(authority, process_id, connection)

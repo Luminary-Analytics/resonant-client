@@ -258,7 +258,8 @@ def extract_skill_from_iter(
     """Run the extractor end-to-end.
 
     1. Threshold check (`should_extract_from_iter`).
-    2. If passed: call backend.stream() with the extractor prompts.
+    2. If passed: call backend.stream() with the extractor prompts
+       (through ``auxiliary_stream``, so usage and DLP apply).
     3. Parse the response; if no skill, return None.
     4. Build a `Skill` with `created_by="agent"`, `scope="project"`,
        and persist via `save_skill`.
@@ -276,9 +277,13 @@ def extract_skill_from_iter(
         return None
 
     try:
-        # Collect text from the stream.
+        from ..engine.request_purpose import auxiliary_stream
+
+        # Collect text from the stream. An auxiliary request: its usage is
+        # recorded, and the organization's DLP rules (lumi/dlp.py) check it.
         collected: list[str] = []
-        for event_type, data in backend.stream(
+        for event_type, data in auxiliary_stream(
+            backend, "skill_extraction",
             user_msg=build_extractor_user_prompt(ctx),
             conversation_history=[],
             instructions=SKILL_EXTRACTOR_SYSTEM_PROMPT,

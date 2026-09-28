@@ -16,8 +16,8 @@ Lumi uses the first of these that exists:
 
 | Platform | Location |
 | --- | --- |
-| Windows | Registry `HKLM\SOFTWARE\Policies\Luminary Analytics\Lumi`: value `Policy` (the JSON document) or `PolicyFile` (a path; environment variables are expanded). Set them with the ADMX template below, Intune or any registry tool. |
-| Windows | `%ProgramData%\Lumi\policy.json` |
+| Windows | Registry `HKLM\SOFTWARE\Policies\Luminary Analytics\Lumi`: value `Policy` (the JSON document) or `PolicyFile` (a path). In the path, `%ProgramData%`, `%ALLUSERSPROFILE%`, `%ProgramFiles%`, `%SystemRoot%`, `%windir%` and `%SystemDrive%` expand to the folders Windows reports; other variables, which each person can set, stay as written, so such a path isn't found and the policy fails closed. Set them with the ADMX template below, Intune or any registry tool. |
+| Windows | `C:\ProgramData\Lumi\policy.json`: the ProgramData folder Windows reports, never the `ProgramData` environment variable, which a person could point at a folder of their own. Create `C:\ProgramData\Lumi` as an administrator: under ProgramData, a folder a person creates is theirs to write. |
 | macOS | The `Policy` key of the `com.luminaryanalytics.lumi` managed preferences, from a device-scope configuration profile (`packaging/policy/make_mobileconfig.py` makes one; see [Deploying on macOS](deploy-macos.md)) |
 | macOS | `/Library/Application Support/Lumi/policy.json` |
 | Linux | `/etc/lumi/policy.json` |
@@ -61,7 +61,7 @@ optional.
 
 | Section | Effect |
 | --- | --- |
-| `settings` | `"section.key": value` pairs that override what people set, locked in Settings and refused by the app's settings commands. Useful keys: `general.default_permission_mode`, `privacy.secret_scan`, `privacy.transcript_retention_days`, `privacy.excluded_paths`, `security.cli_adapters`, `security.computer_use`, `security.chat_gateway`, `security.scheduled_tasks` (see [scheduled tasks](scheduled-tasks.md#for-administrators)), `security.editor_bridge` (VS Code and JetBrains reaching Lumi; see [code editors](code-editors.md)), `cloud.remote_tasks` (tasks from Slack and Teams; see [Lumi Cloud](lumi-cloud.md#tasks-from-slack-and-teams)), `security.shell_sandbox` (`"off"` or `"project"`; see [shell sandbox](shell-sandbox.md)), `swarming.enabled` (`false` keeps the [Team preview](swarming.md#under-an-organization-policy) off), `network.proxy_url`, `network.no_proxy`, `network.system_certificates`, `cost_tracking.budget_alert_usd`, the [audit log](audit-log.md#for-administrators)'s `privacy.audit_log`, `privacy.audit_capture`, `privacy.audit_retention_days`, `audit.otlp_endpoint` and `audit.otlp_auth_header`, and [updates](updates.md#for-administrators)' `updates.mode` (`automatic`, `manual` or `off`), `updates.channel` (`stable` or `beta`) and `updates.pin` (a release line such as `0.20`), and [dictation](voice-input.md#for-administrators)'s `voice.engine` (`off` turns it off), `voice.service`, `voice.model` and `voice.language`. |
+| `settings` | `"section.key": value` pairs that override what people set, locked in Settings and refused by the app's settings commands. Useful keys: `general.default_permission_mode`, `privacy.secret_scan`, `privacy.transcript_retention_days`, `privacy.excluded_paths`, `security.cli_adapters`, `security.computer_use`, `security.chat_gateway`, `security.scheduled_tasks` (see [scheduled tasks](scheduled-tasks.md#for-administrators)), `security.editor_bridge` (VS Code and JetBrains reaching Lumi; see [code editors](code-editors.md)), `cloud.remote_tasks` (tasks from Slack and Teams; see [Lumi Cloud](lumi-cloud.md#tasks-from-slack-and-teams)), `security.shell_sandbox` (`"off"` or `"project"`; see [shell sandbox](shell-sandbox.md)), `security.extension_panels` (`false` turns off capability packs' panels; see [Panels](extensions.md#panels)), `code_hosts.github_hosts` and `code_hosts.gitlab_hosts` (lists of the GitHub Enterprise Server and self-managed GitLab hosts that may receive those tokens, besides github.com and gitlab.com; see [which hosts get the token](github.md#which-hosts-get-the-token)), `swarming.enabled` (`false` keeps the [Team preview](swarming.md#under-an-organization-policy) off), `network.proxy_url`, `network.no_proxy`, `network.system_certificates`, `cost_tracking.budget_alert_usd`, the [audit log](audit-log.md#for-administrators)'s `privacy.audit_log`, `privacy.audit_capture`, `privacy.audit_retention_days`, `audit.otlp_endpoint` and `audit.otlp_auth_header`, and [updates](updates.md#for-administrators)' `updates.mode` (`automatic`, `manual` or `off`), `updates.channel` (`stable` or `beta`) and `updates.pin` (a release line such as `0.20`), and [dictation](voice-input.md#for-administrators)'s `voice.engine` (`off` turns it off), `voice.service`, `voice.model` and `voice.language`, and [offline mode](offline.md#for-administrators)'s `offline.enabled` (`true` or `false`) and `offline.allowed_hosts` (a list of names, `*.domain`, addresses and networks such as `10.20.0.0/16`; `*`, a whole top-level domain such as `*.com` and `0.0.0.0/0` make the policy invalid). When the policy turns offline mode on, only its `offline.allowed_hosts` apply, not hosts people list in Settings. A policy that exists but can't be used keeps offline mode on with no allowed hosts until it's fixed. |
 | `permissions.allowed_modes` | Which of `ask`, `auto-edit`, `plan` and `bypass` people may choose. Others are hidden, and a saved default outside the list becomes the first allowed mode. The [terminal UI](terminal-ui.md) starts in the first allowed mode it has when Bypass, its default, isn't allowed. Missions (**Build this roadmap**) and autonomous sessions run unattended in Full-auto (`bypass`), so without it they don't start, and one already running stops at its next step (see [orchestration specialists](modern-agent-runtime.md#orchestration-specialists)). A [team](swarming.md#under-an-organization-policy) with writers needs `auto-edit` or `bypass`, and one whose orchestrator applies checked changes needs `bypass`; a read-only team runs under any modes. |
 | `models.allowed`, `models.blocked` | `provider:model` patterns, for example `anthropic:*`, `ollama:qwen*` or `conn-gateway:*` for a custom connection. Blocked wins. Other models are removed from the model menu and refused if selected. |
 | `files.exclude` | Gitignore-style patterns added to every project's file exclusions (see the README's *Keys, network and privacy*). |
@@ -77,8 +77,11 @@ optional.
 | `models.capabilities` | Stated capabilities per model pattern (context window, vision, tools, reasoning, computer use, concurrency) that win over inference and provider reports. See [capability overrides](models.md#capability-overrides-for-administrators). |
 | `budgets` | Spending rules per user, project or turn: an alert, a question before continuing, and a stop (`warn_usd`, `approve_usd`, `block_usd`), plus `block_unpriced`. See [budgets](usage-and-costs.md#budgets). |
 | `pricing.prices` | Negotiated prices in USD per million tokens by `provider:model` pattern (`input`, `output`, optional `cached_input` and `cache_write`). They win over users' prices and Lumi's list; see [usage records and prices](usage-and-costs.md). |
+| `oversight` | Share work with the organization's Lumi Cloud: `version` (1), `activity` (each turn's metadata), `messages` (`off`, `redacted` or `full`, with the session's title; secrets always removed), `security_flags`, `retention_days` (1 to 3650), `notice` (the organization's words), `project_paths` and `unattended` (`record`, the default, or `block`: what a scheduled task or a `lumi run` with no interactive terminal does while nobody confirmed the notice as that computer user; `record` runs it, prints the notice with its output and records it as that user and computer, `block` refuses it). Off unless set. People see a notice naming the organization and what it receives, and nothing is sent to a model until they confirm it (a signed record goes to Lumi Cloud). A key or version Lumi doesn't know turns oversight off, with the reason in Settings, and the rest of the policy still applies. See [organization oversight](organization-oversight.md). |
+| `dlp` | Data loss prevention rules checked on everything sent to a model provider: `version` (`1`), built-in `detectors` (`credit_card`, `us_ssn`, `iban`, `secrets`, `email`), keyword and pattern `rules`, each `flag`, `redact` or `block` with an optional `scope`, and an optional external `service`. See [data loss prevention](dlp.md). |
 
-Patterns use `*` and `?` wildcards.
+Patterns use `*` and `?` wildcards (the `dlp` section's `pattern` rules are
+regular expressions).
 
 
 ## Commands a second person approves
@@ -149,9 +152,17 @@ such as the UTF-16 that Windows PowerShell 5.1's `Out-File` writes by
 default. UTF-8 with or without a byte order mark is fine, and a section that
 is missing or `null` counts as empty.
 
+A mistake in the `dlp` section is contained to it: an unknown key, an
+unsupported `version` or a pattern Lumi won't run leaves the rest of the
+policy in force, and model requests are refused, with the reason in the app
+and in Settings, until the section is fixed. Without its rules Lumi can't know
+what may leave the computer (see [data loss prevention](dlp.md#configuring-it)).
+
 A downloaded Lumi Cloud policy that can't be used doesn't block requests. The
 machine policy stays in force, or no policy for an organization someone
-joined in the app, and Settings shows why.
+joined in the app, and Settings shows why. A downloaded policy that verifies
+but has a `dlp` section Lumi can't use is in force, so it refuses requests
+like a machine policy would.
 
 ## Group Policy and Intune
 
@@ -161,11 +172,17 @@ sets the `PolicyFile` value below, and uninstalling removes it. See
 [Deploying on Windows](deploy-windows.md).
 
 `packaging/policy/lumi.admx` and `packaging/policy/en-US/lumi.adml` define
-three machine policies under **Lumi** in the Group Policy editor:
+four machine policies under **Lumi** in the Group Policy editor:
 
 - **Organization policy:** the JSON document, stored in the `Policy` value (REG_MULTI_SZ lines are joined).
 - **Organization policy file:** a path, stored in `PolicyFile`.
 - **Trusted policy signing keys:** stored in `PolicyKeys`.
+- **Trusted license signing keys:** stored in `LicenseKeys`, the keys an
+  [offline license](offline.md#the-offline-license) may be signed with, besides
+  those built into Lumi. On Windows this is the only place for them (a
+  `license-keys.json` file isn't read there; on macOS and Linux it is, beside
+  the machine policy file). The license itself can go in `license.json` beside
+  the machine policy file.
 
 Copy the ADMX to `%SystemRoot%\PolicyDefinitions` or the central store, and
 the ADML to its `en-US` folder. For Intune, import the ADMX as a custom

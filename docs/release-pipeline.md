@@ -39,7 +39,10 @@ the release workflow's executable smoke test alone does not perform them.
   `THIRD_PARTY_NOTICES.txt` from the build environment's metadata and the
   license texts each package ships. It adds the non-Python parts listed in
   `packaging/third-party-components.json` (Python runtime, PyInstaller
-  bootloader, ripgrep, WinSparkle, web assets and fonts).
+  bootloader, ripgrep, WinSparkle, web assets and fonts; Sparkle in the macOS
+  build), and code ported into Lumi's own modules with its original license
+  (pi-coding-agent's `truncate.ts`, ported as `lumi/engine/truncation.py`; the
+  text is in `packaging/licenses/`).
   - The build fails if a shipped Python package is GPL, AGPL or LGPL without a
     recorded `license_reviews` entry.
   - Packages under `not_shipped` are excluded from the bundle by the spec and
@@ -59,7 +62,8 @@ the release workflow's executable smoke test alone does not perform them.
 the installer before its EdDSA signature is computed, so the update feed signs
 the final bytes. It verifies each signature afterwards. It uses one of:
 
-- `WINDOWS_SIGN_PFX_BASE64` and `WINDOWS_SIGN_PFX_PASSWORD` repository secrets: a
+- `WINDOWS_SIGN_PFX_BASE64` and `WINDOWS_SIGN_PFX_PASSWORD` secrets (in the
+  [release environment](#the-release-environment)): a
   code-signing certificate exported as PFX, signed with signtool and an RFC 3161
   timestamp (`WINDOWS_SIGN_TIMESTAMP_URL` overrides the DigiCert default).
 - A `WINDOWS_SIGN_COMMAND` repository variable: a command with `{file}` for a
@@ -70,10 +74,190 @@ the final bytes. It verifies each signature afterwards. It uses one of:
   - DigiCert KeyLocker;
   - SSL.com eSigner.
 
-Without either, the release continues unsigned and the run shows a warning.
-macOS signing and notarization live in `packaging/build_macos.sh`, used by the
-macOS build workflow; the release workflow doesn't publish macOS builds yet
-(see [Lumi on macOS](macos.md)).
+Without either, the release continues unsigned and the run shows a warning,
+until the repository variable `WINDOWS_SIGNING_REQUIRED` is `true`: set it once
+a certificate exists, and a lost secret fails the release instead of shipping
+unsigned files.
+
+## macOS
+
+The same tag starts two more jobs. `macos` (Apple silicon) runs
+`packaging/build_macos.sh`: the pinned build as on Windows, then Sparkle 2
+(`packaging/fetch_sparkle.sh`: a pinned release checked against its SHA-256
+before extraction) copied into `Lumi.app/Contents/Frameworks`, the DMG and the
+PKG. With the Apple secrets ([RELEASING.md](../RELEASING.md#macos-signing-and-notarization))
+the app is signed with the Developer ID and the hardened runtime (Sparkle's
+helpers without Python's entitlements), and the DMG and PKG are notarized and
+stapled; otherwise the app is signed ad hoc and the run, the release notes and
+the download page say it isn't notarized. With the repository variable
+`MACOS_SIGNING_REQUIRED` set to `true` (once the Developer ID exists), missing
+Apple secrets fail the build instead. `publish-macos` waits for the Windows
+job, then runs `packaging/publish_macos.ps1`: it EdDSA-signs the final DMG with
+`winsparkle-tool` and the same key, checks that signature against
+`lumi/updater.py`'s key, publishes the DMG to Pages and adds it to the macOS
+feeds, and signs each macOS feed it wrote the same way (Sparkle's signed feeds,
+below). A feed already on the site whose signature doesn't verify stops the
+publish ([Repairing the macOS feeds](#repairing-the-macos-feeds)). The job
+checks the site byte for byte, adds the files to the GitHub Release, and
+pushes the site ([Publishing gh-pages byte for
+byte](#publishing-gh-pages-byte-for-byte)). See [Lumi on macOS](macos.md).
+
+The macOS feeds are signed because Lumi.app sets `SURequireSignedFeed`: Sparkle
+reads a feed only when the signing block at its end (`packaging/feed_signature.py`,
+the format of Sparkle's own `sign_update`) verifies with the app's key, so no
+one who can change a feed, but not sign it, can point Macs at another download
+or change what a release says. A feed that fails is an update error (Sparkle's
+code 1000). After 20 days of failures Sparkle falls back to its safe mode for
+key rotation: it reads the feed but ignores its release notes and critical or
+informational items, and every download still needs its EdDSA signature (or
+the Developer ID, below). The Windows feeds stay as they are: WinSparkle
+doesn't read a feed signature, and installed copies poll `appcast.xml`
+unchanged.
+
+One key signs every macOS feed, and Sparkle checks only a feed's own bytes,
+so someone who can change the Pages site could serve the beta feed, or a
+newer line's, at the stable or a pinned copy's address without breaking a
+signature. Lumi.app therefore checks the version Sparkle found against its
+channel and pin too (`SparkleUpdater.may_proceed`, `update_channels.refusal_for`):
+the stable channel takes only stable releases, a pin only its line's, and a
+refusal is an `update.refused` record. Two limits remain:
+
+- **An old feed, replayed.** A feed signed for an earlier release still
+  verifies, and Sparkle's signed feeds have no expiry, so serving it again
+  keeps Macs on the version they have (it can't install anything older).
+  Nothing in Sparkle tells a replayed feed from a quiet week; Lumi doesn't
+  try, so as not to lock out real updates.
+- **Redirects.** Offline mode checks each download's address as Sparkle
+  starts it; Sparkle follows a redirect from an allowed host without asking,
+  and exposes no hook for it. The disk image's signature is checked all the
+  same, so a redirect can't change what's installed. GitHub Pages doesn't
+  redirect the downloads it serves.
+
+## The release environment
+
+Every job that can sign an update runs in the `release` environment: the
+Windows `release` job (the EdDSA key and the Authenticode secrets), `macos`
+(the Apple secrets) and `publish-macos` (the EdDSA key). Workflows that
+pull requests start (`build-check.yml`, `build-macos.yml`, `tests.yml`) get no
+signing secret: a pull request runs the workflow files from its own branch,
+so anything they are given could be read out. Their macOS builds are signed ad
+hoc, and the publishing rehearsal uses a key it makes and throws away.
+
+The Apple certificate needs the same care as the EdDSA key. Sparkle accepts an
+update signed with the same team's Developer ID when its EdDSA signature
+doesn't verify: `SUVerifyUpdateBeforeExtraction` allows that before
+extraction, and the check after extraction accepts the code signature alone.
+Either key can therefore ship an update to every Mac, and
+`SUVerifyUpdateBeforeExtraction` doesn't change that; keeping both where only
+tagged releases reach them does.
+
+The environment exists once a job names it, but it protects nothing until
+the owner configures it (Settings › Environments › `release`):
+
+1. **Deployment branches and tags:** *Selected branches and tags*, with one
+   tag rule, `v*`. Only runs for a version tag can then enter it.
+2. **Environment secrets:** move these from the repository secrets (add each
+   to the environment, then delete the repository copy): `EDDSA_PRIVATE_KEY`;
+   `MACOS_SIGN_IDENTITY`, `MACOS_SIGN_P12_BASE64`, `MACOS_SIGN_P12_PASSWORD`,
+   `MACOS_INSTALLER_IDENTITY`; `APPLE_API_KEY_BASE64`, `APPLE_API_KEY_ID`,
+   `APPLE_API_ISSUER_ID` or `APPLE_ID`, `APPLE_TEAM_ID`, `APPLE_APP_PASSWORD`;
+   `WINDOWS_SIGN_PFX_BASE64`, `WINDOWS_SIGN_PFX_PASSWORD`. The variables
+   (`WINDOWS_SIGN_COMMAND`, `MACOS_SIGNING_REQUIRED`,
+   `WINDOWS_SIGNING_REQUIRED`) can stay repository variables.
+3. Optionally, **required reviewers**, so a person approves each release run.
+
+All of this is free for a public repository. A private one needs GitHub Team
+or Enterprise for environments, their secrets and the tag rule, and
+Enterprise for required reviewers; make the repository private only on such a
+plan, or the release jobs lose the protection above. Keep the name `release`:
+the AWS release role is to trust GitHub's OIDC subject
+`repo:Luminary-Analytics/resonant-client:environment:release`, so the same
+environment and tag rule gate it too. Put the `v*` tag rule in place before
+any role trusts that identity: while the environment is unprotected, a job
+from any branch can enter it and get the identity. No workflow asks for an
+OIDC token (`permissions: id-token: write`) today, and
+`tests/test_release_supply_chain.py` keeps it that way; the change that adds
+one must come after the tag rule.
+
+The workflow is hardened in the same spirit:
+
+- The workflow's token only reads; the two jobs that publish get
+  `contents: write`, and the macOS build doesn't. Checkouts that never push
+  keep no credentials (`persist-credentials: false`).
+- The EdDSA key is written to a file only while `winsparkle-tool` signs, and
+  deleted in a `finally` before any third-party action runs.
+- Third-party actions are pinned to a commit, with the version in a comment.
+- The two jobs that push `gh-pages` share the concurrency group
+  `release-gh-pages` (never cancelling a running one), and push with
+  `--force-with-lease` on the commit they checked out, so neither can
+  overwrite what the other published. GitHub keeps one waiting job per group:
+  a third arrival (two tags pushed together) cancels the waiting one, which
+  then needs a rerun; the lease still keeps anything from being overwritten.
+
+## Publishing gh-pages byte for byte
+
+Sparkle reads a macOS feed only when its signature verifies over the bytes
+Pages serves, and Pages serves what the gh-pages commit holds. Git for
+Windows, where both publishing jobs run, is installed with
+`core.autocrlf=true`: it turns `"\n"` into `"\r\n"` when it checks files out
+and back when it commits them, so a feed signed as written on the runner
+wasn't what the branch held (a review of this pipeline found every signed
+feed broken that way, before any was published). Now:
+
+- `packaging/update_appcast.py` writes the feeds, and `publish_pages.py` the
+  page and `macos.json`, with `"\n"` on every platform.
+- Both jobs run `git config --global core.autocrlf false` before they check
+  out gh-pages (after the source checkout, which is unaffected), and the
+  site carries a `.gitattributes` with `* -text` (`publish_pages.py` writes
+  it), so every later checkout gets the committed bytes whatever Git's
+  settings.
+- `packaging/push_pages.py` stages the site and then reads the staged blobs,
+  never the working copy: `.gitattributes` must say `* -text`, every macOS
+  feed must verify with the app's key, and every disk image a macOS feed
+  lists must have the length and signature the feed gives it. Only then does
+  it commit the index as one fresh commit and push it with the lease.
+  `publish-macos` runs the same check (`--check`) before it adds anything to
+  the GitHub Release; `--check --rev gh-pages` checks a pushed commit.
+- `build-macos.yml` rehearses all of it on `windows-latest` for two releases
+  in a row (`scripts/rehearse_pages_publish.py`): the release's Git setting,
+  both jobs' scripts with a throwaway key, a push to a copy of the branch on
+  the runner, and a check of each pushed commit. It also shows that a feed
+  changed after signing is refused, and that a checkout with Git's own
+  defaults gets every file byte for byte. Nothing is pushed to GitHub.
+  Locally: `python scripts/rehearse_pages_publish.py --pages <a gh-pages
+  checkout> --isolate-git-config` (Windows, with PowerShell).
+
+## Repairing the macOS feeds
+
+A macOS feed whose signing block doesn't verify, after a publish went wrong,
+stops the next publish on purpose: signing it again is a person's decision. Macs meanwhile get update error 1000 (and Sparkle's safe
+mode after 20 days). To repair it you need the EdDSA private key, which
+GitHub never shows, so this uses its backup, on Windows (winsparkle-tool is
+a Windows program):
+
+1. Check out gh-pages byte for byte:
+   `git -c core.autocrlf=false clone --branch gh-pages https://github.com/Luminary-Analytics/resonant-client pages`.
+2. See which feeds fail: `pwsh packaging/publish_macos.ps1 -Site pages -CheckFeeds -PublicKey <EDDSA_PUBLIC_KEY>`
+   (the key in `lumi/updater.py`).
+3. Sign those again: `pwsh packaging/publish_macos.ps1 -Site pages -ResignFeeds -PublicKey <key> -PrivateKeyFile <key file>`.
+   It checks each feed first, signs again only those that don't verify, and
+   checks them all afterwards. Delete the key file when it's done.
+4. Publish: `python packaging/push_pages.py pages --message "Sign the macOS feeds again" --tool packaging/winsparkle/WinSparkle-0.9.2/bin/winsparkle-tool.exe`
+   (as LA-Rich). It commits nothing unless the staged feeds and disk images
+   verify, and its lease refuses the push if a release published meanwhile.
+5. Confirm what Pages serves: `python packaging/feed_signature.py verify <downloaded appcast-macos.xml> <key>`
+   for each feed.
+
+A disk image that doesn't match its feed can't be repaired this way: publish
+a new release instead. `scripts/rehearse_pages_publish.py` runs these steps
+on a branch it breaks the way Git for Windows once did.
+
+Rotating the key is not covered. One key signs the Windows installers, the
+disk images and the macOS feeds, and every installed copy trusts only that
+key (Sparkle and WinSparkle each have their own way to move to a new one).
+`-ResignFeeds` signs the feeds with whatever key it's given, but
+`push_pages.py` checks feeds and disk images against one key, so a rotation
+needs a plan of its own first.
 
 ## Signing and publication
 
@@ -101,7 +285,9 @@ byte length, notes and signature, pointing at that Pages copy:
 
 - a stable tag goes into `appcast.xml`, and the beta feed and release-line
   feeds are rebuilt from it;
-- a beta tag (`vX.Y.Z-beta.N`) goes into `appcast-beta.xml` only.
+- a beta tag (`vX.Y.Z-beta.N`) goes into `appcast-beta.xml` only;
+- the macOS disk image goes into the macOS feeds in the same way
+  (`appcast-macos.xml`, `-beta`, `-X.Y`), never into the Windows ones.
 
 [Updates](updates.md#how-the-feeds-work) describes the feeds and how installs
 choose one. The branch is pushed as one fresh commit so old installers do not
@@ -124,7 +310,8 @@ public feed serves the matching version and signature with a Pages-hosted
 installer of the matching length that downloads without signing in. Neither
 pushing a tag nor committing an appcast proves the public feed is current.
 
-The pipeline currently publishes Windows installers. Release-note prose needs
+The pipeline publishes the Windows installer and, from the first release with
+these jobs, the macOS disk image and package. Release-note prose needs
 review; CI's generated notes are not a replacement for describing behavior and
 limitations. Provider authentication and real inference are not exercised by
 ordinary CI. Keep mocked wire-contract tests distinct from live model evidence.
@@ -147,8 +334,13 @@ ordinary CI. Keep mocked wire-contract tests distinct from live model evidence.
 | `packaging/check_bundle.py`, `packaging/bundle-policy.json` | Bundle contents and size gate |
 | `packaging/installer.iss` | Windows installer (EXE) |
 | `packaging/lumi.wxs`, `packaging/build_msi.ps1` | MSI for device management |
-| `packaging/update_appcast.py` | Stable, beta and release-line update feeds |
-| `lumi/updater.py`, `lumi/update_channels.py` | WinSparkle client and verification key; update mode, channel and pin |
+| `packaging/update_appcast.py` | Stable, beta and release-line update feeds, for Windows and macOS |
+| `lumi/updater.py`, `lumi/update_channels.py` | WinSparkle client and verification key; update mode, channel, pin and platform |
+| `packaging/build_macos.sh`, `packaging/fetch_sparkle.sh` | macOS app, DMG and PKG; pinned Sparkle; Apple signing and notarization |
+| `packaging/publish_macos.ps1`, `packaging/feed_signature.py` | Signing the DMG and the macOS feeds, checked with the app's key, and laying them out on Pages; checking or re-signing the feeds |
+| `packaging/push_pages.py`, `scripts/rehearse_pages_publish.py` | Publishing gh-pages from the staged blobs, byte for byte and verified; its rehearsal on Windows |
+| `lumi/sparkle.py` | Sparkle 2 on macOS through PyObjC: the delegate and the main-thread hand-off |
+| `.github/workflows/build-macos.yml`, `packaging/smoke_gui.py` | macOS build and smoke test on every change, the updater included; a publishing rehearsal with a throwaway key |
 
 Paths are relative to the repository root. See the
 [documentation index](README.md) for release records and current guides.

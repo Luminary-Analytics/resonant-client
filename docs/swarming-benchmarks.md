@@ -189,7 +189,10 @@ The output contains:
 - `protocol.json`: predeclared inputs, settings, schedule and identity hash.
 - Each case's `execution.json`, `run.json`, `runtime-report.json` and
   `observations.json`: assigned scopes, seed revision, request allowances,
-  provider failures, typed errors, confirmed cleanup and interventions.
+  provider failures, typed errors, confirmed cleanup and interventions. When
+  the harness itself stops a case (a participant failed, dispatch stopped, a
+  check failed), `observations.json` gives its `reason`; other errors keep
+  only their type.
 - Each case's `worker-events.json`: the workers' own events (tool calls and
   results, refusals, errors), with keys redacted and long text shortened. It can
   contain fixture file contents and model text; it is for local diagnosis.
@@ -335,6 +338,14 @@ was fixed before the next:
    check passes on the checkout. The report said the orchestrator couldn't
    run the check itself. Follow-up planning now lists the team's checked
    changes (`checked_changes`), and the residue rule covers any closing tag.
+5. **Handed back after the work was done** (the code of PR #93, with the
+   review fixes). Round 1 fixed both defects: the combined change passed the
+   check (exit 0), was applied and both writers were accepted under the
+   grant, with 18 requests, all completed. Dispatch briefly refused the
+   second writer while the first ran. The loop waited three passes and it
+   started, with no false hand-back. Round 2's plan had no last `}`, and its
+   retry added a stray `}` after the object, so the loop handed the finished
+   team back. The plan parser now accepts those two shapes.
 
 ### Orchestrator answers during a round, live
 
@@ -355,6 +366,12 @@ reader to ask the orchestrator one question, wait for the answer with
    both readers' reports cite the orchestrator's answers. The team completed in
    158 seconds with 23 requests, all settled. One worker received its answer
    twice, and the closing turn sent its report as a message, which was harmless.
+4. **Answered, but the report overstated it** (the code of PR #93). The first
+   reader asked and got its answer in the same round. The second didn't ask.
+   The team completed in 225 seconds with 14 requests, all completed. The
+   closing report said both readers had asked and been answered, which the
+   recorded messages contradict: the report is model output, and the team's
+   messages are the record.
 
 ### Nemotron 3 Super: baseline and a first single-versus-team comparison
 

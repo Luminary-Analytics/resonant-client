@@ -65,6 +65,14 @@ DEFAULTS = {
         # carry those keys load fine — Python dict tolerance ignores
         # unknown keys; nothing reads them anymore.
     },
+    # Settings > Offline mode (lumi/offline.py): no outbound connections but
+    # this computer and these hosts (names, *.domain, addresses, networks).
+    # An organization's policy can lock either; when it turns offline mode
+    # on, only the hosts it allows apply.
+    "offline": {
+        "enabled": False,
+        "allowed_hosts": [],
+    },
     # Secrets are masked before settings are sent to the frontend.
     "api_keys": {"anthropic": "", "openai": "", "kimi": "", "openrouter": "", "sonn": "", "telegram_bot": "", "otlp": "",
                  "github": "", "gitlab": "", "bitbucket": "", "azure_devops": "", "jira": "", "linear": "", "slack_bot": "", "slack_app": ""},
@@ -72,6 +80,10 @@ DEFAULTS = {
     # with an email it's a Jira Cloud API token, without one a personal access
     # token for Jira Server or Data Center. Linear's key is api_keys.linear.
     "issue_trackers": {"jira_url": "", "jira_email": ""},
+    # GitHub Enterprise Server and self-managed GitLab hosts that may receive the
+    # GitHub or GitLab token, besides github.com and gitlab.com
+    # (engine/github_tools.token_hosts); lockable by policy.
+    "code_hosts": {"github_hosts": [], "gitlab_hosts": []},
     # Agent pull requests wait for these reviewers (engine/review_gate.py); lockable by policy.
     "review": {"agent_changes": False, "reviewers": []},
     # Custom model connections (gateways, Azure, Bedrock, Vertex); see lumi/connections.py.
@@ -155,6 +167,8 @@ DEFAULTS = {
         "chat_gateway": True,     # `lumi gateway` (Telegram)
         "scheduled_tasks": True,  # `lumi schedule`: unattended runs at set times
         "editor_bridge": True,    # VS Code and JetBrains reach Lumi (gui/editor_bridge.py)
+        # Panels from approved capability packs, in a sandboxed frame (gui/extension_panels.py).
+        "extension_panels": True,
         # "project": the agent's commands, jobs and previews run in an OS
         # sandbox that writes only to the project and temporary folders
         # (lumi/engine/os_sandbox.py, macOS and Linux).

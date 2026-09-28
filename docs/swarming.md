@@ -173,6 +173,25 @@ Choose one of two planning approaches:
   allowance and allowance per worker. The coordinator reads within its scope
   and submits a proposal. It does not approve its own plan or task results.
 
+### Use a team's results in the chat
+
+**Use in chat** in the Team panel adds `@team:<run id>` to this
+conversation's message, closes the panel and leaves the message for you to
+finish and send. The attachment carries:
+
+- the objective, and the orchestrator's final report or the latest accepted plan;
+- each accepted result, with how it was accepted (under your autonomy grant
+  and not reviewed, reviewed by you, or after its checks passed);
+- the applied changes' revision, and how many tasks weren't accepted.
+
+Everything but the acceptance record is model-written, and the attachment says
+so. Secret patterns and saved keys are removed, and it is bounded to about
+4,000 tokens. Like a hand-off it stays for the rest of the conversation,
+including after the conversation is reopened. Only this conversation's own
+personal teams can be attached; another conversation's team is refused. The
+attachment is read without creating team state. See
+`engine/swarming/chat_context.py`.
+
 ### Let the orchestrator run the team
 
 With a coordinator plan, **Let the orchestrator run the team** and choose
@@ -191,7 +210,10 @@ team's orchestrator, and you don't approve each step:
   "Accepted under the owner's autonomy grant, not reviewed". It never claims
   your review.
 - A failed task, or an orchestrator turn without a usable plan, is retried once.
-  A retried turn is told why its plan was refused.
+  A retried turn is told why its plan was refused. The plan parser accepts
+  a few near misses live models made: one fenced block, chat-template tags
+  after the JSON, stray closing braces after it, or its last closing brace
+  missing. Anything else refuses the plan.
 - When a running worker asks the orchestrator a question or reports a blocker,
   the orchestrator answers in the same round: a short answer turn replies with
   `swarm_send` from the objective, the team's work and its findings. It has no
@@ -203,7 +225,11 @@ team's orchestrator, and you don't approve each step:
   and may not start work; any work it proposes is rejected.
 
 The **Orchestrator** section shows the round, the current step and the final
-report. You can pause, steer or stop the team at any time. The orchestrator
+report. Under the report, **Recorded by Lumi** gives the team's own counts:
+tasks accepted, questions to the orchestrator and answers, and changes
+applied. The report is the model's own words. A live report once claimed a
+question nobody had asked, so the orchestrator's later turns get the same
+counts (`team_record`) to cite. You can pause, steer or stop the team at any time. The orchestrator
 loop runs in the app that owns the team. After a restart or a lost host,
 **Recover** and **Continue** the team as for any retained team: the loop then
 resumes from the retained plans. Each accepted plan that started work counts

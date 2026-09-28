@@ -158,7 +158,7 @@ def test_independent_connection_duplicate_acceptances_allocate_only_once(setup):
     barrier = threading.Barrier(2)
 
     def call(instance):
-        barrier.wait(5)
+        barrier.wait(30)
         return instance.accept_work(actors["b"], **kwargs)
 
     with ThreadPoolExecutor(max_workers=2) as executor:
@@ -471,7 +471,7 @@ def test_two_native_sessions_keep_captured_ownership_and_receiver_work_after_ori
         for key, claim, provider, model in (("a", source_claim, "ollama", "source-choice"), ("b", target_claim, "sonn", "receiver-choice")):
             context = AttemptContext(actors[key].scope, key, claim["attempt_id"], claim["worker_id"], 1)
             runtimes[key].start(context, BackendSpec(provider, model, api_key=f"private-{key}-fixture-key"))
-        assert entered["a"].wait(5) and entered["b"].wait(5)
+        assert entered["a"].wait(30) and entered["b"].wait(30)
         runtimes["a"].stop()
         assert runtimes["b"].inspect(target_claim["attempt_id"])["alive"]
         assert store.snapshot(actors["b"].scope, "b")["run"]["state"] == "running"

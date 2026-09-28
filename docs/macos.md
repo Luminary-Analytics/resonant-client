@@ -278,6 +278,10 @@ CI runs on a Mac, but not as a person does, and it has no Apple account:
   app replaces itself also needs checking.
 - **The native window** beyond starting: menus, keyboard shortcuts, dragging,
   resizing, the folder and file pickers, and Sparkle's windows over it.
+- **Lumi's terms as a person meets them:** the Installer app's license page
+  for the PKG, and the terms dialog in the WebKit window. CI checks that the
+  PKG holds the license page and the DMG the texts, and the dialog was
+  exercised in headless Edge, not WebKit.
 - **Dictation:** the microphone prompt, and the webview's speech recognition
   or a transcription service.
 - **Computer use:** the Accessibility and Screen Recording prompts, and real

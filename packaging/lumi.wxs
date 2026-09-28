@@ -42,9 +42,10 @@
     <Icon Id="LumiIcon" SourceFile="!(bindpath.brand)\lumi.ico" />
     <Property Id="ARPPRODUCTICON" Value="LumiIcon" />
     <Property Id="ARPURLINFOABOUT" Value="https://luminary-analytics.github.io/resonant-client/" />
-    <Property Id="ARPNOMODIFY" Value="1" />
 
-    <!-- The license page (see above): build_msi.ps1 passes the rendered license.rtf. -->
+    <!-- The license page (see above): build_msi.ps1 passes the rendered license.rtf.
+         WixUI_Minimal also sets ARPNOMODIFY to 1 (no Modify in Apps & features),
+         so the package doesn't set it again. -->
     <ui:WixUI Id="WixUI_Minimal" />
     <WixVariable Id="WixUILicenseRtf" Value="$(var.LicenseRtf)" />
 

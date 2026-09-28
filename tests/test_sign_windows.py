@@ -17,6 +17,7 @@ import base64
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -94,13 +95,20 @@ function global:Get-AuthenticodeSignature {
 }
 """
 # The script's parameters come as JSON (STAND_IN_CALL) and are splatted, as the
-# action passes -Files: an array, however many files.
+# action passes -Files: an array, however many files. A failure is written as the
+# script put it: each PowerShell formats, colors and wraps error records its own way.
 CALL = """\
 $ErrorActionPreference = "Stop"
 @@STUB@@
 $call = @{}
 ($env:STAND_IN_CALL | ConvertFrom-Json).PSObject.Properties | ForEach-Object { $call[$_.Name] = $_.Value }
-& "@@TARGET@@" @call
+try {
+    & "@@TARGET@@" @call
+} catch {
+    [Console]::Error.WriteLine($_.Exception.Message)
+    exit 1
+}
+exit 0
 """
 
 
@@ -195,9 +203,12 @@ def output(result: subprocess.CompletedProcess) -> str:
 
 
 def said(result: subprocess.CompletedProcess, text: str) -> bool:
-    """Whether the output says ``text``: Windows PowerShell wraps long error lines at
-    the console's width, even inside words, so whitespace doesn't count."""
-    return "".join(text.split()) in "".join(output(result).split())
+    """Whether the output says ``text``. Errors come plain from the wrapper, but a
+    script run directly gets PowerShell's own view: Windows PowerShell wraps long
+    lines at the console's width, even inside words, and PowerShell 7 colors them.
+    So colors and whitespace don't count."""
+    plain = re.sub(r"\x1b\[[0-9;]*m", "", output(result))
+    return "".join(text.split()) in "".join(plain.split())
 
 
 def sha256(path: Path) -> str:

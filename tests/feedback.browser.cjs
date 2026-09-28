@@ -377,7 +377,8 @@ test('Send feedback: opening it, checking it, what it shows, what goes and what 
         const sentBefore = (await evidence(info)).received.length;
         await post(info, '/__fixture__/cloud-url', {url: cloudAddress});
         await openFromPalette();
-        const sendHeld = page.getByRole('button', {name: /^Send the bug report to 127\.0\.0\.1:\d+$/});
+        // Its button says as whom it goes: nobody is signed in here, so without an account.
+        const sendHeld = page.getByRole('button', {name: /^Send the bug report to 127\.0\.0\.1:\d+ without an account$/});
         await sendHeld.waitFor();
         assert.match(await page.locator('#feedback-held').textContent(), /written before a feedback address was set/);
         assert.equal((await evidence(info)).received.length, sentBefore, 'nothing went by itself');
@@ -444,6 +445,74 @@ test('Send feedback: opening it, checking it, what it shows, what goes and what 
         assert.equal(await page.locator('#feedback-announcer').getAttribute('aria-live'), 'polite');
         await post(info, '/__fixture__/cloud-mode', {mode: 'up'});
 
+        step('Written signed in, kept, then signed out: it waits for its writer, and goes without the account only by choice');
+        await post(info, '/__fixture__/signed-in-here', {});
+        await post(info, '/__fixture__/cloud-mode', {mode: 'down'});
+        await openFromPalette();
+        await page.locator('#feedback-destination', {hasText: /as ada@example\.com\.$/}).waitFor();
+        await page.keyboard.press('Control+a');
+        await page.keyboard.type('Written as Ada.');
+        await page.keyboard.press('Control+Enter');
+        await page.locator('#feedback-done-text', {hasText: "couldn't be reached"}).waitFor();
+        await page.keyboard.press('Escape');
+        await dialog.waitFor({state: 'hidden'});
+        await post(info, '/__fixture__/cloud-mode', {mode: 'up'});
+        // Signing out in Settings, as a person would.
+        await page.keyboard.press('Control+Comma');
+        await page.locator('#settings-nav-lumi_account').focus();
+        await page.keyboard.press('Enter');
+        const signOut = page.getByRole('button', {name: 'Sign out', exact: true});
+        await signOut.waitFor();
+        await signOut.focus();
+        await page.keyboard.press('Enter');
+        await page.locator('#cloud-url').waitFor();
+        await page.keyboard.press('Escape');
+        const sentWhileKept = (await evidence(info)).received.length;
+        await openFromPalette();
+        const withoutAccount = page.getByRole('button', {name: 'Send the bug report without your account'});
+        await withoutAccount.waitFor();
+        assert.match(await page.locator('#feedback-held').textContent(),
+            /waiting for ada@example\.com to sign in to 127\.0\.0\.1:\d+\. It goes with that account, or without an account if you choose\./);
+        // Send now doesn't send it: it waits for Ada.
+        assert.equal(await page.locator('#feedback-flush').isHidden(), true);
+        assert.equal((await evidence(info)).received.length, sentWhileKept, 'nothing went by itself, or anonymously');
+        await page.screenshot({path: path.join(output, 'feedback-waits-for-writer.png')});
+        page.once('dialog', prompt => { steps.push(`confirm: ${prompt.message()}`); prompt.accept(); });
+        await withoutAccount.focus();
+        await page.keyboard.press('Enter');
+        await page.locator('#feedback-progress', {hasText: 'Sent 1 report.'}).waitFor();
+        seen = await evidence(info);
+        assert.match(steps.at(-1), /Send this report without your account\?/);
+        assert.equal(seen.received.at(-1).body.message, 'Written as Ada.');
+        assert.equal(seen.received.at(-1).authorization, false, 'without the account, as chosen');
+        assert.equal(seen.received.at(-1).idempotency_key, seen.received.at(-2).idempotency_key, 'the same report');
+        assert.deepEqual(seen.queue, []);
+        assert.equal(await dialog.evaluate(node => node.contains(document.activeElement)), true, 'focus stays in the dialog');
+        await page.keyboard.press('Escape');
+        await dialog.waitFor({state: 'hidden'});
+
+        step('Enrolled with another Lumi Cloud: Settings says where, what still goes there, and offers leaving');
+        await post(info, '/__fixture__/enrolled-elsewhere', {});
+        await page.keyboard.press('Control+Comma');
+        await page.locator('#settings-nav-lumi_account').focus();
+        await page.keyboard.press('Enter');
+        const enrolled = page.locator('.settings-row', {hasText: 'This computer: Acme at acme.example.test'});
+        await enrolled.waitFor();
+        assert.match(await enrolled.textContent(),
+            /This computer is enrolled in Acme at acme\.example\.test, and Lumi now uses 127\.0\.0\.1:\d+\. Check-ins and Acme's policy still come from acme\.example\.test, and tasks from chat wait/);
+        await page.setViewportSize({width: 375, height: 740});
+        await page.waitForTimeout(200);
+        const enrolledFit = await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth);
+        assert.ok(enrolledFit, 'no sideways scrolling at 375 px');
+        await page.screenshot({path: path.join(output, 'enrolled-elsewhere-375.png')});
+        await page.setViewportSize({width: 1280, height: 860});
+        page.once('dialog', prompt => prompt.accept());
+        const leave = page.getByRole('button', {name: 'Leave Acme on this computer'});
+        await leave.focus();
+        await page.keyboard.press('Enter');
+        await enrolled.waitFor({state: 'detached'});
+        await page.keyboard.press('Escape');
+
         step('Signed in to another Lumi Cloud: Settings says so, and never uses that sign-in here');
         await post(info, '/__fixture__/signed-in-elsewhere', {});
         await page.keyboard.press('Control+Comma');
@@ -457,13 +526,18 @@ test('Send feedback: opening it, checking it, what it shows, what goes and what 
         await page.screenshot({path: path.join(output, 'signed-in-elsewhere.png')});
         await page.getByRole('button', {name: 'Sign out of other.example.test'}).click();
         await elsewhere.waitFor({state: 'detached'});
+        // other.example.test can't be reached from here: Settings says the sign-in stays valid there.
+        await page.locator('.editor-help[role="status"]', {
+            hasText: /^Signed out on this computer\. other\.example\.test wasn't told \(it couldn't be reached\), so that sign-in stays valid there until it expires\.$/}).waitFor();
         await page.keyboard.press('Escape');
 
         step('No page errors, and nothing but the reports left the app');
         const final = await evidence(info);
         assert.equal(final.live_cloud_called, false);
-        assert.deepEqual(final.received.map(item => item.status), [201, 503, 201, 201, 503, 404, 201]);
-        assert.equal(new Set(final.received.map(item => item.idempotency_key)).size, 5, 'a retry uses its report’s key');
+        assert.deepEqual(final.received.map(item => item.status), [201, 503, 201, 201, 503, 404, 201, 503, 201]);
+        assert.equal(new Set(final.received.map(item => item.idempotency_key)).size, 6, 'a retry uses its report’s key');
+        // Ada's report went with her account while she was signed in, and without it only when she chose that.
+        assert.deepEqual(final.received.slice(-2).map(item => item.authorization), [true, false]);
         assert.deepEqual(errors, []);
         fs.writeFileSync(path.join(output, 'evidence.json'), JSON.stringify({final, steps}, null, 2));
         console.log(`evidence: ${output}`);

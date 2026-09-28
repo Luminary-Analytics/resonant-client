@@ -213,8 +213,12 @@ test('each waiting report says what it waits for', () => {
     const say = report => api.heldText({kind: 'bug', written: 0, ...report}, status);
     assert.match(say({reason: 'no_destination', state: 'held'}), /^Bug report: written before a feedback address was set\. It goes only if you send it to cloud\.example\.com\.$/);
     assert.match(api.heldText({kind: 'idea', reason: 'no_destination', state: 'held'}, {}), /stays here until one is/);
-    assert.match(say({state: 'sign_in', reason: 'sign_in', destination: 'cloud.example.com'}), /didn’t accept your sign-in\. Sign in again/);
-    assert.match(say({state: 'sign_in', reason: 'unauthorized', destination: 'cloud.example.com'}), /waiting for you to sign in/);
+    // Written with an account, it goes only with it: it waits for its writer, or goes without an account by choice.
+    assert.equal(say({state: 'sign_in', reason: 'sign_in', destination: 'cloud.example.com', writer: 'ada@example.com', without_account: true}),
+        'Bug report: cloud.example.com didn’t accept the sign-in it went with. It goes when ada@example.com signs in there again (Settings > Lumi account), or without an account if you choose.');
+    assert.match(say({state: 'sign_in', reason: 'unauthorized', destination: 'cloud.example.com'}), /waiting for you to sign in to cloud\.example\.com\. It goes with that account\.$/);
+    assert.match(say({state: 'waiting', reason: 'unreachable', destination: 'cloud.example.com', here: true, writer: 'ada@example.com', without_account: true}),
+        /waiting for ada@example\.com to sign in to cloud\.example\.com\. It goes with that account, or without an account if you choose\.$/);
     assert.match(say({state: 'waiting', reason: 'unreachable', destination: 'other.test', here: false}), /waiting for other\.test, where it was written to go/);
     assert.match(say({state: 'held', reason: 'not_accepting', destination: 'c.test', here: true}), /doesn’t accept feedback\. Send now tries again/);
     assert.match(say({state: 'held', reason: 'too_large', destination: 'c.test', here: true}), /too large for c\.test/);
@@ -501,7 +505,7 @@ test('reports waiting on this computer: sent now, copied, sent where shown, or d
     p.app.openFeedbackDialog();
     const reports = [
         {id: 'a', kind: 'bug', state: 'waiting', reason: 'unreachable', destination: 'cloud.example.com', here: true, copy: true, send: false},
-        {id: 'b', kind: 'idea', state: 'held', reason: 'no_destination', destination: '', here: false, copy: true, send: true},
+        {id: 'b', kind: 'idea', state: 'held', reason: 'no_destination', destination: '', here: false, copy: true, send: true, send_as: ''},
         {id: 'c', kind: 'bug', state: 'waiting', reason: 'unreachable', destination: 'other.test', here: false, copy: true, send: false},
         {id: 'd', kind: 'other', state: 'held', reason: 'dlp', destination: 'cloud.example.com', here: true, copy: false, send: false},
     ];
@@ -511,15 +515,16 @@ test('reports waiting on this computer: sent now, copied, sent where shown, or d
     const items = p.$('feedback-held').children;
     assert.equal(items.length, 3, 'the one for this address is counted above, the others listed');
     const buttons = item => item.children[1].children.map(button => `${button.dataset.heldAction}:${button.textContent}`);
-    assert.deepEqual(buttons(items[0]), ['send:Send to cloud.example.com', 'copy:Copy', 'discard:Discard']);
+    assert.deepEqual(buttons(items[0]), ['send:Send to cloud.example.com without an account', 'copy:Copy', 'discard:Discard']);
     assert.deepEqual(buttons(items[1]), ['copy:Copy', 'discard:Discard']);
     assert.deepEqual(buttons(items[2]), ['discard:Discard'], 'no copy of what DLP keeps here');
     assert.match(items[1].children[0].textContent, /waiting for other\.test/);
-    assert.equal(items[0].children[1].children[0].getAttribute('aria-label'), 'Send the idea report to cloud.example.com');
+    assert.equal(items[0].children[1].children[0].getAttribute('aria-label'), 'Send the idea report to cloud.example.com without an account');
 
     const click = button => p.$('feedback-held').dispatch('click', {target: button});
     click(items[0].children[1].children[0]);
-    assert.deepEqual(p.sent.at(-1), {command: 'feedback_send_held', id: 'b', destination: 'https://cloud.example.com'});
+    // The button said as whom: that goes with the command, and nothing is sent if it changed meanwhile.
+    assert.deepEqual(p.sent.at(-1), {command: 'feedback_send_held', id: 'b', destination: 'https://cloud.example.com', as: ''});
     click(items[1].children[1].children[0]);
     assert.deepEqual(p.sent.at(-1), {command: 'feedback_copy_held', id: 'c'});
     p.app.handleFeedbackCopy({id: 'c', text: 'Lumi feedback: Bug\n\nkept\n'});
@@ -562,6 +567,46 @@ test('reports waiting on this computer: sent now, copied, sent where shown, or d
     q.app.handleFeedbackStatus({data: {...STATUS, waiting: 1, sendable: 1, reports: reports.slice(0, 1)}});
     q.$('feedback-discard').dispatch('click');
     assert.equal(q.sent.filter(m => m.command === 'feedback_discard').length, 0);
+});
+
+test('a report goes as the account its button names, and without its writer’s account only by choice', () => {
+    const p = page();
+    p.app.openFeedbackDialog();
+    const reports = [
+        {id: 'e', kind: 'bug', state: 'held', reason: 'no_destination', destination: '', here: false, copy: true, send: true, send_as: 'ada@example.com'},
+        {id: 'f', kind: 'idea', state: 'sign_in', reason: 'sign_in', destination: 'cloud.example.com', here: true, copy: true, send: false,
+         writer: 'ada@example.com', without_account: true},
+        {id: 'g', kind: 'other', state: 'waiting', reason: 'unreachable', destination: 'cloud.example.com', here: true, copy: true, send: false},
+    ];
+    p.app.handleFeedbackStatus({data: {...STATUS, waiting: 3, sendable: 1, reports}});
+    const items = p.$('feedback-held').children;
+    assert.equal(items.length, 2, 'the one waiting for its writer is listed, with its choice; the sendable one is counted');
+    const buttons = item => item.children[1].children.map(button => `${button.dataset.heldAction}:${button.textContent}`);
+    assert.deepEqual(buttons(items[0]), ['send:Send to cloud.example.com as ada@example.com', 'copy:Copy', 'discard:Discard']);
+    assert.deepEqual(buttons(items[1]), ['anonymous:Send without your account', 'copy:Copy', 'discard:Discard']);
+    assert.match(items[1].children[0].textContent, /didn’t accept the sign-in it went with/);
+    const click = button => p.$('feedback-held').dispatch('click', {target: button});
+    click(items[0].children[1].children[0]);
+    assert.deepEqual(p.sent.at(-1), {command: 'feedback_send_held', id: 'e', destination: 'https://cloud.example.com', as: 'ada@example.com'});
+    click(items[1].children[1].children[0]);
+    assert.match(p.confirmed.at(-1), /Send this report without your account\?/);
+    assert.deepEqual(p.sent.at(-1), {command: 'feedback_send_without_account', id: 'f'});
+    const q = page({confirm: false});
+    q.app.openFeedbackDialog();
+    q.app.handleFeedbackStatus({data: {...STATUS, waiting: 1, sendable: 0, reports: reports.slice(1, 2)}});
+    q.$('feedback-held').dispatch('click', {target: q.$('feedback-held').children[0].children[1].children[0]});
+    assert.equal(q.sent.filter(m => m.command === 'feedback_send_without_account').length, 0, 'not without the person saying so');
+    // Offline, or switched off: no such choice to make.
+    p.app.handleFeedbackStatus({data: {...STATUS, offline: 'Offline mode', waiting: 1, sendable: 0, reports: reports.slice(1, 2)}});
+    assert.deepEqual(buttons(p.$('feedback-held').children[0]), ['copy:Copy', 'discard:Discard']);
+});
+
+test('reports another Lumi process is using are said to be busy', () => {
+    const p = page();
+    p.app.openFeedbackDialog();
+    p.app.handleFeedbackStatus({data: {...STATUS, waiting: 0, sendable: 0, reports: [], busy: 'Another Lumi window or process is using the reports saved on this computer.'}});
+    assert.equal(p.$('feedback-queue').hidden, false);
+    assert.equal(p.$('feedback-queue-text').textContent, 'Another Lumi window or process is using the reports saved on this computer.');
 });
 
 test('a report Lumi couldn’t make leaves no empty box to tab to', () => {

@@ -654,7 +654,7 @@ def test_a_managed_enrollment_elsewhere_never_gets_the_account(fake, tmp_path, m
     status = client.status()
     assert not status["signed_in"] and status["signed_in_elsewhere"] == URL
     client._access = None  # an hour later: whatever asks for the account now
-    for call in (lambda: client.account_call("GET", "/api/v1/library"), client.account_token,
+    for call in (lambda: client.account_call("GET", "/api/v1/library"), lambda: client.account_token(client.url),
                  client.refresh_account):
         with pytest.raises(cloud.CloudError, match="Sign in again here") as refused:
             call()
@@ -728,3 +728,220 @@ def test_an_address_with_a_user_name_is_never_used_or_shown(fake):
     client = _client(fake)
     client.settings.update_section("cloud", {"url": "https://ada:secret@cloud.example.test"})
     assert client.url == "" and "secret" not in json.dumps(client.status())
+
+
+# ── Tokens with their issuer, and device requests with their enrollment ───────
+# The second review of #101. A sign-in at B, completing while something works
+# with A's sign-in, is _adopt: what _finish_sign_in does once B has answered.
+
+
+def _sign_in_completes_at_b(client: cloud.CloudClient) -> None:
+    client._adopt(B_URL, "access-issued-by-B", "refresh-issued-by-B", time.monotonic() + 3000,
+                  {"user_id": "usr_b", "email": "ben@b.example", "name": "Ben", "organizations": []})
+
+
+def _device_requests(requests: list[httpx.Request]) -> list[httpx.Request]:
+    return [request for request in requests if request.url.path.startswith("/api/v1/devices")]
+
+
+def test_account_tokens_are_only_for_the_lumi_cloud_that_issued_them(fake):
+    client, other, access, _refresh = _signed_in_at_a(fake)
+    assert client.account_token(URL) == access
+    assert client.account_token("HTTPS://Cloud.Example.test:443/") == access  # the same one, written otherwise
+    for destination in (B_URL, f"{URL}/elsewhere", ""):
+        with pytest.raises(cloud.CloudError) as refused:
+            client.account_token(destination)
+        assert refused.value.code == "signed_out"
+    with pytest.raises(cloud.CloudError, match="Someone else"):
+        client.account_token(URL, user_id="usr_2")
+    assert client.account_token(URL, user_id="usr_1") == access
+    # The token Lumi Cloud refused is refreshed once, where it was issued; one another request replaced isn't.
+    fresh = client.account_token(URL, refused=access)
+    assert fresh != access and fresh in fake.access_tokens
+    assert client.account_token(URL, refused=access) == fresh
+    assert other.seen == []
+
+
+def test_a_refresh_overtaken_by_a_sign_in_elsewhere_keeps_nothing(fake):
+    """The reviewer's n1b: A's refreshed token went to B, and A's rotated refresh token was kept as B's."""
+    client, other, _access, _refresh = _signed_in_at_a(fake)
+    racing = {"on": True}
+
+    def route(request: httpx.Request) -> httpx.Response:
+        client.seen.append(request)
+        if request.url.host != "cloud.example.test":
+            return other(request)
+        answer = fake(request)
+        if request.url.path == "/oauth/token" and racing["on"]:
+            racing["on"] = False
+            _sign_in_completes_at_b(client)  # while A answers the refresh
+        return answer
+
+    client._transport = httpx.MockTransport(route)
+    client.seen = []  # from here on
+    client._access = None  # A's access token expired: the next account call refreshes it at A
+    with pytest.raises(cloud.CloudError) as changed:
+        client.account_call("GET", "/api/v1/me")
+    assert changed.value.code == "signed_out"
+    assert other.seen == []  # nothing of A's reached B
+    assert not any(request.url.path == "/api/v1/me" for request in client.seen)  # nor A: the call wasn't made
+    # B's sign-in is the one kept; the refresh token A just made was revoked at A, where it was made.
+    assert client.settings.get("api_keys", cloud.REFRESH_SECRET) == "refresh-issued-by-B"
+    assert client.account_url == B_URL and all(used for used in fake.refresh_tokens.values())
+    # From now on, B's token goes to B.
+    client.account_call("GET", "/api/v1/me")
+    assert [request.headers["authorization"] for request in other.seen] == ["Bearer access-issued-by-B"]
+
+
+def test_an_ended_refresh_never_forgets_a_sign_in_that_completed_meanwhile(fake):
+    client, other, _access, refresh = _signed_in_at_a(fake)
+    fake.refresh_tokens[refresh] = True  # used elsewhere: A answers invalid_grant
+
+    def route(request: httpx.Request) -> httpx.Response:
+        if request.url.host != "cloud.example.test":
+            return other(request)
+        answer = fake(request)
+        if request.url.path == "/oauth/token":
+            _sign_in_completes_at_b(client)
+        return answer
+
+    client._transport = httpx.MockTransport(route)
+    client._access = None
+    with pytest.raises(cloud.CloudError, match="Sign in again"):
+        client.account_token(URL)
+    assert client.account_url == B_URL and client.settings.get("api_keys", cloud.REFRESH_SECRET) == \
+        "refresh-issued-by-B"
+
+
+def test_device_requests_go_only_to_the_lumi_cloud_the_computer_enrolled_with(fake):
+    """The reviewer's n2a: after a sign-in at B, A's device token went to B with the check-in."""
+    client, other, _access, _refresh = _signed_in_at_a(fake)
+    device = client.enroll("org_acme")
+    device_token = client._device_access[0]
+    client.sign_out()  # still enrolled in Acme
+    _sign_in_completes_at_b(client)
+    assert client.url == B_URL and client.device_url == URL
+    checkins = len(fake.checkins)
+    client.check_in()  # to A, where the computer enrolled
+    assert len(fake.checkins) == checkins + 1
+    with pytest.raises(cloud.CloudError) as moved:  # a request prepared for another Lumi Cloud is refused
+        client.device_call("POST", "/api/v1/devices/checkin", json={}, expect=B_URL)
+    assert moved.value.code == "changed"
+    assert _device_requests(other.seen) == [] and not other.holds(device_token)
+    status = client.status()
+    assert status["device_elsewhere"].startswith("This computer is enrolled in Acme at cloud.example.test, and "
+                                                 "Lumi now uses b.example.test.")
+    assert status["device"]["url"] == URL
+    # Leaving tells A, with A's device token; B hears nothing.
+    client.unenroll()
+    assert fake.devices[device["id"]]["revoked"] and client.device() == {}
+    assert _device_requests(other.seen) == []
+
+
+@pytest.mark.parametrize("token", ["lce_b", ""])
+def test_a_machine_policy_naming_another_lumi_cloud_ends_the_enrollment_and_enrolls_there(fake, tmp_path, monkeypatch,
+                                                                                          token):
+    """The reviewer's n2b: the machine policy's address is authoritative for enrollment (docs/lumi-cloud.md)."""
+    client, other, _access, _refresh = _signed_in_at_a(fake)
+    old = client.enroll("org_acme")
+    device_token = client._device_access[0]
+    _machine_policy(tmp_path, monkeypatch, {"url": B_URL, **({"enrollment_token": token} if token else {})})
+    client.background_step()
+    assert fake.devices[old["id"]]["revoked"]  # A was told, with its own device token
+    assert not other.holds(device_token)
+    if token:
+        assert (client.device()["organization_id"], client.device()["how"], client.device_url) == ("org_b", "managed",
+                                                                                                      B_URL)
+        enrolling = other.seen[0]
+        assert enrolling.url.path == "/api/v1/devices" and json.loads(enrolling.content)["enrollment_token"] == "lce_b"
+        assert "authorization" not in enrolling.headers
+        assert [request.url.path for request in other.seen[1:3]] == ["/api/v1/devices/token", "/api/v1/devices/checkin"]
+    else:
+        assert client.device() == {} and other.seen == []
+
+
+def test_requests_from_chat_wait_while_the_computer_uses_another_lumi_cloud(fake, tmp_path):
+    """The reviewer's n2c: B handed out a request, and it ran here with A's device token."""
+    from lumi.remote_tasks import IDLE_SECONDS, RemoteTasks
+
+    client, other, _access, _refresh = _signed_in_at_a(fake)
+    client.enroll("org_acme")
+    project = tmp_path / "project"
+    project.mkdir()
+    client.settings.update_section("cloud", {"remote_tasks": True, "remote_tasks_project": str(project),
+                                             "remote_tasks_mode": "ask"})
+    client.sign_out()
+    _sign_in_completes_at_b(client)
+    ran = []
+    tasks = RemoteTasks(client.settings, client, session_factory=lambda *args: ran.append(args))
+    assert tasks.blocked() == client.device_elsewhere() and "tasks from chat wait" in tasks.blocked()
+    assert tasks.step() == IDLE_SECONDS and ran == []
+    assert _device_requests(other.seen) == []
+
+
+def test_a_request_from_chat_reports_only_to_the_lumi_cloud_that_handed_it_out(fake):
+    client, _other, _access, _refresh = _signed_in_at_a(fake)
+    client.enroll("org_acme")
+    sent = []
+    real = client._call
+
+    def recording(method, url, **kwargs):
+        sent.append(url)
+        return real(method, url, **kwargs)
+
+    client._call = recording
+    with pytest.raises(cloud.CloudError) as moved:
+        client.device_call("POST", "/api/v1/devices/tasks/t1/result", json={}, expect=B_URL)
+    assert moved.value.code == "changed" and sent == []
+
+
+@pytest.mark.parametrize("written", ["https://Cloud.Example.Test", "https://cloud.example.test:443",
+                                     "https://cloud.example.test/", "HTTPS://CLOUD.EXAMPLE.TEST:443//"])
+def test_the_same_lumi_cloud_written_differently_is_the_same(fake, written):
+    assert cloud.same_address(written, URL) and cloud.normalize_url(written) == URL
+    client, other, _access, _refresh = _signed_in_at_a(fake)
+    client.settings.update_section("cloud", {"url": written})
+    assert client.status()["signed_in"] and client.status()["signed_in_elsewhere"] == ""
+    assert client.refresh_account()["email"] == "ada@example.com" and other.seen == []
+
+
+def test_what_makes_lumi_cloud_addresses_differ():
+    assert cloud.same_address("https://b\u00fccher.example", "https://xn--bcher-kva.example")
+    assert cloud.same_address("http://127.0.0.1:80", "http://127.0.0.1")
+    assert cloud.same_address("https://[::1]:443/", "https://[::1]")
+    for other in ("https://cloud.example.test:8443", "https://cloud.example.test/path", "https://other.example.test",
+                  "", "not an address", "https://ada:pw@cloud.example.test"):
+        assert not cloud.same_address(other, URL), other
+
+
+def test_signing_in_again_at_the_same_lumi_cloud_revokes_the_earlier_sign_in(fake):
+    client, other, _access, first = _signed_in_at_a(fake)
+    _sign_in(client, fake)
+    second = client.settings.get("api_keys", cloud.REFRESH_SECRET)
+    assert second != first and first not in fake.refresh_tokens and second in fake.refresh_tokens
+    assert other.seen == []
+
+
+def test_a_sign_out_its_lumi_cloud_cant_be_told_about_says_so(fake, tmp_path):
+    from lumi import audit, offline
+
+    log = audit.AuditLog(tmp_path / "audit")
+    audit.set_for_tests(log)
+    client, other, _access, refresh = _signed_in_at_a(fake)
+    offline.set_for_tests(enabled=True, allowed_hosts=())
+    notice = client.sign_out()
+    assert notice == ("Signed out on this computer. cloud.example.test wasn't told (offline mode kept Lumi from "
+                      "reaching it), so that sign-in stays valid there until it expires.")
+    status = client.status()
+    assert status["notice"] == notice and not status["signed_in"] and status["signed_in_elsewhere"] == ""
+    assert refresh in fake.refresh_tokens  # still valid at A: nothing reached it
+    assert client.settings.get("api_keys", cloud.REFRESH_SECRET) == ""  # and nothing of it is kept here
+    [record] = [json.loads(line) for path in sorted(log.root.glob("*.jsonl"))
+                for line in path.read_text(encoding="utf-8").splitlines()
+                if json.loads(line)["type"] == "cloud.signed_out"]
+    assert record["data"]["revoked"] is False
+    # A sign-out Lumi Cloud hears about says nothing more.
+    offline.set_for_tests(enabled=False)
+    _sign_in(client, fake)
+    assert client.sign_out() == "" and client.status()["notice"] == ""
+    audit.set_for_tests(None)

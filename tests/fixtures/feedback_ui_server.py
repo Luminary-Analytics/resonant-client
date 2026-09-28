@@ -6,9 +6,12 @@ Cloud is a route on this same server (``/__fixture__/cloud``, the address
 settings give Lumi Cloud), which answers POST /api/v1/feedback as the feedback
 contract says (201 acknowledging the report's Idempotency-Key, 200 for a
 replay) and GET /api/v1/feedback/info, unless ``/__fixture__/cloud-mode`` says
-it's down (503), doesn't take feedback (404) or is slow. ``/__fixture__/policy``
-sets an organization policy's ``settings``, and ``/__fixture__/signed-in-elsewhere``
-a sign-in another Lumi Cloud issued. ``/__fixture__/evidence`` returns what the
+it's down (503), doesn't take feedback (404) or is slow; it also refreshes
+and revokes sign-ins (``/oauth/token``, ``/oauth/revoke``). ``/__fixture__/policy``
+sets an organization policy's ``settings``, ``/__fixture__/signed-in-elsewhere``
+a sign-in another Lumi Cloud issued, ``/__fixture__/signed-in-here`` one this
+fixture's Lumi Cloud issued, and ``/__fixture__/enrolled-elsewhere`` an
+enrollment with another Lumi Cloud. ``/__fixture__/evidence`` returns what the
 route received, the reports waiting on this computer and the audit log's
 feedback records, so the check can compare them with what the dialog showed.
 Never a qualification against a real Lumi Cloud.
@@ -19,6 +22,7 @@ import json
 import os
 import socket
 import sys
+import time
 from pathlib import Path
 
 # What a secret looks like in the log and in a message: the report must never carry them.
@@ -82,8 +86,12 @@ def main() -> None:
     from starlette.responses import JSONResponse
     from starlette.routing import Route
 
+    from lumi import feedback as fixture_feedback
     from lumi import offline
     from lumi.engine import Session
+
+    # The check sends more reports than a person would in ten minutes: the dialog's own pace limit isn't under test.
+    fixture_feedback.MAX_RECENT = 100
     from lumi.gui import app as gui
     from lumi.gui.runtime import BackendSpec
     from tests.streaming_stub import StreamingBackend, done, text_delta
@@ -104,8 +112,9 @@ def main() -> None:
     state.detect_backends = lambda *args, **kwargs: None
 
     received: list[dict] = []
-    kept: dict[str, str] = {}  # Idempotency-Key -> Lumi Cloud's id
+    kept: dict[str, tuple[str, str, bool]] = {}  # Idempotency-Key -> (Lumi Cloud's id, install id, account)
     mode = {"cloud": "up"}
+    tokens = {"count": 0, "revoked": 0}
 
     async def cloud_feedback(request):
         """Lumi Cloud's POST /api/v1/feedback, as the contract says; 503 down, 404 not taking feedback."""
@@ -123,8 +132,11 @@ def main() -> None:
             return JSONResponse({"detail": "Not Found"}, status_code=404)
         if mode["cloud"] == "slow":
             await asyncio.sleep(1.5)
-        kept.setdefault(key, f"fbk_{len(kept) + 1:04d}")
-        return JSONResponse({"id": kept[key], "report": key, "account": bool(request.headers.get("authorization"))},
+        # One report per key, whatever install id a try carries; a replay shows the account only to its install.
+        install = str(json.loads(body).get("install_id") or "")
+        kept.setdefault(key, (f"fbk_{len(kept) + 1:04d}", install, bool(request.headers.get("authorization"))))
+        stored_id, stored_install, stored_account = kept[key]
+        return JSONResponse({"id": stored_id, "report": key, "account": stored_account and stored_install == install},
                             status_code=status)
 
     async def cloud_info(request):
@@ -143,6 +155,31 @@ def main() -> None:
         state.cloud.settings.update_section("cloud", {
             "account_url": "https://other.example.test",
             "account": {"user_id": "usr_other", "email": "ada@example.com", "organizations": []}})
+        state.cloud._changed()  # as a sign-in's change does: open pages hear of it
+        return JSONResponse(state.cloud.status())
+
+    async def cloud_token(request):
+        """Lumi Cloud's refresh: a new access token (and refresh token) for the fixture's sign-in."""
+        tokens["count"] += 1
+        return JSONResponse({"access_token": f"fixture-access-{tokens['count']}",
+                             "refresh_token": f"fixture-refresh-{tokens['count']}", "token_type": "Bearer",
+                             "expires_in": 3600})
+
+    async def cloud_revoke(request):
+        tokens["revoked"] += 1
+        return JSONResponse({})
+
+    async def signed_in_here(request):
+        # What a completed sign-in at the fixture's Lumi Cloud leaves (lumi/cloud.py): its address, its tokens.
+        state.cloud._adopt(cloud_url, "fixture-access-0", "fixture-refresh-0", time.monotonic() + 3000, {
+            "user_id": "usr_fixture", "email": "ada@example.com", "name": "Ada", "organizations": []})
+        return JSONResponse(state.cloud.status())
+
+    async def enrolled_elsewhere(request):
+        state.cloud.settings.update_section("cloud", {"device": {
+            "id": "dev_fixture", "organization_id": "org_acme", "organization_name": "Acme", "how": "joined",
+            "url": "https://acme.example.test", "user_id": "", "trusted_keys": {}}})
+        state.cloud._changed()  # as an enrollment's change does: open pages hear of it
         return JSONResponse(state.cloud.status())
 
     async def set_mode(request):
@@ -163,7 +200,7 @@ def main() -> None:
         audit = [json.loads(line) for path in sorted((state_dir / "audit").glob("*.jsonl"))
                  for line in path.read_text(encoding="utf-8").splitlines()]
         return JSONResponse({"kind": "source-app-feedback-browser", "live_cloud_called": False,
-                             "received": received,
+                             "received": received, "tokens": tokens,
                              "queue": json.loads(queue_file.read_text(encoding="utf-8"))["items"]
                              if queue_file.exists() else [],
                              "audit": [record for record in audit if record["type"].startswith("feedback.")],
@@ -186,6 +223,10 @@ def main() -> None:
         Route("/__fixture__/cloud/api/v1/feedback/info", cloud_info, methods=["GET"]),
         Route("/__fixture__/policy", set_policy, methods=["POST"]),
         Route("/__fixture__/signed-in-elsewhere", signed_in_elsewhere, methods=["POST"]),
+        Route("/__fixture__/signed-in-here", signed_in_here, methods=["POST"]),
+        Route("/__fixture__/enrolled-elsewhere", enrolled_elsewhere, methods=["POST"]),
+        Route("/__fixture__/cloud/oauth/token", cloud_token, methods=["POST"]),
+        Route("/__fixture__/cloud/oauth/revoke", cloud_revoke, methods=["POST"]),
         Route("/__fixture__/cloud-mode", set_mode, methods=["POST"]),
         Route("/__fixture__/cloud-url", set_url, methods=["POST"]),
         Route("/__fixture__/offline", set_offline, methods=["POST"]),

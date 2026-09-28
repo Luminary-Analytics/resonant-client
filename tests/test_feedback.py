@@ -54,17 +54,24 @@ class Cloud:
         self.refreshes = 0
         self.token = f"access-for-{user_id}"
         self.refreshed_at = "2026-09-27T10:00:00.000Z"
+        self.destinations: list[str] = []  # where each token asked for was to go
 
     def status(self) -> dict:
         signed_in = bool(self.user_id)
         account = {"user_id": self.user_id, "email": self.email, "refreshed_at": self.refreshed_at}
         return {"signed_in": signed_in, "account": account if signed_in else {}}
 
-    def account_token(self, *, refresh: bool = False) -> str:
+    def account_token(self, destination: str, *, user_id: str = "", refused: str = "") -> str:
+        """As CloudClient's: only for the Lumi Cloud that issued the sign-in, and only as whom is signed in."""
+        from lumi.cloud import same_address
+
         self.token_calls += 1
-        if not self.user_id:
+        self.destinations.append(destination)
+        if not self.user_id or not same_address(destination, self.account_url):
             raise CloudError("Sign in to Lumi Cloud first.", code="signed_out")
-        if refresh:
+        if user_id and user_id != self.user_id:
+            raise CloudError("Someone else is signed in to that Lumi Cloud now.", code="signed_out")
+        if refused and refused == self.token:
             self.refreshes += 1
             self.token = f"access-for-{self.user_id}-{self.refreshes}"
         return self.token
@@ -597,45 +604,72 @@ def test_the_account_goes_only_while_the_person_is_signed_in(inbox, audit_log, m
     feedback.submit(anonymous, form(), now=NOW)
     feedback.flush(ada, force=True, now=NOW + 1)
     assert "authorization" not in inbox.requests[-1].headers
-    # Written as Ada: sent as Ada only while Ada is the one signed in.
+    # Written as Ada: sent only as Ada. While Bob is the one signed in, it waits for her, and never goes as Bob
+    # or without an account.
     inbox.answers = [down()]
     feedback.submit(ada, form(), now=NOW)
-    feedback.flush(Cloud(user_id="usr_bob"), force=True, now=NOW + 2)
-    assert "authorization" not in inbox.requests[-1].headers
-    inbox.answers = [down()]
-    feedback.submit(ada, form(), now=NOW)
-    feedback.flush(ada, force=True, now=NOW + 3)
+    sent_before = len(inbox.requests)
+    assert feedback.flush(Cloud(user_id="usr_bob"), force=True, now=NOW + 2)["sent"] == 0
+    assert len(inbox.requests) == sent_before and queue()[-1]["state"] == "sign_in"
+    assert feedback.flush(ada, force=True, now=NOW + 3)["sent"] == 1
     assert inbox.requests[-1].headers["authorization"] == "Bearer access-for-usr_ada"
 
 
-def test_signed_in_when_written_signed_out_when_sent_goes_as_the_person_is_then(inbox, clock):
+def test_written_signed_in_it_waits_for_its_writer_and_goes_without_the_account_only_by_choice(inbox, clock):
     ada = Cloud(user_id="usr_ada")
     inbox.answers = [down()]
     feedback.submit(ada, form(), now=NOW)
     ada.user_id = ""  # signed out meanwhile
-    assert feedback.flush(ada, force=True, now=NOW + 1)["sent"] == 1
+    assert feedback.flush(ada, force=True, now=NOW + 1)["sent"] == 0  # Send now: it waits for Ada
+    [item] = queue()
+    assert (item["state"], item["account"], item["email"]) == ("sign_in", "usr_ada", "ada@example.com")
+    [report] = feedback.status(ada)["reports"]
+    assert (report["writer"], report["without_account"], report["here"]) == ("ada@example.com", True, True)
+    assert feedback.status(ada)["sendable"] == 0
+    # The person's choice, labelled as such: it then goes without the account, with the signed-out install id.
+    assert feedback.send_without_account(ada, None, item["id"], now=NOW + 2)["sent"] == 1
     request = inbox.requests[-1]
     assert "authorization" not in request.headers
-    # The id matches who sent it: never the account's id without its sign-in.
     assert json.loads(request.content)["install_id"] == feedback.install_id(URL, "")
     assert json.loads(inbox.requests[0].content)["install_id"] == feedback.install_id(URL, "usr_ada")
+    assert request.headers["idempotency-key"] == item["id"] and queue() == []
+    with pytest.raises(feedback.FeedbackError) as gone:
+        feedback.send_without_account(ada, None, item["id"])
+    assert gone.value.code == "gone"
 
 
-def test_a_sign_in_that_ended_meanwhile_sends_as_signed_out(inbox, audit_log):
+def test_sent_without_the_account_after_a_try_with_it_arrived_is_the_same_report(inbox, monkeypatch):
+    """Lumi Cloud keeps one report per key, whatever install id a try carries: the choice makes no second copy."""
+    ada = Cloud(user_id="usr_ada")
+    inbox.answers = [httpx.ReadTimeout("the report arrived; its answer didn't")]
+    feedback.submit(ada, form(), now=NOW)
+    [item] = queue()
+    ada.user_id = ""
+    # Lumi Cloud's answer to the key it has: the first report's id, and no account for another install id.
+    inbox.answers = [(200, {"id": "fbk_first", "report": item["id"], "account": False}, None)]
+    records = []
+    monkeypatch.setattr(feedback, "_record", lambda event, body, **extra: records.append((event, extra)))
+    assert feedback.send_without_account(ada, None, item["id"], now=NOW + 2)["sent"] == 1
+    first, again = inbox.requests
+    assert first.headers["idempotency-key"] == again.headers["idempotency-key"] == item["id"]
+    assert json.loads(first.content)["install_id"] != json.loads(again.content)["install_id"]
+    assert queue() == [] and ("feedback.sent", {"queued": True, "attributed": False}) in records
+
+
+def test_a_sign_in_that_ended_meanwhile_keeps_the_report_for_its_writer(inbox, audit_log):
     class Ended(Cloud):
-        def account_token(self, *, refresh: bool = False) -> str:
+        def account_token(self, destination: str, *, user_id: str = "", refused: str = "") -> str:
             raise CloudError("Your Lumi Cloud sign-in ended. Sign in again.", code="signed_out")
 
-    assert feedback.submit(Ended(user_id="usr_ada"), form(), now=NOW).status == "sent"
-    request = inbox.requests[-1]
-    assert "authorization" not in request.headers
-    assert json.loads(request.content)["install_id"] == feedback.install_id(URL, "")
-    assert records(audit_log)[-1]["data"]["attributed"] is False  # what went, not what was meant
+    outcome = feedback.submit(Ended(user_id="usr_ada"), form(), now=NOW)
+    assert (outcome.status, outcome.reason) == ("queued", "sign_in")
+    assert inbox.requests == []  # never sent without the account the person wrote it with
+    assert queue()[0]["account"] == "usr_ada"
 
 
 def test_a_token_that_cant_be_had_now_keeps_the_report(inbox):
     class Flaky(Cloud):
-        def account_token(self, *, refresh: bool = False) -> str:
+        def account_token(self, destination: str, *, user_id: str = "", refused: str = "") -> str:
             raise CloudError("Lumi Cloud answered 503.", code="503")
 
     outcome = feedback.submit(Flaky(user_id="usr_ada"), form(), now=NOW)
@@ -1284,3 +1318,167 @@ def test_nothing_the_dialog_is_told_holds_a_token(inbox, settings):
 def test_report_ids_are_uuid4():
     for _ in range(5):
         assert feedback.REPORT_ID.fullmatch(str(uuid.uuid4()))
+
+
+# ── The second review of #101 ───────────────────────────────────────────────
+
+
+def _redact_rule(name: str, keyword: str) -> None:
+    lumi_policy.set_for_tests(lumi_policy.parse({
+        "schema": "lumi.policy/v1", "organization": "Acme",
+        "dlp": {"version": 1, "rules": [{"name": name, "keywords": [keyword], "action": "redact"}]},
+    }, source="test policy"))
+
+
+def test_a_redact_rule_named_after_its_keyword_is_reviewed_once_then_sent(inbox, settings):
+    """The reviewer's n3: the check at Send found the rule's own marker, and the report could never be sent."""
+    _redact_rule("confidential", "confidential")
+    message = "the confidential plan broke"
+    shown = feedback.preview(Cloud(), form(message=message, include_diagnostics=True), settings=settings)
+    assert shown["body"]["message"] == "the [REDACTED:confidential] plan broke"
+    outcome = feedback.submit(Cloud(), form(message=message, include_diagnostics=True), settings=settings,
+                              preview_id=shown["preview_id"], now=NOW)
+    assert outcome.status == "sent"
+    [body] = inbox.bodies()
+    assert body == shown["body"] and body["message"].count("[REDACTED:") == 1
+
+
+def test_a_waiting_report_is_checked_again_only_when_the_rules_changed(inbox, clock):
+    _redact_rule("confidential", "confidential")
+    inbox.answers = [down()]
+    feedback.submit(Cloud(), form(message="the confidential plan broke"), now=NOW)
+    [item] = queue()
+    assert item["body"]["message"] == "the [REDACTED:confidential] plan broke" and item["rules"]
+    feedback.flush(Cloud(), force=True, now=NOW + 1)  # the same rules: sent as it was checked, markers and all
+    assert inbox.bodies()[-1]["message"] == "the [REDACTED:confidential] plan broke"
+    # Written under these rules, sent under stricter ones: they apply to what was reviewed.
+    inbox.answers = [down()]
+    feedback.submit(Cloud(), form(message="the confidential plan and Falcon broke"), now=NOW + 2)
+    lumi_policy.set_for_tests(lumi_policy.parse({
+        "schema": "lumi.policy/v1", "organization": "Acme",
+        "dlp": {"version": 1, "rules": [{"name": "falcon", "keywords": ["Falcon"], "action": "redact"},
+                                        {"name": "confidential", "keywords": ["confidential"], "action": "redact"}]},
+    }, source="test policy"))
+    feedback.flush(Cloud(), force=True, now=NOW + 3)
+    sent = inbox.bodies()[-1]["message"]
+    assert "Falcon" not in sent and "[REDACTED:falcon]" in sent and "plan" in sent
+
+
+@pytest.mark.parametrize("b_user", ["usr_b", "usr_1"], ids=["someone else", "the same user id"])
+def test_a_sign_in_elsewhere_during_a_round_never_sends_its_token_to_the_old_destination(inbox, request, b_user):
+    """The reviewer's n1: the round decided the account at its start, and asked for the token per report.
+
+    User ids are each Lumi Cloud's own, so B can have given the same one: only the destination stops that.
+    """
+    from tests.test_cloud import B_URL, _client, _sign_in
+
+    cloud_fake = request.getfixturevalue("fake")
+    client = _client(cloud_fake)
+    _sign_in(client, cloud_fake)  # signed in at A, where reports go
+    access_a = client._access[0]
+    inbox.answers = [down(), down()]
+    for n in range(2):
+        feedback.submit(client, form(message=f"report {n}"), now=NOW + n)  # A unreachable: both wait, as Ada
+    assert [item["account"] for item in queue()] == ["usr_1", "usr_1"]
+
+    def sign_in_completes_at_b(sent: httpx.Request) -> httpx.Response:
+        # While the round sends the first report, a sign-in at B completes (what _finish_sign_in does).
+        client._adopt(B_URL, "access-issued-by-B", "refresh-issued-by-B", time.monotonic() + 3000,
+                      {"user_id": b_user, "email": "ben@b.example", "name": "Ben", "organizations": []})
+        return httpx.Response(201, json=inbox.ack(sent))
+
+    inbox.answers = [sign_in_completes_at_b]
+    result = feedback.flush(client, force=True, now=NOW + 10)
+    tokens = [sent.headers.get("authorization", "") for sent in inbox.requests]
+    assert tokens[-1] == f"Bearer {access_a}" and "Bearer access-issued-by-B" not in tokens
+    assert result["sent"] == 1
+    # The second is Ada's: it waits for her, never goes with Ben's token or without an account.
+    [item] = queue()
+    assert (item["state"], item["account"]) == ("sign_in", "usr_1")
+
+
+def test_a_report_held_for_a_sign_in_never_goes_anonymously_or_as_someone_else(inbox):
+    """The reviewer's n6: after two 401s, Send now sent it without the account when nobody was signed in."""
+    ada = Cloud(user_id="usr_ada")
+    inbox.answers = [(401, {"error": "invalid_token"}, None), (401, {"error": "invalid_token"}, None)]
+    outcome = feedback.submit(ada, form(), now=NOW)
+    assert outcome.reason == "sign_in" and queue()[0]["state"] == "sign_in"
+    sent = len(inbox.requests)
+    assert feedback.flush(Cloud(user_id=""), force=True, now=NOW + 1)["sent"] == 0  # Send now, signed out
+    assert feedback.flush(Cloud(user_id="usr_bob", email="bob@example.com"), force=True, now=NOW + 2)["sent"] == 0
+    assert len(inbox.requests) == sent and queue()[0]["state"] == "sign_in"
+    # Only the person's labelled choice sends it without the account.
+    status = feedback.status(Cloud(user_id=""))
+    [report] = status["reports"]
+    assert report["without_account"] and report["writer"] == "ada@example.com"
+    assert feedback.send_without_account(Cloud(user_id=""), None, report["id"], now=NOW + 3)["sent"] == 1
+    assert "authorization" not in inbox.requests[-1].headers and queue() == []
+
+
+def test_a_report_written_without_an_address_goes_as_its_button_says(inbox):
+    feedback.submit(Cloud(url=""), form(), now=NOW)
+    [item] = queue()
+    [report] = feedback.status(Cloud(user_id="usr_ada"))["reports"]
+    assert report["send"] and report["send_as"] == "ada@example.com"
+    # The button named Ada; Bob is signed in by the time it's pressed: nothing is sent.
+    with pytest.raises(feedback.FeedbackError) as changed:
+        feedback.send_held(Cloud(user_id="usr_bob", email="bob@example.com"), None, item["id"], URL,
+                           shown_as="ada@example.com")
+    assert changed.value.code == "preview" and inbox.requests == []
+    # As shown: with Ada's account, and only Ada's.
+    assert feedback.send_held(Cloud(user_id="usr_ada"), None, item["id"], URL, shown_as="ada@example.com")["sent"] == 1
+    assert inbox.requests[-1].headers["authorization"] == "Bearer access-for-usr_ada"
+    # Without an account, when the button said so.
+    feedback.submit(Cloud(url=""), form(), now=NOW + 1)
+    [item] = queue()
+    assert feedback.status(Cloud())["reports"][0]["send_as"] == ""
+    assert feedback.send_held(Cloud(), None, item["id"], URL, shown_as="")["sent"] == 1
+    assert "authorization" not in inbox.requests[-1].headers
+
+
+def test_the_dialog_sends_a_waiting_report_without_the_account_only_when_asked(inbox, settings):
+    ada = Cloud(user_id="usr_ada")
+    inbox.answers = [down()]
+    feedback.submit(ada, form(), settings=settings, now=NOW)
+    [item] = queue()
+    signed_out = Cloud()
+    [status] = _command("feedback_send_without_account", signed_out, settings, id=item["id"])
+    assert status["event"] == "feedback_status" and status["data"]["flushed"]["sent"] == 1
+    assert "authorization" not in inbox.requests[-1].headers
+    [status] = _command("feedback_send_without_account", signed_out, settings, id=item["id"])
+    assert "isn't waiting" in status["data"]["flushed"]["error"]
+
+
+def test_another_process_holding_the_reports_is_waited_for_a_bounded_time(inbox, monkeypatch):
+    """The reviewer's lock_stall.py: a second process waited for ever on macOS and Linux (about 10 s on Windows),
+    and then went on unlocked. Now: the same bounded wait everywhere, then ``busy``, and nothing touched."""
+    from lumi import file_lock
+
+    script = ("import sys, time\n"
+              "from lumi import feedback\n"
+              "with feedback._state():\n"
+              "    print('held', flush=True)\n"
+              "    time.sleep(float(sys.argv[1]))\n")
+    home = Path.home()
+    env = {**os.environ, "USERPROFILE": str(home), "HOME": str(home), "LUMI_STATE_HOME": str(state_home()),
+           "LUMI_KEYCHAIN": "off", "PYTHONPATH": str(Path(__file__).resolve().parent.parent),
+           "PYTHONDONTWRITEBYTECODE": "1"}
+    holder = subprocess.Popen([sys.executable, "-c", script, "20"], env=env, stdout=subprocess.PIPE,
+                              stderr=subprocess.PIPE, text=True)
+    try:
+        assert holder.stdout.readline().strip() == "held", holder.stderr.read()
+        monkeypatch.setattr(file_lock, "LOCK_SECONDS", 0.5)
+        monkeypatch.setattr(feedback, "LOCK_SECONDS", 0.5)
+        started = time.monotonic()
+        with pytest.raises(feedback.FeedbackError) as busy:
+            feedback.waiting()
+        assert busy.value.code == "busy" and 0.4 <= time.monotonic() - started < 5
+        with pytest.raises(feedback.FeedbackError) as busy:  # nothing is written unlocked either
+            feedback.submit(Cloud(url=""), form(), now=NOW)
+        assert busy.value.code == "busy" and "Lumi feedback: Bug" in busy.value.copy
+        status = feedback.status(Cloud())
+        assert status["busy"] and status["reports"] == []
+    finally:
+        holder.kill()
+        holder.communicate(timeout=30)
+    assert feedback.waiting() == 0

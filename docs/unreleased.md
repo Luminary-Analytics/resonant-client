@@ -8,6 +8,113 @@ The heartbeat remains paused. Documentation maintenance does not resume work,
 spending or grants, and changes no native implementation or installed bundle.
 The dated September 15/18 records below are historical.
 
+## September 27 Lumi Cloud: device requests stay with their enrollment, and a sign-in's tokens with their issuer (security fix, source only, not released)
+
+A second review of the sign-in fix below found the same kind of problem on
+the device side, and places where a check and its use could be separated.
+
+**What was wrong.**
+
+- **Device requests followed the address this computer uses now.** Device
+  tokens, check-ins, policy downloads, leaving the organization and tasks
+  from chat all went to the current address, never the one the computer
+  enrolled with. After a sign-in at another Lumi Cloud, or a machine policy
+  naming one, the enrollment's device token went there with the next
+  check-in, and a task that Lumi Cloud handed out ran here.
+- **A check and its use were apart.** A round of waiting feedback decided
+  the account when it started but asked for the token for each report, so a
+  sign-in at another Lumi Cloud during the round sent its token to the old
+  destination. A refresh that a sign-in elsewhere overtook sent the
+  refreshed token to the new Lumi Cloud and kept the old one's rotated
+  refresh token as the new one's. Oversight's account header and its
+  request had the same gap.
+
+**Fixes.**
+
+- **Device requests go only to the enrollment's address** (`device["url"]`,
+  recorded at enrollment). When this computer uses another Lumi Cloud, it
+  counts as enrolled elsewhere (`status()["device_elsewhere"]`): check-ins
+  and the organization's policy still come from where it enrolled, tasks
+  from chat wait with that reason, and Settings > Lumi account names the
+  enrollment's Lumi Cloud and offers **Leave … on this computer**. Everything
+  about a task goes back to the Lumi Cloud that handed it out, or nowhere
+  (`device_call`'s `expect`).
+- **A machine policy's `cloud.url` is authoritative for enrollment.** When
+  it names another address than the enrollment's, the next round ends the
+  old enrollment (the old Lumi Cloud is told, with its own device token) and,
+  with an `enrollment_token`, enrolls at the new address. A joined
+  enrollment ends the same way.
+- **The sign-in's issuer and tokens are read and written together**
+  (`CloudClient._credentials`, under one lock; every sign-in and sign-out
+  starts a new generation). A token is sent to the issuer it was read with,
+  never to an address read again. `account_token(destination, user_id=...)`
+  refuses a destination that isn't the issuer, or a person who isn't the one
+  signed in. A refresh a sign-in or sign-out overtook stores nothing, and the
+  refresh token it got is revoked where it was made; an ended refresh never
+  forgets a sign-in that completed meanwhile. One refresh runs at a time. A
+  completed sign-in replaces the earlier one in one step (`_adopt`), which
+  is then revoked where it was issued, also at the same Lumi Cloud.
+- **Feedback goes only with its writer's account.** A report written signed
+  in waits for its writer when they've signed out or someone else signed in,
+  never goes without the account or as someone else by itself, and goes
+  without it only by **Send without your account**. That keeps the report's
+  key, and Lumi Cloud keeps one report per key whatever install id a try
+  carries: if an earlier try with the account arrived, that one is kept and
+  no second copy is made. A report written without an address goes as the
+  account its button names ("as you@example.com" or "without an account"),
+  or not at all if that changed.
+- **Oversight names a person only to the Lumi Cloud that signed them in**:
+  a confirmation recorded while the sign-in is another Lumi Cloud's names no
+  account, and the account's token is asked for the enrollment's Lumi Cloud
+  only.
+- **The team library's copy belongs to its sign-in**: after a sign-in at
+  another Lumi Cloud, or as someone else, it isn't offered until a sync
+  replaces it.
+- **Addresses compare as addresses** (`same_address`): case, the default
+  port, a trailing slash and an internationalized name written either way
+  no longer sign people out.
+- **A sign-out Lumi Cloud couldn't be told about says so** (offline mode, or
+  unreachable): Settings shows that the sign-in stays valid there until it
+  expires, and the audit record says `revoked: false`. Nothing of it is kept
+  here.
+- **DLP at Send runs on the report before DLP.** A redaction rule named after
+  its own keyword used to find its marker in the reviewed report and send it
+  back for review each time, so it could never be sent. A kept report is
+  checked again only when the rules changed, and then on what was reviewed.
+- **The lock over shared files is waited for at most ten seconds on every
+  platform** (it waited for ever on macOS and Linux). Feedback then says the
+  reports are busy and touches nothing unlocked; the audit log goes on
+  unlocked, as before. A thread whose open or lock call on the file hasn't
+  returned doesn't take another thread with it.
+
+Validation: `tests/test_cloud.py` (11 new) with the real `CloudClient`
+against two fake Lumi Clouds: tokens only for their issuer, a refresh
+overtaken by a sign-in elsewhere (nothing reaches either Lumi Cloud, B's
+sign-in is kept and A's new refresh token revoked), an ended refresh that
+doesn't forget the new sign-in, device requests after a sign-in elsewhere
+(check-ins to A only, leaving tells A), a machine policy naming B with and
+without an enrollment token, requests from chat waiting, a task's reply
+refused when the enrollment moved, addresses written differently, signing in
+again at the same Lumi Cloud, and a sign-out offline mode keeps from Lumi
+Cloud. `tests/test_feedback.py` (8 new): a sign-in elsewhere during a round
+(by someone else, or with the same user id at the other Lumi Cloud), a
+report held after two 401s (not sent signed out or as someone else, then
+sent without the account by choice), the same choice after a try with the
+account arrived (the same key, acknowledged once), Send held as the button
+says, the redaction rule named after its keyword, a kept report checked
+again only when the rules changed, and another process holding the reports'
+lock (busy within the bound, nothing written). `tests/test_file_lock.py`
+(new, 3): a lock another process keeps waited for a bounded time, held and
+released, and a stuck call tying up one thread only.
+`tests/test_oversight.py` (1 new) and `tests/test_team_library.py` (1 new).
+`tests/feedback_view.test.cjs` (2 new): the labelled choices and the busy
+line. In headless Edge (`tests/feedback.browser.cjs`): a report written
+signed in, kept while Lumi Cloud was down, then signing out in Settings: it
+waits for its writer, Send now doesn't send it, and **Send without your
+account** (confirmed) sends it without the account under the same key; an
+enrollment elsewhere in Settings at 375 px, left by keyboard; a sign-out
+that couldn't reach its Lumi Cloud saying so.
+
 ## September 27 Lumi Cloud sign-in: the account's tokens stay with the Lumi Cloud that issued them (security fix, source only, not released)
 
 **What was wrong.** `CloudClient` refreshed the sign-in, made account calls

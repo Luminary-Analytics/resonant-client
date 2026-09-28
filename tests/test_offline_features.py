@@ -55,7 +55,8 @@ def enrolled_cloud(tmp_path):
     raw = key.private_bytes(serialization.Encoding.Raw, serialization.PrivateFormat.Raw, serialization.NoEncryption())
     settings.update_section("cloud", {"url": "https://cloud.example.test", "account_url": "https://cloud.example.test",
                                       "device": {
-        "id": "dev-1", "organization_id": "org-1", "organization_name": "Acme", "how": "joined"}})
+        "id": "dev-1", "organization_id": "org-1", "organization_name": "Acme", "how": "joined",
+        "url": "https://cloud.example.test"}})
     settings.set("api_keys", DEVICE_SECRET, base64.b64encode(raw).decode())
     settings.set("api_keys", "lumi_cloud_refresh", "refresh-token")
     recorder = _Recorder()

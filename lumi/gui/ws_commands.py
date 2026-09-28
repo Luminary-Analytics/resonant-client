@@ -4028,9 +4028,14 @@ def _feedback_task(work) -> None:
 
 
 async def _feedback_state(ctx: CommandContext, **extra: Any) -> None:
+    """The dialog's status, with ``extra``; it always answers, so the dialog never waits for one."""
     from .. import feedback
 
-    status = await asyncio.to_thread(feedback.status, ctx.state.cloud, ctx.state.settings)
+    try:
+        status = await asyncio.to_thread(feedback.status, ctx.state.cloud, ctx.state.settings)
+    except Exception:
+        logger.exception("The Send feedback dialog's status failed")
+        status = {"busy": _FEEDBACK_FAILED, "reports": [], "waiting": 0}
     await ctx.send({"event": "feedback_status", "data": {**status, **extra}})
 
 
@@ -4134,9 +4139,11 @@ async def _cmd_feedback_flush(ctx: CommandContext) -> None:
     async def run() -> None:
         try:
             result = await asyncio.to_thread(feedback.flush, ctx.state.cloud, ctx.state.settings, force=True)
+        except feedback.FeedbackError as exc:
+            result = {"sent": 0, "held": 0, "error": exc.message}
         except Exception:
             logger.exception("Sending the waiting feedback failed")
-            result = {"sent": 0, "held": 0, "waiting": await asyncio.to_thread(feedback.waiting), "failed": True}
+            result = {"sent": 0, "held": 0, "failed": True}
         await _feedback_state(ctx, flushed=result)
 
     _feedback_task(run)
@@ -4144,20 +4151,45 @@ async def _cmd_feedback_flush(ctx: CommandContext) -> None:
 
 @command("feedback_send_held")
 async def _cmd_feedback_send_held(ctx: CommandContext) -> None:
-    """Send a report written before a feedback address was set, to the address the dialog showed."""
+    """Send a report written before a feedback address was set, to the address and as whom the dialog showed.
+
+    ``as`` is the account the button named ("" for "without an account").
+    """
     from .. import feedback
 
     report_id = str(ctx.msg.get("id") or "")
     shown = str(ctx.msg.get("destination") or "")
+    shown_as = str(ctx.msg.get("as") or "")
 
     async def run() -> None:
         try:
             result = await asyncio.to_thread(feedback.send_held, ctx.state.cloud, ctx.state.settings, report_id,
-                                             shown)
+                                             shown, shown_as=shown_as)
         except feedback.FeedbackError as exc:
             result = {"sent": 0, "held": 0, "error": exc.message}
         except Exception:
             logger.exception("Sending a held feedback report failed")
+            result = {"sent": 0, "held": 0, "failed": True}
+        await _feedback_state(ctx, flushed=result)
+
+    _feedback_task(run)
+
+
+@command("feedback_send_without_account")
+async def _cmd_feedback_send_without_account(ctx: CommandContext) -> None:
+    """The person's choice: send a report that waits for their sign-in without their account."""
+    from .. import feedback
+
+    report_id = str(ctx.msg.get("id") or "")
+
+    async def run() -> None:
+        try:
+            result = await asyncio.to_thread(feedback.send_without_account, ctx.state.cloud, ctx.state.settings,
+                                             report_id)
+        except feedback.FeedbackError as exc:
+            result = {"sent": 0, "held": 0, "error": exc.message}
+        except Exception:
+            logger.exception("Sending a feedback report without the account failed")
             result = {"sent": 0, "held": 0, "failed": True}
         await _feedback_state(ctx, flushed=result)
 
@@ -4171,7 +4203,12 @@ async def _cmd_feedback_discard(ctx: CommandContext) -> None:
 
     ids = ctx.msg.get("ids")
     ids = [str(value) for value in ids] if isinstance(ids, list) else None
-    await _feedback_state(ctx, discarded=await asyncio.to_thread(feedback.discard, ids))
+    try:
+        discarded = await asyncio.to_thread(feedback.discard, ids)
+    except feedback.FeedbackError as exc:
+        await _feedback_state(ctx, flushed={"sent": 0, "held": 0, "error": exc.message})
+        return
+    await _feedback_state(ctx, discarded=discarded)
 
 
 @command("feedback_copy_held")
@@ -4180,7 +4217,10 @@ async def _cmd_feedback_copy_held(ctx: CommandContext) -> None:
     from .. import feedback
 
     report_id = str(ctx.msg.get("id") or "")
-    text = await asyncio.to_thread(feedback.held_copy, report_id)
+    try:
+        text = await asyncio.to_thread(feedback.held_copy, report_id)
+    except feedback.FeedbackError:
+        text = ""
     await ctx.send({"event": "feedback_copy", "id": report_id, "text": text})
 
 

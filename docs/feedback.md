@@ -55,17 +55,34 @@ off). An address with a user name or password in it isn't used.
 **A report is bound to its address when it's written.** It goes there and
 nowhere else, even if the address changes later. A report written while no
 address was set stays on this computer: once there is one, the dialog lists
-it with **Send to** that address, and it goes only when you choose that.
-It never goes by itself to an address that appears later, such as one an
+it with **Send to** that address **as** the account signed in there now (or
+**without an account**), and it goes only when you choose that, and only as
+the button said: if who's signed in changed meanwhile, nothing is sent. It
+never goes by itself to an address that appears later, such as one an
 employer's policy sets.
 
 **Your account goes only while you're signed in** to the Lumi Cloud that
 issued your sign-in, and only when reports go there. The request then
 carries your access token (`Authorization: Bearer`), so staff see who sent
-it; your token never goes to a host that didn't issue it. A report goes as
-you are when it's sent: written while signed in and sent after you signed
-out, it goes without your account, and its install id is the one for
-reports sent signed out.
+it; your token never goes to a host that didn't issue it. Lumi asks for the
+token at the moment each report goes, for that report's address, and gets
+it only when that Lumi Cloud issued the sign-in and you are still the one
+signed in there (`CloudClient.account_token(destination, user_id=...)`).
+
+**A report written with your account goes only with your account.** If
+you've signed out (or someone else signed in) before it goes, it waits for
+you, and the dialog says so: "waiting for you@example.com to sign in to …".
+It never goes without your account, or as someone else, by itself. **Send
+without your account** beside it is the one way to send it otherwise, and
+asks first. It then carries the install id of reports sent signed out, so
+Lumi Cloud can't link it to your account's reports. It keeps its key: if an
+earlier try with your account did reach Lumi Cloud (its answer lost on the
+way back), Lumi Cloud keeps that report, with your account, and answers
+with its id; no second copy is made.
+
+Lumi Cloud recognizes a report sent again by its key alone
+(`Idempotency-Key`, a random UUID made when the report is written), whatever
+install id a try carries, and keeps the first report it got with that key.
 
 ## What is sent
 
@@ -110,7 +127,10 @@ send**, and says where it goes and whether as your account. Send sends that
 very report (`preview_id`, kept 15 minutes), checked again first. If the
 form changes after that, or where the report would go or as whom, the report
 is prepared again, and Send waits until you've seen the new one. So log
-lines written after the preview never go.
+lines written after the preview never go. The check at Send runs on the
+report as it was before any DLP rule touched it, and compares its result
+with what you saw: a rule named after its own keyword (whose marker,
+`[REDACTED:confidential]`, holds the keyword) never counts as a change.
 
 ## Before anything leaves the computer
 
@@ -170,7 +190,8 @@ and the terminal UI can't lose one another's reports:
 | No address was set when it was written | Kept until you send it to the address shown, or discard it |
 | Lumi Cloud couldn't be reached, answered 5xx or 408, or didn't acknowledge it (a captive portal's page, a 202 or 204) | Tried again: after 10 minutes, then twice as long after each try, up to 6 hours |
 | 429 | After `Retry-After` (whole seconds, at most an hour, with a little jitter) |
-| Your token was refused even after one refresh (401), or Lumi Cloud asked for a sign-in (401 or 403 with no token) | When you sign in again (or **Send now**); never sent without your account instead |
+| Your token was refused even after one refresh (401), or Lumi Cloud asked for a sign-in (401 or 403 with no token) | When you sign in again as its writer (or **Send now** while you are); never sent without your account, unless you choose **Send without your account** |
+| Written with your account, and you've signed out or someone else signed in | The same: it waits for you |
 | Your access token couldn't be refreshed just now | Tried again as above |
 | Lumi Cloud doesn't accept feedback (404) | Kept, with **Copy** and **Discard**; **Send now** tries again |
 | Lumi Cloud refused it (400, 413 or another 4xx) | Kept as couldn't be delivered, with the reason, **Copy** and **Discard** |
@@ -183,15 +204,22 @@ and the terminal UI can't lose one another's reports:
 - The 30 days count time Lumi was running, each round adding at most ten
   minutes, so moving the clock forward (or a computer asleep) doesn't expire
   the queue.
-- Each report is checked again before it's sent (the secret scan and DLP),
-  since the rules may have changed.
+- Each report goes through the secret scan again before it's sent, and
+  through the DLP rules again when they changed since it was checked; then
+  they apply to the report you reviewed, so it never carries more than you
+  saw.
 - One report Lumi Cloud can't take now ends the round, so an unreachable
   server isn't asked once per waiting report.
 - The dialog lists the waiting reports: how many wait for the address shown,
   with **Send now** and **Discard all**, and each other one with what it
-  waits for (another address, a sign-in, you) and its own **Copy**, **Send
-  to** or **Discard**. A report being sent at that moment can't be taken back;
-  the dialog says so.
+  waits for (another address, its writer's sign-in, you) and its own
+  **Copy**, **Send to … as …**, **Send without your account** or
+  **Discard**. A report being sent at that moment can't be taken back; the
+  dialog says so.
+- The lock is waited for at most ten seconds, on every platform. When
+  another Lumi process keeps it longer (one stuck on a network drive, say),
+  the dialog says the reports are busy and nothing is read or written
+  unlocked; a report you were sending is offered to copy.
 - A damaged entry in the file is dropped (and recorded), never stops the
   others; a file that isn't JSON is set aside.
 
@@ -207,7 +235,7 @@ and whether it had diagnostics; never its text, reply-to or install id:
 | Type | When | Also |
 | --- | --- | --- |
 | `feedback.sent` | Lumi Cloud acknowledged a report | `queued` (sent from the waiting list), `attributed` (Lumi Cloud says it went with your account) |
-| `feedback.queued` | A report waits to be tried again | `reason`: `unreachable`, `busy`, `unconfirmed`, `unauthorized`, `sign_in` |
+| `feedback.queued` | A report waits to be tried again | `reason`: `unreachable`, `busy`, `unconfirmed`, `unauthorized`, `sign_in`, `without_account` (you chose to send it without your account) |
 | `feedback.held` | A report waits for you | `reason`: `no_destination`, `not_accepting`, `too_large`, `refused` (with Lumi Cloud's `status`), `dlp`, `expired` |
 | `feedback.refused` | A report wasn't sent or kept | `reason`: `offline`, `dlp`, `disabled`, `rate_limited`, `queue_full`, `refused`, `too_large`, `not_accepting` (with Lumi Cloud's `status`) |
 | `feedback.dropped` | A waiting report was removed | `reason`: `discarded`, `damaged` |
@@ -247,7 +275,7 @@ signed-in account. Answers:
 | Status | Body | Lumi |
 | --- | --- | --- |
 | 201 | `{"id": "fbk_…", "report": "<the key>", "account": true}` | Delivered: shows the id as the report's reference |
-| 200 | The same, for a report Lumi Cloud already has (a retry of the same key from the same install) | Delivered |
+| 200 | The same, for a key Lumi Cloud already has: the first report with that key, kept as it arrived even when this try's text differs. `account` is `true` only when this try carries that report's install id and the report has an account | Delivered |
 | 200 or 201 whose `report` isn't the key, or no JSON | | Not delivered (a captive portal, say): kept and tried again |
 | 401 `{"error": "invalid_token"}` with `WWW-Authenticate: Bearer error="invalid_token"` | | The token presented was refused: refreshed once where it was issued and tried again; then kept for a new sign-in |
 | 400 | `{"error": "invalid_request", "error_description": "…"}` | Says why; a waiting report is kept as couldn't be delivered |

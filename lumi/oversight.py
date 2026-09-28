@@ -196,15 +196,25 @@ def os_user() -> str:
     return str(name or "")[:200]
 
 
-def _cloud_account() -> str | None:
-    """The signed-in Lumi Cloud user's id from settings.json, or None (never a secret)."""
+def _cloud_account(device: dict | None) -> str | None:
+    """The signed-in Lumi Cloud user's id from settings.json, for records sent to ``device``'s Lumi Cloud; or None.
+
+    Only when that Lumi Cloud issued the sign-in (``cloud.account_url``, as
+    lumi/cloud.py records it): a person signed in to another one isn't anyone
+    there, and their id isn't sent to it. Never a secret.
+    """
+    from .cloud import same_address
     from .paths import state_home
 
     data = _read_json(state_home() / "settings.json", {})
     section = data.get("cloud") if isinstance(data, dict) else None
-    account = section.get("account") if isinstance(section, dict) else None
+    section = section if isinstance(section, dict) else {}
+    account = section.get("account")
     user = account.get("user_id") if isinstance(account, dict) else None
-    return str(user)[:200] if user else None
+    destination = str((device or {}).get("url") or "")
+    if not user or not same_address(str(section.get("account_url") or ""), destination):
+        return None
+    return str(user)[:200]
 
 
 def canonical(document: dict) -> bytes:
@@ -482,7 +492,7 @@ def status() -> dict:
             "unattended": settings.unattended,
             "acknowledgment": _acknowledgment_status(scope),
             # Whom confirming now would count for (the person signed in here, or this computer).
-            "confirms_as": _counts_for(scope, _cloud_account()) if scope.in_force else "",
+            "confirms_as": _counts_for(scope, _cloud_account(scope.device)) if scope.in_force else "",
             **(described(settings, scope.organization) if scope.configured else {}),
         }
     except Exception as exc:  # the page still shows the policy's error elsewhere
@@ -693,7 +703,7 @@ def _acknowledgment_record(scope: Scope, surface: str, notice: str, chat: str) -
         "surface": surface,
         "person": {
             # A chat's people aren't this computer's Lumi Cloud account.
-            "account": None if surface == "gateway" else _cloud_account(),
+            "account": None if surface == "gateway" else _cloud_account(scope.device),
             "os_user": os_user(),
             "chat": chat[len(CHAT_PREFIX):] if surface == "gateway" else None,
         },
@@ -1638,15 +1648,18 @@ def _upload_acknowledgments(client: Any) -> str:
             _settle_acknowledgment(ack_id, "not_sent", error="It wasn't signed with this computer's key.")
             continue
         headers, sign_in = {}, ""
+        # Where it goes: the Lumi Cloud this computer enrolled with. The account's token goes only to that one,
+        # when it issued the sign-in, and the request is refused if the enrollment moved meanwhile (expect).
+        destination = str(device.get("url") or "")
         account = (record.get("person") or {}).get("account") if isinstance(record.get("person"), dict) else None
         if account and record.get("surface") != "gateway" and device.get("how") == "managed":
             # A managed computer belongs to nobody in Lumi Cloud: the person's own
             # sign-in shows the confirmation is theirs. Only theirs, while they're
-            # still the one signed in here.
+            # still the one signed in there.
             sign_in = "missing"
-            if _cloud_account() == account and callable(getattr(client, "account_token", None)):
+            if _cloud_account(device) == account and callable(getattr(client, "account_token", None)):
                 try:
-                    headers = {ACCOUNT_TOKEN_HEADER: str(client.account_token())}
+                    headers = {ACCOUNT_TOKEN_HEADER: str(client.account_token(destination, user_id=account))}
                     sign_in = "sent"
                 except CloudError as exc:
                     if exc.code != "signed_out":
@@ -1655,7 +1668,7 @@ def _upload_acknowledgments(client: Any) -> str:
                         continue
         try:
             answer = client.device_call("POST", ACKNOWLEDGMENT_PATH, json={"record": record, "signature": signature},
-                                        **({"headers": headers} if headers else {}))
+                                        expect=destination, **({"headers": headers} if headers else {}))
         except CloudError as exc:
             status = int(getattr(exc, "status", 0) or 0)
             # Refusals sending again won't change: shown in Settings, never resent.

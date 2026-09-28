@@ -13,7 +13,11 @@ refused when nobody answers within 10 minutes or the person says stop. The
 reply, or what went wrong, goes back to the chat.
 
 An organization can turn it off by locking ``cloud.remote_tasks`` in its
-policy. A managed computer never takes anyone's requests. Under an
+policy. A managed computer never takes anyone's requests, and none are taken
+while this computer uses another Lumi Cloud than the one it enrolled with
+(``CloudClient.device_elsewhere``). Every call about a request goes to the
+Lumi Cloud that handed it out, and stops if the enrollment moves meanwhile
+(``device_call``'s ``expect``). Under an
 organization's oversight (lumi/oversight.py) a request runs only once this
 computer's person has confirmed the notice; until then ``Session.run``
 refuses it and the chat is told why.
@@ -49,6 +53,7 @@ class RemoteTasks:
         self._clock = clock
         self.current = ""  # the task running now
         self.last: dict = {}  # how the last task ended, for Settings
+        self._source = ""  # the Lumi Cloud that handed out the task running now
 
     # ── Settings ───────────────────────────────────────────────────────────
     def options(self) -> dict:
@@ -70,6 +75,10 @@ class RemoteTasks:
             return "This computer isn't enrolled in Lumi Cloud."
         if device.get("how") == "managed":
             return "A managed computer doesn't take anyone's requests."
+        elsewhere = getattr(self.cloud, "device_elsewhere", None)
+        reason = elsewhere() if callable(elsewhere) else ""
+        if reason:
+            return reason
         if not os.path.isdir(options["project"]):
             return "Choose the project folder requests run in."
         return blocked_reason() or ""
@@ -84,19 +93,23 @@ class RemoteTasks:
 
         if self.blocked():
             return IDLE_SECONDS
+        # Where the request comes from: its every call goes back there, and nowhere else.
+        source = str(getattr(self.cloud, "device_url", "") or "")
         try:
-            task = self.cloud.device_call("POST", "/api/v1/devices/tasks/claim")
+            task = self.cloud.device_call("POST", "/api/v1/devices/tasks/claim", expect=source)
         except CloudError as exc:
             logger.info("Couldn't ask Lumi Cloud for requests from chat: %s", exc)
             return IDLE_SECONDS
         if not task.get("id"):
             return POLL_SECONDS
-        self.run(task)
+        self.run(task, source=source)
         return 1.0  # there may be another one waiting
 
-    def run(self, task: dict) -> None:
+    def run(self, task: dict, *, source: str = "") -> None:
+        """Run one request; ``source`` is the Lumi Cloud that handed it out ("" for wherever it's enrolled)."""
         from .cloud import CloudError
 
+        self._source = source
         task_id = str(task["id"])
         options = self.options()
         self.current = task_id
@@ -132,7 +145,7 @@ class RemoteTasks:
         self.last = {"status": status, "at": time.time()}
         try:
             self.cloud.device_call("POST", f"/api/v1/devices/tasks/{task_id}/result",
-                                   json={"status": status, "text": text})
+                                   json={"status": status, "text": text}, expect=self._source)
         except CloudError as exc:
             logger.warning("Couldn't report a request's result to Lumi Cloud: %s", exc)
 
@@ -142,7 +155,8 @@ class RemoteTasks:
 
         while not stop.wait(STOP_CHECK_SECONDS):
             try:
-                if self.cloud.device_call("GET", f"/api/v1/devices/tasks/{task_id}").get("stop_requested"):
+                if self.cloud.device_call("GET", f"/api/v1/devices/tasks/{task_id}",
+                                          expect=self._source).get("stop_requested"):
                     session.cancel()
                     return
             except CloudError:
@@ -156,14 +170,15 @@ class RemoteTasks:
         def ask(tool_name: str, tool_args: dict) -> bool:
             try:
                 approval = self.cloud.device_call("POST", f"/api/v1/devices/tasks/{task_id}/approvals",
-                                                  json={"text": describe_call(tool_name, tool_args)})
+                                                  json={"text": describe_call(tool_name, tool_args)},
+                                                  expect=self._source)
             except CloudError as exc:
                 logger.warning("Couldn't ask for approval in the chat: %s", exc)
                 return False
             deadline = self._clock() + APPROVAL_SECONDS
             while self._clock() < deadline and not session.cancel_requested:
                 try:
-                    state = self.cloud.device_call("GET", f"/api/v1/devices/tasks/{task_id}")
+                    state = self.cloud.device_call("GET", f"/api/v1/devices/tasks/{task_id}", expect=self._source)
                 except CloudError:
                     state = {}
                 if state.get("stop_requested"):

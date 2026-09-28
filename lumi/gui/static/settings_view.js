@@ -354,6 +354,8 @@ class LumiSettingsView {
         const parts = [];
         if (s.error) parts.push(`<p class="editor-error" role="alert">${esc(s.error)}</p>`);
         if (s.cloud_error) parts.push(`<p class="editor-error" role="alert">${esc(s.cloud_error)}</p>`);
+        // A sign-out the Lumi Cloud that issued it couldn't be told about (offline mode, say): still valid there.
+        if (s.notice) parts.push(`<p class="editor-help" role="status">${esc(s.notice)}</p>`);
         const device = s.device && s.device.id ? s.device : null;
         if (s.signing_in) {
             parts.push(row('Signing in…', 'Finish signing in in your browser. This page updates when you’re done.', button('cancel', 'Cancel')));
@@ -392,9 +394,13 @@ class LumiSettingsView {
             const how = device.how === 'managed' ? 'managed by your organization' : 'joined in this app';
             const seen = s.last_checkin ? new Date(s.last_checkin).toLocaleString() : 'not yet';
             const version = s.policy_version ? `policy version ${esc(s.policy_version)} is in force` : 'no policy is published yet';
-            parts.push(row(`This computer: ${esc(device.organization_name)}`,
-                `Enrolled, ${how}. Last check-in: ${esc(seen)}; ${version}.`,
-                `${button('check_in', 'Check in now')}${device.how === 'managed' ? '' : ` ${button('unenroll', 'Leave on this computer')}`}`));
+            let enrolledAt = '';
+            try { enrolledAt = device.url ? new URL(device.url).host : ''; } catch (_err) { enrolledAt = ''; }
+            // Enrolled with another Lumi Cloud than the one Lumi uses now (lumi/cloud.py): its requests go there only.
+            const elsewhere = s.device_elsewhere ? ` ${esc(s.device_elsewhere)}` : '';
+            parts.push(row(`This computer: ${esc(device.organization_name)}${enrolledAt ? ` at ${esc(enrolledAt)}` : ''}`,
+                `Enrolled, ${how}. Last check-in: ${esc(seen)}; ${version}.${elsewhere}`,
+                `${button('check_in', 'Check in now')}${device.how === 'managed' ? '' : ` ${button('unenroll', `Leave ${esc(device.organization_name || 'the organization')} on this computer`)}`}`));
         } else if (s.managed_organization) {
             parts.push(row('This computer', 'Your organization’s policy enrolls this computer in Lumi Cloud automatically.'));
         }

@@ -16,7 +16,10 @@
  * clipboard offers the report as text instead when there's one to give.
  * Reports waiting on this computer are listed with what they wait for, and
  * Copy, Discard or (written before an address was set) Send to the address
- * shown. An outcome that arrives after the dialog closed is announced.
+ * shown, as the account its button names. A report written with an account
+ * goes only with it: one waiting for its writer to sign in goes without the
+ * account only when the person chooses Send without your account. An
+ * outcome that arrives after the dialog closed is announced.
  *
  * window.LumiFeedback holds the checks and wording, so tests can run them
  * without a page (tests/feedback_view.test.cjs). LumiFeedbackView is mixed
@@ -133,9 +136,14 @@
         if (r.reason === 'no_destination') {
             why = s.destination ? `written before a feedback address was set. It goes only if you send it to ${s.destination}.`
                 : 'written before a feedback address was set. It stays here until one is.';
-        } else if (r.state === 'sign_in') {
-            why = r.reason === 'sign_in' ? `${r.destination} didn’t accept your sign-in. Sign in again in Settings > Lumi account, and it goes.`
-                : `waiting for you to sign in to ${r.destination}.`;
+        } else if (r.state === 'sign_in' || r.without_account) {
+            // Written with an account, it goes only with that account (lumi/feedback.py), unless the person chooses.
+            const who = r.writer || 'you';
+            const signs = who === 'you' ? 'sign' : 'signs';
+            const choice = r.without_account ? ', or without an account if you choose' : '';
+            why = r.state === 'sign_in' && r.reason === 'sign_in'
+                ? `${r.destination} didn’t accept the sign-in it went with. It goes when ${who} ${signs} in there again (Settings > Lumi account)${choice}.`
+                : `waiting for ${who} to sign in to ${r.destination}. It goes with that account${choice}.`;
         } else if (r.state !== 'held' && !r.here) {
             why = `waiting for ${r.destination || 'its feedback address'}, where it was written to go.`;
         } else if (r.reason === 'not_accepting') {
@@ -258,7 +266,12 @@
                     const where = this._feedbackStatus?.destination_url || '';
                     if (!where) return;
                     this._feedbackNote(`Sending it to ${this._feedbackStatus.destination}…`);
-                    this.send({command: 'feedback_send_held', id, destination: where});
+                    // As whom the button said: if that changed meanwhile, nothing is sent.
+                    this.send({command: 'feedback_send_held', id, destination: where, as: button.dataset.as || ''});
+                } else if (action === 'anonymous') {
+                    if (!window.confirm('Send this report without your account? Lumi Cloud won’t know it’s from you, unless an earlier try with your account already arrived: it keeps that one.')) return;
+                    this._feedbackNote('Sending it without your account…');
+                    this.send({command: 'feedback_send_without_account', id});
                 }
             });
         }
@@ -649,11 +662,12 @@
         _renderFeedbackQueue(data) {
             const reports = Array.isArray(data.reports) ? data.reports : [];
             const sendable = Number(data.sendable || 0);
-            const others = reports.filter(r => !(r.here && r.state !== 'held'));
+            // Listed one by one: held ones, ones for another address, and ones waiting for their writer.
+            const others = reports.filter(r => !(r.here && r.state !== 'held' && !r.without_account));
             const queue = byId('feedback-queue');
-            if (queue) queue.hidden = reports.length === 0;
+            if (queue) queue.hidden = reports.length === 0 && !data.busy;
             const text = byId('feedback-queue-text');
-            if (text) text.textContent = sendable ? queueText(sendable, data.destination) : (reports.length ? queueText(reports.length) : '');
+            if (text) text.textContent = data.busy || (sendable ? queueText(sendable, data.destination) : (reports.length ? queueText(reports.length) : ''));
             const flush = byId('feedback-flush');
             if (flush) {
                 flush.hidden = !sendable && !reports.some(r => r.here && r.reason === 'not_accepting');
@@ -671,18 +685,25 @@
                 item.appendChild(line);
                 const actions = document.createElement('span');
                 actions.className = 'feedback-held-actions';
-                const add = (action, label, name) => {
+                const add = (action, label, name, as = null) => {
                     const button = document.createElement('button');
                     button.type = 'button';
                     button.className = 'btn-sm';
                     button.dataset.heldAction = action;
                     button.dataset.id = report.id;
+                    if (as !== null) button.dataset.as = as;
                     button.textContent = label;
                     button.setAttribute('aria-label', name);
                     actions.appendChild(button);
                 };
                 const what = `the ${(KIND_LABELS[report.kind] || 'Other').toLowerCase()} report`;
-                if (report.send && data.destination && !data.offline && !data.disabled) add('send', `Send to ${data.destination}`, `Send ${what} to ${data.destination}`);
+                const open = data.destination && !data.offline && !data.disabled;
+                if (report.send && open) {
+                    // It goes as the account signed in there now: the button says which, or that it goes without one.
+                    const as = report.send_as ? ` as ${report.send_as}` : ' without an account';
+                    add('send', `Send to ${data.destination}${as}`, `Send ${what} to ${data.destination}${as}`, report.send_as || '');
+                }
+                if (report.without_account && open) add('anonymous', 'Send without your account', `Send ${what} without your account`);
                 if (report.copy) add('copy', 'Copy', `Copy ${what}`);
                 add('discard', 'Discard', `Discard ${what}`);
                 item.appendChild(actions);

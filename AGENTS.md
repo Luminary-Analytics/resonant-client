@@ -185,7 +185,18 @@ host enrollment and actual packaged/learned-benefit qualification remain open.
   (`CloudClient.account_url`, recorded when a sign-in completes, never by an
   enrollment or a lock): refresh, `account_call`, `account_token` and
   revocation use it, and a computer that now uses another Lumi Cloud counts as
-  signed out there. A policy's `settings` never lock `cloud.*` keys other
+  signed out there. Read the issuer and the token together
+  (`_credentials`, under `_lock`) and send the token to that issuer, never to
+  an address read again; `account_token(destination, user_id=...)` refuses
+  any other destination or person; a refresh a sign-in or sign-out overtook
+  stores nothing; `_adopt` swaps a completed sign-in in one step and the old
+  one is revoked where it was issued. Device requests (tokens, check-ins,
+  policy downloads, leaving, tasks from chat, oversight) go only to the
+  enrollment's address (`device["url"]`, `device_call`'s `expect`); a
+  computer using another Lumi Cloud counts as enrolled elsewhere, and a
+  machine policy's `cloud.url` that differs ends the old enrollment there
+  and enrolls at the new address. Compare addresses with `same_address`,
+  never as strings. A policy's `settings` never lock `cloud.*` keys other
   than `cloud.remote_tasks`; Lumi Cloud addresses never carry a user name.
 - Organization oversight (`oversight.py`, `security_flags.py`) is the only
   path that sends people's turns to Lumi Cloud: off unless the policy's
@@ -439,8 +450,14 @@ host enrollment and actual packaged/learned-benefit qualification remain open.
   report goes back for review. Only Lumi Cloud's acknowledgment (the key
   echoed) counts as delivered. A report is bound to its destination when
   written and goes nowhere else; one written with none waits for
-  `send_held`. The account token goes only to the Lumi Cloud that issued it;
-  a 401 refreshes once, then waits for a sign-in, never anonymous.
+  `send_held` (as the account its button names). The account token goes
+  only to the Lumi Cloud that issued it, asked for per report
+  (`account_token(url, user_id=writer)`); a 401 refreshes once, then waits
+  for a sign-in. A report written with the account goes only with its
+  writer's account; `send_without_account` is the person's explicit choice.
+  The check at Send re-runs DLP on the text before DLP (`Prepared.source`)
+  and compares; a kept report is checked again only when `_dlp_rules`
+  changed, and then on what was reviewed.
   `privacy.feedback` and `privacy.feedback_diagnostics` are the
   organization's switches. The queue's read-modify-writes take the lock every
   Lumi process takes. Audit records name the kind and size, never the text,

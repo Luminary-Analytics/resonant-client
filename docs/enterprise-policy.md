@@ -112,6 +112,16 @@ verifies against `trusted_keys` (or `PolicyKeys` / `policy-keys.json`). Until
 then, the machine policy's rules apply. Lumi Cloud's Devices page prints this
 file when you create an enrollment token. See [Lumi Cloud](lumi-cloud.md).
 
+**The `cloud.url` is authoritative for enrollment.** Every device request goes
+only to the Lumi Cloud the computer enrolled with. When the machine policy
+names another address than that one (you moved computers to another
+deployment, or a computer had joined an organization itself), the next
+check-in round ends the old enrollment: the old Lumi Cloud is told the
+computer left, with its own device token and nowhere else, and its
+downloaded policy is deleted. With `enrollment_token`, the computer then
+enrolls at the new address; without one it stays unenrolled until you add
+one. A computer's device token is never sent to another Lumi Cloud.
+
 ## Signed policies and offline use
 
 A policy can be signed with Ed25519 so it can be distributed by less trusted

@@ -20,7 +20,12 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Optional, Sequence
 
-from lumi.processes import background_process_kwargs
+from lumi.processes import (
+    background_process_kwargs,
+    close_windows_job,
+    popen_in_kill_job,
+    terminate_windows_job,
+)
 
 from .truncation import (
     GREP_MAX_LINE_LENGTH,
@@ -1889,78 +1894,16 @@ def _run_subprocess_with_cancel(
     cancel_event: Optional[threading.Event] = None,
     owned_process_group: bool = False,
 ):
-    def _create_windows_kill_job(process):
-        if sys.platform != "win32":
-            return None
-        try:
-            import ctypes
-            from ctypes import wintypes
-
-            class _BasicLimitInfo(ctypes.Structure):
-                _fields_ = [
-                    ("PerProcessUserTimeLimit", ctypes.c_longlong),
-                    ("PerJobUserTimeLimit", ctypes.c_longlong),
-                    ("LimitFlags", wintypes.DWORD),
-                    ("MinimumWorkingSetSize", ctypes.c_size_t),
-                    ("MaximumWorkingSetSize", ctypes.c_size_t),
-                    ("ActiveProcessLimit", wintypes.DWORD),
-                    ("Affinity", ctypes.c_size_t),
-                    ("PriorityClass", wintypes.DWORD),
-                    ("SchedulingClass", wintypes.DWORD),
-                ]
-
-            class _IoCounters(ctypes.Structure):
-                _fields_ = [
-                    ("ReadOperationCount", ctypes.c_ulonglong),
-                    ("WriteOperationCount", ctypes.c_ulonglong),
-                    ("OtherOperationCount", ctypes.c_ulonglong),
-                    ("ReadTransferCount", ctypes.c_ulonglong),
-                    ("WriteTransferCount", ctypes.c_ulonglong),
-                    ("OtherTransferCount", ctypes.c_ulonglong),
-                ]
-
-            class _ExtendedLimitInfo(ctypes.Structure):
-                _fields_ = [
-                    ("BasicLimitInformation", _BasicLimitInfo),
-                    ("IoInfo", _IoCounters),
-                    ("ProcessMemoryLimit", ctypes.c_size_t),
-                    ("JobMemoryLimit", ctypes.c_size_t),
-                    ("PeakProcessMemoryUsed", ctypes.c_size_t),
-                    ("PeakJobMemoryUsed", ctypes.c_size_t),
-                ]
-
-            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-            job = kernel32.CreateJobObjectW(None, None)
-            if not job:
-                return None
-            info = _ExtendedLimitInfo()
-            info.BasicLimitInformation.LimitFlags = 0x00002000  # KILL_ON_JOB_CLOSE
-            configured = kernel32.SetInformationJobObject(
-                job, 9, ctypes.byref(info), ctypes.sizeof(info),
-            )
-            assigned = configured and kernel32.AssignProcessToJobObject(job, int(process._handle))
-            if not assigned:
-                kernel32.CloseHandle(job)
-                return None
-            return job
-        except Exception:
-            return None
-
-    def _close_windows_job(job):
-        if not job or sys.platform != "win32":
-            return
-        try:
-            import ctypes
-            ctypes.WinDLL("kernel32", use_last_error=True).CloseHandle(job)
-        except Exception:
-            pass
-
     # A managed native worker already owns its process group. Its file-search
     # child must stay in that group so app restart/Stop can observe and clean
     # the entire tree. Ordinary tools still get their independent group.
     process_group_args = background_process_kwargs(new_process_group=not owned_process_group)
-    proc = subprocess.Popen(
+    # On Windows the command joins a kill-on-close job before it runs, so a
+    # shell that exits at once still leaves in the job whatever it started.
+    # Best effort: without a job, _terminate_tree falls back to taskkill.
+    proc, windows_job = popen_in_kill_job(
         cmd,
+        best_effort=True,
         shell=shell,
         cwd=cwd,
         # Search children need no input and must never inherit the managed
@@ -1974,13 +1917,11 @@ def _run_subprocess_with_cancel(
         text=text,
         **process_group_args,
     )
-    windows_job = _create_windows_kill_job(proc)
 
     def _terminate_tree():
-        if sys.platform == "win32" and windows_job:
+        if windows_job:
             try:
-                import ctypes
-                ctypes.WinDLL("kernel32", use_last_error=True).TerminateJobObject(windows_job, 1)
+                terminate_windows_job(windows_job)
             except Exception:
                 pass
             return
@@ -2037,7 +1978,7 @@ def _run_subprocess_with_cancel(
         process_finished.set()
         if watcher:
             watcher.join(timeout=0.25)
-        _close_windows_job(windows_job)
+        close_windows_job(windows_job)
 
 
 def _normalize_managed_bash_command(command: str) -> str:

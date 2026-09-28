@@ -15,7 +15,7 @@ from urllib.parse import urlsplit
 import urllib.request
 
 from lumi.engine import os_sandbox
-from lumi.processes import background_process_kwargs, windows_kill_job, close_windows_job
+from lumi.processes import background_process_kwargs, close_windows_job, popen_in_kill_job
 from lumi.secrets_store import child_env
 
 
@@ -42,16 +42,12 @@ class PreviewManager:
                     raise ValueError('Preview port is already in use; choose another port.')
             # Inside the shell sandbox when it's on (engine/os_sandbox.py).
             launch = os_sandbox.prepare_argv(argv, roots=sandbox_roots or [root], cwd=root)
-            process = subprocess.Popen(launch, cwd=root, stdin=subprocess.DEVNULL, env=child_env(),
+            # Joins its job before it runs, so a launcher that exits at once
+            # can't fail the start or leave its server outside the job; a job
+            # that can't take it raises.
+            process, job = popen_in_kill_job(launch, cwd=root, stdin=subprocess.DEVNULL, env=child_env(),
                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                 **background_process_kwargs(new_process_group=True))
-            try:
-                job = windows_kill_job(process)
-            except OSError:
-                process.kill()
-                process.wait()
-                process.stdout.close()
-                raise
             handle = uuid.uuid4().hex[:12]
             item = dict(id=handle, project=root, command=list(argv), url=url,
                         process=process, job=job, logs=deque(maxlen=64), ready=False, started_at=time.time())

@@ -48,7 +48,8 @@ def windows_kill_job(process, *, kill_on_close: bool = True, name=None):
     return (api, handle)
 
 
-def popen_in_kill_job(args, *, kill_on_close: bool = True, name=None, **popen_kwargs):
+def popen_in_kill_job(args, *, kill_on_close: bool = True, name=None, best_effort: bool = False,
+                      **popen_kwargs):
     """Start a process that runs none of its code outside its job: ``(process, job)``.
 
     Assigning the job after ``Popen`` returns races a short-lived child. Once
@@ -58,6 +59,10 @@ def popen_in_kill_job(args, *, kill_on_close: bool = True, name=None, **popen_kw
     Windows the process starts suspended, joins the job, then resumes; anything
     it starts is inside the job from the first instruction. Elsewhere there is
     no job (``None``); callers own POSIX trees through their process group.
+
+    A job that can't take the process raises, and the process never runs.
+    With ``best_effort=True`` it runs anyway, without a job (``None``), for
+    callers with a fallback: taskkill, or stopping only the process itself.
     """
     if sys.platform != "win32":
         return subprocess.Popen(args, **popen_kwargs), None
@@ -65,7 +70,11 @@ def popen_in_kill_job(args, *, kill_on_close: bool = True, name=None, **popen_kw
     process = subprocess.Popen(args, **popen_kwargs)
     job = None
     try:
-        job = windows_kill_job(process, kill_on_close=kill_on_close, name=name)
+        try:
+            job = windows_kill_job(process, kill_on_close=kill_on_close, name=name)
+        except Exception:
+            if not best_effort:
+                raise
         _resume_suspended(process)
     except BaseException:
         # Suspended, so it has run nothing; a job without kill-on-close would

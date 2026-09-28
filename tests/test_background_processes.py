@@ -92,3 +92,41 @@ def test_popen_in_kill_job_owns_a_quick_child_and_its_descendants_despite_a_late
         processes.close_windows_job(job)  # kill-on-close ends everything in the job
     descendant.wait(timeout=30)
     assert not descendant.is_running()
+
+
+def _refuse_jobs_late(monkeypatch):
+    """A job that can't take its process, found out only after a while."""
+    import time
+
+    seen = []
+
+    def refuse(process, **kwargs):
+        seen.append(process)
+        time.sleep(.5)  # a process that was running has left its mark by now
+        raise OSError("no job object")
+    monkeypatch.setattr(processes, "windows_kill_job", refuse)
+    return seen
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows job objects")
+def test_popen_in_kill_job_never_runs_a_process_its_job_refused(tmp_path, monkeypatch):
+    seen = _refuse_jobs_late(monkeypatch)
+    mark = tmp_path / "ran"
+    with pytest.raises(OSError, match="no job object"):
+        processes.popen_in_kill_job([sys.executable, "-I", "-c", f"open({str(mark)!r}, 'w').close()"],
+                                    **processes.background_process_kwargs(new_process_group=True))
+    assert not mark.exists()
+    assert seen[0].poll() is not None  # ended, not left suspended
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows job objects")
+def test_popen_in_kill_job_best_effort_runs_a_process_its_job_refused(tmp_path, monkeypatch):
+    # For callers with a fallback: hooks (taskkill), language servers and the
+    # agent's shell.
+    _refuse_jobs_late(monkeypatch)
+    mark = tmp_path / "ran"
+    process, job = processes.popen_in_kill_job(
+        [sys.executable, "-I", "-c", f"open({str(mark)!r}, 'w').close()"], best_effort=True,
+        **processes.background_process_kwargs(new_process_group=True))
+    assert job is None
+    assert process.wait(timeout=60) == 0 and mark.exists()

@@ -15,6 +15,7 @@ from lumi.engine.session import Session
 from lumi.engine.tools import execute_tool
 from lumi.engine.turn_outcomes import current_checks
 from lumi.gui.runtime import BackendSpec
+from tests.quick_launcher import assign_jobs_late, quick_launcher, sleeper_ended
 from tests.streaming_stub import StreamingBackend, tool_call, text_delta, done
 
 
@@ -58,6 +59,22 @@ def test_preview_start_failure_and_cancel_clean_up(tmp_path):
         assert stopped['state'] == 'stopped'
         with pytest.raises(ValueError):
             manager.start(tmp_path, [sys.executable], 'https://example.com:80')
+    finally:
+        manager.close()
+
+
+@pytest.mark.skipif(sys.platform != 'win32', reason='Windows job objects')
+def test_a_preview_whose_launcher_exits_at_once_is_stopped_with_what_it_started(tmp_path, monkeypatch):
+    # The job object used to be assigned after the launcher started. One that
+    # had exited by then failed the start ("Access is denied") and left what it
+    # started outside the job, where no preview_stop could reach it.
+    assign_jobs_late(monkeypatch)
+    argv, pid_file = quick_launcher(tmp_path)
+    manager = PreviewManager()
+    try:
+        item = manager.start(tmp_path, argv, f'http://127.0.0.1:{free_port()}', timeout=30)
+        assert item['state'] == 'stopped' and item['exit_code'] == 0
+        assert sleeper_ended(pid_file)
     finally:
         manager.close()
 

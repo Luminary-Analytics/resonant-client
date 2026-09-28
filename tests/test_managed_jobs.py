@@ -6,7 +6,9 @@ import time
 
 import pytest
 
+from lumi import processes
 from lumi.engine.jobs import JobManager
+from tests.quick_launcher import assign_jobs_late, quick_launcher, sleeper_ended
 
 
 @pytest.fixture
@@ -91,6 +93,32 @@ def test_failure_and_client_exit_stop_owned_tree(manager, tmp_path):
     time.sleep(2.2)
     assert not (tmp_path / 'escaped').exists()
     assert manager.status(tmp_path, active['id'])['state'] == 'cancelled'
+
+
+@pytest.mark.skipif(sys.platform != 'win32', reason='Windows job objects')
+def test_a_quick_job_starts_and_its_end_stops_what_it_left_running(manager, tmp_path, monkeypatch):
+    # The job object used to be assigned after the command started. A command
+    # that had exited by then failed to start ("Access is denied"), and what
+    # it left running was outside the job, so nothing ever stopped it.
+    assign_jobs_late(monkeypatch)
+    argv, pid_file = quick_launcher(tmp_path)
+    job = manager.start(tmp_path, argv)
+    until(lambda: manager.status(tmp_path, job['id'])['state'] != 'running')
+    assert manager.status(tmp_path, job['id'])['state'] == 'completed'
+    assert sleeper_ended(pid_file)
+
+
+@pytest.mark.skipif(sys.platform != 'win32', reason='Windows job objects')
+def test_a_command_its_job_object_refused_never_runs(manager, tmp_path, monkeypatch):
+    def refuse(process, **kwargs):
+        time.sleep(.5)  # a command that was running has left its mark by now
+        raise OSError('no job object')
+    monkeypatch.setattr(processes, 'windows_kill_job', refuse)
+    mark = tmp_path / 'ran'
+    with pytest.raises(OSError, match='no job object'):
+        manager.start(tmp_path, [sys.executable, '-I', '-c', f"open({str(mark)!r}, 'w').close()"])
+    assert not mark.exists()
+    assert manager.list(tmp_path) == []
 
 
 def test_cancelled_submission_and_tool_permissions(manager, tmp_path):

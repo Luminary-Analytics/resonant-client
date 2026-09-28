@@ -8,6 +8,17 @@ The heartbeat remains paused. Documentation maintenance does not resume work,
 spending or grants, and changes no native implementation or installed bundle.
 The dated September 15/18 records below are historical.
 
+## September 27 Quick commands stay owned on Windows (source only, not released)
+
+- **Background jobs, previews, hooks, language servers and the agent's shell
+  now start inside their Windows job.** Each process used to join its job after
+  it started. A command that exited first failed to start with "Access is
+  denied" (`job_start`, `preview_start`), and anything it had started ran
+  outside the job, so Stop, timeouts and closing Lumi missed it. These now start
+  suspended, join the job, then run (`processes.popen_in_kill_job`, as the Team
+  code does). Hooks, language servers and the shell still run without a job
+  when Windows refuses one (`best_effort=True`).
+
 ## September 27 Team: steadier on a busy machine (source only, not released)
 
 The Team suite (`team-tests.yml`) failed now and then on CI, on different

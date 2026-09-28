@@ -1255,8 +1255,9 @@ class LumiApp {
             if (!footer || getComputedStyle(footer).overflowY === 'visible') return;
             const rect = permToggle.getBoundingClientRect();
             permMenu.style.maxWidth = `${window.innerWidth - 16}px`;
-            const width = Math.min(permMenu.offsetWidth || 280, window.innerWidth - 16);
             permMenu.style.position = 'fixed';
+            // Measured once fixed: its width follows its own content there.
+            const width = Math.min(permMenu.offsetWidth || 280, window.innerWidth - 16);
             permMenu.style.left = `${Math.max(8, Math.min(rect.left, window.innerWidth - width - 8))}px`;
             permMenu.style.bottom = `${window.innerHeight - rect.top + 8}px`;
         };

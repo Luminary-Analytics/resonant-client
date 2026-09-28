@@ -355,13 +355,18 @@ class IntegrationWorkflow:
     def _view(self, record):
         with self._threads_lock:
             thread = self._threads.get(record["id"])
-        return self.inspect_row(record, active=bool(thread and thread.is_alive()))
+        return self.inspect_row(record, active=bool(thread and thread.is_alive()),
+                                waiting=self.integration.waiting_for_repository(thread))
 
     @staticmethod
-    def inspect_row(record, *, active: bool = False) -> dict[str, Any]:
-        """Project an already scoped durable row without private command data."""
+    def inspect_row(record, *, active: bool = False, waiting: bool = False) -> dict[str, Any]:
+        """Project an already scoped durable row without private command data.
+
+        ``waiting``: the operation is waiting for another step to release the
+        repository (transient; only the operation's own host knows it).
+        """
         return {"id": record["id"], "command_id": record["command_id"], "kind": record["kind"], "epoch": record["epoch"],
-                "state": record["state"], "active": active, "effect_id": record["effect_id"],
+                "state": record["state"], "active": active, "waiting": waiting, "effect_id": record["effect_id"],
                 "approval_expires_at": record["approval_expires_at"], "result": IntegrationWorkflow._result(json.loads(record["result_json"])),
                 "error": record["error"], "requires_reconciliation": record["state"] == "uncertain" or (record["state"] not in _TERMINAL and not active)}
 

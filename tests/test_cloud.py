@@ -67,7 +67,7 @@ class FakeCloud:
         self.policy_document = document
         self.published.append(document)
 
-    def _acknowledgment(self, device_id: str, device: dict, body: dict) -> httpx.Response:
+    def _acknowledgment(self, device_id: str, device: dict, body: dict, account_token: str = "") -> httpx.Response:
         """POST /api/v1/oversight/acknowledgments, as the contract with Lumi Cloud describes it."""
         if self.acknowledgment_failures:
             return self.acknowledgment_failures.pop(0)
@@ -94,7 +94,18 @@ class FakeCloud:
         if record.get("notice_fingerprint") not in produced:
             return httpx.Response(409, json={"error": "notice_mismatch",
                                              "error_description": "No policy of this organization shows that notice."})
-        stored = {"id": self._token("ack"), "record": record, "signature": signature}
+        # Whom it counts for: the member whose own computer it is, or on a managed computer
+        # (enrolled with a token) the member whose sign-in came with it; no account, the computer.
+        account = (record.get("person") or {}).get("account")
+        if not account:
+            attribution = "none"
+        elif record.get("surface") == "gateway":
+            attribution = "unverified"
+        elif device["owner"] is not None:
+            attribution = "person" if device["owner"] == account else "unverified"
+        else:
+            attribution = "signed_in" if account == "usr_1" and account_token in self.access_tokens else "unverified"
+        stored = {"id": self._token("ack"), "record": record, "signature": signature, "attribution": attribution}
         self.acknowledgments.append(stored)
         return httpx.Response(201, json={"id": stored["id"]})
 
@@ -196,7 +207,8 @@ class FakeCloud:
             device["revoked"] = True
             return httpx.Response(200, json={"revoked": True})
         if path == "/api/v1/oversight/acknowledgments" and request.method == "POST":
-            return self._acknowledgment(device_id, device, json.loads(request.content))
+            return self._acknowledgment(device_id, device, json.loads(request.content),
+                                        request.headers.get("lumi-account-token", ""))
         return httpx.Response(404, json={"error": "not_found"})
 
 

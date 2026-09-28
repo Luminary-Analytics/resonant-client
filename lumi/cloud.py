@@ -259,16 +259,24 @@ class CloudClient:
 
         from .net import client_options
 
-        return httpx.Client(**client_options(timeout=20.0, transport=self._transport),
+        # Check-ins, sign-in, sharing, the team library, hand-offs, reviews and
+        # tasks from chat all come through here, so offline mode refuses them
+        # all with one message (lumi/offline.py).
+        return httpx.Client(**client_options(timeout=20.0, transport=self._transport, feature="Lumi Cloud"),
                             headers={"User-Agent": f"Lumi/{_app_version()} ({platform.system()})"})
 
     def _call(self, method: str, url: str, **kwargs: Any) -> dict:
         import httpx
 
+        from . import offline
+
         try:
             with self._http() as http:
                 response = http.request(method, url, **kwargs)
         except httpx.HTTPError as exc:
+            reason = offline.message_for(exc)
+            if reason:
+                raise CloudError(reason, code="offline") from exc
             raise CloudError(f"Lumi Cloud couldn't be reached ({type(exc).__name__}).", code="unreachable") from exc
         try:
             data = response.json() if response.content else {}
@@ -285,10 +293,17 @@ class CloudClient:
     # ── Signing in ─────────────────────────────────────────────────────────
     def begin_sign_in(self, url: str = "") -> str:
         """Open the browser to sign in; finishes in the background. Returns the address opened."""
+        from . import offline
+
         with self._lock:
             target = normalize_url(url or self.url)
             if self.managed().get("url") and target != normalize_url(self.managed()["url"]):
                 raise CloudError("Your organization's policy sets which Lumi Cloud this computer uses.")
+            # Signing in happens in the browser, outside Lumi's own clients:
+            # say so now rather than open a page that can't load.
+            reason = offline.refusal(target, "Lumi Cloud")
+            if reason:
+                raise CloudError(reason, code="offline")
             self.cancel_sign_in()
             verifier, state = secrets.token_urlsafe(48), secrets.token_urlsafe(24)
             loopback = _Loopback(state)
@@ -453,6 +468,8 @@ class CloudClient:
             "organization_name": str(organization.get("name") or ""),
             "url": self.url,
             "how": how,
+            # Whose computer it is in Lumi Cloud: the person who joined here (none when managed).
+            "user_id": str((self._section().get("account") or {}).get("user_id") or "") if how == "joined" else "",
             "enrolled_at": _iso(_now()),
             # Pinned now; they verify the organization's policy (lumi/policy.py).
             "trusted_keys": {str(k): str(v) for k, v in keys.items()},
@@ -540,10 +557,21 @@ class CloudClient:
         token = self._access_token()
         return self._call(method, f"{self.url}{path}", headers={"Authorization": f"Bearer {token}"}, **kwargs)
 
-    def device_call(self, method: str, path: str, **kwargs: Any) -> dict:
+    def account_token(self) -> str:
+        """The signed-in person's desktop access token, refreshed when it has expired.
+
+        A managed computer sends it with the person's confirmation of the
+        oversight notice (``Lumi-Account-Token``, lumi/oversight.py), so Lumi
+        Cloud can check the confirmation is theirs. CloudError (``signed_out``)
+        when nobody is signed in.
+        """
+        return self._access_token()
+
+    def device_call(self, method: str, path: str, *, headers: dict | None = None, **kwargs: Any) -> dict:
         """Lumi Cloud's device API as this computer (tasks from chat, lumi/remote_tasks.py); {} for no content."""
         token = self._device_token()
-        return self._call(method, f"{self.url}{path}", headers={"Authorization": f"Bearer {token}"}, **kwargs)
+        return self._call(method, f"{self.url}{path}",
+                          headers={**(headers or {}), "Authorization": f"Bearer {token}"}, **kwargs)
 
     def check_in(self) -> dict:
         """Report to Lumi Cloud and apply a new policy if there is one."""

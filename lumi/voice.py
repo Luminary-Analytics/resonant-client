@@ -19,6 +19,9 @@ the browser's recognizer, because Lumi can't tell what that service keeps.
 While an organization's oversight notice waits to be confirmed
 (lumi/oversight.py), neither engine may listen: the browser's recognizer
 sends audio to its vendor's service, like a model request.
+Offline mode (lumi/offline.py) turns it off too, since Lumi can't tell where
+it sends the audio, and allows only a service on this computer or an allowed
+host.
 """
 
 from __future__ import annotations
@@ -119,19 +122,21 @@ def _service_problem(settings: Any, service: str) -> str:
     if not service:
         return "Choose a transcription service in Settings > Voice."
     if service == "openai":
-        if _has_key(settings, "openai") or os.environ.get("OPENAI_API_KEY", "").strip():
-            return ""
-        return "Add your OpenAI API key in Settings > Connections to transcribe with OpenAI."
+        if not (_has_key(settings, "openai") or os.environ.get("OPENAI_API_KEY", "").strip()):
+            return "Add your OpenAI API key in Settings > Connections to transcribe with OpenAI."
+        from .offline import refusal
+
+        return refusal(OPENAI_URL, "dictation with OpenAI")
     connection = _connection(settings, service)
     if connection is None:
         return "The transcription service chosen in Settings > Voice no longer exists. Choose another."
-    from .connections import secret_setting
+    from .connections import offline_refusal, secret_setting
 
     # OAuth's key is the client secret it exchanges for a token.
     needs_key = connection["auth"] in ("bearer", "header", "oauth")
     if needs_key and not _has_key(settings, secret_setting(connection["id"])):
         return f"Add the key for {connection['name']} in Settings > Connections."
-    return ""
+    return offline_refusal(connection)  # its endpoint and where it signs in
 
 
 def status(settings: Any) -> dict[str, Any]:
@@ -184,6 +189,15 @@ def status(settings: Any) -> dict[str, Any]:
             f"{policy.organization} allows only services that keep no data, and Lumi can't tell what your "
             "browser's speech service keeps. Choose a transcription service in Settings > Voice."
         )
+    from . import offline
+
+    if offline.enabled() and result["browser"]:
+        # The webview sends the audio to its maker's service (Google, Microsoft
+        # or Apple), from code Lumi can't see or limit.
+        result["browser"] = False
+        result["browser_reason"] = offline.unchecked(
+            "this window's speech recognition sends your voice to its maker's service",
+            "choose a transcription service on this computer or an allowed host in Settings > Voice")
     if engine in ("auto", "service"):
         problem = _service_problem(settings, service)
         if not problem and policy and not policy.model_allowed(service, model):
@@ -280,7 +294,8 @@ def transcribe(settings: Any, audio: bytes, audio_type: str, *, project: str = "
     started = time.monotonic()
     outcome, text = "error", ""
     try:
-        with httpx.Client(**net.client_options(timeout=timeout, transport=transport, verify=tls)) as client:
+        with httpx.Client(**net.client_options(timeout=timeout, transport=transport, verify=tls,
+                                               feature=f"dictation with {name}")) as client:
             response = client.post(f"{base}/audio/transcriptions", headers=headers, data=data, files=files)
         if response.status_code >= 400:
             raise VoiceError(_failure(name, response, base, model))
@@ -296,7 +311,8 @@ def transcribe(settings: Any, audio: bytes, audio_type: str, *, project: str = "
     except httpx.TimeoutException:
         raise VoiceError(f"{name} didn't answer in time. Try a shorter recording.") from None
     except httpx.HTTPError as exc:
-        raise VoiceError(f"Lumi couldn't reach {name} ({type(exc).__name__}).") from None
+        raise VoiceError(net.offline_message(exc) or f"Lumi couldn't reach {name} ({type(exc).__name__}).") \
+            from None
     finally:
         elapsed = time.monotonic() - started
         # Dictation is priced per minute, not per token, so it is recorded

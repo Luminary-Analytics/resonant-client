@@ -175,7 +175,7 @@ def test_a_changed_checkout_hands_the_checked_changes_back_and_the_owner_can_fin
     base = git(project, "rev-parse", "HEAD")
     outputs += [writer_plan(), writer("verified change\n"), json.dumps(FINAL)]
     run_id = start(service, capture, check=SLOW_CHECK)
-    until(lambda: view(service, capture, run_id)["run"]["submissions"], timeout=30)
+    until(lambda: view(service, capture, run_id)["run"]["submissions"], timeout=90)  # worktree, worker, commit
     (project / "personal.txt").write_text("my unfinished work\n")  # While the check runs.
     current = phase(service, capture, run_id, "needs_owner")
     assert "couldn't be applied" in current["autonomy"]["detail"]

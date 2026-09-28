@@ -13,17 +13,26 @@ import pytest
 from lumi.engine.swarming.integration_processes import IntegrationProcesses
 from lumi.engine.swarming.models import Conflict, IdempotencyConflict, RevisionConflict, StaleAuthority
 from lumi.engine.swarming.workflow import DispatchClosed, IntegrationWorkflow
-from tests.test_swarm_integration import command, finish, git, setup as integration_setup, writers  # noqa: F401
+from tests.test_swarm_integration import (command, finish, git, repository_held,  # noqa: F401
+                                          setup as integration_setup, writers)
 
 
-def wait_for(predicate, *, timeout=10):
+def wait_for(predicate, *, timeout=60, describe=None):
+    # Operations run Git and checks through owned processes: seconds each on
+    # a loaded runner. On failure, say where the operation got to.
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         result = predicate()
         if result:
             return result
         time.sleep(.01)
-    pytest.fail("Fixture operation did not reach its observed state")
+    pytest.fail("Fixture operation did not reach its observed state" + (f": {describe()}" if describe else ""))
+
+
+def progress(workflow, operation):
+    """An operation's state and error, for a wait that timed out."""
+    row = workflow.inspect(operation["id"])
+    return {key: row[key] for key in ("kind", "state", "active", "error")}
 
 
 @pytest.fixture
@@ -47,7 +56,7 @@ def submit(workflow, kind, payload, *, key):
 
 def settled(workflow, operation):
     return wait_for(lambda: (row if row["state"] not in {"queued", "running"} else None)
-                    if (row := workflow.inspect(operation["id"])) else None)
+                    if (row := workflow.inspect(operation["id"])) else None, describe=lambda: progress(workflow, operation))
 
 
 def prepared(workflow, payload):
@@ -72,7 +81,7 @@ def test_admission_returns_promptly_exact_racing_retries_launch_once_and_apply_e
     def blocked(*args, **kwargs):
         calls.append(kwargs["candidate_id"])
         entered.set()
-        assert release.wait(10)
+        assert release.wait(60)
         return original(*args, **kwargs)
     monkeypatch.setattr(integration, "prepare_candidate", blocked)
     revision = store.snapshot(authority.scope, authority.run_id)["run"]["revision"]
@@ -85,7 +94,7 @@ def test_admission_returns_promptly_exact_racing_retries_launch_once_and_apply_e
             receipts = [future.result(timeout=2) for future in futures]
         assert time.monotonic() - began < 2
         assert receipts[0]["id"] == receipts[1]["id"]
-        assert entered.wait(2) and len(calls) == 1
+        assert entered.wait(20) and len(calls) == 1
         assert git(project, "rev-parse", "HEAD") == base
         with pytest.raises(IdempotencyConflict):
             workflow.submit("prepare_candidate", {**payload, "checks": [{**payload["checks"][0], "argv": [sys.executable, "-c", "print('different')"]}]},
@@ -129,8 +138,10 @@ def test_admission_returns_promptly_exact_racing_retries_launch_once_and_apply_e
 def test_stop_waits_for_running_named_check_and_workflow_observation(setup):
     fixture, workflow, payload = setup
     store, supervisor, authority, _, _, _ = fixture
-    payload["checks"][0]["argv"] = [sys.executable, "-c", "import time; print('started', flush=True); time.sleep(30)"]
-    payload["checks"][0]["timeout_seconds"] = 60
+    # Outlives every wait here: only the Stop can end it in time (a check that
+    # finished on its own would then meet the closed admission too).
+    payload["checks"][0]["argv"] = [sys.executable, "-c", "import time; print('started', flush=True); time.sleep(600)"]
+    payload["checks"][0]["timeout_seconds"] = 900
     candidate_id = prepared(workflow, payload)
     operation = submit(workflow, "run_check", {"candidate_id": candidate_id, "check_key": "combined"}, key="check")
     def running_check():
@@ -149,17 +160,29 @@ def test_stop_waits_for_running_named_check_and_workflow_observation(setup):
     assert snapshot["integration_checks"][0]["state"] == "cancelled"
 
 
+def test_an_operation_waiting_for_the_repository_says_so(setup):
+    fixture, workflow, payload = setup
+    integration = fixture[3]
+    with repository_held(integration):
+        operation = submit(workflow, "prepare_candidate", payload, key="prepare")
+        row = wait_for(lambda: (row if row["waiting"] else None) if (row := workflow.inspect(operation["id"])) else None,
+                       describe=lambda: progress(workflow, operation))
+        assert row["state"] == "running" and row["active"]
+    assert settled(workflow, operation)["state"] == "completed"
+    assert not workflow.inspect(operation["id"])["waiting"]
+
+
 def test_close_revokes_queued_launch_and_does_not_claim_thread_termination(setup, monkeypatch):
     fixture, workflow, payload = setup
     entered, release = threading.Event(), threading.Event()
     original = workflow._run
     def delayed(record):
         entered.set()
-        assert release.wait(5)
+        assert release.wait(60)
         original(record)
     monkeypatch.setattr(workflow, "_run", delayed)
     operation = submit(workflow, "prepare_candidate", payload, key="prepare")
-    assert entered.wait(2)
+    assert entered.wait(20)
     try:
         status = workflow.close(timeout=.01)[0]
         assert status["state"] == "queued" and status["active"]
@@ -197,7 +220,7 @@ def test_reopened_workflow_never_replays_an_unobserved_dispatch_and_blocks_termi
     monkeypatch.setattr(workflow, "_run", lambda record: None)
     revision = store.snapshot(authority.scope, authority.run_id)["run"]["revision"]
     operation = workflow.submit("prepare_candidate", payload, command_id="prepare", expected_revision=revision)
-    wait_for(lambda: not workflow.inspect(operation["id"])["active"])
+    wait_for(lambda: not workflow.inspect(operation["id"])["active"], describe=lambda: progress(workflow, operation))
     reopened = IntegrationWorkflow(supervisor, authority, integration)
     try:
         repeated = reopened.submit("prepare_candidate", payload, command_id="prepare", expected_revision=revision)
@@ -336,7 +359,7 @@ def test_fenced_operation_with_terminal_effect_receipt_reconciles_without_reexec
         raise sqlite3.OperationalError("Fixture lost workflow observation acknowledgement")
     monkeypatch.setattr(workflow, "_finish", missing_ack)
     operation = submit(workflow, "prepare_candidate", payload, key="prepare")
-    wait_for(lambda: not workflow.inspect(operation["id"])["active"])
+    wait_for(lambda: not workflow.inspect(operation["id"])["active"], describe=lambda: progress(workflow, operation))
     original = store.snapshot(authority.scope, authority.run_id)
     assert original["integration_candidates"][0]["state"] == "ready"
     assert original["integration_operations"][0]["state"] == "running"
@@ -368,8 +391,8 @@ def test_fenced_operation_with_terminal_effect_receipt_reconciles_without_reexec
 def test_check_after_takeover_uses_cleanup_evidence_and_never_owner_prose_as_pass(setup, legacy):
     fixture, workflow, payload = setup
     store, supervisor, authority, integration, _, _ = fixture
-    payload["checks"][0]["argv"] = [sys.executable, "-c", "import time; time.sleep(30)"]
-    payload["checks"][0]["timeout_seconds"] = 60
+    payload["checks"][0]["argv"] = [sys.executable, "-c", "import time; time.sleep(600)"]  # only the takeover ends it
+    payload["checks"][0]["timeout_seconds"] = 900
     candidate_id = prepared(workflow, payload)
     operation = submit(workflow, "run_check", {"candidate_id": candidate_id, "check_key": "combined"}, key="check")
     wait_for(lambda: any(row["job_id"] for row in store.snapshot(authority.scope, authority.run_id)["integration_checks"]))
@@ -385,7 +408,7 @@ def test_check_after_takeover_uses_cleanup_evidence_and_never_owner_prose_as_pas
             connection.execute("UPDATE integration_checks SET process_protocol=0")
     store.clock = lambda: 1031
     replacement = supervisor.acquire(authority.scope, authority.run_id, expected_epoch=1, supervisor_id="replacement", command_id="takeover")
-    wait_for(lambda: not workflow.inspect(operation["id"])["active"])
+    wait_for(lambda: not workflow.inspect(operation["id"])["active"], describe=lambda: progress(workflow, operation))
     observer = IntegrationWorkflow(supervisor, replacement, integration)
     try:
         observed = submit(observer, "reconcile_operation", {"operation_id": operation["id"],

@@ -82,9 +82,73 @@ def _managed_startup_arguments(arguments):
 # somewhere readable. Rotated only by hand for now (single file appends).
 #
 # Only fires when frozen + at least one stream is None — leaves dev runs
-# (`python -m lumi`) untouched so output still hits the terminal.
+# (`python -m lumi`) untouched so output still hits the terminal. An app that
+# LaunchServices opened on macOS (Finder, the Dock, `open`, Sparkle's
+# relaunch) gets streams open on /dev/null instead of none, so for such a
+# launch, and only for one, those count too: without this a Mac tester's
+# startup errors would go nowhere. A command-line run whose output was sent
+# to /dev/null on purpose (`lumi run … > /dev/null` from a script) keeps it
+# there, so nothing it prints, a model's output included, lands on disk.
+
+
+def _bundle_identifier(executable: str) -> str:
+    """The CFBundleIdentifier of the app bundle ``executable`` runs from (Contents/MacOS/…), or ""."""
+    import plistlib
+
+    contents = os.path.dirname(os.path.dirname(os.path.abspath(executable)))
+    try:
+        with open(os.path.join(contents, "Info.plist"), "rb") as handle:
+            value = plistlib.load(handle).get("CFBundleIdentifier")
+    except Exception:
+        return ""
+    return value if isinstance(value, str) else ""
+
+
+def _launched_by_launchservices(argv=None, *, platform=None, frozen=None, terminal=None, parent=None,
+                                environ=None, bundle_id=None) -> bool:
+    """Lumi.app started by LaunchServices: Finder, the Dock, `open`, or Sparkle's relaunch.
+
+    Such a launch is a child of launchd, without a terminal, with
+    ``__CFBundleIdentifier`` set to this app's bundle identifier (old macOS
+    versions also pass a ``-psn_…`` argument). A run of the same executable
+    from a terminal, a script, cron or a launchd job is none of that, and
+    keeps the command line's behavior. The keyword arguments stand in for
+    this process's own facts in tests.
+    """
+    if (sys.platform if platform is None else platform) != "darwin":
+        return False
+    if not (getattr(sys, "frozen", False) if frozen is None else frozen):
+        return False
+    argv = sys.argv if argv is None else argv
+    if any(argument.startswith("-psn_") for argument in argv[1:]):
+        return True
+    if (os.getppid() if parent is None else parent) != 1:
+        return False
+    if os.isatty(0) if terminal is None else terminal:
+        return False
+    launched_as = (os.environ if environ is None else environ).get("__CFBundleIdentifier", "")
+    if not launched_as:
+        return False
+    return launched_as == (_bundle_identifier(sys.executable) if bundle_id is None else bundle_id)
+
+
+def _discarded(stream, launched_by_launchservices: bool) -> bool:
+    """A stream the startup log should replace: missing, or /dev/null in an app LaunchServices opened."""
+    if stream is None:
+        return True
+    if not launched_by_launchservices:
+        return False
+    try:
+        return os.path.samestat(os.fstat(stream.fileno()), os.stat(os.devnull))
+    except (OSError, ValueError, AttributeError):
+        return False
+
+
+_LAUNCHED_BY_LAUNCHSERVICES = _launched_by_launchservices()
+
 if getattr(sys, "frozen", False) and (
-    sys.stdout is None or sys.stderr is None or sys.stdin is None
+    _discarded(sys.stdout, _LAUNCHED_BY_LAUNCHSERVICES) or _discarded(sys.stderr, _LAUNCHED_BY_LAUNCHSERVICES)
+    or sys.stdin is None
 ):
     _log_dir = str(state_home() / "logs")
     try:
@@ -98,15 +162,34 @@ if getattr(sys, "frozen", False) and (
         # If we can't open the log file (read-only home, weird perms),
         # fall back to NUL — better silently-broken than crashing on stderr.
         _log_file = open(os.devnull, "w", encoding="utf-8")
-    if sys.stdout is None:
+    if _discarded(sys.stdout, _LAUNCHED_BY_LAUNCHSERVICES):
         sys.stdout = _log_file
-    if sys.stderr is None:
+    if _discarded(sys.stderr, _LAUNCHED_BY_LAUNCHSERVICES):
         sys.stderr = _log_file
     if sys.stdin is None:
         sys.stdin = open(os.devnull, "r", encoding="utf-8")
 
 
+def _opened_as_mac_app(argv=None, **facts) -> bool:
+    """Lumi.app opened from Finder, the Dock, `open` or Sparkle's relaunch: the GUI, not the terminal UI.
+
+    Such a launch passes no arguments of its own. The same executable run
+    from a terminal or a script without arguments is the terminal UI, as
+    ``lumi.exe`` is. ``facts`` stand in for this process's own in tests
+    (see ``_launched_by_launchservices``).
+    """
+    if argv is None and not facts:
+        launched, argv = _LAUNCHED_BY_LAUNCHSERVICES, sys.argv
+    else:
+        argv = sys.argv if argv is None else argv
+        launched = _launched_by_launchservices(argv, **facts)
+    return launched and not [argument for argument in argv[1:] if not argument.startswith("-psn_")]
+
+
 def main():
+    if _opened_as_mac_app():
+        sys.argv = [sys.argv[0], "gui"]
+
     # Surface --version / -V before any other dispatch so it works without
     # loading the heavier TUI / GUI subsystems.
     if len(sys.argv) > 1 and sys.argv[1] in ("--version", "-V"):
@@ -117,9 +200,10 @@ def main():
     # diagnosing "improperly signed" update errors (verifies the key the
     # binary will check against matches the key used to sign updates).
     if len(sys.argv) > 1 and sys.argv[1] == "--print-pubkey":
-        from lumi.updater import EDDSA_PUBLIC_KEY, APPCAST_URL
+        from lumi.updater import APPCAST_URL, EDDSA_PUBLIC_KEY, MACOS_APPCAST_URL
         print(f"EDDSA_PUBLIC_KEY={EDDSA_PUBLIC_KEY}")
-        print(f"APPCAST_URL={APPCAST_URL}")
+        # The stable feed this build reads; macOS has its own (disk images).
+        print(f"APPCAST_URL={MACOS_APPCAST_URL if sys.platform == 'darwin' else APPCAST_URL}")
         return
 
     # Reading the usage records and unattended runs need neither the
@@ -139,6 +223,9 @@ def main():
     if len(sys.argv) > 1 and sys.argv[1] == "updates":
         from lumi.update_channels import main as updates_main
         raise SystemExit(updates_main(sys.argv[2:]))
+    if len(sys.argv) > 1 and sys.argv[1] == "license":
+        from lumi.license import main as license_main
+        raise SystemExit(license_main(sys.argv[2:]))
     if len(sys.argv) > 1 and sys.argv[1] == "extension":
         from lumi.extension_check import main as extension_main
         raise SystemExit(extension_main(sys.argv[2:]))
@@ -158,17 +245,20 @@ def main():
         print("Managed setup failed. Verify the protected configuration and certificate files.", file=sys.stderr)
         raise SystemExit(2) from None
 
-    # Kick off the WinSparkle background updater. No-op on non-Windows or
-    # when the DLL isn't bundled (dev runs from source). Fire-and-forget;
-    # WinSparkle owns its own thread and surfaces a native dialog only when
-    # a newer version is found in the appcast.
-    try:
-        from lumi.updater import init_updater
-        init_updater()
-    except Exception:
-        # Updater failures must never block app startup.
-        import logging
-        logging.getLogger(__name__).exception("Updater init failed (non-fatal)")
+    # Kick off the WinSparkle background updater. No-op on Linux or when the
+    # DLL isn't bundled (dev runs from source). Fire-and-forget; WinSparkle
+    # owns its own thread and surfaces a native dialog only when a newer
+    # version is found in the appcast. On macOS only the app starts Sparkle,
+    # here on the main thread: it runs its checks and windows on the app's
+    # run loop, which the terminal UI and the chat gateway don't turn.
+    if sys.platform != "darwin" or (len(sys.argv) > 1 and sys.argv[1] == "gui"):
+        try:
+            from lumi.updater import init_updater
+            init_updater()
+        except Exception:
+            # Updater failures must never block app startup.
+            import logging
+            logging.getLogger(__name__).exception("Updater init failed (non-fatal)")
 
     # Check for GUI subcommand before parsing full args
     if len(sys.argv) > 1 and sys.argv[1] == "gui":

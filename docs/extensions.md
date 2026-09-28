@@ -7,7 +7,8 @@ usual tools. A pack can also add [panels](#panels): pages of its own that
 the person opens in Lumi, which run in a sandbox. You don't need Lumi's
 source to write either; this page and the
 SDK in [`sdk/`](https://github.com/Luminary-Analytics/resonant-client/tree/main/sdk)
-are the whole contract.
+are the whole contract. The SDK is under the MIT License (`sdk/LICENSE`),
+unlike Lumi itself, so packs can include it.
 
 This is the Extension SDK, version 1. Code: `lumi/engine/provider_extensions.py`
 and, for panels, `lumi/gui/extension_panels.py`.
@@ -410,7 +411,9 @@ message box.
   that way. This was seen in Edge, where the proposed `webrtc 'block'`
   directive is ignored. A panel can only send what it can see: the project's
   name, the theme and what you type into it. Approve packs whose code you've
-  read or whose publisher you trust, as for hooks.
+  read or whose publisher you trust, as for hooks. For the same reason
+  [offline mode](offline.md) keeps panels closed, and turning it on closes
+  an open one.
 - One panel is open at a time, and panels don't open in the macOS and Linux
   desktop window yet.
 

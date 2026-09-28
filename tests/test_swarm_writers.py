@@ -94,18 +94,66 @@ def runner(fixture, backend):
                              backend_factory=lambda spec: backend, writer_process_factory=None)
 
 
+def explain(runtime):
+    """Each worker's state and error and the last events, as one string: a CI
+    log shows only a line of any longer, non-string assertion message."""
+    polled = runtime.poll(limit=1000)
+    return json.dumps({"workers": [{key: row[key] for key in ("state", "error", "alive", "termination_recorded")}
+                                   for row in polled["workers"]],
+                       "last_events": [{key: value for key, value in event.items() if key in {"event", "message", "error", "outcome"}}
+                                       for event in polled["events"]][-12:]}, default=str)
+
+
 def finished(runtime, context):
-    deadline = time.monotonic() + 30
+    # A writer's worker runs, then its result is committed through owned Git
+    # processes: seconds each on a loaded runner.
+    deadline = time.monotonic() + 90
     while time.monotonic() < deadline:
         if not runtime.inspect(context.attempt_id)["alive"]:
             return
         time.sleep(.01)
-    raise AssertionError(runtime.poll())
+    raise AssertionError(explain(runtime))
 
 
 def snapshot(fixture):
     supervisor, authority, *_ = fixture
     return supervisor.store.snapshot(authority.scope, authority.run_id)
+
+
+def test_a_writer_cancelled_while_its_result_waits_for_the_repository_commits_nothing(fixture):
+    # A writer's result waits for the repository while another step holds it
+    # (a long check, say). Cancelling that writer ends the wait at once, and
+    # nothing of it is committed afterwards.
+    from lumi.engine.swarming.models import RevisionConflict
+    from tests.test_swarm_integration import repository_held
+    context, writer = assign(fixture)
+    backend = Backend(scripts=[[tool_call("file_write", {"path": "src/fact.txt", "content": "cancelled change\n"}, "write-1"), done()],
+                               [text_delta("Changed the isolated file."), done()]])
+    runtime = runner(fixture, backend)
+    try:
+        with repository_held(fixture[2]) as release:
+            runtime.start(context, BackendSpec("ollama", "chosen"), writer_id=writer["id"])
+            deadline = time.monotonic() + 90
+            while runtime.inspect(context.attempt_id)["state"] != "waiting_for_repository":
+                assert time.monotonic() < deadline, explain(runtime)
+                time.sleep(.01)
+            for attempt in range(3):  # a lease renewal can refuse it first, before anything commits
+                try:
+                    runtime.cancel_worker(context.attempt_id, context.epoch, command_id="cancel",
+                                          expected_revision=snapshot(fixture)["run"]["revision"])
+                    break
+                except RevisionConflict:
+                    if attempt == 2:
+                        raise
+            finished(runtime, context)
+            assert not release.is_set()  # the cancel ended the wait, not the other step
+        state = snapshot(fixture)
+        assert runtime.inspect(context.attempt_id)["state"] == "cancelled", explain(runtime)
+        assert state["attempts"][0]["state"] == "cancelled" and not state["submissions"]
+        assert state["writer_worktrees"][0]["state"] == "active"
+        assert git(Path(writer["path"]), "rev-parse", "HEAD") == fixture[4]
+    finally:
+        runtime.close()
 
 
 def test_model_file_write_and_edit_finalize_to_checked_candidate_without_touching_checkout(fixture):
@@ -121,7 +169,7 @@ def test_model_file_write_and_edit_finalize_to_checked_candidate_without_touchin
         runtime.start(context, BackendSpec("ollama", "chosen"), writer_id=writer["id"])
         finished(runtime, context)
         status = runtime.inspect(context.attempt_id)
-        assert status["state"] == "submitted", runtime.poll()
+        assert status["state"] == "submitted", explain(runtime)
         assert backend.closed and backend._supervised_single_request
         assert "swarm_submit" not in backend.tool_names
         state = snapshot(fixture)

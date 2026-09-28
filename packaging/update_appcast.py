@@ -2,11 +2,11 @@
 Add a release to the update feeds on the Pages site.
 
 Pipeline (called from .github/workflows/release.yml):
-    1. CI builds lumi-setup-X.Y.Z.exe
+    1. CI builds lumi-setup-X.Y.Z.exe (and on macOS lumi-X.Y.Z.dmg)
     2. CI signs it with winsparkle-tool using the EDDSA_PRIVATE_KEY secret
-    3. CI uploads the .exe to the GitHub Release for tag vX.Y.Z
+    3. CI uploads it to the GitHub Release for tag vX.Y.Z
     4. CI checks out the gh-pages branch into ./gh-pages-checkout
-    5. publish_pages.py copies the installer to downloads/vX.Y.Z/
+    5. publish_pages.py copies it to downloads/vX.Y.Z/
     6. THIS script adds the release to the feeds (below)
     7. CI publishes gh-pages-checkout as one fresh commit
 
@@ -19,6 +19,8 @@ Standalone usage (for local testing):
         --notes "<p>Lumi 0.21.0.</p>" \\
         --download-base "https://luminary-analytics.github.io/resonant-client/downloads"
 
+    Add --platform macos with the .dmg as --installer for the macOS feeds.
+
 The feeds (lumi/update_channels.py picks one per install):
     appcast.xml         stable releases. Installed copies before 0.21 poll only
                         this one, so it keeps its address and history.
@@ -27,11 +29,20 @@ The feeds (lumi/update_channels.py picks one per install):
     appcast-X.Y.xml     stable releases of one release line, for installs pinned
                         to it; written for the newest LINES lines.
 
-A stable release goes into appcast.xml and a pre-release into the beta feed;
-the beta and line feeds are then rebuilt from those two, so they can't drift.
-Items are ordered newest first (WinSparkle picks by version anyway). A
-version that is already listed is replaced, so a re-run of a release job is
-harmless. Nothing is published without a signature.
+macOS has the same three kinds, listing disk images for Sparkle:
+appcast-macos.xml, appcast-macos-beta.xml and appcast-macos-X.Y.xml. They are
+separate files so the Windows feeds that installed copies poll stay exactly as
+they are: WinSparkle never sees a disk image, and Sparkle never sees an .exe
+(it would take an enclosure without ``sparkle:os`` for its own). A macOS item
+also says ``sparkle:os="macos"``, the minimum macOS version, and its version
+in the form Sparkle compares (``macos_bundle_version``, as in Lumi.app's
+CFBundleVersion); ``sparkle:shortVersionString`` keeps the release's name.
+
+A stable release goes into the stable feed and a pre-release into the beta
+feed; the beta and line feeds are then rebuilt from those two, so they can't
+drift. Items are ordered newest first (WinSparkle and Sparkle pick by version
+anyway). A version that is already listed is replaced, so a re-run of a
+release job is harmless. Nothing is published without a signature.
 """
 
 from __future__ import annotations
@@ -44,6 +55,7 @@ import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from email.utils import format_datetime
 from pathlib import Path
+from typing import NamedTuple
 
 # Sparkle XML namespace — needed so ET emits the right `sparkle:` prefix.
 SPARKLE_NS = "http://www.andymatuschak.org/xml-namespaces/sparkle"
@@ -55,6 +67,34 @@ BETA_FEED = "appcast-beta.xml"
 LINES = 4
 VERSION = re.compile(r"(\d+)\.(\d+)\.(\d+)(?:-(alpha|beta|rc)\.(\d+))?")
 _PRE_RANK = {"alpha": 0, "beta": 1, "rc": 2}
+# Lumi.app's LSMinimumSystemVersion (packaging/lumi.spec); Sparkle skips an
+# item a Mac can't run.
+MACOS_MINIMUM_SYSTEM_VERSION = "12.0"
+
+
+class FeedSet(NamedTuple):
+    """One platform's feed files and the words in them.
+
+    A NamedTuple, not a dataclass: the tests and packaging/lumi.spec load this
+    script by path, without registering it as a module, which dataclasses need.
+    """
+
+    stable: str
+    beta: str
+    line: str  # with {line}
+    title: str
+    stable_description: str
+    beta_description: str
+    line_description: str  # with {line}
+
+
+FEEDS = {
+    "windows": FeedSet(STABLE_FEED, BETA_FEED, "appcast-{line}.xml", "Lumi updates", "Stable releases of Lumi",
+                       "Beta and stable releases of Lumi", "Stable releases of Lumi {line}"),
+    "macos": FeedSet("appcast-macos.xml", "appcast-macos-beta.xml", "appcast-macos-{line}.xml",
+                     "Lumi updates for macOS", "Stable releases of Lumi for macOS",
+                     "Beta and stable releases of Lumi for macOS", "Stable releases of Lumi {line} for macOS"),
+}
 
 
 def version_key(version: str) -> tuple[int, ...]:
@@ -76,16 +116,30 @@ def release_line(version: str) -> str:
     return f"{major}.{minor}"
 
 
+def macos_bundle_version(version: str) -> str:
+    """The version Sparkle compares for a release: Lumi.app's CFBundleVersion and a macOS item's.
+
+    Sparkle's comparator stops at the first dash, so ``0.21.0-beta.1`` would
+    equal ``0.21.0`` and a beta would never update to its release. Without
+    the dash (``0.21.0beta.1``) the suffix is a word, which Sparkle sorts
+    before the release, and alpha < beta < rc. A development version such as
+    ``0.19.2.dev11`` has no dash and stays as it is.
+    """
+    return version.replace("-", "")
+
+
 def build_item(
     version: str,
     installer_path: Path,
     signature: str,
     notes_html: str,
     download_url: str,
+    platform: str = "windows",
 ) -> ET.Element:
     """Build a new <item> element for this release."""
     pub_date = format_datetime(datetime.now(timezone.utc))
     file_size = installer_path.stat().st_size
+    compared = macos_bundle_version(version) if platform == "macos" else version
 
     item = ET.Element("item")
 
@@ -96,30 +150,47 @@ def build_item(
     pub.text = pub_date
 
     sv = ET.SubElement(item, f"{{{SPARKLE_NS}}}version")
-    sv.text = version
+    sv.text = compared
 
     ssv = ET.SubElement(item, f"{{{SPARKLE_NS}}}shortVersionString")
     ssv.text = version
+
+    if platform == "macos":
+        minimum = ET.SubElement(item, f"{{{SPARKLE_NS}}}minimumSystemVersion")
+        minimum.text = MACOS_MINIMUM_SYSTEM_VERSION
 
     desc = ET.SubElement(item, "description")
     # CDATA isn't natively supported by ElementTree — pass HTML as text and
     # post-process. WinSparkle accepts either way.
     desc.text = notes_html
 
-    ET.SubElement(item, "enclosure", attrib={
+    enclosure = {
         "url": download_url,
-        f"{{{SPARKLE_NS}}}version": version,
+        f"{{{SPARKLE_NS}}}version": compared,
         f"{{{SPARKLE_NS}}}shortVersionString": version,
         "length": str(file_size),
         "type": "application/octet-stream",
         f"{{{SPARKLE_NS}}}edSignature": signature,
-    })
+    }
+    if platform == "macos":
+        enclosure[f"{{{SPARKLE_NS}}}os"] = "macos"
+    ET.SubElement(item, "enclosure", attrib=enclosure)
     return item
 
 
 def item_version(item: ET.Element) -> str:
+    """The release an item lists, as in its tag (``X.Y.Z`` or ``X.Y.Z-beta.N``).
+
+    A Windows item's ``sparkle:version`` is that already. A macOS item's is the
+    form Sparkle compares, so its ``sparkle:shortVersionString`` names it.
+    """
     node = item.find(f"{{{SPARKLE_NS}}}version")
-    return (node.text or "").strip() if node is not None else ""
+    version = (node.text or "").strip() if node is not None else ""
+    enclosure = item.find("enclosure")
+    if enclosure is not None and enclosure.get(f"{{{SPARKLE_NS}}}os") == "macos":
+        short = item.find(f"{{{SPARKLE_NS}}}shortVersionString")
+        version = (short.text or "").strip() if short is not None else ""
+    return version
 
 
 def _items(path: Path) -> list[ET.Element]:
@@ -168,8 +239,23 @@ def _write(path: Path, template: ET.Element, title: str, description: str,
         channel.append(copy.deepcopy(item))
     tree = ET.ElementTree(rss)
     ET.indent(tree, space="    ")
-    tree.write(path, encoding="utf-8", xml_declaration=True)
+    # A binary handle, so every platform writes the same bytes with "\n" line
+    # ends: given a file name, ElementTree writes in text mode, which is
+    # "\r\n" on Windows, where the release publishes. The macOS feeds are
+    # signed over exactly these bytes (packaging/publish_macos.ps1).
+    with open(path, "wb") as handle:
+        tree.write(handle, encoding="utf-8", xml_declaration=True)
     return path
+
+
+def _new_channel(feeds: FeedSet, site_url: str) -> ET.Element:
+    """Channel details for a platform's first feed (macOS; Windows has had appcast.xml all along)."""
+    channel = ET.Element("channel")
+    ET.SubElement(channel, "title").text = feeds.title
+    ET.SubElement(channel, "link").text = site_url
+    ET.SubElement(channel, "description").text = feeds.stable_description
+    ET.SubElement(channel, "language").text = "en"
+    return channel
 
 
 def publish_feeds(
@@ -181,25 +267,34 @@ def publish_feeds(
     download_base: str,
     *,
     lines: int = LINES,
+    platform: str = "windows",
 ) -> list[Path]:
-    """Add one release to the feeds in ``site`` and rebuild the derived feeds."""
+    """Add one release to a platform's feeds in ``site`` and rebuild the derived feeds."""
     if not signature:
         raise ValueError("empty signature — refusing to publish an unsigned update")
     if not installer_path.exists():
         raise FileNotFoundError(f"installer not found at {installer_path}")
+    if platform not in FEEDS:
+        raise ValueError(f"{platform!r} isn't a platform with update feeds ({', '.join(FEEDS)})")
     version_key(version)  # a release version, or ValueError
-    stable_path = site / STABLE_FEED
-    if not stable_path.exists():
+    feeds = FEEDS[platform]
+    stable_path = site / feeds.stable
+    if stable_path.exists():
+        template = ET.parse(stable_path).getroot().find("channel")
+        if template is None:
+            raise ValueError(f"<channel> element not found in {feeds.stable}")
+    elif platform == "macos":
+        # The first macOS release starts its feeds; the stable one is written
+        # even for a beta, so the stable channel finds a feed with nothing new.
+        template = _new_channel(feeds, download_base.rstrip("/").removesuffix("/downloads") + "/")
+    else:
         raise FileNotFoundError(f"appcast not found at {stable_path}")
-    template = ET.parse(stable_path).getroot().find("channel")
-    if template is None:
-        raise ValueError("<channel> element not found in appcast.xml")
 
     new_item = build_item(version, installer_path, signature, notes_html,
-                          f"{download_base.rstrip('/')}/v{version}/{installer_path.name}")
-    # appcast.xml keeps whatever it already holds; only its own release is added.
+                          f"{download_base.rstrip('/')}/v{version}/{installer_path.name}", platform)
+    # The stable feed keeps whatever it already holds; only its own release is added.
     stable_items = _items(stable_path)
-    beta_items = [item for item in _known(_items(site / BETA_FEED)) if is_prerelease(item_version(item))]
+    beta_items = [item for item in _known(_items(site / feeds.beta)) if is_prerelease(item_version(item))]
     if is_prerelease(version):
         beta_items = _with(beta_items, new_item)
     else:
@@ -209,25 +304,24 @@ def publish_feeds(
     # A beta that a stable release has caught up with is no longer offered.
     beta_items = [item for item in beta_items if newest is None or version_key(item_version(item)) > newest]
 
-    title = "Lumi updates"
     written = []
-    if not is_prerelease(version):
-        # A beta leaves the stable feed untouched. The stable feed keeps its
-        # own title and any hand-made entries.
+    if not is_prerelease(version) or not stable_path.exists():
+        # A beta leaves an existing stable feed untouched. The stable feed
+        # keeps its own title and any hand-made entries.
         known = _known(stable_items)
         unknown = [item for item in stable_items if all(item is not other for other in known)]
-        written.append(_write(stable_path, template, template.findtext("title") or title,
-                              template.findtext("description") or "Stable releases of Lumi",
+        written.append(_write(stable_path, template, template.findtext("title") or feeds.title,
+                              template.findtext("description") or feeds.stable_description,
                               _newest_first(known) + unknown))
-    written.append(_write(site / BETA_FEED, template, f"{title} (beta)",
-                          "Beta and stable releases of Lumi", _newest_first(beta_items + released)))
+    written.append(_write(site / feeds.beta, template, f"{feeds.title} (beta)",
+                          feeds.beta_description, _newest_first(beta_items + released)))
     by_line: dict[str, list[ET.Element]] = {}
     for item in released:
         by_line.setdefault(release_line(item_version(item)), []).append(item)
     newest_lines = sorted(by_line, key=lambda line: tuple(int(p) for p in line.split(".")), reverse=True)[:lines]
     for line in newest_lines:
-        written.append(_write(site / f"appcast-{line}.xml", template, f"{title} ({line})",
-                              f"Stable releases of Lumi {line}", _newest_first(by_line[line])))
+        written.append(_write(site / feeds.line.format(line=line), template, f"{feeds.title} ({line})",
+                              feeds.line_description.format(line=line), _newest_first(by_line[line])))
     return written
 
 
@@ -236,7 +330,7 @@ def main() -> None:
     p.add_argument("--site", required=True, type=Path, help="The gh-pages checkout holding appcast.xml")
     p.add_argument("--version", required=True, help="X.Y.Z, or X.Y.Z-beta.N for a beta")
     p.add_argument("--installer", required=True, type=Path,
-                   help="Path to the signed .exe installer")
+                   help="Path to the signed .exe installer, or the .dmg with --platform macos")
     p.add_argument("--signature", required=True,
                    help="Base64 EdDSA signature from winsparkle-tool sign")
     p.add_argument("--notes", required=True,
@@ -244,11 +338,13 @@ def main() -> None:
     p.add_argument("--download-base", required=True,
                    help="Base URL of the downloads/ folder on the Pages site")
     p.add_argument("--lines", type=int, default=LINES, help="How many release lines get their own feed")
+    p.add_argument("--platform", choices=sorted(FEEDS), default="windows",
+                   help="Whose feeds: windows (appcast.xml and its kin) or macos (appcast-macos*.xml)")
     args = p.parse_args()
 
     try:
         written = publish_feeds(args.site, args.version, args.installer, args.signature, args.notes,
-                                args.download_base, lines=args.lines)
+                                args.download_base, lines=args.lines, platform=args.platform)
     except (OSError, ValueError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         sys.exit(1)

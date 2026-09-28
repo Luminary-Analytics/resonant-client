@@ -368,9 +368,31 @@ def exit_code(result: dict) -> int:
 
 def _interactive(stdin: TextIO, stderr: TextIO) -> bool:
     """Someone at a terminal can read the notice and answer: stdin and stderr are both terminals."""
+    return _is_terminal(stdin) and _is_terminal(stderr)
+
+
+def _is_terminal(stream: Any) -> bool:
+    """Whether ``stream`` is a terminal. Windows says the NUL device is one (``isatty``); there only a
+    console handle counts. A stream with no descriptor of its own is taken at its word."""
     try:
-        return bool(stdin.isatty()) and bool(stderr.isatty())
+        if stream is None or not stream.isatty():
+            return False
     except (AttributeError, OSError, ValueError):
+        return False
+    if sys.platform != "win32":
+        return True
+    try:
+        descriptor = stream.fileno()
+    except (AttributeError, OSError, ValueError):
+        return True
+    try:
+        import ctypes
+        import msvcrt
+
+        mode = ctypes.c_ulong(0)
+        handle = ctypes.c_void_p(msvcrt.get_osfhandle(descriptor))
+        return bool(ctypes.windll.kernel32.GetConsoleMode(handle, ctypes.byref(mode)))
+    except Exception:
         return False
 
 
@@ -382,13 +404,7 @@ def _terminal_attached(*streams: Any) -> bool:
     (lumi/oversight.py): the run's environment says whether anyone is there,
     never what started it.
     """
-    for stream in streams:
-        try:
-            if stream is not None and stream.isatty():
-                return True
-        except (AttributeError, OSError, ValueError):
-            continue
-    return _controlling_terminal()
+    return any(_is_terminal(stream) for stream in streams) or _controlling_terminal()
 
 
 def _controlling_terminal() -> bool:

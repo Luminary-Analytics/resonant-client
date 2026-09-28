@@ -13,6 +13,11 @@ both process-wide from Settings > Network:
 
 A proxy already set in the user's environment is left alone unless Settings
 names one.
+
+``configure`` also applies offline mode (lumi/offline.py), and
+``client_options``, which Lumi's HTTP clients are built with, checks each
+request against it before connecting. A new outbound client must use it and
+name its feature, so a refused request says what needed which host.
 """
 
 from __future__ import annotations
@@ -32,16 +37,32 @@ _lock = threading.Lock()
 _state: dict[str, Any] = {"trust_injected": False, "saved_env": None}
 
 
-def client_options(*, timeout: Any, transport: Any = None, verify: Any = None) -> dict[str, Any]:
-    """Keyword arguments for an ``httpx.Client`` that talks to a model provider.
+def client_options(*, timeout: Any, transport: Any = None, verify: Any = None, feature: str = "",
+                   request_hooks: tuple = ()) -> dict[str, Any]:
+    """Keyword arguments for an ``httpx.Client`` that Lumi uses to reach another computer.
 
     ``transport`` is for tests (an ``httpx.MockTransport``); production
     callers leave it unset. Proxy and certificate settings apply through the
     environment and the injected trust store, so they need no argument here.
     ``verify`` is an ``ssl.SSLContext`` presenting a client certificate
     (lumi/auth_tokens.py), for connections that require mTLS.
+
+    ``feature`` names what the client is for ("Lumi Cloud", "GitHub"): in
+    offline mode a request to a host that isn't allowed fails before it
+    connects, redirects included, with "Offline mode: <feature> needs <host>".
+    The hook reads offline mode at each request, so a client built before it
+    was turned on still obeys it. A caller's own request hooks go in
+    ``request_hooks`` (the options already set ``event_hooks``); they run
+    after that check.
     """
-    options: dict[str, Any] = {"timeout": timeout}
+    # Imported here: lumi/policy.py reaches this module through voice.py, and
+    # policy validation must work without httpx (packaging/policy/make_mobileconfig.py).
+    from . import offline
+
+    options: dict[str, Any] = {
+        "timeout": timeout,
+        "event_hooks": {"request": [offline.request_hook(feature or "a network request"), *request_hooks]},
+    }
     if transport is not None:
         options["transport"] = transport
     if verify is not None:
@@ -153,7 +174,7 @@ def apply_proxy(proxy_url: str, no_proxy: str = "") -> None:
 
 
 def configure(settings: Any) -> dict[str, Any]:
-    """Apply Settings > Network proxy and certificate choices to this process."""
+    """Apply Settings > Network proxy and certificate choices, and offline mode, to this process."""
     get = settings.get if settings is not None else (lambda *args, **kwargs: None)
     system_certs = get("network", "system_certificates", True)
     trust_active = use_system_certificates(system_certs is not False)
@@ -163,4 +184,19 @@ def configure(settings: Any) -> dict[str, Any]:
     except ValueError as exc:
         logger.warning("Ignoring the saved proxy: %s", exc)
     apply_proxy(proxy, str(get("network", "no_proxy", "") or ""))
-    return {"system_certificates": trust_active, "proxy": bool(proxy)}
+    from . import offline
+
+    offline_config = offline.configure(settings)
+    return {"system_certificates": trust_active, "proxy": bool(proxy), "offline": offline_config.enabled}
+
+
+def offline_message(exc: BaseException) -> str:
+    """Offline mode's reason behind a failed request, or "" (lumi/offline.py)."""
+    from .offline import message_for
+
+    return message_for(exc)
+
+
+def error_text(exc: BaseException) -> str:
+    """How to name a failed request in a message: offline mode's reason, else the error's type."""
+    return offline_message(exc) or type(exc).__name__

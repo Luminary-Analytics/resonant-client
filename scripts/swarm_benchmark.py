@@ -39,6 +39,14 @@ PROVIDERS = ("ollama", "exo", "kimi", "openrouter", "sonn", "openai-compatible")
 UNSUPPORTED_BATCH = "Native task_batch exists, but this harness has no equivalent bounded accounting/integration adapter; no batch execution is emulated."
 
 
+class HarnessStop(RuntimeError):
+    """A stop this harness declares itself.
+
+    Its text is written here, never taken from a provider or a command, so the
+    case's observations can keep it as the reason the case stopped.
+    """
+
+
 def fixture_pack():
     spec = importlib.util.spec_from_file_location("swarm_benchmark_fixtures", PACK / "benchmark.py")
     module = importlib.util.module_from_spec(spec)
@@ -369,6 +377,7 @@ def execute_case(protocol, case, output, *, endpoint, api_key="", backend_factor
     verification = None
     verified_at = None
     accepted = False
+    reason = None
     stop_errors = []
 
     def deadline():
@@ -397,10 +406,13 @@ def execute_case(protocol, case, output, *, endpoint, api_key="", backend_factor
             snapshot = store.snapshot(scope, run_id)
             if len(snapshot["submissions"]) == count and all(row["process_state"] == "stopped" for row in snapshot["attempts"]):
                 break
-            if any(row["state"] in {"failed", "cancelled", "uncertain"} for row in snapshot["attempts"]):
-                raise RuntimeError("A participant did not provide a verified, fully observed submission")
+            ended = sorted({row["state"] for row in snapshot["attempts"] if row["state"] in {"failed", "cancelled", "uncertain"}})
+            if ended:
+                raise HarnessStop("A participant did not provide a verified, fully observed submission "
+                                  f"(attempt {', '.join(ended)})")
             if scheduler.inspect()["error"]:
-                raise RuntimeError("Dispatch requires inspection")
+                # The scheduler's own diagnostic: a fixed text and an exception type.
+                raise HarnessStop(scheduler.inspect()["error"])
             time.sleep(.03)
         scheduler.close()
         if expired.is_set():
@@ -417,10 +429,10 @@ def execute_case(protocol, case, output, *, endpoint, api_key="", backend_factor
             candidate = integration.prepare_candidate(authority, writer_ids=tuple(row["id"] for row in snapshot["writer_worktrees"]),
                 required_checks=(check,), criterion_checks={item["id"]: {"fixture_acceptance": check.key} for item in plan})
             if candidate["state"] != "ready":
-                raise RuntimeError("Combined candidate is not ready")
+                raise HarnessStop(f"Combined candidate is not ready ({candidate['state']})")
             receipt = integration.run_check(authority, candidate["id"], check.key)
             if receipt["state"] != "passed":
-                raise RuntimeError("The predeclared external check failed")
+                raise HarnessStop(f"The predeclared external check failed ({receipt['state']}, exit code {receipt['exit_code']})")
             if expired.is_set():
                 raise TimeoutError("Deadline expired before application")
             approval = ApplyApproval(uuid.uuid4().hex, scope, run_id, candidate["id"], base,
@@ -430,7 +442,7 @@ def execute_case(protocol, case, output, *, endpoint, api_key="", backend_factor
         verification = pack.evaluate(scenario_id, artifact, timeout=max(.1, min(15, protocol["wall_seconds"] - (time.monotonic() - started_clock))))
         verified_at = _now()
         if not verification["accepted"]:
-            raise RuntimeError("Independent applied-artifact verification failed")
+            raise HarnessStop("Independent applied-artifact verification failed")
         for attempt in snapshot["attempts"]:
             identity = {"attempt_id": attempt["id"], "attempt_epoch": attempt["epoch"]}
             if read_only:
@@ -450,8 +462,10 @@ def execute_case(protocol, case, output, *, endpoint, api_key="", backend_factor
         error = "KeyboardInterrupt"
     except Exception as exc:
         # Exception text can contain provider bodies/credentials. Retain typed
-        # failure plus durable sanitized diagnostics, never arbitrary repr.
+        # failure plus durable sanitized diagnostics, never arbitrary repr;
+        # only the harness's own stops keep their text.
         error = type(exc).__name__
+        reason = str(exc) if isinstance(exc, HarnessStop) else None
     finally:
         timer.cancel()
         scheduler.close()
@@ -498,7 +512,7 @@ def execute_case(protocol, case, output, *, endpoint, api_key="", backend_factor
     _write(directory / "runtime-report.json", report)
     _write(directory / "worker-events.json", _event_log(events, api_key))
     _write(directory / "run.json", record)
-    _write(directory / "observations.json", {"error_type": error, "stop_errors": stop_errors,
+    _write(directory / "observations.json", {"error_type": error, "reason": reason, "stop_errors": stop_errors,
         "runtime_state": snapshot["run"]["state"],
         "workers": [{key: row[key] for key in ("attempt_id", "epoch", "state", "alive", "termination_recorded")}
                     for row in controls], "deadline_reached": expired.is_set(),

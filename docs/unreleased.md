@@ -8,6 +8,217 @@ The heartbeat remains paused. Documentation maintenance does not resume work,
 spending or grants, and changes no native implementation or installed bundle.
 The dated September 15/18 records below are historical.
 
+## September 27 macOS alpha: Sparkle updates and release publishing (source only, not released)
+
+The macOS app now updates itself, and a release tag publishes it beside the
+Windows installer. See [Lumi on macOS](macos.md) and [Updates](updates.md).
+
+- **Sparkle 2.10.0 in Lumi.app** (`packaging/fetch_sparkle.sh`: pinned, and
+  checked against its SHA-256 before extraction; its license is in the
+  notices). The XPC services, which only sandboxed apps use, are left out.
+  `packaging/build_macos.sh` copies the framework into
+  `Contents/Frameworks` after PyInstaller, signs Sparkle's installer and
+  progress app without Python's entitlements when there's a Developer ID,
+  and re-signs the app (ad hoc otherwise).
+- **`lumi/sparkle.py`** drives it through PyObjC with WinSparkle's behavior:
+  a daily check (Info.plist `SUEnableAutomaticChecks`, set from Settings >
+  Updates at each launch), `SUPublicEDKey` = the key WinSparkle checks with,
+  the feed for the mode, channel and pin, the same `update.*` audit records,
+  nothing when updates are off or the copy came from the PKG, and an install
+  that waits while an agent turn runs (Sparkle asks once; Lumi lets it go on
+  when the turn ends). Offline mode refuses every check and download Sparkle
+  asks to start. No silent installs (`SUAllowsAutomaticUpdates` off), and the
+  disk image's signature is checked before it's mounted
+  (`SUVerifyUpdateBeforeExtraction`). Only the app starts Sparkle, on the
+  main thread; in browser mode the main thread turns the run loop while it
+  waits, and Lumi closes itself when the installer starts.
+- **Feeds of its own.** `update_channels` picks `appcast-macos.xml`,
+  `appcast-macos-beta.xml` or `appcast-macos-X.Y.xml` on macOS;
+  `update_appcast.py --platform macos` writes them. The Windows feeds'
+  addresses and contents don't change. macOS items say `sparkle:os="macos"`
+  and the minimum macOS, and give the version without its dash
+  (`0.21.0beta.1`), because Sparkle compares versions only up to a dash; so
+  does Lumi.app's `CFBundleVersion`.
+- **Opening Lumi.app from Finder** (or the Dock, or Sparkle's relaunch) opens
+  the app. It used to pass no arguments to the terminal UI, which has no
+  terminal there and quit. Such launches also write the startup log. Only a
+  LaunchServices launch counts (see the review fixes below).
+- **Release workflow.** New jobs build the DMG and PKG on Apple silicon,
+  signed and notarized when the Apple secrets exist (an App Store Connect API
+  key or an Apple ID; `MACOS_INSTALLER_IDENTITY` is now passed too), and
+  otherwise signed ad hoc with a warning on the run, the release notes and
+  the download page. After the Windows job they EdDSA-sign the DMG with the
+  installer's key (checked against `lumi/updater.py`), add the files to the
+  release, and publish the DMG to Pages and the macOS feeds. The download
+  page offers both platforms. [RELEASING.md](../RELEASING.md) lists the Apple
+  secrets and how to get them.
+- **CI.** `build-macos.yml` checks the Info.plist Sparkle reads, asks the
+  running app over its WebSocket what the updater reports
+  (`packaging/smoke_gui.py`), waits for Sparkle's first scheduled check to
+  fetch the macOS feed, and opens the app as Finder does. `tests.yml` runs
+  the updater tests on macOS, with the real Sparkle reading a feed
+  `update_appcast.py` wrote.
+
+### Review fixes (September 27)
+
+- **Offline mode stops a download from an update window left open.** Sparkle
+  asks about an update once, when it finds it. The delegate now also checks
+  each download request as Sparkle starts it
+  (`updater:willDownloadUpdate:withRequest:`): after offline mode came on, or
+  to a host offline mode doesn't allow, the request gets an address Sparkle's
+  downloader refuses before connecting, and the audit log records
+  `update.refused` with the reason. Release notes from another host are
+  refused the same way.
+- **Signed macOS feeds.** Lumi.app sets `SURequireSignedFeed`, and
+  `packaging/publish_macos.ps1` signs every macOS feed it writes with the
+  release key (`packaging/feed_signature.py`: Sparkle's own block format),
+  checking each signature with the app's key. A feed changed after signing,
+  or signed with another key, or not at all, is an update error. The Windows
+  feeds don't change.
+- **Signing secrets only for tagged releases.** The jobs that sign run in the
+  `release` environment, which the owner restricts to `v*` tags and moves the
+  secrets into ([the release environment](release-pipeline.md#the-release-environment)).
+  `build-macos.yml`, which pull requests run, gets no Apple secret and signs
+  ad hoc: a Developer ID certificate can ship an update to every Mac by
+  itself, since Sparkle accepts it in place of the EdDSA signature.
+- **Hardened release workflow.** The EdDSA key file is deleted in a
+  `finally` as soon as it has signed, in both jobs; every third-party action
+  is pinned to a commit; the workflow token only reads, and only the two
+  publishing jobs get `contents: write`; checkouts that don't push keep no
+  credentials; the two jobs that push `gh-pages` share a concurrency group
+  and push with `--force-with-lease` on the commit they checked out.
+- **Signing can be required.** With the repository variable
+  `MACOS_SIGNING_REQUIRED` or `WINDOWS_SIGNING_REQUIRED` set to `true`,
+  missing Developer ID or Authenticode secrets fail the release instead of
+  shipping an unsigned build. `build_macos.sh` deletes the certificate file
+  as soon as it's imported, and its keychain and notary key when it ends.
+- **`fetch_sparkle.sh` never reuses what it hasn't verified.** It used to
+  keep a framework from an earlier run as it was; now it checks the kept
+  archive's SHA-256 on every run (downloading again when it doesn't match)
+  and always extracts afresh.
+- **Command-line runs keep the command line's behavior.** The Finder fix
+  now applies only to a LaunchServices launch (a child of launchd without a
+  terminal, whose `__CFBundleIdentifier` is Lumi's, or an old `-psn_`
+  argument). A script's `lumi run … > /dev/null` no longer writes its output
+  to the startup log, and `lumi` without arguments from a script is the
+  terminal UI, as before.
+- **Tests.** On macOS with the real Sparkle: a signed feed reads and a
+  tampered, other-key or unsigned one doesn't; nothing older than the running
+  version is offered; a refused download never reaches the server while an
+  allowed one does. `build-macos.yml` rehearses the macOS publishing on
+  Windows with a throwaway key on a scratch copy of `gh-pages`, pushing
+  nothing. Not covered: Sparkle's installer rejecting a disk image with a bad
+  signature. That check runs in Sparkle's installer, which it starts through
+  launchd to replace the app; CI instead verifies every signature it
+  publishes with the app's key.
+
+### Second review fixes (September 27)
+
+- **The signed feeds now reach Pages as signed.** On the Windows runner the
+  feeds were written with `\r\n` line ends and signed so, and Git for
+  Windows committed them with `\n`: every published macOS feed would have
+  failed its signature, and the next publish would have stopped. The feeds
+  are now written with `\n` everywhere, both jobs turn `core.autocrlf` off
+  before checking out gh-pages, the site carries a `.gitattributes` with
+  `* -text`, and `packaging/push_pages.py` commits only after the staged
+  blobs verify: every macOS feed's signature, and each disk image's length
+  and signature. `build-macos.yml` rehearses two releases in a row on
+  Windows, as the release publishes (`scripts/rehearse_pages_publish.py`),
+  checking each pushed commit, a feed changed after signing, and a checkout
+  with Git's own defaults.
+- **The channel and pin hold whatever feed arrives.** One key signs every
+  macOS feed, so the version Sparkle found is checked too: a copy on the
+  stable channel refuses a beta, a pinned copy anything outside its line
+  (`update.refused`). A replayed old feed can still keep Macs where they are;
+  that's documented as a limit.
+- **Repairing a feed.** `publish_macos.ps1 -CheckFeeds` and `-ResignFeeds`
+  check, and sign again, the macOS feeds a site has. A publish no longer
+  skips a feed whose signature doesn't verify: it stops and points at the
+  repair ([Repairing the macOS feeds](release-pipeline.md#repairing-the-macos-feeds)).
+- **Smaller:** a download address Lumi can't read is refused; Sparkle
+  follows redirects without asking, which is documented; the AWS role must
+  wait for the `v*` tag rule, and no workflow asks for an OIDC token.
+
+Not verified: an update installed on a real Mac (no macOS release is
+published yet), Gatekeeper's first launch of a downloaded build, the native
+window beyond starting, dictation, computer use, the Keychain prompt, and a
+Developer ID signature or notarization (no Apple account yet). See
+[what still needs a real Mac](macos.md#what-still-needs-a-real-mac).
+
+## September 27 Lumi is commercial software: a proprietary license (source only, not released)
+
+The owner decided that Lumi is a commercial, proprietary product. The new
+wording is a draft for counsel.
+
+- **`LICENSE`** is a short proprietary notice: © 2026 Luminary Analytics, all
+  rights reserved; use only under a written license from Luminary Analytics
+  or the Lumi End User License Agreement provided with the software; no other
+  rights. It notes that versions 0.6.3 through 0.19.x were published under the
+  MIT License and remain under it. Versions before 0.6.3 declared
+  "Proprietary" and had no `LICENSE` file.
+- **Package metadata:** `license = {text = "Proprietary"}` and the classifier
+  `License :: Other/Proprietary License` in `pyproject.toml`. The table form
+  still builds with `setuptools>=68`; a PEP 639 SPDX string needs setuptools
+  77 and can't be combined with a License classifier. The deb's copyright
+  file (`License: proprietary`) and the rpm's `License:` field say the same.
+- **Settings > About Lumi** reads "© Luminary Analytics. All rights reserved.
+  Licensed under the Lumi End User License Agreement.", with the third-party
+  notices as before; searching Settings for "EULA" finds it.
+  `THIRD_PARTY_NOTICES.txt` says the same about Lumi itself, since the bundle
+  doesn't ship `LICENSE`.
+- **Still under the MIT License**, so others can build and ship extensions
+  (the proposed default; the owner decides): the Extension SDK (`sdk/LICENSE`,
+  plus `sdk/python/lumi_extension/LICENSE`, which travels with the package,
+  also into the packs `sdk/new_pack.py` makes) and the VS Code extension
+  (`lumi/code_editors/vscode/LICENSE.txt`, unchanged).
+- **Docs:** the README, [Plans](plans.md), [Extensions](extensions.md),
+  AGENTS.md, and ROADMAP.md, whose 2026-05 open-source direction is marked
+  superseded. Being free for individuals stays a product decision that the
+  license text doesn't change. [Offline mode](offline.md) now says it works
+  without an *offline* license.
+- **Ported code is credited.** `lumi/engine/truncation.py` is a Python port
+  of `truncate.ts` from pi-coding-agent (`@mariozechner/pi-coding-agent`,
+  `packages/coding-agent/src/core/tools/truncate.ts` in the pi monorepo,
+  formerly `badlogic/pi-mono`), MIT License, "Copyright (c) 2025 Mario
+  Zechner". The file is the same in 0.70.6, the npm release current when it
+  was ported on April 30, 2026. The module now opens with that notice and the
+  full MIT text. `packaging/third-party-components.json` lists it (kind
+  "Ported source code") with `packaging/licenses/pi-coding-agent-LICENSE.txt`,
+  the upstream text, so `THIRD_PARTY_NOTICES.txt` and the SBOM include it.
+- **Unchanged:** the copyleft gate. No installer shows a license page (Inno
+  Setup, the MSI and the macOS package have none), so none needed changing.
+- **Before the next release,** the End User License Agreement has to exist
+  and ship with the installers: `LICENSE` names an agreement "provided with
+  the software".
+- **Still to decide:** whether the repository stays public. On the
+  organization's free GitHub plan, a private repository turns GitHub Pages
+  off, and Pages serves the installers and the update feed (`FEED_BASE` in
+  `lumi/update_channels.py`), so installed copies would stop updating. See
+  [RELEASING.md](../RELEASING.md#signing-and-infrastructure).
+
+Validation on September 27, 2026:
+
+- `ruff check .` (0.16.9) is clean; `node --check` passes for `app.js` and
+  `settings_view.js`; the six Node UI test files pass (152 tests, with main
+  merged in).
+- With an isolated home, `test_about.py`, `test_linux_packages.py`,
+  `test_release_supply_chain.py`, `test_docs_links.py`,
+  `test_code_editors.py`, `test_content_security_policy.py`,
+  `test_provider_extensions.py`, `test_extension_panels.py`,
+  `test_bundle_policy.py` and `test_truncation.py` pass (197 tests).
+  `test_release_supply_chain.py` checks that the notices carry
+  pi-coding-agent's MIT text and that `truncation.py` keeps its copyright
+  line. The notice in the file and the copy in `packaging/licenses/` match
+  the text of the upstream `LICENSE` exactly.
+- setuptools 80.8, run on a copy of the tree, writes `License: Proprietary`,
+  the proprietary classifier and `License-File: LICENSE`; the SDK's wheel
+  holds `lumi_extension/LICENSE`.
+- In the browser pane, the GUI from this branch in a throwaway home: a
+  Settings search for "EULA" lists only About Lumi, Tab and Return open it,
+  and its License row reads the notice. At 375 px nothing overflows, and the
+  console has no errors. The copyleft gate itself runs in CI's Windows, macOS
+  and Linux builds.
+
 ## September 27 organization oversight — source only, not released
 
 An organization's policy can have Lumi share its people's work with the
@@ -107,6 +318,21 @@ now.
   - The notice fingerprint is the full SHA-256 hex digest (64 characters),
     in step with Lumi Cloud; a chat's I've read this button carries its
     first 32 characters, which fit Telegram's button data.
+  - Whom a confirmation counts for: a managed computer sends the signed-in
+    person's desktop sign-in with their confirmation (`Lumi-Account-Token`),
+    so Lumi Cloud counts it for them; a joined computer is its member's; with
+    nobody signed in it counts for the computer. Settings says which, before
+    and after confirming. The joined computer's member is kept with its
+    enrollment (`cloud.device.user_id`).
+- **With offline mode (merged from main)**: while Lumi Cloud is out of
+  reach, confirmations (managed computers' sign-ins included) and records
+  wait in the queue and Settings shows offline mode's reason; turning offline
+  mode off or allowing Lumi Cloud's host sends them at once. A policy that
+  can't be used (offline mode on with no hosts) no longer reads as one that
+  stopped asking for oversight: the queue is kept, unsent, instead of
+  deleted, and Settings says the policy can't be used and what waits instead
+  of "Off". `lumi extension check` refuses a pack's provider under offline
+  mode or an unusable policy before any other gate.
 - **Panels (merged from main)**: **I've read this** takes only a click or
   key press the browser reports as the person's (`isTrusted`); a click a
   script makes confirms nothing. A capability pack's panel can add text to
@@ -220,6 +446,29 @@ Python 3.13 venv, `PYTHONNOUSERSITE=1`):
   verified against their versions. No contract mismatch. The model saw each
   prompt only after its confirmation (the stub's log). The real home and
   Credential Manager were unchanged.
+- Repeated after the second review, with this branch at 64dc235 and Lumi
+  Cloud at ecdc10b (the 64-character fingerprint on both sides; the cloud
+  source exported with `git archive`, a fresh database): the same steps and
+  results. Both acknowledgments matched their versions (1, then 2) with
+  64-character fingerprints, verified signatures and the member as whom they
+  count (`attribution: person`); the turns were stored as `app` (attended)
+  and `headless` (unattended, twice); the `block` run was refused with no
+  model request. `lumi run` there had standard input from NUL, which
+  Windows' `isatty` calls a terminal: it counted as unattended only once a
+  console handle was required (64dc235).
+- Whom confirmations count for, end to end with Lumi Cloud at d6f5564 (fresh
+  database) and this branch's app from its source (fa45f19, then its Settings
+  wording): a personal laptop (joined in the app) and a managed computer
+  (enrolled by the bootstrap machine policy the portal gives with an
+  enrollment token, through `LUMI_POLICY_FILE`). The laptop's confirmations
+  counted for its member (`attribution: person`, versions 1 and 2). The
+  managed computer's first, with nobody signed in, counted for the computer
+  (`none`), and Settings said so; after the person signed in there and
+  version 2 was published, its confirmation went with `Lumi-Account-Token`
+  and counted for them (`signed_in`, "signed in on this managed computer"),
+  Settings saying so before and after. Lumi Cloud then showed the member and
+  both computers as acknowledged. The real home, Credential Manager and
+  `C:\ProgramData` were unchanged.
 - Not run: a packaged build, a deployed Lumi Cloud, a real Telegram or Slack
   chat, a real terminal (the typed yes was driven through the code's own
   prompts), screen readers.
@@ -389,6 +638,222 @@ Python 3.13 venv, `PYTHONNOUSERSITE=1`):
   unchanged.
 - Not run: a full local `pytest` (CI runs it), a packaged build, the
   terminal UI and a real Telegram or Slack chat.
+
+## September 27 offline and air-gapped operation, first pass (source only, not released)
+
+**Offline mode** (Settings > Offline mode, or the policy's `offline.enabled`
+and `offline.allowed_hosts`): Lumi reaches only this computer and the hosts
+you allow, and everything else is refused at once with
+`Offline mode: <feature> needs <host>; allow it or turn offline mode off.`
+See [Offline and air-gapped operation](offline.md).
+
+- **One check** (`lumi/offline.py`, host rules in `lumi/offline_rules.py`).
+  `net.client_options`, which Lumi's HTTP clients are built with, now takes
+  the feature's name and adds a request hook that checks each request and
+  redirect before it connects. The OpenAI-compatible stream (connections,
+  EXO, SONN, OpenRouter, Kimi), HTTP MCP servers and the SONN account now
+  use it too.
+- **Locality from the name as written.** `localhost`, loopback and unspecified
+  addresses (IPv4, IPv6 and IPv4-mapped) and this computer's name are local;
+  `localhost.evil.com`, `127.0.0.1.nip.io`, `127.1`, a user name in the URL or
+  a backslash never pass as local. Allowed hosts take names, `*.domain`,
+  addresses and networks; `*` and `0.0.0.0/0` are refused. Only plain host
+  names match: one with a control character, a space, `%`, `/` or `@` never
+  does, whatever domain it ends in.
+- **The policy wins** through `SettingsManager.get`. When it turns offline
+  mode on, only its own allowed hosts apply. A policy that exists but can't be
+  used (invalid, `*.com`, `"true"` as text, a bad signature) keeps offline mode
+  on with no allowed hosts until it's fixed, and the refusals say so.
+- **Covered:** provider discovery (unreachable providers aren't probed and are
+  hidden from Models with the reason, in the menu and the picker), model
+  requests (a turn, an auxiliary request or a fallback to an unreachable
+  provider, or one whose sign-in host is unreachable, is refused before
+  sending; Codex, Claude Code and extension providers always, since their own
+  processes can't be checked), Lumi Cloud (check-ins, sign-in before the
+  browser opens, sharing, the team library and everything else through
+  `CloudClient`), update checks and downloads (WinSparkle isn't loaded, and
+  turning offline mode on stops it at once), the agent's browser tools
+  (refused for other hosts and for `file:` addresses on other computers, which
+  Chrome on Windows opens as network shares; Lumi's Chrome starts with proxy
+  switches, `<-loopback>` included, that keep pages to reachable hosts, and is
+  closed at once when the rules change), `open_application` given an address,
+  pull request and issue tracker APIs and the push before a pull request
+  (every push address of the remote, network shares and `file://` remotes
+  included), the OpenTelemetry export, pack installs from Git and the registry
+  (the address as Git's `insteadOf` rewrites it too, and no redirects),
+  dictation (the webview's own recognizer is off; a service must be
+  reachable), Entra ID sign-in without a client ID (azure-identity and the
+  Azure CLI start only when `login.microsoftonline.com` is allowed) and
+  sign-in token endpoints. The Team preview refuses new work while offline
+  mode is on, and [panels from capability packs](extensions.md) stay closed
+  (`gui/extension_panels.enabled`): a panel's only network is WebRTC, which
+  offline mode can't check. Turning offline mode on closes an open panel.
+- **A backstop:** once offline mode has been on, an audit hook refuses host
+  name lookups through Python's socket module in Lumi's process
+  (`getaddrinfo`, `gethostbyname`, `gethostbyaddr`, `getnameinfo`) for
+  anything else, and connections or datagrams to a host given by name. The
+  clients not built with the factory (Ollama's own API, provider catalogs, the
+  chat gateway, Engram) meet it, with a generic message. It doesn't see native
+  code that resolves names by itself.
+- **With DLP** ([DLP](dlp.md)): offline mode refuses first, in
+  `Session._model_stream` (every request of a turn, and compression's),
+  `request_purpose.auxiliary_stream` and `send_checked`, and the terminal UI's
+  planning question (`Session.should_plan`, which for Codex or Claude Code
+  would start their programs). A request that can't be sent is neither
+  DLP-checked nor recorded; a reachable provider's request passes DLP and
+  `dlp.send` as before.
+
+**Updates from a file** (`lumi/update_file.py`). Settings > Updates > Install
+an update from a file, and `lumi updates verify <file>`, take the installer
+with the feed that lists it (a folder or a .zip). The file passes WinSparkle's
+check with the same built-in key: the installer's EdDSA signature over its
+bytes, the size in the feed, a newer version on the channel and release line
+in effect; updates off or an MSI, PKG, deb or rpm install refuse it. The
+version checked is the one inside the signed installer (its Windows version
+resource, which `packaging/installer.iss` now sets explicitly), and the feed
+must agree, since the feed isn't signed: an old signed installer listed as a
+new version is refused. The feed is parsed without a document type, in any
+encoding. Installing waits for the running turn, records `update.install` with
+the SHA-256, starts a copy of exactly the verified bytes, saved as
+`lumi-setup-<version>.exe` in a new private folder whatever the bundle called
+it, and closes Lumi, as a downloaded update does. macOS and Linux get
+instructions instead, since Lumi doesn't update itself there.
+
+**Offline license** (`lumi/license.py`, `lumi license status|verify|install`,
+Settings > Offline mode). A `lumi.license/v1` document signed with Ed25519
+over canonical JSON (organization, seats, expiry, `offline`). It verifies
+only against keys built into Lumi or set by an administrator: `LicenseKeys`
+(now in the ADMX template, and the macOS profile), or `license-keys.json`
+beside the machine policy on macOS and Linux. On Windows that file isn't read:
+any user can create `C:\ProgramData\Lumi` where no administrator did. It
+labels offline use and locks nothing. `scripts/sign_license.py` makes keys
+and licenses for Luminary's operations. No production key is built in yet.
+
+**Machine folders from Windows** (`lumi/policy.py`). The machine policy,
+policy keys and license beside it are found in the ProgramData folder Windows
+reports (`SHGetKnownFolderPath`), not the `ProgramData` environment variable,
+which a person could point at a folder of their own to escape a file-deployed
+policy or plant keys. A `PolicyFile` path expands only machine folders
+(`%ProgramData%`, `%ProgramFiles%`, `%SystemRoot%` and the like) from Windows;
+other variables stay as written, so such a path isn't found and the policy
+fails closed.
+
+**Not yet:** programs the agent runs (shell, jobs, previews, checks), MCP
+servers started as commands, hooks and language servers aren't limited; use a
+firewall. Computer use drives the desktop, whose apps connect by themselves.
+A streaming response and Team workers that started before offline mode was
+turned on run to their end. An organization's Chrome proxy policy outranks
+Lumi's switches, and a local page can still refer to a network share. Git
+uses its own proxy settings unchecked. The backstop sees name lookups, so an
+asynchronous connection straight to an IP address is checked only by Lumi's
+own clients. While a policy can't be used, the Settings switch and host list
+stay editable though they change nothing (the status says why). The macOS
+profile maker has no license-key option yet.
+
+**Validation.**
+- 203 new tests: 201 in `tests/test_offline.py`, `test_offline_features.py`,
+  `test_update_file.py` and `test_license.py`, and 2 in `test_policy.py`
+  (one Windows-only), with mock transports, fakes and keys they generate; no
+  test reaches another computer (the backstop's lookups are refused before
+  they leave, or its hook is called directly). Feeds for the update tests are
+  written by `packaging/update_appcast.py`, installers are minimal Windows
+  programs with a version resource laid out as Inno Setup writes it, and the
+  policy tests run the standard-library MDM profile maker without httpx.
+- The full suite on Windows, isolated home, `PYTHONPATH` set to the checkout
+  for child processes, with `main` at 6b00ca9 (DLP, panels) merged: 6,153
+  passed, 7 skipped, 6 failed, 11 errors. Five of the failures fail the same
+  way on unmodified `main` (6b00ca9) here: `test_swarm_main_integration.py`'s
+  two cases and
+  `test_swarm_process_workers.py::test_managed_reader_uses_owned_child_and_durable_primary_result`,
+  whose workers search with the pinned ripgrep that CI fetches, and two that
+  give a child process about a second under this machine's load
+  (`test_swarm_argv_process.py::test_timeout_and_stop_terminate_descendants_without_claiming_success[timeout]`,
+  `test_swarm_integration.py::test_check_timeout_stops_owned_process_and_retains_failed_candidate`).
+  The sixth (`test_swarm_integration.py::test_foreign_approval_scope_and_wrong_revision_are_rejected`:
+  Windows refused a job-object assignment) and the 11 errors
+  (`test_swarm_benchmark_runner.py`'s shared study reached its deadline) pass
+  when their files run on their own. Node UI tests: 147 passed; ruff clean.
+- The installer version reader matches Windows' own `FileVersionInfo` for
+  Lumi installers built locally with Inno Setup 6 from
+  `packaging/installer.iss` (0.21.0 and 0.22.0-beta.1, before and after the
+  explicit `VersionInfoProductTextVersion`, whose strings are identical),
+  python.exe, ISCC.exe and git.exe.
+- Real Edge (Playwright) against the source app in a throwaway home, with an
+  Ollama stub and offline mode seeded on, 18 of 18 checks: the model menu and
+  the Models picker list the hidden gateway with its reason; Ctrl+Shift+Space
+  says the window's speech recognition is off in offline mode; a model's
+  `browser_navigate` to example.com is refused and the model receives the
+  reason; Settings > Offline mode shows the hosts, hidden providers, updates
+  and license; Space on the focused switch turns it off and on again, a host
+  typed into Allowed hosts is saved normalized and its provider offered, and
+  `*` is refused; a conversation on a provider that stops being reachable is
+  refused before anything is sent; Settings > Updates refuses a changed
+  installer and an older signed installer listed as 0.21.0, verifies the
+  signed one and says a copy from source can't install; at 375 px nothing
+  scrolls sideways; no page errors and no request beyond 127.0.0.1. A second
+  run under a policy with `"*.com"`, 4 of 4: both connections hidden with the
+  policy note, the status "On, set by your organization's policy" with the
+  policy error, the switch turned off with Space leaves it on, no errors. A
+  third, with the repository's panels fixture, 7 of 7: an open panel closes
+  with the reason when offline mode turns on, the palette and View offer no
+  panel and opening one is refused, it's offered again once offline mode is
+  off, and nothing reached the fixture's canary.
+- Not exercised: an air-gapped computer, a real Chrome started with the
+  offline switches (including `<-loopback>`), installing a real signed
+  installer from a file, a frozen build, macOS and Linux.
+
+## September 27 Team: steadier on a busy machine (source only, not released)
+
+The Team suite (`team-tests.yml`) failed now and then on CI, on different
+tests in each run. Three of the causes were in the runtime, not the tests.
+
+- **Git started before Lumi owned it.** The host started each Git process and
+  then assigned it to a Windows job. A quick read (`git rev-parse`,
+  `git config --list`) could exit first when other threads held the host
+  busy, and assigning an exited process fails with "Access is denied". A
+  writer then failed to commit its result, and checks failed. Git processes,
+  check gates and worker children now start suspended, join their job, then
+  run (`processes.popen_in_kill_job`).
+  - A host that dies between creating such a child and assigning its job
+    would leave the child suspended forever, outside any job, holding its
+    folder. Each child is recorded (pid and creation time, its host's too)
+    until it runs in its job, and the next Lumi process to start one, or a
+    Team recovery, ends a leftover whose host is gone
+    (`processes.reap_orphaned_launches`).
+- **Integration steps gave up on each other after 5 s.** Creating a writer,
+  committing its result, combining, checking and applying take turns on one
+  repository lock, and a check holds it while it runs. When two writers
+  finished together, the second failed if the first's commit took over 5 s.
+  A step now waits its turn, up to 25 minutes (the longest check plus its
+  Git work). The wait ends at once when the step can no longer run:
+  - the run is stopped or its owner's authority is lost;
+  - for a writer's result, the owner cancels that writer; nothing of it is
+    committed afterwards either;
+  - for an application, its approval expires. Apply waits no longer than
+    the approval lasts and checks it again before recording its intent, so
+    an approval that expired while it waited applies nothing.
+  - Reconciling an application may be asked for after Stop, so only a Stop
+    that arrives while it waits ends that wait.
+  The Team panel shows a waiting step: a worker's activity reads "Waiting
+  for another step on this repository", and so does its operation's status.
+- **Stop could end a check with "[Errno 22] Invalid argument".** If the host
+  had already ended a check's process when its input thread wrote to it,
+  Windows failed the write, and the flush when the pipe closed, with EINVAL.
+  That error replaced the Stop. Input a finished process can't read is now
+  discarded.
+- A worker child's allowances bound a stuck child, not a slow one:
+  - 15 s to exit after its closing message (it had 1 s, then it was ended
+    and its work failed);
+  - 60 s to complete its startup handshake (it had 15 s);
+  - 10 s for its output to close after it exits (it had 3 s);
+  - a check gate forwards the last output for up to 10 s (it had 1 s).
+  A child's error now gives its exit code, whether its closing message
+  arrived and whether the host ended it.
+- The tests' waits allow for a loaded runner, and a wait that times out says
+  what the team was doing. Each fixture that ends on its own (a sleep, a
+  timeout) now outlasts every wait that observes it, so the mechanism under
+  test is still what ends it. The benchmark harness keeps the reason for its
+  own stops (`reason` in `observations.json`).
 
 ## September 27 Panels from capability packs (source only, not released)
 

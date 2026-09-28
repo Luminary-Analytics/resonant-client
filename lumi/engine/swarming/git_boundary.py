@@ -9,7 +9,7 @@ import subprocess
 import threading
 import time
 
-from ...processes import background_process_kwargs, close_windows_job, windows_kill_job
+from ...processes import background_process_kwargs, close_windows_job, popen_in_kill_job
 from .models import Conflict
 
 
@@ -64,10 +64,10 @@ def git_bytes(integration, path: Path, args: tuple[str, ...], *, limit: int, dea
     command = [integration._git_executable, "--no-pager", "-c", f"core.hooksPath={integration._hooks}",
                "-c", "core.fsmonitor=false", "-c", "gc.auto=0", "-c", "core.quotePath=false",
                *[value for option in overrides for value in ("-c", option)], *args]
-    process = subprocess.Popen(command, cwd=path, env=environment, stdin=subprocess.DEVNULL,
+    process, job = popen_in_kill_job(command, cwd=path, env=environment, stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, bufsize=0,
         **background_process_kwargs(new_process_group=True))
-    job = reader = None
+    reader = None
     complete = threading.Event()
     output = bytearray()
     failure = []
@@ -86,7 +86,6 @@ def git_bytes(integration, path: Path, args: tuple[str, ...], *, limit: int, dea
         finally:
             complete.set()
     try:
-        job = windows_kill_job(process)
         reader = threading.Thread(target=drain, daemon=True, name="swarm-git-inspection")
         reader.start()
         if not complete.wait(max(0, deadline - time.monotonic())):

@@ -84,7 +84,7 @@ def check(folder: str | Path, *, prompt: str = DEFAULT_PROMPT, api_key: str = ""
         if declared and set(declared) != set(ids):
             findings.append(("note", f"The manifest lists {', '.join(declared)}; Lumi offers those without "
                                      "starting the process, so keep the two in step."))
-        checked, why = _gated(pack, ids[0], prompt)
+        checked, why = _gated(pack, ids[0], prompt, label)
         if why:
             findings.append(("note", f"{label} wasn't asked to answer: {why}"))
             continue
@@ -92,11 +92,19 @@ def check(folder: str | Path, *, prompt: str = DEFAULT_PROMPT, api_key: str = ""
     return findings
 
 
-def _gated(pack, model: str, prompt: str) -> tuple[str, str]:
-    """(the prompt as it may be sent, why it may not): an organization's policy's gates for a model request."""
-    from . import dlp, oversight
-    from .policy import current
+def _gated(pack, model: str, prompt: str, label: str = "") -> tuple[str, str]:
+    """(the prompt as it may be sent, why it may not): the gates of a model request to a pack's provider.
 
+    A policy that can't be used refuses it, as it refuses every model request;
+    offline mode refuses a provider a pack runs (its own connections can't be
+    checked); then, under a policy, its oversight notice and DLP rules.
+    """
+    from . import dlp, offline, oversight
+    from .policy import blocked_reason, current
+
+    refusal = blocked_reason() or offline.extension_refusal(label or pack.name)
+    if refusal:
+        return "", refusal
     if current() is None:
         return prompt, ""
     refusal = oversight.refusal("terminal")

@@ -14,11 +14,15 @@ from tests.streaming_stub import StreamingBackend, done, text_delta, tool_call
 
 
 ENDPOINT = "http://127.0.0.1:9/unused-fixture-endpoint"
+# A case's wall deadline covers seeding Git, creating worktrees, the workers,
+# the combined check and verification: seconds each through owned processes on
+# a loaded runner. Scripted cases get room; only the deadline test uses a short one.
+WALL_SECONDS = 600
 
 
 def protocol(**overrides):
     values = dict(provider="ollama", model="explicit-scripted-fixture", endpoint=ENDPOINT,
-        request_limit=8, wall_seconds=30, resource_control="equal_resource",
+        request_limit=8, wall_seconds=WALL_SECONDS, resource_control="equal_resource",
         modes=("single", "swarm", "current-batch"), scenarios=("csv_export", "serial_control"),
         repetitions=1, order_seed=14)
     values.update(overrides)
@@ -33,7 +37,9 @@ def factory(*, solve=True, false_success=False, first_request_barrier=None):
         def stream(self, **kwargs):
             if not self.stream_count:
                 if first_request_barrier is not None:
-                    first_request_barrier.wait(timeout=10)
+                    # The second writer's worktree is created (through owned Git
+                    # processes) after the first writer starts; allow for that.
+                    first_request_barrier.wait(timeout=120)
                 history = kwargs["conversation_history"]
                 prompt = next(row["content"] for row in history if "Your assigned write scope: " in str(row.get("content")))
                 roots = prompt.split("Your assigned write scope: ", 1)[1].split(". Implement only", 1)[0].split(", ")
@@ -64,11 +70,25 @@ def study(tmp_path_factory):
 
 
 def stopped(destination):
-    """Why a study stopped, compactly: each run's error type and state (a CI log cuts long reprs)."""
+    """Why a study stopped, compactly: a CI log cuts long reprs, so name each run's failure.
+
+    Per run: the harness error and its reason, the run state, whether the wall
+    deadline fired, how long the case took, and each worker's final state and error.
+    """
     interruption = destination / "study-interruption.json"
-    runs = {path.parent.name[:24]: {key: value for key, value in json.loads(path.read_text(encoding="utf-8")).items()
-                                    if key in ("error_type", "stop_errors", "runtime_state", "deadline_reached")}
-            for path in sorted(destination.glob("*/observations.json"))}
+    runs = {}
+    for path in sorted(destination.glob("*/observations.json")):
+        observed = json.loads(path.read_text(encoding="utf-8"))
+        row = {key: observed.get(key) for key in ("error_type", "reason", "stop_errors", "runtime_state", "deadline_reached")}
+        record = path.parent / "run.json"
+        if record.exists():
+            row["elapsed_seconds"] = round(json.loads(record.read_text(encoding="utf-8"))["timing"]["elapsed_seconds"], 1)
+        events = path.parent / "worker-events.json"
+        stops = json.loads(events.read_text(encoding="utf-8"))["events"] if events.exists() else []
+        row["workers"] = [(worker["state"], next((event.get("error") for event in stops if event.get("event") == "worker.stopped"
+                                                   and event.get("attempt_id") == worker["attempt_id"]), None))
+                          for worker in observed["workers"]]
+        runs[path.parent.name[:12]] = row
     return f"{interruption.read_text() if interruption.exists() else 'no interruption file'}; runs: {runs}"
 
 
@@ -215,7 +235,7 @@ def test_unresolved_named_check_receipt_halts_study_even_when_model_requests_are
 
     monkeypatch.setattr(SwarmIntegration, "run_check", lost_observation)
     make, created = factory()
-    declared = protocol(modes=("single",), scenarios=("serial_control",), repetitions=2, wall_seconds=60)
+    declared = protocol(modes=("single",), scenarios=("serial_control",), repetitions=2)
     root = tmp_path / "check-observation-loss"
     result = pilot.run_study(declared, root, endpoint=ENDPOINT, backend_factory=make)
     assert not result["complete_records"] and len(created) == 1 and len(result["runs"]) == 1
@@ -246,7 +266,7 @@ def test_wall_deadline_keeps_stop_intervention_and_interrupted_request(tmp_path)
     class Slow(StreamingBackend):
         def stream(self, **kwargs):
             entered.set()
-            for _ in range(400):  # outlasts the deadline below
+            for _ in range(2400):  # outlasts the deadline below; the deadline's Stop ends it
                 time.sleep(.05)
                 yield text_delta("Still working. ")
 
@@ -254,13 +274,13 @@ def test_wall_deadline_keeps_stop_intervention_and_interrupted_request(tmp_path)
         created.append(Slow(name=spec.backend_type, model=spec.model))
         return created[-1]
 
-    # The deadline also covers seeding the repository and the writer's worktree,
-    # which alone can take two seconds of git on a loaded Windows machine; the
-    # first request must be in flight before the deadline interrupts it.
-    declared = protocol(modes=("single",), scenarios=("serial_control",), wall_seconds=8, repetitions=2)
+    # The deadline also covers seeding the repository and creating the
+    # writer's worktree through owned Git processes, seconds on a loaded
+    # runner; the first request must be in flight before the deadline.
+    declared = protocol(modes=("single",), scenarios=("serial_control",), wall_seconds=20, repetitions=2)
     root = tmp_path / "deadline"
     result = pilot.run_study(declared, root, endpoint=ENDPOINT, backend_factory=make)
-    assert not result["complete_records"] and entered.is_set()
+    assert not result["complete_records"] and entered.is_set(), stopped(root)
     assert len(created) == 1 and len(result["invalid_or_missing"]) == 1
     assert (root / "study-interruption.json").exists()
     row = result["runs"][0]
@@ -268,7 +288,7 @@ def test_wall_deadline_keeps_stop_intervention_and_interrupted_request(tmp_path)
     assert row["usage"]["uncertain"]["requests"] == 1
     record = json.loads((root / row["run_id"] / "run.json").read_text())
     assert [item["kind"] for item in record["interventions"]] == ["enforced_deadline"]
-    assert record["timing"]["elapsed_seconds"] >= 8
+    assert record["timing"]["elapsed_seconds"] >= 20
 
 
 @pytest.mark.parametrize("change", ({"model": ""}, {"endpoint": "http://secret@localhost/"},
@@ -318,11 +338,11 @@ def managed_factory():
 def test_new_scenarios_use_real_managed_native_children_and_pinned_checks(tmp_path, resource_control):
     managed, processes, child_events = managed_factory()
     declared = protocol(modes=("single", "swarm"), scenarios=("independent_investigation", "interruption_recovery"),
-                        resource_control=resource_control, wall_seconds=60)
+                        resource_control=resource_control)
     root = tmp_path / "managed-study"
     result = pilot.run_study(declared, root, endpoint=ENDPOINT, process_factory=managed)
-    assert result["complete_records"], result
-    assert len(result["runs"]) == 4 and all(row["verified_completed"] for row in result["runs"]), child_events
+    assert result["complete_records"], stopped(root)
+    assert len(result["runs"]) == 4 and all(row["verified_completed"] for row in result["runs"]), stopped(root)
     assert len(processes) == 5 and all(process.pid and process.cleanup_confirmed and not process.alive for process in processes)
     for case in declared["schedule"]:
         directory = root / case["run_id"]

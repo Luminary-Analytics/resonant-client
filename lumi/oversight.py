@@ -96,6 +96,9 @@ logger = logging.getLogger(__name__)
 UPLOAD_PATH = "/api/v1/oversight/events"
 ACKNOWLEDGMENT_PATH = "/api/v1/oversight/acknowledgments"
 ACKNOWLEDGMENT_KIND = "lumi.oversight-acknowledgment/v1"
+# A managed computer sends the signed-in person's desktop sign-in with their
+# confirmation under this header, so Lumi Cloud can count it for them.
+ACCOUNT_TOKEN_HEADER = "Lumi-Account-Token"
 # What started a turn, on every record (the contract with Lumi Cloud): the
 # app's chat, a terminal (the terminal UI, or `lumi run` with someone at a
 # terminal), a chat (the chat gateway, tasks from chat), a scheduled task,
@@ -478,11 +481,21 @@ def status() -> dict:
             "notice_text": scope.notice("app") if scope.configured else "",
             "unattended": settings.unattended,
             "acknowledgment": _acknowledgment_status(scope),
+            # Whom confirming now would count for (the person signed in here, or this computer).
+            "confirms_as": _counts_for(scope, _cloud_account()) if scope.in_force else "",
             **(described(settings, scope.organization) if scope.configured else {}),
         }
     except Exception as exc:  # the page still shows the policy's error elsewhere
         logger.exception("Oversight status failed")
         info = {"configured": False, "active": False, "required": False, "error": str(exc)}
+    # A policy that can't be used isn't one that stopped asking for oversight (as offline mode, which it keeps
+    # on with no hosts, isn't off): Settings says so, never "off", with what waits here (_unusable_policy).
+    info["policy_unusable"] = _unusable_policy()
+    try:
+        info["acknowledgments_waiting"] = acknowledgments_waiting()
+    except sqlite3.Error:
+        logger.warning("Couldn't count the confirmations waiting", exc_info=True)
+        info["acknowledgments_waiting"] = 0
     info["queue"] = queue_status()
     info["flags"] = [{**flag, "rule_text": rule_text(flag.get("rule"))} for flag in recent_flags(50)]
     return info
@@ -800,10 +813,38 @@ def _acknowledgment_status(scope: Scope) -> dict | None:
     if not isinstance(shown, dict) or not shown.get("id") or not isinstance(shown.get("record"), dict):
         return None
     upload = acknowledgment_upload(str(shown["id"]))
+    person = shown["record"].get("person") if isinstance(shown["record"].get("person"), dict) else {}
     return {"id": shown["id"], "at": str(shown.get("shown_at") or ""), "surface": str(shown.get("surface") or ""),
             "notice": str(shown.get("notice") or ""), "fingerprint": str(shown.get("fingerprint") or ""),
             "notice_sha256": str(shown["record"].get("notice_sha256") or ""),
-            "current": _confirmed(shown, scope), "signed": bool(shown.get("signature")), "upload": upload}
+            "current": _confirmed(shown, scope), "signed": bool(shown.get("signature")), "upload": upload,
+            "counts_for": _counts_for(scope, person.get("account"), upload)}
+
+
+def _counts_for(scope: Scope, account: Any, upload: dict | None = None) -> str:
+    """Whom a confirmation counts for in Lumi Cloud, in words for Settings.
+
+    A person when Lumi Cloud can check it's them: this computer is theirs in
+    the organization (they joined it here), or a managed computer sent their
+    sign-in with it. Nobody signed in: the computer.
+    """
+    who = scope.organization or "your organization"
+    if not account:
+        return (f"It counts for this computer, not for a person: nobody was signed in to {who}'s Lumi Cloud "
+                "here. Sign in before confirming to confirm as yourself.")
+    if scope.device.get("how") != "managed":
+        owner = str(scope.device.get("user_id") or "")
+        if owner and owner != account:
+            return (f"Lumi Cloud keeps it as an unverified claim: this computer is another member's in {who}, so "
+                    "it can't count for you.")
+        return f"It counts for you: this computer is yours in {who}."
+    sign_in = (upload or {}).get("sign_in", "")
+    if sign_in == "sent":
+        return "It counts for you: Lumi sent your sign-in with it, so Lumi Cloud could check it's yours."
+    if sign_in == "missing":
+        return ("Lumi Cloud keeps it as an unverified claim: your sign-in wasn't here when it was sent. Signing "
+                "out and in again asks for the notice again, and that confirmation counts for you.")
+    return "Lumi sends your sign-in with it, so Lumi Cloud can check it's yours."
 
 
 # ── The chat gateway's chats ────────────────────────────────────────────────
@@ -1362,7 +1403,14 @@ def _database() -> sqlite3.Connection:
     # (Lumi Cloud said no) or not_sent (this computer left before it went).
     connection.execute("CREATE TABLE IF NOT EXISTS acknowledgments (id TEXT PRIMARY KEY, at TEXT NOT NULL, "
                        "body TEXT NOT NULL, state TEXT NOT NULL, cloud_id TEXT NOT NULL DEFAULT '', "
-                       "error TEXT NOT NULL DEFAULT '', updated TEXT NOT NULL DEFAULT '')")
+                       "error TEXT NOT NULL DEFAULT '', updated TEXT NOT NULL DEFAULT '', "
+                       "sign_in TEXT NOT NULL DEFAULT '')")
+    # sign_in: whether a managed computer sent the person's sign-in with it ("sent", or "missing").
+    if "sign_in" not in {row[1] for row in connection.execute("PRAGMA table_info(acknowledgments)")}:
+        try:
+            connection.execute("ALTER TABLE acknowledgments ADD COLUMN sign_in TEXT NOT NULL DEFAULT ''")
+        except sqlite3.OperationalError:  # another process added it first
+            pass
     return connection
 
 
@@ -1516,21 +1564,21 @@ def acknowledgment_upload(ack_id: str) -> dict:
         return {"state": "unknown"}
     try:
         with closing(_database()) as connection:
-            row = connection.execute("SELECT state, cloud_id, error, updated, body FROM acknowledgments WHERE id = ?",
-                                     (ack_id,)).fetchone()
+            row = connection.execute("SELECT state, cloud_id, error, updated, body, sign_in FROM acknowledgments "
+                                     "WHERE id = ?", (ack_id,)).fetchone()
     except sqlite3.Error:
         logger.warning("Couldn't read an oversight acknowledgment", exc_info=True)
         return {"state": "unknown"}
     if row is None:
         return {"state": "unknown"}
-    state, cloud_id, error, updated, body = row
+    state, cloud_id, error, updated, body, sign_in = row
     try:
         signed = bool(json.loads(body).get("signature"))
     except (ValueError, AttributeError):
         signed = False
     # A claim in progress is still waiting, as far as the person can tell.
     return {"state": "pending" if state == "sending" else state, "id": cloud_id, "error": error, "at": updated,
-            "signed": signed}
+            "signed": signed, "sign_in": sign_in}
 
 
 def acknowledgments_waiting() -> int:
@@ -1565,14 +1613,16 @@ def _claim_acknowledgments(limit: int) -> list[tuple[str, str]]:
 
 
 def _settle_acknowledgment(ack_id: str, state: str, *, error: str = "", cloud_id: str = "",
-                           body: str | None = None) -> None:
+                           body: str | None = None, sign_in: str = "") -> None:
     with closing(_database()) as connection:
         if body is None:
-            connection.execute("UPDATE acknowledgments SET state = ?, error = ?, cloud_id = ?, updated = ? "
-                               "WHERE id = ?", (state, str(error)[:300], str(cloud_id)[:200], _now(), ack_id))
+            connection.execute("UPDATE acknowledgments SET state = ?, error = ?, cloud_id = ?, updated = ?, "
+                               "sign_in = ? WHERE id = ?",
+                               (state, str(error)[:300], str(cloud_id)[:200], _now(), sign_in, ack_id))
         else:
-            connection.execute("UPDATE acknowledgments SET state = ?, error = ?, cloud_id = ?, updated = ?, body = ? "
-                               "WHERE id = ?", (state, str(error)[:300], str(cloud_id)[:200], _now(), body, ack_id))
+            connection.execute("UPDATE acknowledgments SET state = ?, error = ?, cloud_id = ?, updated = ?, body = ?, "
+                               "sign_in = ? WHERE id = ?",
+                               (state, str(error)[:300], str(cloud_id)[:200], _now(), body, sign_in, ack_id))
 
 
 def _upload_acknowledgments(client: Any) -> str:
@@ -1585,6 +1635,8 @@ def _upload_acknowledgments(client: Any) -> str:
     from . import audit, policy
     from .cloud import CloudError
 
+    if _unusable_policy() and acknowledgments_waiting():
+        return "retry"  # kept, unsent, until the policy can be used
     outcome = "idle"
     for ack_id, raw in _claim_acknowledgments(ACKNOWLEDGMENTS_PER_STEP):
         try:
@@ -1602,8 +1654,25 @@ def _upload_acknowledgments(client: Any) -> str:
             # Every confirmation is signed when it's made (acknowledge); an unsigned one isn't one.
             _settle_acknowledgment(ack_id, "not_sent", error="It wasn't signed with this computer's key.")
             continue
+        headers, sign_in = {}, ""
+        account = (record.get("person") or {}).get("account") if isinstance(record.get("person"), dict) else None
+        if account and record.get("surface") != "gateway" and device.get("how") == "managed":
+            # A managed computer belongs to nobody in Lumi Cloud: the person's own
+            # sign-in shows the confirmation is theirs. Only theirs, while they're
+            # still the one signed in here.
+            sign_in = "missing"
+            if _cloud_account() == account and callable(getattr(client, "account_token", None)):
+                try:
+                    headers = {ACCOUNT_TOKEN_HEADER: str(client.account_token())}
+                    sign_in = "sent"
+                except CloudError as exc:
+                    if exc.code != "signed_out":
+                        _settle_acknowledgment(ack_id, "pending", error=str(exc))
+                        outcome = "retry"
+                        continue
         try:
-            answer = client.device_call("POST", ACKNOWLEDGMENT_PATH, json={"record": record, "signature": signature})
+            answer = client.device_call("POST", ACKNOWLEDGMENT_PATH, json={"record": record, "signature": signature},
+                                        **({"headers": headers} if headers else {}))
         except CloudError as exc:
             status = int(getattr(exc, "status", 0) or 0)
             # Refusals sending again won't change: shown in Settings, never resent.
@@ -1617,7 +1686,7 @@ def _upload_acknowledgments(client: Any) -> str:
                 _count(last_error=str(exc)[:300])
             outcome = "retry"
             continue
-        _settle_acknowledgment(ack_id, "sent", cloud_id=str((answer or {}).get("id") or ""))
+        _settle_acknowledgment(ack_id, "sent", cloud_id=str((answer or {}).get("id") or ""), sign_in=sign_in)
     return outcome
 
 
@@ -1732,6 +1801,15 @@ def _send(client: Any, batch: list[dict], version: Any) -> None:
     _remove({record["id"] for record in batch}, outcome="uploaded")
 
 
+def _unusable_policy() -> str:
+    """Why the policy in force can't be used, or ''. Not a policy that stopped asking for oversight:
+    queued records and confirmations wait, unsent and kept, until it can be (offline mode, which such a
+    policy keeps on with no hosts, refuses Lumi Cloud meanwhile; lumi/offline.py)."""
+    from . import policy
+
+    return str(policy.load().error or "")
+
+
 def _upload_records(client: Any, max_batches: int) -> str:
     from . import policy
     from .cloud import CloudError
@@ -1739,6 +1817,11 @@ def _upload_records(client: Any, max_batches: int) -> str:
     for _ in range(max_batches):
         if not queued_records(1):
             return "idle"
+        waiting = _unusable_policy()
+        if waiting:
+            with _lock, exclusive(_root() / ".lock"):
+                _count(last_error=f"Waiting until the organization's policy can be used: {waiting}"[:300])
+            return "retry"
         scope = Scope()
         if not scope.configured:
             discard("Your organization's policy no longer asks for oversight.")
@@ -1829,11 +1912,23 @@ _uploader: _Uploader | None = None
 
 
 def start_uploader(client: Any) -> None:
-    """Send queued records and confirmations to Lumi Cloud from a background thread (once per process)."""
+    """Send queued records and confirmations to Lumi Cloud from a background thread (once per process).
+
+    When offline mode changes what Lumi can reach (turned off, or Lumi Cloud's
+    host allowed), what waits goes at once, not after the wait that follows a
+    refusal.
+    """
     global _uploader
+    from . import offline
+
     with _lock:
         if _uploader is None:
             _uploader = _Uploader(client)
+    offline.add_listener(_reach_changed)
+
+
+def _reach_changed(config: Any) -> None:
+    wake(urgent=True)
 
 
 def wake(*, urgent: bool = False) -> None:

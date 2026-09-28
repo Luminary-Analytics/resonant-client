@@ -1,6 +1,7 @@
 """Real Git and owned subprocess fixtures for isolated candidate integration."""
 
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from dataclasses import replace
 import json
 import os
@@ -8,6 +9,7 @@ from pathlib import Path
 import sqlite3
 import subprocess
 import sys
+import threading
 import time
 
 import psutil
@@ -427,17 +429,21 @@ def test_check_timeout_stops_owned_process_and_retains_failed_candidate(setup):
     manifest = finish(setup, context, lease)
     marker = integration.root / "must-not-appear"
     pid_file = integration.root / "child.pid"
-    child_code = f"import time; from pathlib import Path; time.sleep(10); Path({str(marker)!r}).write_text('escaped')"
+    child_code = f"import time; from pathlib import Path; time.sleep(600); Path({str(marker)!r}).write_text('escaped')"
     code = ("import subprocess, sys, time; from pathlib import Path; "
             f"child=subprocess.Popen([sys.executable, '-c', {child_code!r}]); "
-            f"Path({str(pid_file)!r}).write_text(str(child.pid)); time.sleep(20)")
+            f"Path({str(pid_file)!r}).write_text(str(child.pid)); time.sleep(600)")
+    # The timeout counts from before the owned gate starts, so it must cover
+    # the gate, the check's own start and its child's (a 1 s limit expired
+    # first on a loaded CI runner and left no child to check).
     result = integration.prepare_candidate(authority, writer_ids=(manifest["id"],), required_checks=(
-        CheckSpec("bounded", (sys.executable, "-c", code), 1),))
+        CheckSpec("bounded", (sys.executable, "-c", code), 10),))
     receipt = integration.run_check(authority, result["id"], "bounded")
     assert receipt["state"] == "timed_out"
     assert receipt["job_id"]
+    assert pid_file.exists(), f"The check had not started its child when it timed out: {receipt['output']!r}"
     child_pid = int(pid_file.read_text())
-    deadline = time.monotonic() + 3
+    deadline = time.monotonic() + 30
     while psutil.pid_exists(child_pid) and time.monotonic() < deadline:
         if psutil.Process(child_pid).status() == psutil.STATUS_ZOMBIE:
             break
@@ -612,15 +618,136 @@ with integration._repository_lock():
             process.stderr.close()
 
 
+def test_writer_finalization_waits_out_a_longer_repository_operation(setup):
+    # A check holds the repository while it runs, and a writer's finalization
+    # runs several owned Git processes. On a loaded runner either can take more
+    # than 5 s, which is all a second operation used to wait before failing
+    # with "Another integration operation owns this repository".
+    store, supervisor, authority, integration, project, base = setup
+    context, lease = writers(setup, ("a",))[0]
+    (Path(lease["path"]) / "a.txt").write_text("new-a\n")
+    held, release = threading.Event(), threading.Event()
+
+    def hold():
+        with integration._repository_lock():
+            held.set()
+            release.wait(60)
+    holder = threading.Thread(target=hold)
+    holder.start()
+    try:
+        assert held.wait(60)
+        releaser = threading.Timer(6, release.set)
+        releaser.start()
+        started = time.monotonic()
+        manifest = integration.finalize_writer(authority, context, lease["id"])
+        assert manifest["state"] == "ready" and release.is_set()
+        assert time.monotonic() - started >= 5
+    finally:
+        release.set()
+        holder.join(timeout=60)
+
+
+def test_stop_ends_a_wait_for_the_repository_before_its_holder_finishes(setup):
+    store, supervisor, authority, integration, project, base = setup
+    context, lease = writers(setup, ("a",))[0]
+    held, release = threading.Event(), threading.Event()
+
+    def hold():
+        with integration._repository_lock():
+            held.set()
+            release.wait(120)
+    holder = threading.Thread(target=hold)
+    holder.start()
+    try:
+        assert held.wait(60)
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            waiting = pool.submit(integration.finalize_writer, authority, context, lease["id"])
+            assert command(supervisor, authority, "stop").state == "stopping"
+            with pytest.raises(AdmissionClosed):
+                waiting.result(timeout=60)
+        assert not release.is_set()  # The Stop ended the wait, not the holder.
+    finally:
+        release.set()
+        holder.join(timeout=120)
+
+
+@contextmanager
+def repository_held(integration, seconds=120):
+    """Another step holds the repository until the block ends (or ``seconds`` pass)."""
+    held, release = threading.Event(), threading.Event()
+
+    def hold():
+        with integration._repository_lock():
+            held.set()
+            release.wait(seconds)
+    holder = threading.Thread(target=hold)
+    holder.start()
+    try:
+        assert held.wait(60)
+        yield release
+    finally:
+        release.set()
+        holder.join(timeout=seconds)
+
+
+def waiting_call(integration, call, *args, **kwargs):
+    """Run a call on its own thread and return once it waits for the repository."""
+    outcome = []
+
+    def run():
+        try:
+            outcome.append(call(*args, **kwargs))
+        except BaseException as exc:
+            outcome.append(exc)
+    thread = threading.Thread(target=run)
+    thread.start()
+    deadline = time.monotonic() + 60
+    while not integration.waiting_for_repository(thread):
+        assert thread.is_alive() and time.monotonic() < deadline, outcome
+        time.sleep(.01)
+    return thread, outcome
+
+
+def test_an_approval_that_expires_while_apply_waits_for_the_repository_is_refused(setup):
+    # An approval lasts at most 300 s, and apply can wait far longer for the
+    # repository. Its expiry is checked again once apply holds it.
+    store, supervisor, authority, integration, project, base = setup
+    result = candidate(setup)
+    integration.run_check(authority, result["id"], "combined")
+    approval = replace(approved(setup, result), expires_at=1010)  # the run's lease lasts until 1030
+    with repository_held(integration) as release:
+        thread, outcome = waiting_call(integration, integration.apply, authority, result["id"], approval=approval)
+        store.clock = lambda: 1011
+        release.set()
+        thread.join(timeout=120)
+    assert outcome and isinstance(outcome[0], Conflict) and "expired" in str(outcome[0]), outcome
+    assert git(project, "rev-parse", "HEAD") == base
+    assert store.snapshot(authority.scope, authority.run_id)["integration_applications"] == []
+
+
+def test_apply_waits_for_the_repository_no_longer_than_its_approval_lasts(setup):
+    store, supervisor, authority, integration, project, base = setup
+    result = candidate(setup)
+    integration.run_check(authority, result["id"], "combined")
+    approval = replace(approved(setup, result), expires_at=1002)  # 2 s left on the fixture's clock
+    with repository_held(integration):
+        started = time.monotonic()
+        with pytest.raises(Conflict, match="expired while another step held this repository"):
+            integration.apply(authority, result["id"], approval=approval)
+        assert time.monotonic() - started < 30
+    assert git(project, "rev-parse", "HEAD") == base
+
+
 def test_stop_waits_for_a_live_check_process_to_be_observed_stopped(setup):
     store, supervisor, authority, integration, project, base = setup
     context, lease = writers(setup, ("a",))[0]
     manifest = finish(setup, context, lease)
+    # The check outlives every wait here: only the Stop can end it in time.
     result = integration.prepare_candidate(authority, writer_ids=(manifest["id"],), required_checks=(
-        CheckSpec("long", (sys.executable, "-c", "import time; time.sleep(20)"), 30),))
+        CheckSpec("long", (sys.executable, "-c", "import time; time.sleep(600)"), 900),))
     with ThreadPoolExecutor(max_workers=1) as pool:
         future = pool.submit(integration.run_check, authority, result["id"], "long")
-        deadline = time.monotonic() + 10
+        deadline = time.monotonic() + 60
         while time.monotonic() < deadline:
             checks = store.snapshot(authority.scope, authority.run_id)["integration_checks"]
             if checks and checks[0]["job_id"]:
@@ -630,7 +757,7 @@ def test_stop_waits_for_a_live_check_process_to_be_observed_stopped(setup):
             pytest.fail("Check process never acquired its owned job handle")
         assert command(supervisor, authority, "stop").state == "stopping"
         with pytest.raises(AdmissionClosed):
-            future.result(timeout=10)
+            future.result(timeout=60)
     snapshot = store.snapshot(authority.scope, authority.run_id)
     assert snapshot["integration_checks"][0]["state"] == "cancelled"
     assert snapshot["run"]["state"] == "cancelled"
@@ -640,11 +767,13 @@ def test_expired_owner_cannot_report_check_stop_as_completed_run(setup):
     store, supervisor, authority, integration, project, base = setup
     context, lease = writers(setup, ("a",))[0]
     manifest = finish(setup, context, lease)
+    # The check outlives every wait here: only the lost lease can end it in
+    # time (a check that simply finished would also meet LeaseExpired).
     result = integration.prepare_candidate(authority, writer_ids=(manifest["id"],), required_checks=(
-        CheckSpec("long", (sys.executable, "-c", "import time; time.sleep(20)"), 30),))
+        CheckSpec("long", (sys.executable, "-c", "import time; time.sleep(600)"), 900),))
     with ThreadPoolExecutor(max_workers=1) as pool:
         future = pool.submit(integration.run_check, authority, result["id"], "long")
-        deadline = time.monotonic() + 10
+        deadline = time.monotonic() + 60
         while time.monotonic() < deadline:
             checks = store.snapshot(authority.scope, authority.run_id)["integration_checks"]
             if checks and checks[0]["job_id"]:
@@ -654,10 +783,58 @@ def test_expired_owner_cannot_report_check_stop_as_completed_run(setup):
             pytest.fail("Check process never started")
         store.clock = lambda: 1031
         with pytest.raises(LeaseExpired):
-            future.result(timeout=10)
+            future.result(timeout=60)
     snapshot = store.snapshot(authority.scope, authority.run_id)
     assert snapshot["integration_checks"][0]["state"] == "uncertain"
     assert snapshot["run"]["state"] != "cancelled"
+
+
+def test_stop_is_reported_when_its_control_frame_finds_the_check_gate_already_ended(setup, monkeypatch):
+    # On a loaded runner the gate's input thread can run only after the host has
+    # already ended the gate (0.1 s after Stop). Windows fails that write, and
+    # the flush when the pipe closes, with EINVAL (errno 22); that OSError used
+    # to escape as the check's outcome instead of the Stop.
+    from lumi.engine.swarming.process_worker import ManagedWorkerProcess
+    store, supervisor, authority, integration, project, base = setup
+    context, lease = writers(setup, ("a",))[0]
+    manifest = finish(setup, context, lease)
+    started = integration.root / "check-started"
+    result = integration.prepare_candidate(authority, writer_ids=(manifest["id"],), required_checks=(
+        CheckSpec("long", (sys.executable, "-c", f"import time; from pathlib import Path; "
+                           f"Path({str(started)!r}).write_text('running'); time.sleep(600)"), 900),))
+    spawn = ManagedWorkerProcess._spawn
+
+    def spawn_with_late_input(process):
+        spawn(process)
+        pipe, frames = process.process.stdin, []
+
+        class LateInput:
+            def write(self, data):
+                frames.append(data)
+                if len(frames) > 1:  # init goes through; later frames arrive after the gate ended
+                    process.process.wait(timeout=120)
+                return pipe.write(data)
+
+            def flush(self):
+                return pipe.flush()
+
+            def close(self):
+                return pipe.close()
+        process.process.stdin = LateInput()
+    monkeypatch.setattr(ManagedWorkerProcess, "_spawn", spawn_with_late_input)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(integration.run_check, authority, result["id"], "long")
+        deadline = time.monotonic() + 60
+        while not started.exists():  # the gate has its input, so later frames reach LateInput
+            assert time.monotonic() < deadline and not future.done(), "The check never started"
+            time.sleep(0.02)
+        assert command(supervisor, authority, "stop").state == "stopping"
+        with pytest.raises(AdmissionClosed):
+            future.result(timeout=60)
+    snapshot = store.snapshot(authority.scope, authority.run_id)
+    assert snapshot["integration_checks"][0]["state"] == "cancelled"
+    assert snapshot["integration_processes"][-1]["state"] == "stopped"
+    assert snapshot["run"]["state"] == "cancelled"
 
 
 def test_ignored_user_file_is_preserved_when_candidate_adds_same_path(setup):

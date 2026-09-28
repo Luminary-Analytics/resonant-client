@@ -9,6 +9,7 @@ import base64
 import hashlib
 import io
 import json
+import os
 import re
 import sqlite3
 import sys
@@ -62,10 +63,11 @@ def _parse(section, **extra):
     return policy.parse({**BASE, **extra, "oversight": section}, source="test")
 
 
-def _device(how="joined", device_id="dev-1", organization_id="org_acme", account=None):
+def _device(how="joined", device_id="dev-1", organization_id="org_acme", account=None, owner=None):
     home = state_home()
     home.mkdir(parents=True, exist_ok=True)
-    cloud = {"device": {"id": device_id, "how": how, "organization_id": organization_id, "organization_name": "Acme"}}
+    cloud = {"device": {"id": device_id, "how": how, "organization_id": organization_id, "organization_name": "Acme",
+                        "user_id": owner or ""}}
     if account:
         cloud["account"] = {"user_id": account, "email": "ada@acme.example"}
     # The enrolled device key (LUMI_KEYCHAIN=off keeps it in settings.json): confirmations must verify with it.
@@ -700,20 +702,28 @@ class TestEveryPath:
 class _AckClient:
     """Stands in for CloudClient: signs as the device, answers acknowledgments and events."""
 
-    def __init__(self, *failures, key=DEVICE_KEY):
+    def __init__(self, *failures, key=DEVICE_KEY, account_token=None):
         self.failures = list(failures)
         self.acknowledgments: list[dict] = []
+        self.headers: list[dict] = []  # sent with each acknowledgment
         self.events: list[dict] = []
         self.key = key
+        self._account_token = account_token  # the signed-in person's desktop sign-in, or the CloudError it raises
 
     def sign_as_device(self, data: bytes) -> str:
         return base64.urlsafe_b64encode(self.key.sign(data)).decode("ascii")
+
+    def account_token(self) -> str:
+        if isinstance(self._account_token, Exception):
+            raise self._account_token
+        return self._account_token or ""
 
     def device_call(self, method, path, **kwargs):
         assert method == "POST"
         if path == oversight.ACKNOWLEDGMENT_PATH:
             if self.failures:
                 raise self.failures.pop(0)
+            self.headers.append(dict(kwargs.get("headers") or {}))
             self.acknowledgments.append(kwargs["json"])
             return {"id": f"ack_{len(self.acknowledgments)}"}
         assert path == oversight.UPLOAD_PATH
@@ -799,6 +809,57 @@ class TestAcknowledgment:
         assert not oversight.acknowledge(fingerprint, "app", signer=_sign)
         assert oversight.refusal() and oversight.acknowledgments_waiting() == 0
         assert not (state_home() / "oversight" / "notice.json").exists()
+
+    def test_whom_a_confirmation_counts_for(self, org):
+        from lumi.cloud import CloudError
+
+        org(EVERYTHING)
+        # Nobody signed in to Lumi Cloud here: it counts for the computer, and Settings says so first.
+        assert "counts for this computer, not for a person" in oversight.status()["confirms_as"]
+        _shown()
+        client = _AckClient(account_token="tok-ada")
+        assert oversight.upload_pending(client) == "idle" and client.headers == [{}]  # no account, no sign-in
+        assert oversight.status()["acknowledgment"]["counts_for"].startswith("It counts for this computer")
+        # Someone who joined this computer to the organization themselves: it's theirs.
+        oversight.forget_notice("test")
+        _device(account="usr_ada", owner="usr_ada")
+        assert oversight.status()["confirms_as"] == "It counts for you: this computer is yours in Acme."
+        _shown()
+        client = _AckClient()
+        assert oversight.upload_pending(client) == "idle"
+        assert client.headers == [{}]  # a joined computer sends no sign-in: Lumi Cloud knows whose it is
+        assert oversight.status()["acknowledgment"]["counts_for"] == "It counts for you: this computer is yours in Acme."
+        # Another member's computer: only a claim.
+        oversight.forget_notice("test")
+        _device(account="usr_ada", owner="usr_bob")
+        assert "unverified claim" in oversight.status()["confirms_as"]
+
+        # A managed computer belongs to nobody: the person's own sign-in goes with their confirmation.
+        oversight.forget_notice("test")
+        org(EVERYTHING, extra={"cloud": {"url": "https://cloud.example.test"}})
+        _device(how="managed", account="usr_ada")
+        assert oversight.status()["confirms_as"] == "Lumi sends your sign-in with it, so Lumi Cloud can check it's yours."
+        _shown()
+        client = _AckClient(account_token="tok-ada")
+        assert oversight.upload_pending(client) == "idle"
+        assert client.headers == [{oversight.ACCOUNT_TOKEN_HEADER: "tok-ada"}]
+        assert oversight.status()["acknowledgment"]["counts_for"].startswith("It counts for you: Lumi sent your sign-in")
+        # Signed out before it went: sent without it, a claim Lumi Cloud can't count.
+        oversight.forget_notice("test")
+        _device(how="managed", account="usr_ada", device_id="dev-2")
+        _shown()
+        client = _AckClient(account_token=CloudError("Sign in to Lumi Cloud first.", code="signed_out"))
+        assert oversight.upload_pending(client) == "idle"
+        assert client.headers == [{}] and "unverified claim" in oversight.status()["acknowledgment"]["counts_for"]
+        # Lumi Cloud couldn't refresh the sign-in just now: it waits and goes with it later.
+        oversight.forget_notice("test")
+        _device(how="managed", account="usr_ada", device_id="dev-3")
+        _shown()
+        client = _AckClient(account_token=CloudError("Lumi Cloud is unavailable.", code="unavailable", status=503))
+        assert oversight.upload_pending(client) == "retry" and client.headers == []
+        client = _AckClient(account_token="tok-ada")
+        assert oversight.upload_pending(client) == "idle"
+        assert client.headers == [{oversight.ACCOUNT_TOKEN_HEADER: "tok-ada"}]
 
     def test_a_confirmation_from_another_enrollment_isnt_sent(self, org):
         org(EVERYTHING)
@@ -1506,6 +1567,9 @@ class TestUnattended:
         assert headless._terminal_attached(io.StringIO(), _Terminal())
         monkeypatch.setattr(headless, "_controlling_terminal", lambda: True)
         assert headless._terminal_attached(io.StringIO(), io.StringIO())
+        # The null device isn't a terminal, though Windows' isatty says so.
+        with open(os.devnull, encoding="utf-8") as null:
+            assert not headless._is_terminal(null)
         # POSIX: whether /dev/tty opens.
         opened, closed = [], []
         assert headless._posix_tty(opener=lambda path, flags: opened.append(path) or 99, closer=closed.append)
@@ -1595,6 +1659,98 @@ def _later(monkeypatch, seconds):
             return datetime.now(tz) + timedelta(seconds=seconds)
 
     monkeypatch.setattr(oversight, "datetime", Later)
+
+
+class TestOfflineMode:
+    """Offline mode refuses Lumi Cloud: confirmations and records wait, kept, and Settings says why."""
+
+    def test_confirmations_and_records_wait_while_lumi_cloud_is_out_of_reach(self, org, tmp_path):
+        from lumi import offline
+        from lumi.cloud import CloudError
+
+        org(EVERYTHING)
+        _shown()
+        list(_session(tmp_path, StreamingBackend(events=[text_delta("Hi."), done()])).run("hello"))
+        offline.set_for_tests(enabled=True)
+        refused = CloudError("Offline mode: Lumi Cloud needs cloud.example.test; allow it or turn offline mode off.",
+                             code="offline")
+        client = _AckClient(refused)
+
+        def records_refused(method, path, **kwargs):
+            raise refused
+
+        client_device_call = client.device_call
+        client.device_call = lambda method, path, **kwargs: (records_refused(method, path) if
+                                                             path == oversight.UPLOAD_PATH else
+                                                             client_device_call(method, path, **kwargs))
+        assert oversight.upload_pending(client) == "retry"
+        status = oversight.status()
+        upload = status["acknowledgment"]["upload"]
+        assert upload["state"] == "pending" and "Offline mode" in upload["error"]
+        assert status["queue"]["pending"] == 1 and status["queue"]["discarded"] == 0
+        assert "Offline mode" in status["queue"]["last_error"]
+        # Online again: both go.
+        offline.reset_for_tests()
+        client = _AckClient()
+        assert oversight.upload_pending(client) == "idle"
+        assert len(client.acknowledgments) == 1 and len(client.events) == 1
+        assert oversight.status()["acknowledgment"]["upload"]["state"] == "sent"
+
+    def test_a_policy_that_cant_be_used_keeps_the_queue_and_sends_nothing(self, org, tmp_path, monkeypatch):
+        org(EVERYTHING)
+        _shown()
+        list(_session(tmp_path, StreamingBackend(events=[text_delta("Hi."), done()])).run("hello"))
+        good = policy.load
+        broken = policy.PolicyState(error="The machine policy isn't valid JSON.")
+        monkeypatch.setattr(policy, "load", lambda force=False: broken)
+        client = _AckClient()
+        # Not a policy that stopped asking: nothing is discarded, and nothing goes.
+        assert oversight.upload_pending(client) == "retry"
+        assert client.acknowledgments == [] and client.events == []
+        assert oversight.queue_status()["pending"] == 1 and oversight.queue_status()["discarded"] == 0
+        assert "can be used" in oversight.queue_status()["last_error"]
+        assert oversight.acknowledgments_waiting() == 1
+        # Settings says so, never "off": the policy's error, and what waits here.
+        status = oversight.status()
+        assert status["configured"] is False and status["policy_unusable"] == broken.error
+        assert status["acknowledgments_waiting"] == 1 and status["queue"]["pending"] == 1
+        monkeypatch.setattr(policy, "load", good)
+        assert oversight.upload_pending(client) == "idle"
+        assert len(client.acknowledgments) == 1 and len(client.events) == 1
+
+    def test_a_change_in_what_lumi_can_reach_sends_what_waits_at_once(self, monkeypatch):
+        from lumi import offline
+
+        woken = []
+
+        class Uploader:
+            def __init__(self, client):
+                pass
+
+            def wake(self, *, urgent=False):
+                woken.append(urgent)
+
+        monkeypatch.setattr(offline, "_listeners", list(offline._listeners))
+        monkeypatch.setattr(oversight, "_uploader", None)
+        monkeypatch.setattr(oversight, "_Uploader", Uploader)
+        oversight.start_uploader(object())
+        offline.set_for_tests(enabled=True)
+        offline.set_for_tests(enabled=True, allowed_hosts=("cloud.example.test",))
+        offline.reset_for_tests()
+        # Each change cuts the wait that follows a refusal, even while sending backs off.
+        assert woken == [True, True, True]
+
+    def test_an_extension_check_under_offline_mode_asks_nothing(self, org, tmp_path):
+        from lumi import offline
+        from lumi.extension_check import check
+        from tests.test_provider_extensions import _template
+
+        pack = _template(tmp_path / "acme")
+        org(EVERYTHING)
+        _shown()
+        offline.set_for_tests(enabled=True)
+        [note] = [text for kind, text in check(pack) if "answered" in text or "wasn't asked" in text]
+        assert "wasn't asked to answer: Offline mode: Acme models runs as a process from a capability pack" in note
 
 
 class TestSending:
@@ -1941,6 +2097,52 @@ def test_joined_organization_end_to_end(monkeypatch, tmp_path):
     assert not oversight.status()["configured"]
     # Joining again, even the same organization, needs the notice confirmed again.
     assert not (state_home() / "oversight" / "notice.json").exists()
+
+
+def test_whom_lumi_cloud_counts_a_confirmation_for(monkeypatch, tmp_path):
+    """A personal computer's confirmation counts for its member; a managed computer's counts for the person whose
+    sign-in went with it, and for the computer when nobody was signed in."""
+    from lumi import cloud as lumi_cloud
+    from tests.test_cloud import URL, _sign_in
+
+    # A member's own computer, joined in the app.
+    fake, client = _cloud(monkeypatch, tmp_path, {"version": 1, "activity": True})
+    client.enroll("org_acme")
+    _confirm_with(client)
+    assert oversight.upload_pending(client) == "idle"
+    assert [a["attribution"] for a in fake.acknowledgments] == ["person"]
+    assert oversight.status()["acknowledgment"]["counts_for"] == "It counts for you: this computer is yours in Acme."
+    client.unenroll()
+
+    # A managed computer: its machine policy enrolls it with a token, so it belongs to nobody.
+    bootstrap = tmp_path / "machine-policy.json"
+    bootstrap.write_text(json.dumps({
+        "schema": "lumi.policy/v1", "organization": "Acme",
+        "cloud": {"url": URL, "organization_id": "org_acme", "enrollment_token": fake.enrollment_token},
+        "trusted_keys": {fake.key_id: fake.public}}), encoding="utf-8")
+    monkeypatch.setattr(policy, "machine_policy_file", lambda: bootstrap)
+    policy.load(force=True)
+    client.sign_out()
+    client.background_step()  # enrolls and applies the organization's policy
+    assert client.device()["how"] == "managed" and oversight.status()["required"]
+    assert "counts for this computer, not for a person" in oversight.status()["confirms_as"]
+    _confirm_with(client)
+    assert oversight.upload_pending(client) == "idle"
+    assert fake.acknowledgments[-1]["attribution"] == "none"  # nobody signed in: the computer's
+    assert oversight.status()["acknowledgment"]["counts_for"].startswith("It counts for this computer")
+
+    # Signed in, a new notice: the person's own sign-in goes with their confirmation.
+    _sign_in(client, fake)
+    fake.publish({"oversight": {"version": 1, "activity": True, "messages": "redacted"}})
+    client.check_in()
+    assert oversight.status()["required"]
+    assert oversight.status()["confirms_as"].startswith("Lumi sends your sign-in with it")
+    _confirm_with(client)
+    assert oversight.upload_pending(client) == "idle"
+    assert fake.acknowledgments[-1]["attribution"] == "signed_in"
+    assert fake.acknowledgments[-1]["record"]["person"]["account"] == "usr_1"
+    assert oversight.status()["acknowledgment"]["counts_for"].startswith("It counts for you: Lumi sent your sign-in")
+    assert isinstance(client, lumi_cloud.CloudClient)
 
 
 def test_lumi_cloud_refuses_a_notice_it_didnt_produce_or_a_bad_signature(monkeypatch, tmp_path):

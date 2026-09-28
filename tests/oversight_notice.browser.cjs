@@ -1,7 +1,8 @@
 /* Organization oversight in the source app, through the real WebSocket: the locked
  * message box, a script's click and a capability pack's panel that can't confirm
  * the notice or send, the notice's keyboard path, the signed confirmation that
- * unlocks it, and the notice at 375 px in both themes. Inference is scripted;
+ * unlocks it, the notice at 375 px in both themes, a confirmation waiting under
+ * offline mode, and a policy that can't be used. Inference is scripted;
  * nothing leaves the loopback (tests/fixtures/oversight_ui_server.py).
  * node tests/oversight_notice.browser.cjs [absolute-path-to-playwright-module]
  * Optional OVERSIGHT_PYTHON selects the Python that runs the fixture.
@@ -237,6 +238,53 @@ test('the oversight notice locks the message box until its button confirms it', 
         }
         await page.locator('#oversight-notice-confirm').click();
         await page.waitForFunction(() => !document.getElementById('user-input').disabled);
+
+        // Offline mode, turned on with its own switch, keeps Lumi Cloud out of reach: a confirmation waits,
+        // kept, and Settings says why. The fixture starts the app's uploader only now.
+        await page.setViewportSize({width: 1180, height: 860});
+        await fetch(info.url + '/__fixture__/forget', {method: 'POST'});
+        await page.goto(info.url + '/');
+        await page.waitForFunction(() => window.app?.oversightStatus?.required === true);
+        await page.keyboard.press('Control+Comma');
+        await page.locator('#settings-nav-offline').click();
+        await page.locator('label.settings-toggle', {has: page.locator('input[data-section="offline"][data-key="enabled"]')}).click();
+        for (let i = 0; i < 50 && !(await evidence(info)).offline; i++) await page.waitForTimeout(100);
+        assert.equal((await evidence(info)).offline, true, 'the switch turned offline mode on');
+        await page.locator('#settings-back').click();
+        await page.locator('#oversight-notice-confirm').click();
+        await page.waitForFunction(() => !document.getElementById('user-input').disabled);
+        assert.equal((await (await fetch(info.url + '/__fixture__/upload', {method: 'POST'})).json()).started, true);
+        let waiting;
+        for (let i = 0; i < 100; i++) {
+            waiting = await evidence(info);
+            if (waiting.upload.error) break;
+            await page.waitForTimeout(100);
+        }
+        assert.equal(waiting.upload.state, 'pending', 'kept to send later, not failed');
+        assert.match(waiting.upload.error, /^Offline mode: Lumi Cloud needs cloud\.example\.test/);
+        await page.keyboard.press('Control+Comma');
+        await page.locator('#settings-nav-privacy').click();
+        const mine = page.locator('#org-oversight-confirmation', {hasText: 'Offline mode'});
+        await mine.waitFor();
+        record.offlineConfirmation = (await mine.innerText()).split(/\s+/).join(' ');
+        assert.match(record.offlineConfirmation, /It’s waiting to be sent to Lumi Cloud\. Offline mode: Lumi Cloud needs cloud\.example\.test/);
+        await mine.evaluate(node => node.scrollIntoView({block: 'center'}));
+        await page.screenshot({path: path.join(output, 'offline-waiting.png')});
+
+        // A policy that can't be used isn't one that stopped asking: never "Off", and what waits is kept.
+        // (The page reloads, as the app re-sends Settings when the policy changes.)
+        await fetch(info.url + '/__fixture__/unusable', {method: 'POST'});
+        await page.goto(info.url + '/');
+        await page.waitForFunction(() => window.app?.ws?.readyState === 1);
+        await page.keyboard.press('Control+Comma');
+        await page.locator('#settings-nav-privacy').click();
+        await page.locator('.editor-error[role="alert"]', {hasText: 'The fixture machine policy is not valid JSON. Lumi won’t send model requests until it’s fixed.'}).waitFor();
+        const unusable = page.locator('#org-oversight-start', {hasText: 'can’t be used'});
+        await unusable.waitFor();
+        record.unusablePolicy = (await unusable.innerText()).split(/\s+/).join(' ');
+        assert.match(record.unusablePolicy, /^Your organization’s policy can’t be used, so Lumi can’t tell what it asks to share\. The fixture machine policy is not valid JSON\. Lumi sends no model requests until it’s fixed\. \d+ records? and \d+ confirmations? of the notice wait here, unsent, until then\.$/);
+        await unusable.evaluate(node => node.scrollIntoView({block: 'center'}));
+        await page.screenshot({path: path.join(output, 'policy-unusable.png')});
         assert.deepEqual(errors, []);
         record.ok = true;
     } catch (error) {

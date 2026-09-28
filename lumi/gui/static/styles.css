@@ -13276,6 +13276,11 @@ body.is-window-dragging * {
 .provider-model-choice:hover, .provider-model-choice[aria-current=true] { background: color-mix(in srgb, var(--brand) 7.8%, transparent); }
 .provider-star { color: var(--text); border: 0; background: transparent; padding: 12px; cursor: pointer; font-size: 19px; }
 .provider-picker-footer { margin-top: 14px; font-size: 11px; color: var(--muted); }
+/* Offline mode: what the model picker hides, and why (lumi/offline.py). */
+.provider-offline-note { margin-top: 12px; }
+.provider-offline-note ul, .settings-offline-list { margin: 4px 0 0; padding-left: 18px; }
+.provider-offline-note li, .settings-offline-list li { margin: 3px 0; overflow-wrap: anywhere; }
+#settings-body .settings-update-file .settings-input { width: 100%; box-sizing: border-box; }
 
 /* New conversations choose their project before changing the active draft. */
 .new-session-project-picker { margin: auto; width: min(480px, calc(100vw - 32px)); max-height: calc(100dvh - 32px); padding: 20px; color: var(--text); background: var(--bg); border: 1px solid var(--border-strong); border-radius: 14px; box-shadow: 0 20px 80px #0008; }

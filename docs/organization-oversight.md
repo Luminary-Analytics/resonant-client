@@ -190,6 +190,15 @@ notice text that was shown:
   SHA-256 of the notice text as the surface shows it now, and this computer
   user (or, for a chat, that chat). A `notice.json` or `chats.json` written
   or changed by hand counts for nothing.
+- **Whom it counts for.** Lumi Cloud counts a confirmation for a member only
+  when it can check it's theirs: the computer is that member's own (they
+  joined it to the organization in the app), or, on a managed computer
+  (enrolled with a token, so it belongs to nobody), the person's own desktop
+  sign-in goes with it in a `Lumi-Account-Token` header: Lumi sends the
+  signed-in person's access token when the record names them and they're
+  still the one signed in. With nobody signed in to Lumi Cloud, the record
+  names no account and counts for the computer. Anything else is kept as an
+  unverified claim. Settings says which, before and after confirming.
 - The person is unblocked at once. The record then waits in the queue's
   `acknowledgments` table and goes to `POST /api/v1/oversight/acknowledgments`
   (`{"record": ..., "signature": ...}`, signed in as the device) before any
@@ -211,7 +220,8 @@ A scheduled task (`lumi schedule run`, trigger `schedule`) and `lumi run`
 (trigger `headless`) have nobody to show the notice to when **their
 environment** says so: none of standard input, output and error is a
 terminal, and the process has no controlling terminal (POSIX: `/dev/tty`
-doesn't open; Windows: no console window in an interactive session). What
+doesn't open; Windows: no console window in an interactive session, and only
+a console handle counts as a terminal, not the `NUL` device). What
 started the run can't say that nobody is there; the app's **Run now** says
 the opposite, since the person is in the app, and its run is recorded as
 `schedule` with `unattended: false` and needs the notice confirmed like any
@@ -395,6 +405,19 @@ of an output are searched.
 
 ## Where it goes, and when it doesn't
 
+With [offline mode](offline.md) on and Lumi Cloud's host not allowed, Lumi
+Cloud is out of reach: confirmations and records wait in the queue, kept,
+and Settings shows each waiting with offline mode's reason. Turning offline
+mode off, or allowing Lumi Cloud's host, sends them at once rather than
+after the wait that follows a refusal. A policy that can't be used (which
+keeps offline mode on with no hosts, and refuses every model request) isn't
+a policy that stopped asking for oversight: nothing queued is deleted,
+nothing is sent until it can be used again, and Settings never says
+oversight is off. It says the policy can't be used, so Lumi can't tell what
+it asks to share, and how many records and confirmations wait. Dictation
+stays off under both, and `lumi extension check` asks a pack's provider
+nothing.
+
 Records go only to the Lumi Cloud of the organization whose policy asks for
 them: the policy must come from that Lumi Cloud (signed and verified for
 this enrolled computer), or be a machine policy that enrolled the computer
@@ -461,7 +484,9 @@ What Lumi Cloud implements against (lumi-cloud's oversight ingest):
   <the record above>, "signature": "<base64url Ed25519 over the canonical
   JSON of record>"}`. Lumi Cloud verifies it with the device's registered
   public key, checks that `organization` and `device_id` match the
-  authenticated device, and stores it immutably. Answers: `201 {"id": ...,
+  authenticated device, and stores it immutably. From a managed computer it
+  may carry `Lumi-Account-Token: <the person's desktop access token>`, so
+  Lumi Cloud can count it for them. Answers: `201 {"id": ...,
   "policy_version": <matched version or null>}`; `409 notice_mismatch`;
   `422 invalid_signature`.
 - **Events** carry `trigger` and `unattended` (and `os_user`) as above; Lumi

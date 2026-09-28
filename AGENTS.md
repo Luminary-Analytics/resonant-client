@@ -39,6 +39,14 @@ host enrollment and actual packaged/learned-benefit qualification remain open.
   `resonant-policy.json`) are still read; do not write new state under them.
   The update feed URL and repository name stay until a bridge release moves
   the feed (see [Unreleased](docs/unreleased.md)).
+- Lumi is proprietary ([LICENSE](LICENSE)). The Extension SDK (`sdk/`) and
+  the VS Code extension (`lumi/code_editors/vscode/`) are MIT-licensed so
+  others can build and ship extensions; never move app code into them.
+  Shipped third-party code keeps its notice in `THIRD_PARTY_NOTICES.txt`
+  (`packaging/third-party-components.json` for anything that isn't a Python
+  package), and the copyleft gate stays. Code ported from another project
+  keeps its license notice in the file and gets a components entry with the
+  license text (`packaging/licenses/`), as `engine/truncation.py` does.
 - Follow the [harness north star](docs/agentic-harness-north-star.md): correct
   completion, verification, maintainability, and time to a trustworthy result
   come before token efficiency.
@@ -127,12 +135,45 @@ host enrollment and actual packaged/learned-benefit qualification remain open.
   loop that calls a model repeatedly must check them too.
 - Updates: `update_channels.py` picks the feed from `updates.mode`, `channel` and
   `pin` (Settings or policy, read at startup); `appcast.xml` keeps its address
-  because every earlier install polls it. Running from source never loads
-  WinSparkle, and an MSI, PKG, deb or rpm install (`lumi-install.json`) never
+  because every earlier install polls it. macOS uses Sparkle (`sparkle.py`,
+  PyObjC, main thread, app only) with the same EdDSA key and its own feeds
+  (`appcast-macos*.xml`); never put macOS items in the Windows feeds. The
+  macOS feeds are signed (`SURequireSignedFeed`, `packaging/feed_signature.py`):
+  whatever writes one signs it again (`packaging/publish_macos.ps1`), and
+  gh-pages must hold exactly the bytes signed: write feeds and pages with
+  LF line ends, keep the site's `.gitattributes` (`* -text`), and publish only
+  through `packaging/push_pages.py`, which verifies the staged blobs. Sparkle's
+  delegate checks each download request as it starts (`download_refusal`),
+  not only the check, and the found version against the channel and pin
+  (`may_proceed`), since one key signs every macOS feed. Running
+  from source never loads WinSparkle or Sparkle, and an MSI, PKG, deb or rpm install (`lumi-install.json`) never
   updates itself. A macOS configuration profile that can't be used fails closed like
   any machine policy (`policy.managed_preferences_policy`).
   Never change `packaging/lumi.wxs`'s UpgradeCode. Publishing a release or
-  feed needs the user's go-ahead.
+  feed needs the user's go-ahead. Signing secrets (EdDSA, Apple, Authenticode)
+  go only to release.yml's jobs in the `release` environment, never to a
+  workflow pull requests run; a Developer ID certificate is an update key too.
+- Offline mode (`offline.py`, docs/offline.md): every outbound connection Lumi
+  makes goes through the central check, and only this computer and
+  `offline.allowed_hosts` are reachable. Build HTTP clients with
+  `net.client_options(..., feature=...)`, which checks each request and
+  redirect before it connects; where an address leaves Lumi's process (Git,
+  Chrome, WinSparkle, Sparkle, a browser sign-in) call `offline.refusal` or
+  `check_url` first; a provider or tool that reaches the network is refused
+  with the reason (`backend_refusal`, `tool_refusal`), never silently
+  dropped. That refusal comes before DLP (`Session._model_stream`,
+  `should_plan`, `request_purpose`): a request that can't be sent is neither
+  DLP-checked nor recorded. Locality is decided from the name as written, never by resolving
+  it, and only plain host names match allowed hosts. Read the settings
+  through `SettingsManager.get`; when a policy turns it on, only the policy's
+  hosts apply, and a policy that can't be used keeps it on with no allowed
+  hosts. The audit-hook lookup check is a backstop, not the enforcement
+  point. Offline licenses (`license.py`) verify only against built-in or
+  machine-set keys (no key file on Windows) and lock nothing; an update from
+  a file (`update_file.py`) passes the same EdDSA check as WinSparkle's and
+  takes its version from the signed installer, never the unsigned feed.
+  Machine folders on Windows come from the OS (`policy._known_folder`), never
+  from environment variables a person can set.
 - Lumi Cloud (`cloud.py`): the sign-in's refresh token and the device's private
   key live in `api_keys` (`lumi_cloud_refresh`, `lumi_cloud_device_key`), in the
   credential store; status sent to the page never includes them. Check-ins
@@ -140,6 +181,49 @@ host enrollment and actual packaged/learned-benefit qualification remain open.
   (`activity.py`), never prompts, code, paths or titles. A downloaded policy applies only when it verifies against machine
   keys, or keys pinned when the person joined, and a joined organization
   never replaces a machine policy (`policy._with_cloud_policy`).
+- Organization oversight (`oversight.py`, `security_flags.py`) is the only
+  path that sends people's turns to Lumi Cloud: off unless the policy's
+  `oversight` section asks (a key or version Lumi doesn't know turns it off,
+  never the policy), only to the Lumi Cloud that policy came from. While it
+  is in force, nothing reaches a model until the person confirmed the
+  notice for that policy on this computer (`oversight.admit`, asked by
+  `Session.run` before each turn and each model request, and
+  `oversight.refusal` at entry points outside a turn: the app's message
+  box, plans, missions, autonomous sessions, Team's `policy_refusal` and
+  `TeamGovernance.refusal`, model comparisons, evaluations, dictation, and
+  requests outside a turn: planning classification, titles, structured
+  repair, `[vision]` checks, skill extraction). A new entry point runs
+  through `Session.run` and refuses before it starts, and a new request
+  outside a turn asks too; `TestEveryPath` fails if code calls the turn
+  loop another way. Confirmation (`oversight.acknowledge`)
+  comes only from a person: the notice's own button, on a trusted click or
+  key press (never a status push, a timer, a painted page, a script's click
+  or a panel, and focus never moves onto it), a typed yes at
+  an interactive terminal, or a gateway chat's button or reply for that
+  chat, always with the notice text it showed. It is a record signed with
+  the device key (`CloudClient.sign_as_device`), kept locally and sent in
+  the background to `/api/v1/oversight/acknowledgments` (from a managed
+  computer with the signed-in person's `Lumi-Account-Token`); a kept record
+  counts only while it verifies with that key and covers the notice in
+  force (fingerprint, the full SHA-256, and the text's SHA-256). Only a
+  surface that sets `Session.oversight_unattended` runs unconfirmed, under
+  the policy's `oversight.unattended` (`record` or `block`): scheduled
+  tasks and `lumi run`, when their environment has no terminal at all
+  (`headless._terminal_attached`); a caller can say someone is there
+  (Run now), never that nobody is. Every record carries its `trigger` and
+  `unattended`. Dictation, Engram writes and `lumi extension check`'s prompt
+  wait for the notice too. Under offline mode, or a policy that can't be
+  used (which keeps offline mode on with no hosts), records and
+  confirmations wait unsent, never deleted, and Settings never says
+  oversight is off for such a policy. Anything shared passes
+  `secret_scan.redact_for_sharing` and then the DLP rules (`dlp.shareable`,
+  which may withhold it) before it is cut; file contents and tool output
+  never leave, and excluded files and their patterns are never named. A flag's `rule` is a label from `security_flags.RULES`, never free
+  text; what someone wrote goes only in the excerpt, which goes only with
+  messages. Session titles go only with messages. Patterns that run on tool
+  output must take linear time. Refusals carry `denied_by` on their
+  `tool.result` for the flags; a new place that refuses a tool call should
+  set it. Tests use fake clients, never a real Lumi Cloud.
 - `lumi run` (`headless.py`) builds its session from the same pieces as the
   app: `engine/policies.project_execution_policy`, `ExclusionRules`, workspace
   trust and policy checks. Keep the two in step, and never let a headless run

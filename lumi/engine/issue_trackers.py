@@ -167,11 +167,14 @@ def _http(method: str, url: str, *, tracker: str, headers: dict, json: Any = Non
     from ..net import client_options
 
     try:
-        with httpx.Client(**client_options(timeout=30.0, transport=_transport), follow_redirects=True) as client:
+        with httpx.Client(**client_options(timeout=30.0, transport=_transport, feature=TRACKERS[tracker]),
+                          follow_redirects=True) as client:
             response = client.request(method, url, headers={**headers, "User-Agent": "lumi"}, json=json,
                                       params=params)
     except httpx.HTTPError as exc:
-        raise IssueError(f"{TRACKERS[tracker]} didn't answer: {type(exc).__name__}") from exc
+        from ..offline import message_for
+
+        raise IssueError(message_for(exc) or f"{TRACKERS[tracker]} didn't answer: {type(exc).__name__}") from exc
     if response.status_code >= 400:
         message = ""
         try:

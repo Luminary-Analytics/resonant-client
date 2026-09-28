@@ -160,7 +160,8 @@ from lumi.engine.swarming.worker_child import main
 from tests.streaming_stub import StreamingBackend, text_delta
 class Blocked(StreamingBackend):
     def stream(self, **kwargs):
-        descendant = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+        # Outlives every wait below: only the owned tree's termination ends it.
+        descendant = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(600)"])
         Path({str(descendant_file)!r}).write_text(str(descendant.pid))
         yield text_delta("Owned provider is blocked")
         while True: time.sleep(.1)
@@ -208,7 +209,7 @@ import json, time
 print(json.dumps({{"version":1,"kind":"ready"}}),flush=True)
 sys.stdin.readline()
 {payload}
-time.sleep(30)
+time.sleep(600)  # outlives the wait below: only the host's termination ends it in time
 ''')
     worker, _ = runtime(fixture, command)
     try:
@@ -314,7 +315,7 @@ import json, subprocess, time
 from pathlib import Path
 print(json.dumps({{"version":1,"kind":"ready"}}), flush=True)
 sys.stdin.readline()
-descendant = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+descendant = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(600)"])  # outlives the waits
 Path({str(descendant_file)!r}).write_text(json.dumps(descendant.pid))
 while True: time.sleep(.1)
 ''')
@@ -518,7 +519,7 @@ def test_managed_search_child_stays_owned_through_cancellation(read_setup, tmp_p
     search_script = tmp_path / "fixture_search.py"
     search_script.write_text("import json,os,time\nfrom pathlib import Path\n"
         f"Path({str(marker)!r}).write_text(json.dumps({{'pid':os.getpid(),'group':os.getpgrp() if os.name!='nt' else None}}))\n"
-        "time.sleep(60)\n", encoding="utf-8")
+        "time.sleep(600)\n", encoding="utf-8")  # outlives the waits: only cancellation ends it
     command = child_script(tmp_path, f'''
 import lumi.engine.tools as tools
 from lumi.engine.swarming.worker_child import main

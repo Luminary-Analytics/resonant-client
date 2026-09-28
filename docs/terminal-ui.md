@@ -48,7 +48,11 @@ which has no Lumi Cloud connection to ask.
 Your organization's policy decides which modes you can use. If it doesn't
 allow Bypass, the terminal starts in the first mode it allows (Ask or
 Auto-edit, which edits files and asks about the rest) and the banner says
-so. `--approve` or `/approve` for a mode it doesn't allow is refused. Only the
+so. When the policy turns on [organization
+oversight](organization-oversight.md), the banner shows its notice and the
+terminal asks you to type `yes` before anything reaches a model; anything
+else quits. It asks again before a turn if the confirmation was forgotten
+meanwhile (you signed out of Lumi Cloud in the app). `--approve` or `/approve` for a mode it doesn't allow is refused. Only the
 models it allows are offered, and a policy that is invalid or has expired
 stops the terminal before it starts.
 

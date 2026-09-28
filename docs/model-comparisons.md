@@ -29,7 +29,10 @@ Every task runs once per model:
    other's changes, and your checkout isn't touched.
 2. The task runs there as an unattended [`lumi run`](headless.md) with that
    model. Nobody is asked anything, your organization's policy and budgets
-   apply, and its requests count in **Usage & cost**. Repository
+   apply, and its requests count in **Usage & cost**. Under your
+   organization's [oversight](organization-oversight.md), a comparison
+   starts only once you confirmed its notice, and its runs are recorded as
+   yours. Repository
    instructions apply only if the project is trusted in the app. So do the
    `allow` rules in its `lumi-policy.json`, and only if the last commit's copy
    is the version you trusted.

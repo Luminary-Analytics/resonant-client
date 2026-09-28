@@ -12,7 +12,7 @@ from lumi.engine.swarming import argv_process
 from lumi.engine.execution_guard import ExecutionGuardError
 from lumi.engine.swarming.integration import SwarmIntegration
 from lumi.engine.swarming.models import AdmissionClosed, Conflict, ScopeDenied
-from tests.test_swarm_integration import command, setup, writers  # noqa: F401
+from tests.test_swarm_integration import command, repository_held, setup, waiting_call, writers  # noqa: F401
 
 
 def application_intent(setup, *, protocol=1):
@@ -45,6 +45,34 @@ def test_application_cannot_inspect_ref_before_owned_process_cleanup(setup, monk
     monkeypatch.setattr(integration, "_head", lambda _: pytest.fail("Unsettled application inspected its ref"))
     with pytest.raises(Conflict, match="process cleanup"):
         integration.reconcile_application(authority, "application")
+
+
+def test_reconciling_an_application_stops_waiting_for_the_repository_on_stop(setup):
+    # Reconciliation is an observation that recovery may ask for after Stop,
+    # so a Stop that was already there doesn't end its wait; one that arrives
+    # while it waits does, as does lost authority.
+    authority, integration = application_intent(setup)
+    supervisor = setup[1]
+    with repository_held(integration) as release:
+        thread, outcome = waiting_call(integration, integration.reconcile_application, authority, "application")
+        assert command(supervisor, authority, "stop").state in {"stopping", "cancelled"}
+        thread.join(timeout=60)
+        assert not thread.is_alive() and not release.is_set()
+    assert outcome and isinstance(outcome[0], AdmissionClosed), outcome
+
+
+def test_reconciling_after_stop_still_waits_its_turn(setup, monkeypatch):
+    authority, integration = application_intent(setup)
+    command(setup[1], authority, "stop")
+    observed = []
+    monkeypatch.setattr(integration, "_head", lambda path: observed.append(path) or "1" * 40)
+    with repository_held(integration) as release:
+        thread, outcome = waiting_call(integration, integration.reconcile_application, authority, "application")
+        time.sleep(1)  # several checks of the Stop that was already there
+        assert thread.is_alive() and not outcome
+        release.set()
+        thread.join(timeout=60)
+    assert outcome and not isinstance(outcome[0], AdmissionClosed), outcome
 
 
 def test_legacy_application_cannot_infer_absence_from_current_ref(setup, monkeypatch):
@@ -88,17 +116,17 @@ def test_pause_during_owned_isolated_effect_retains_failure_then_reaches_checkpo
     original = integration._execute
     def slow_effect(owner, kind, identity, argv, cwd, **kwargs):
         return original(owner, kind, identity, [sys.executable, "-c",
-            f"from pathlib import Path; import time; Path({str(marker)!r}).touch(); time.sleep(60)"], cwd, **kwargs)
+            f"from pathlib import Path; import time; Path({str(marker)!r}).touch(); time.sleep(600)"], cwd, **kwargs)
     monkeypatch.setattr(integration, "_execute", slow_effect)
     with ThreadPoolExecutor(max_workers=1) as executor:
         pending = executor.submit(writers, setup, ("a",))
-        deadline = time.monotonic() + 5
+        deadline = time.monotonic() + 60  # the owned gate starts before the effect
         while not marker.exists() and time.monotonic() < deadline:
             time.sleep(.02)
         assert marker.exists()
         assert command(supervisor, authority, "pause").state == "pausing"
         with pytest.raises(AdmissionClosed):
-            pending.result(timeout=5)
+            pending.result(timeout=60)  # the effect sleeps far longer: only the pause ends it
     snapshot = store.snapshot(authority.scope, authority.run_id)
     assert snapshot["writer_worktrees"][0]["state"] == "failed"
     assert all(row["state"] == "stopped" for row in snapshot["integration_processes"])

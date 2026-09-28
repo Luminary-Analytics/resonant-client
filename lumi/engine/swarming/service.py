@@ -99,17 +99,34 @@ def policy_refusal(action: str, *, personal: bool = False, team: Callable[[], st
     and ``team`` says why it can't start more work now, if it can't. Sharing
     with another conversation and organization-managed teams don't follow a
     policy's rules yet, so their other actions stay refused, as does any
-    action not listed here.
+    action not listed here. Before any of them, and whatever those rules
+    allow, organization oversight's notice must be confirmed
+    (lumi/oversight.py): no team work that can reach a model starts, and no
+    orchestrator step runs, for a person who hasn't.
     """
     if action in _POLICY_SAFE_ACTIONS:
         return ""
     reason = blocked_reason()
     if reason:
         return reason
+    from ... import offline
+
+    if offline.enabled():
+        # Workers and their child processes don't take offline mode yet (lumi/offline.py).
+        return ("Offline mode is on, and the Team preview doesn't follow it yet, so it can't start or "
+                "change team work here. Turn offline mode off to use it.")
     if current_policy() is None:
         return ""
     if personal and action in _POLICY_PERSONAL_ACTIONS:
-        return ""
+        return ""  # reviews and bookkeeping: no participant, model request, check or change
+    # Nothing reaches a model before the person confirms the notice of an
+    # organization's oversight (lumi/oversight.py): not a team's start, and
+    # not a step of its orchestrator loop (autopilot.py asks here too).
+    from ... import oversight
+
+    reason = oversight.refusal("team")
+    if reason:
+        return reason
     if personal and action in _POLICY_GOVERNED_ACTIONS:
         return team() if team is not None else ""
     return organization.unsupported_refusal()

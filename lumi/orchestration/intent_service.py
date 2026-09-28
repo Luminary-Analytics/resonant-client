@@ -163,7 +163,7 @@ class IntentService:
 
     def start_intent(
         self, text: str, *, planner_specialization: Optional[str] = None,
-        viewer: Optional[Callable[[dict], None]] = None,
+        viewer: Optional[Callable[[dict], None]] = None, trigger: str = "plan",
     ) -> str:
         """Bootstrap a fresh plan-graph from `text` and start a worker thread.
 
@@ -178,8 +178,13 @@ class IntentService:
         `PLAN` for backwards compatibility with the regular Mission
         flow.
 
-        Raises ValueError for empty text, an unknown specialization, or an
-        organization policy that doesn't allow Full-auto (lumi/policy.py).
+        Raises ValueError for empty text, an unknown specialization, an
+        organization policy that doesn't allow Full-auto (lumi/policy.py), or
+        an organization oversight notice the person hasn't confirmed
+        (lumi/oversight.py).
+
+        `trigger` names what started it for oversight's records: "plan" for
+        /plan, "mission" for a mission's roadmap or an autonomous session.
 
         `viewer` receives the plan's events instead of `on_event`: the
         emitter of the page that follows it in the Plan tab. An autonomous
@@ -196,8 +201,11 @@ class IntentService:
                 f"expected one of {sorted(NodeSpecialization.ALL)}"
             )
         # Specialists run in Full-auto; refused before anything is saved or
-        # started when the organization's policy doesn't allow it.
-        refusal = full_auto_refusal()
+        # started when the organization's policy doesn't allow it, or while
+        # the person hasn't confirmed its oversight notice.
+        from .. import oversight
+
+        refusal = full_auto_refusal() or oversight.refusal(trigger)
         if refusal:
             raise ValueError(refusal)
         graph = PlanGraph.new(text)
@@ -229,6 +237,7 @@ class IntentService:
             specialist_backend_resolver=self.specialist_backend_resolver,
             mcp_manager=self.mcp_manager,
             hook_runner_for=self.hook_runner_for,
+            oversight_trigger=trigger,
         )
         walker = GraphWalker(
             runner=runner,

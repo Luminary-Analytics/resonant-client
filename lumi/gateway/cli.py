@@ -120,10 +120,21 @@ def build_service(args: argparse.Namespace, settings: SettingsManager, adapter) 
         return session
 
     def describe() -> str:
-        return f"Project: {project}\nPermission mode: {mode}\nModel: {model} ({provider})"
+        text = f"Project: {project}\nPermission mode: {mode}\nModel: {model} ({provider})"
+        # People in the chat hear what their organization receives, as the app shows it (lumi/oversight.py).
+        from ..oversight import Scope
+
+        scope = Scope()
+        if scope.configured:
+            text += f"\nOversight: {scope.notice('gateway')}"
+        return text
+
+    from ..cloud import CloudClient
 
     minutes = args.approval_minutes or float(settings.get("gateway", "approval_minutes", 10) or 10)
-    return GatewayService(adapter, session_for, describe=describe, approval_seconds=max(1.0, minutes) * 60)
+    # A chat's confirmation of the oversight notice is signed with this computer's device key.
+    return GatewayService(adapter, session_for, describe=describe, approval_seconds=max(1.0, minutes) * 60,
+                          oversight_signer=CloudClient(settings).sign_as_device)
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -172,6 +183,19 @@ def main(argv: list[str] | None = None) -> None:
         raise SystemExit(1)
 
     print(f"Gateway starting on {adapter.name}.\n{service._describe()}")
+    from .. import oversight
+
+    # The person running the gateway is shown the notice here; each chat
+    # confirms it in the chat before its requests run (gateway/service.py).
+    gate = oversight.for_terminal(unattended=False)
+    if gate.notice:
+        print(f"Organization oversight: {gate.notice}")
+    if gate.in_force:
+        print("Each chat is sent this notice and confirms it before Lumi runs its requests.")
+        from ..cloud import CloudClient
+
+        # Chats' turns and confirmations go to Lumi Cloud while the gateway runs.
+        oversight.start_uploader(CloudClient(settings))
     if not allowed:
         print(
             "WARNING: nothing is allowed yet. The bot will reply to new chats with their IDs so you "

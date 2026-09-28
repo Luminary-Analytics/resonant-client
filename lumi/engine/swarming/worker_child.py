@@ -257,6 +257,8 @@ def main(*, backend_factory=None) -> int:
         session.project_path = initial["workspace"]
         session.sandbox = PathSandbox(initial["workspace"], enabled=True)
         session.exclusions = ExclusionRules(initial["workspace"], rules=[tuple(rule) for rule in initial["exclusions"]])
+        # Organization oversight (lumi/oversight.py) admits and records it as team work.
+        session.oversight_trigger = "team"
         queued = set()
         def collect():
             if channel.cancel.is_set():

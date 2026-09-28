@@ -532,7 +532,8 @@ class AnthropicBackend(KimiBackend):
             return []
         credential = {"Authorization": f"Bearer {token}"} if token else {"x-api-key": api_key}
         try:
-            with httpx.Client(**net.client_options(timeout=timeout, transport=transport, verify=verify)) as client:
+            with httpx.Client(**net.client_options(timeout=timeout, transport=transport, verify=verify,
+                                                   feature="Anthropic")) as client:
                 response = client.get(
                     f"{str(base_url or DEFAULT_BASE_URL).rstrip('/')}/v1/models",
                     params={"limit": 100},
@@ -549,7 +550,8 @@ class AnthropicBackend(KimiBackend):
         if self.platform != "direct":
             self._auth_headers(b"{}", self._endpoint())  # proves credentials resolve
             return {"status": "ready", "backend": self.name, "models": [self.model]}
-        with httpx.Client(**net.client_options(timeout=10.0, transport=self._transport, verify=self._tls)) as client:
+        with httpx.Client(**net.client_options(timeout=10.0, transport=self._transport, verify=self._tls,
+                                               feature=self.PROVIDER_LABEL)) as client:
             response = client.get(f"{self.base_url}/v1/models", params={"limit": 100},
                                   headers=self._request_headers())
         if response.status_code >= 400:
@@ -777,7 +779,7 @@ class AnthropicBackend(KimiBackend):
         last_status = 0.0
         try:
             with httpx.Client(**net.client_options(timeout=self._timeout, transport=self._transport,
-                                                   verify=self._tls)) as client:
+                                                   verify=self._tls, feature=self.PROVIDER_LABEL)) as client:
                 attempt = 0
                 while True:
                     if cancel_event is not None and cancel_event.is_set():
@@ -879,7 +881,8 @@ class AnthropicBackend(KimiBackend):
             yield (EVENT_ERROR, {"message": self._timeout_error_message()})
             return
         except httpx.HTTPError as exc:
-            yield (EVENT_ERROR, {"message": f"{self.PROVIDER_LABEL} connection failed: {type(exc).__name__}"})
+            yield (EVENT_ERROR, {"message": net.offline_message(exc)
+                                 or f"{self.PROVIDER_LABEL} connection failed: {type(exc).__name__}"})
             return
         except ValueError as exc:
             yield (EVENT_ERROR, {"message": str(exc)})

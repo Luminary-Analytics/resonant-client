@@ -1,6 +1,7 @@
 """Real Git and owned subprocess fixtures for isolated candidate integration."""
 
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from dataclasses import replace
 import json
 import os
@@ -428,10 +429,10 @@ def test_check_timeout_stops_owned_process_and_retains_failed_candidate(setup):
     manifest = finish(setup, context, lease)
     marker = integration.root / "must-not-appear"
     pid_file = integration.root / "child.pid"
-    child_code = f"import time; from pathlib import Path; time.sleep(60); Path({str(marker)!r}).write_text('escaped')"
+    child_code = f"import time; from pathlib import Path; time.sleep(600); Path({str(marker)!r}).write_text('escaped')"
     code = ("import subprocess, sys, time; from pathlib import Path; "
             f"child=subprocess.Popen([sys.executable, '-c', {child_code!r}]); "
-            f"Path({str(pid_file)!r}).write_text(str(child.pid)); time.sleep(120)")
+            f"Path({str(pid_file)!r}).write_text(str(child.pid)); time.sleep(600)")
     # The timeout counts from before the owned gate starts, so it must cover
     # the gate, the check's own start and its child's (a 1 s limit expired
     # first on a loaded CI runner and left no child to check).
@@ -670,12 +671,80 @@ def test_stop_ends_a_wait_for_the_repository_before_its_holder_finishes(setup):
         holder.join(timeout=120)
 
 
+@contextmanager
+def repository_held(integration, seconds=120):
+    """Another step holds the repository until the block ends (or ``seconds`` pass)."""
+    held, release = threading.Event(), threading.Event()
+
+    def hold():
+        with integration._repository_lock():
+            held.set()
+            release.wait(seconds)
+    holder = threading.Thread(target=hold)
+    holder.start()
+    try:
+        assert held.wait(60)
+        yield release
+    finally:
+        release.set()
+        holder.join(timeout=seconds)
+
+
+def waiting_call(integration, call, *args, **kwargs):
+    """Run a call on its own thread and return once it waits for the repository."""
+    outcome = []
+
+    def run():
+        try:
+            outcome.append(call(*args, **kwargs))
+        except BaseException as exc:
+            outcome.append(exc)
+    thread = threading.Thread(target=run)
+    thread.start()
+    deadline = time.monotonic() + 60
+    while not integration.waiting_for_repository(thread):
+        assert thread.is_alive() and time.monotonic() < deadline, outcome
+        time.sleep(.01)
+    return thread, outcome
+
+
+def test_an_approval_that_expires_while_apply_waits_for_the_repository_is_refused(setup):
+    # An approval lasts at most 300 s, and apply can wait far longer for the
+    # repository. Its expiry is checked again once apply holds it.
+    store, supervisor, authority, integration, project, base = setup
+    result = candidate(setup)
+    integration.run_check(authority, result["id"], "combined")
+    approval = replace(approved(setup, result), expires_at=1010)  # the run's lease lasts until 1030
+    with repository_held(integration) as release:
+        thread, outcome = waiting_call(integration, integration.apply, authority, result["id"], approval=approval)
+        store.clock = lambda: 1011
+        release.set()
+        thread.join(timeout=120)
+    assert outcome and isinstance(outcome[0], Conflict) and "expired" in str(outcome[0]), outcome
+    assert git(project, "rev-parse", "HEAD") == base
+    assert store.snapshot(authority.scope, authority.run_id)["integration_applications"] == []
+
+
+def test_apply_waits_for_the_repository_no_longer_than_its_approval_lasts(setup):
+    store, supervisor, authority, integration, project, base = setup
+    result = candidate(setup)
+    integration.run_check(authority, result["id"], "combined")
+    approval = replace(approved(setup, result), expires_at=1002)  # 2 s left on the fixture's clock
+    with repository_held(integration):
+        started = time.monotonic()
+        with pytest.raises(Conflict, match="expired while another step held this repository"):
+            integration.apply(authority, result["id"], approval=approval)
+        assert time.monotonic() - started < 30
+    assert git(project, "rev-parse", "HEAD") == base
+
+
 def test_stop_waits_for_a_live_check_process_to_be_observed_stopped(setup):
     store, supervisor, authority, integration, project, base = setup
     context, lease = writers(setup, ("a",))[0]
     manifest = finish(setup, context, lease)
+    # The check outlives every wait here: only the Stop can end it in time.
     result = integration.prepare_candidate(authority, writer_ids=(manifest["id"],), required_checks=(
-        CheckSpec("long", (sys.executable, "-c", "import time; time.sleep(20)"), 30),))
+        CheckSpec("long", (sys.executable, "-c", "import time; time.sleep(600)"), 900),))
     with ThreadPoolExecutor(max_workers=1) as pool:
         future = pool.submit(integration.run_check, authority, result["id"], "long")
         deadline = time.monotonic() + 60
@@ -698,8 +767,10 @@ def test_expired_owner_cannot_report_check_stop_as_completed_run(setup):
     store, supervisor, authority, integration, project, base = setup
     context, lease = writers(setup, ("a",))[0]
     manifest = finish(setup, context, lease)
+    # The check outlives every wait here: only the lost lease can end it in
+    # time (a check that simply finished would also meet LeaseExpired).
     result = integration.prepare_candidate(authority, writer_ids=(manifest["id"],), required_checks=(
-        CheckSpec("long", (sys.executable, "-c", "import time; time.sleep(20)"), 30),))
+        CheckSpec("long", (sys.executable, "-c", "import time; time.sleep(600)"), 900),))
     with ThreadPoolExecutor(max_workers=1) as pool:
         future = pool.submit(integration.run_check, authority, result["id"], "long")
         deadline = time.monotonic() + 60
@@ -730,7 +801,7 @@ def test_stop_is_reported_when_its_control_frame_finds_the_check_gate_already_en
     started = integration.root / "check-started"
     result = integration.prepare_candidate(authority, writer_ids=(manifest["id"],), required_checks=(
         CheckSpec("long", (sys.executable, "-c", f"import time; from pathlib import Path; "
-                           f"Path({str(started)!r}).write_text('running'); time.sleep(60)"), 120),))
+                           f"Path({str(started)!r}).write_text('running'); time.sleep(600)"), 900),))
     spawn = ManagedWorkerProcess._spawn
 
     def spawn_with_late_input(process):

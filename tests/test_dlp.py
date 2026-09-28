@@ -1166,6 +1166,78 @@ def test_service_redactions_leave_signed_reasoning_out(audit_log):
     assert history[1]["reasoning_details"][0]["thinking"] == "Jane Doe asked"
 
 
+# ── Copies that aren't model requests (organization oversight) ──────────────
+
+
+def test_a_shared_copy_meets_the_rules_for_its_kind():
+    install(rules({"name": "falcon", "keywords": ["Project Falcon"], "action": "block", "scope": ["prompt"]},
+                  {"name": "codename", "keywords": ["Bluebird"], "action": "redact"}, credit_card="redact"))
+    assert dlp.shareable(f"Refund {CARD} for Bluebird") == "Refund [REDACTED:credit_card] for [REDACTED:codename]"
+    assert dlp.shareable("the Project Falcon roadmap", "prompt") is None
+    # A rule for prompts leaves the model's output alone, as it does in requests; mixed text meets every rule.
+    assert dlp.shareable("the Project Falcon roadmap", "model_output") == "the Project Falcon roadmap"
+    assert dlp.shareable("the Project Falcon roadmap") is None
+    assert dlp.shareable("") == "" and dlp.shareable(None) == ""
+
+
+def test_a_shared_copy_is_withheld_when_its_check_fails(monkeypatch):
+    install(rules(credit_card="redact"))
+
+    def broken(*args, **kwargs):
+        raise RuntimeError("detector crashed")
+
+    monkeypatch.setattr(dlp, "_scan", broken)
+    assert dlp.shareable("hello") is None
+
+
+def test_without_dlp_rules_a_shared_copy_is_unchanged():
+    assert dlp.shareable(f"card {CARD}") == f"card {CARD}"
+    install(rules())
+    assert dlp.shareable(f"card {CARD}") == f"card {CARD}"
+
+
+def test_a_dlp_section_lumi_cant_use_shares_nothing():
+    install({"version": 99})
+    assert dlp.shareable("hello") is None
+
+
+def test_a_shared_copy_follows_what_the_service_decided(audit_log):
+    def answer(payload):
+        if any("Jane Doe" in item["text"] for item in payload["items"]):
+            return {"action": "redact", "rule": "person", "redactions": ["Jane Doe"]}
+        return export_control(payload)
+
+    with_service(answer)
+    assert dlp.shareable("Jane Doe called") == "Jane Doe called"  # nothing decided yet
+    check_request(request("Email Jane Doe"), purpose="primary")
+    with pytest.raises(Blocked):
+        check_request(request("the ITAR schematic"), purpose="primary")
+    # What it redacted is replaced wherever it is; what it blocked isn't shared, nor text holding it or part of it.
+    assert dlp.shareable("Jane Doe called") == "[REDACTED:person] called"
+    assert dlp.shareable("the ITAR schematic") is None
+    assert dlp.shareable("Re:   the ITAR\nschematic, rev 4") is None
+    assert dlp.shareable("ITAR schem") is None
+    # A short text counts only when it is all of what was blocked.
+    assert dlp.shareable("ITAR") == "ITAR" and dlp.shareable("hello") == "hello"
+
+
+def test_a_request_the_service_blocked_whole_shares_nothing_it_hadnt_allowed(audit_log):
+    service = with_service(lambda payload: {"action": "block"} if any(
+        "ITAR" in item["text"] for item in payload["items"]) else {"action": "allow"})
+    check_request(request("", [{"role": "user", "content": "hello there, friend"}]), purpose="primary")
+    with pytest.raises(Blocked):
+        check_request(request("", [{"role": "user", "content": "hello there, friend"},
+                                   {"role": "user", "content": "the ITAR schematic"},
+                                   {"role": "user", "content": "rev 4 of the plan"}]), purpose="primary")
+    # It didn't say which text it blocked: none of the new ones is shared.
+    assert dlp.shareable("the ITAR schematic") is None and dlp.shareable("rev 4 of the plan") is None
+    assert dlp.shareable("hello there, friend") == "hello there, friend"  # allowed before
+    # Requests don't read that memory: the service is asked about the same text again.
+    before = len(service.calls)
+    check_request(request("rev 4 of the plan"), purpose="primary")
+    assert len(service.calls) == before + 1
+
+
 # ── Speed ────────────────────────────────────────────────────────────────────
 
 

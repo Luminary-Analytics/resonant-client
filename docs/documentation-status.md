@@ -72,10 +72,12 @@ guidance needs an explicit status notice and a current replacement.
 - [docs/index.md](index.md): the documentation site's home page
 - [docs/packs.md](packs.md)
 - [docs/lumi-cloud.md](lumi-cloud.md)
+- [docs/offline.md](offline.md): offline mode, updates from a file and the offline license (source only, not released)
 - [docs/dlp.md](dlp.md): data loss prevention rules on outgoing model requests (source only).
 - [Team preview](swarming.md): current source behavior. Live NVIDIA NIM runs of
   orchestrated teams are recorded in the [benchmarks](swarming-benchmarks.md).
   Packaged qualification and a benefit claim are still pending.
+- [docs/organization-oversight.md](organization-oversight.md)
 - [docs/unreleased.md](unreleased.md)
 
 ## Planning proposals

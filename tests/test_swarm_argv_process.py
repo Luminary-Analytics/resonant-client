@@ -58,9 +58,10 @@ def test_output_is_capped_while_both_streams_are_drained(tmp_path):
 @pytest.mark.skipif(os.name != "nt", reason="Arbitrary effect containment requires Windows named jobs")
 def test_timeout_and_stop_terminate_descendants_without_claiming_success(tmp_path, cause):
     pid_file = tmp_path / "descendant.pid"
+    # Both outlive the timeout and Stop below, so only the gate can end them.
     code = ("import subprocess,sys,time; from pathlib import Path; "
-        "child=subprocess.Popen([sys.executable,'-c','import time;time.sleep(60)']); "
-        f"Path({str(pid_file)!r}).write_text(str(child.pid)); time.sleep(60)")
+        "child=subprocess.Popen([sys.executable,'-c','import time;time.sleep(600)']); "
+        f"Path({str(pid_file)!r}).write_text(str(child.pid)); time.sleep(600)")
     process = ManagedArgvProcess()
     def check():
         if cause == "stop" and pid_file.exists():
@@ -86,9 +87,11 @@ def test_parent_pipe_eof_stops_effect_on_supported_process_group(tmp_path):
     failure = []
     def execute():
         try:
+            # Neither the target nor the gate's timeout ends before the join
+            # below, so only the pipe's EOF can have stopped the effect.
             result.append(process.execute([sys.executable, "-c",
-                f"import os,time; from pathlib import Path; Path({str(pid_file)!r}).write_text(str(os.getpid())); time.sleep(60)"],
-                tmp_path, timeout_seconds=10))
+                f"import os,time; from pathlib import Path; Path({str(pid_file)!r}).write_text(str(os.getpid())); time.sleep(600)"],
+                tmp_path, timeout_seconds=900))
         except BaseException as exc:
             failure.append(exc)
     worker = threading.Thread(target=execute)
@@ -101,7 +104,7 @@ def test_parent_pipe_eof_stops_effect_on_supported_process_group(tmp_path):
         process.process.stdin.close()
         worker.join(timeout=30)
         assert not worker.is_alive() and process.cleanup_confirmed
-        assert failure or result[0].exit_code != 0
+        assert failure or (result[0].exit_code != 0 and not result[0].timed_out)
         pid = int(pid_file.read_text())
         assert not psutil.pid_exists(pid) or psutil.Process(pid).status() == psutil.STATUS_ZOMBIE
     finally:

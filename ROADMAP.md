@@ -127,6 +127,11 @@ whether an item has since shipped before treating it as open work.
 
 ## Project direction (2026-05, set at v0.6.3)
 
+> **Superseded in September 2026:** Lumi is now commercial software under a
+> proprietary license (see [LICENSE](LICENSE)); only the Extension SDK and the
+> VS Code extension stay under the MIT License. The open-source goal below is
+> historical.
+
 **Goal: an open-source flagship for local-first, self-improving autonomous coding.** Relicensed MIT at v0.6.3. The project is used personally today; the intent is a public flagship.
 
 - **The moat is the self-improvement loop** — an agent that gets measurably better at a codebase every mission. No other open-source coding agent has the full provenance-gated extractor/curator/loader loop. See [`docs/self-improvement-loop.md`](docs/self-improvement-loop.md).

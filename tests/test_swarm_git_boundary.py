@@ -63,12 +63,16 @@ def test_quick_git_reads_are_owned_even_when_the_host_assigns_their_job_late(set
     # denied" failed writer finalization and checks on CI. Git now starts
     # suspended inside its job, so a late assignment only delays it.
     from lumi import processes
+    from lumi.engine.swarming import git_boundary, integration as integration_module
     assign = processes.windows_kill_job
 
     def late(process, **kwargs):
         time.sleep(.5)  # far longer than these reads take
         return assign(process, **kwargs)
-    monkeypatch.setattr(processes, "windows_kill_job", late)
+    # Wherever the assignment is looked up: code that imported the function by
+    # name keeps its own reference, which patching lumi.processes alone misses.
+    for module in (processes, git_boundary, integration_module):
+        monkeypatch.setattr(module, "windows_kill_job", late, raising=False)
     integration, project, base = setup[3], setup[4], setup[5]
     assert integration._git(project, "rev-parse", "HEAD").stdout.strip() == base
     assert integration._git(project, "status", "--porcelain").stdout == ""  # also reads config through git_bytes

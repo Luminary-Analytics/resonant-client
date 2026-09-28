@@ -263,6 +263,18 @@ time, since each blocked request is a separate refusal. `dlp.error` records a
 request that couldn't be checked: too large, the service failed (with
 `on_error`), or an internal error.
 
+## Organization oversight
+
+When the policy also turns on [organization oversight](organization-oversight.md),
+what it shares with the organization's Lumi Cloud (messages, replies,
+titles, tool arguments and flag excerpts) passes these rules too, after
+secrets are removed and before anything is cut (`dlp.shareable`), under the
+same kinds as in requests. A redaction is shared redacted; text a block rule
+matches isn't shared. A DLP service's remembered verdicts apply as well, and
+a turn in which a service refused a request shares no text. A `dlp` section
+Lumi can't use withholds all shared text. Oversight's notice check comes
+first: a turn refused for an unconfirmed notice never reaches DLP.
+
 ## Limits
 
 - Every detector and rule scans in time proportional to the text. A megabyte
@@ -287,8 +299,9 @@ request that couldn't be checked: too large, the service failed (with
   DLP checks what Lumi hands them (instructions, history and the message), not
   what they read themselves. Turn them off with `security.cli_adapters: false`
   if that matters.
-- Text that isn't a model request, apart from Engram's: dictation audio (its
-  transcript is checked when it's sent), MCP servers' and web tools' requests,
+- Text that isn't a model request, apart from Engram's and organization
+  oversight's records: dictation audio (its transcript is checked when it's
+  sent), MCP servers' and web tools' requests,
   sharing a conversation or a hand-off with Lumi Cloud, SONN task graphs, and
   the audit log's own content capture and OpenTelemetry export.
 - A new DLP section applies to text already in a conversation from the next

@@ -22,6 +22,14 @@ the organization publishes a new policy, or the cached one is within a week
 of expiring, Lumi downloads it, checks its signature against the trusted
 keys (lumi/policy.py) and applies it. A revoked device forgets its
 enrollment and the downloaded policy.
+
+**Organization oversight** (lumi/oversight.py) is separate: only when the
+organization's policy asks, turn records and security flags go to
+``/api/v1/oversight/events`` through ``device_call``. A person's confirmation
+of the notice is a record signed with this computer's device key
+(``sign_as_device``) and sent to ``/api/v1/oversight/acknowledgments``.
+Leaving the organization deletes records still queued, and leaving or
+signing out forgets the confirmed notice.
 """
 
 from __future__ import annotations
@@ -56,11 +64,16 @@ LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "::1")
 
 
 class CloudError(Exception):
-    """Something Lumi Cloud refused or couldn't do; the message is for people."""
+    """Something Lumi Cloud refused or couldn't do; the message is for people.
 
-    def __init__(self, message: str, *, code: str = "") -> None:
+    ``code`` is Lumi Cloud's error code (or the HTTP status when it gave
+    none); ``status`` the HTTP status, 0 when Lumi Cloud wasn't reached.
+    """
+
+    def __init__(self, message: str, *, code: str = "", status: int = 0) -> None:
         super().__init__(message)
         self.code = code
+        self.status = status
 
 
 def normalize_url(url: str) -> str:
@@ -246,16 +259,24 @@ class CloudClient:
 
         from .net import client_options
 
-        return httpx.Client(**client_options(timeout=20.0, transport=self._transport),
+        # Check-ins, sign-in, sharing, the team library, hand-offs, reviews and
+        # tasks from chat all come through here, so offline mode refuses them
+        # all with one message (lumi/offline.py).
+        return httpx.Client(**client_options(timeout=20.0, transport=self._transport, feature="Lumi Cloud"),
                             headers={"User-Agent": f"Lumi/{_app_version()} ({platform.system()})"})
 
     def _call(self, method: str, url: str, **kwargs: Any) -> dict:
         import httpx
 
+        from . import offline
+
         try:
             with self._http() as http:
                 response = http.request(method, url, **kwargs)
         except httpx.HTTPError as exc:
+            reason = offline.message_for(exc)
+            if reason:
+                raise CloudError(reason, code="offline") from exc
             raise CloudError(f"Lumi Cloud couldn't be reached ({type(exc).__name__}).", code="unreachable") from exc
         try:
             data = response.json() if response.content else {}
@@ -265,16 +286,24 @@ class CloudClient:
             code = str(data.get("error") or response.status_code) if isinstance(data, dict) else str(
                 response.status_code)
             message = data.get("error_description") if isinstance(data, dict) else ""
-            raise CloudError(str(message or f"Lumi Cloud answered {response.status_code}."), code=code)
+            raise CloudError(str(message or f"Lumi Cloud answered {response.status_code}."), code=code,
+                             status=response.status_code)
         return data if isinstance(data, dict) else {}
 
     # ── Signing in ─────────────────────────────────────────────────────────
     def begin_sign_in(self, url: str = "") -> str:
         """Open the browser to sign in; finishes in the background. Returns the address opened."""
+        from . import offline
+
         with self._lock:
             target = normalize_url(url or self.url)
             if self.managed().get("url") and target != normalize_url(self.managed()["url"]):
                 raise CloudError("Your organization's policy sets which Lumi Cloud this computer uses.")
+            # Signing in happens in the browser, outside Lumi's own clients:
+            # say so now rather than open a page that can't load.
+            reason = offline.refusal(target, "Lumi Cloud")
+            if reason:
+                raise CloudError(reason, code="offline")
             self.cancel_sign_in()
             verifier, state = secrets.token_urlsafe(48), secrets.token_urlsafe(24)
             loopback = _Loopback(state)
@@ -392,9 +421,11 @@ class CloudClient:
             except CloudError:
                 logger.info("Couldn't reach Lumi Cloud to revoke the sign-in; forgetting it here")
         self._forget_account()
-        from . import audit
+        from . import audit, oversight
 
         audit.record("cloud.signed_out", url=self.url)
+        # The oversight notice is confirmed again after signing back in (lumi/oversight.py).
+        oversight.forget_notice("Signed out of Lumi Cloud")
         self._changed()
 
     # ── Enrolling ──────────────────────────────────────────────────────────
@@ -437,6 +468,8 @@ class CloudClient:
             "organization_name": str(organization.get("name") or ""),
             "url": self.url,
             "how": how,
+            # Whose computer it is in Lumi Cloud: the person who joined here (none when managed).
+            "user_id": str((self._section().get("account") or {}).get("user_id") or "") if how == "joined" else "",
             "enrolled_at": _iso(_now()),
             # Pinned now; they verify the organization's policy (lumi/policy.py).
             "trusted_keys": {str(k): str(v) for k, v in keys.items()},
@@ -477,19 +510,39 @@ class CloudClient:
             logger.warning("Couldn't delete the downloaded organization policy", exc_info=True)
         policy.load(force=True)
         audit.record("cloud.unenrolled", organization=organization, reason=reason)
+        # Oversight records meant for the organization aren't sent anywhere
+        # else, and a later enrollment shows its own notice (lumi/oversight.py).
+        from . import oversight
+
+        oversight.discard(f"This computer left {organization or 'the organization'} ({reason}).")
+        oversight.forget_notice(f"This computer left {organization or 'the organization'} ({reason}).")
         self._changed()
 
     # ── Device sign-in and check-ins ───────────────────────────────────────
-    def _device_token(self) -> str:
-        if self._device_access and self._device_access[1] > time.monotonic():
-            return self._device_access[0]
+    def _device_key(self):
+        """This computer's enrolled Ed25519 key (CloudError when it isn't enrolled)."""
         from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
         device = self.device()
         secret = self.settings.get("api_keys", DEVICE_SECRET) or ""
         if not device or not secret:
             raise CloudError("This computer isn't enrolled.", code="not_enrolled")
-        key = Ed25519PrivateKey.from_private_bytes(base64.b64decode(secret))
+        return Ed25519PrivateKey.from_private_bytes(base64.b64decode(secret))
+
+    def sign_as_device(self, data: bytes) -> str:
+        """An Ed25519 signature by this computer's device key over ``data``, base64url with padding.
+
+        Organization oversight signs a person's confirmation of its notice
+        with it (lumi/oversight.py); Lumi Cloud checks it against the public
+        key the device enrolled with. The key never leaves the credential store.
+        """
+        return base64.urlsafe_b64encode(self._device_key().sign(bytes(data))).decode("ascii")
+
+    def _device_token(self) -> str:
+        if self._device_access and self._device_access[1] > time.monotonic():
+            return self._device_access[0]
+        device = self.device()
+        key = self._device_key()
         now = int(time.time())
         audience = f"{self.url}/api/v1/devices/token"
         assertion = eddsa_jwt({"iss": device["id"], "sub": device["id"], "aud": audience, "iat": now,
@@ -504,10 +557,21 @@ class CloudClient:
         token = self._access_token()
         return self._call(method, f"{self.url}{path}", headers={"Authorization": f"Bearer {token}"}, **kwargs)
 
-    def device_call(self, method: str, path: str, **kwargs: Any) -> dict:
+    def account_token(self) -> str:
+        """The signed-in person's desktop access token, refreshed when it has expired.
+
+        A managed computer sends it with the person's confirmation of the
+        oversight notice (``Lumi-Account-Token``, lumi/oversight.py), so Lumi
+        Cloud can check the confirmation is theirs. CloudError (``signed_out``)
+        when nobody is signed in.
+        """
+        return self._access_token()
+
+    def device_call(self, method: str, path: str, *, headers: dict | None = None, **kwargs: Any) -> dict:
         """Lumi Cloud's device API as this computer (tasks from chat, lumi/remote_tasks.py); {} for no content."""
         token = self._device_token()
-        return self._call(method, f"{self.url}{path}", headers={"Authorization": f"Bearer {token}"}, **kwargs)
+        return self._call(method, f"{self.url}{path}",
+                          headers={**(headers or {}), "Authorization": f"Bearer {token}"}, **kwargs)
 
     def check_in(self) -> dict:
         """Report to Lumi Cloud and apply a new policy if there is one."""

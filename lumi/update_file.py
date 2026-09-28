@@ -432,11 +432,12 @@ def can_install_here() -> str:
 
 
 def instructions() -> str:
-    """What to do where Lumi doesn't install updates itself (macOS and Linux)."""
+    """What to do where Lumi doesn't install updates from a file (macOS and Linux)."""
     if sys.platform == "darwin":
-        return ("On macOS Lumi doesn't install updates itself. Install the new lumi-X.Y.Z.pkg with your device "
-                "management or `sudo installer -pkg lumi-X.Y.Z.pkg -target /` (check it first with "
-                "`pkgutil --check-signature`), or replace Lumi.app from the new .dmg.")
+        return ("On macOS Lumi installs only the updates it downloads itself (Settings > Updates), not a file. "
+                "Open the new lumi-X.Y.Z.dmg and drag Lumi to Applications to replace it, or install the new "
+                "lumi-X.Y.Z.pkg with your device management or `sudo installer -pkg lumi-X.Y.Z.pkg -target /` "
+                "(check it first with `pkgutil --check-signature`).")
     return ("On Linux Lumi doesn't install updates itself. Install the new package with your package manager "
             "(`sudo apt install ./lumi_X.Y.Z_amd64.deb` or `sudo dnf install ./lumi-X.Y.Z-1.x86_64.rpm`), or "
             "replace the AppImage or tarball.")

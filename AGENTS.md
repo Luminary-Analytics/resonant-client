@@ -154,10 +154,14 @@ host enrollment and actual packaged/learned-benefit qualification remain open.
   go only to release.yml's jobs in the `release` environment, never to a
   workflow pull requests run; a Developer ID certificate is an update key too.
   Authenticode goes through `.github/actions/authenticode-sign` and
-  `packaging/sign_windows.ps1`, which decides and checks (Valid and
-  timestamped). Azure Artifact Signing signs with a short-lived OIDC sign-in:
-  only release.yml's `release` job may have `id-token: write`, never a job
-  that runs tests or installs packages from PyPI.
+  `packaging/sign_windows.ps1`, which decides and checks (unsigned before;
+  then Valid, timestamped and by `WINDOWS_SIGN_EXPECTED_SUBJECT`). Azure
+  Artifact Signing signs with a short-lived OIDC sign-in: only release.yml's
+  `release` job may have `id-token: write`, and it runs only pinned code
+  (actions by commit, tools by SHA-256, nothing installed at run time). Tests
+  and PyPI installs stay in `test`; what's signed comes only from `build`'s
+  hash-pinned packages, and only tags on main are released. Publish only
+  what `packaging/check_release_files.ps1` lists.
 - Offline mode (`offline.py`, docs/offline.md): every outbound connection Lumi
   makes goes through the central check, and only this computer and
   `offline.allowed_hosts` are reachable. Build HTTP clients with

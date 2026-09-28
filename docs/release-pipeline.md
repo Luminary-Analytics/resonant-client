@@ -7,18 +7,29 @@ not permanent thresholds or guarantees.
 ## Source to installer
 
 `.github/workflows/tests.yml` checks pushed/PR source; `build-check.yml` checks
-Windows packaging. A `v*.*.*` tag starts `release.yml` on Windows runners. Its
-`build` job checks the tag against `__version__`, installs test dependencies,
-runs Ruff and pytest, then invokes `scripts/build_clean.ps1`, and hands the
-bundle to the `release` job, which signs, packages and publishes it. `build`
-has no secret, no OIDC token and no environment: the test run installs
-packages from PyPI, and nothing it runs may reach a signing identity.
+Windows packaging. A `v*.*.*` tag starts `release.yml` on Windows runners, in
+three jobs, so that only pinned inputs produce the bytes that get signed:
 
-The clean build creates a temporary virtual environment, installs
-`packaging/requirements-release.txt` with `--require-hashes` and then the local
-package without resolving anything again. Fetch scripts verify pinned ripgrep
-and frontend assets. `lumi.spec` selects code/data, and `check_bundle.py`
-enforces `bundle-policy.json`, producing a manifest.
+- `test` installs the test dependencies from PyPI (within `pyproject.toml`'s
+  ranges) and runs Ruff and pytest. Nothing it makes is used; the release only
+  waits for it to pass.
+- `build` checks that the tag's commit is on main and matches `__version__`,
+  then runs `scripts/build_clean.ps1` in a fresh Python from `setup-python`,
+  with no pip cache and only hash-pinned packages, and hands the bundle, the
+  SBOM and the notices on as an artifact. It runs no tests.
+- `release`, once both passed, signs, packages and publishes
+  ([Authenticode](#authenticode)).
+
+`test` and `build` have no secret, no OIDC token and no environment.
+
+The clean build creates a temporary virtual environment and installs, with the
+pip that comes with that Python, `packaging/requirements-release.txt` with
+`--require-hashes`, then the local package from the checkout without an index
+or build isolation (built with the pinned setuptools), so nothing is resolved
+or downloaded again. Fetch scripts verify pinned ripgrep and frontend assets.
+`lumi.spec` selects code/data, and `check_bundle.py` enforces
+`bundle-policy.json`, producing a manifest. The macOS and Linux builds
+(`packaging/build_macos.sh`, `build_linux.sh`) install the same way.
 The v0.17.0 local bundle was 55.5 MiB across 256 files.
 
 CI smoke-checks the executable's version, then Inno Setup wraps the bundle into
@@ -66,8 +77,14 @@ signature (SmartScreen, company policies): `lumi.exe` before Inno Setup
 packages it, the MSI, and the installer before its EdDSA signature is
 computed, so the update feed signs the final bytes. Each goes through
 `.github/actions/authenticode-sign`, and `packaging/sign_windows.ps1` decides
-how to sign and checks the result: every signature must be `Valid`
-(`Get-AuthenticodeSignature`) and timestamped. One signer at a time:
+how to sign and checks the result. Each file must carry no signature before
+it's signed, and afterwards a signature that is `Valid`
+(`Get-AuthenticodeSignature`), timestamped and by the certificate subject in
+the variable `WINDOWS_SIGN_EXPECTED_SUBJECT`, exactly as Windows shows it
+(Properties › Digital Signatures › Details › View Certificate › Details ›
+Subject); every signer needs it. So a signer that exits 0 without signing, on
+an unsigned file or on one signed already, or that signs with another
+certificate, fails the release. One signer at a time:
 
 - **Azure Artifact Signing** (formerly Trusted Signing), the one Lumi means to
   use. The variables `ARTIFACT_SIGNING_ENDPOINT`, `ARTIFACT_SIGNING_ACCOUNT`
@@ -96,16 +113,39 @@ and the run shows a warning, until the variable `WINDOWS_SIGNING_REQUIRED` is
 `true`; set it once signing works, and losing the signer fails the release
 instead of shipping unsigned files. A signer configured in part, two signers
 at once, an Artifact Signing account without the Azure sign-in (or a sign-in
-without an account), and a signature that fails or has no timestamp always
-fail the release.
+without an account), a signer without `WINDOWS_SIGN_EXPECTED_SUBJECT` (or the
+subject without a signer), and a signature that fails, has no timestamp or
+names another subject always fail the release.
+
+Only pinned code runs in the `release` job, which holds the Azure sign-in and
+the EdDSA key: this repository's scripts at the tagged commit, actions pinned
+by commit, and tools pinned by SHA-256. Microsoft's Artifact Signing client
+and WiX (`packaging/fetch_wix.ps1`: the `wix` 5.0.2 NuGet package, installed
+from a folder that holds only the checked file) are both fetched that way; in
+CI (`GITHUB_ACTIONS=true`) `sign_windows.ps1` refuses the `WINDOWS_SIGNTOOL`
+and `ARTIFACT_SIGNING_DLIB` overrides and signs only with the Windows SDK's
+signtool, checked as validly signed by Microsoft.
+
+**Publishing only what was signed.** `release` takes only the bundle, SBOM
+and notices from `build`'s artifact (`packaging/check_release_files.ps1
+-Handover`). `sign_windows.ps1` records each file it signs, with its SHA-256,
+and `check_release_files.ps1` runs again just before the GitHub Release and
+before the Pages site: `dist/installer` must hold exactly the installer and,
+for a stable tag, the MSI (a beta gets none), each unchanged since it was
+signed and signed as recorded (`sign_windows.ps1 -Verify`; with no signer
+configured, still unsigned and not required). Only the files it lists, with
+the SBOM and notices, are uploaded.
 
 `build-check.yml`'s `signing-dry-run` job runs the same action as a pull
-request can, with no identity, token or secret: the Azure sign-in is skipped
-and the log says why, the file is left as it was, and an account without a
-sign-in, or required signing with no signer, fails. It also checks the
-signing client's pinned hash against the package NuGet serves.
-`tests/test_sign_windows.py` runs `sign_windows.ps1` with a stand-in signtool
-for every signer, in Windows PowerShell and PowerShell 7.
+request can, with no identity, token or secret. It first finds signtool and
+fetches the signing client as the release would, and checks both
+(`sign_windows.ps1 -CheckTools`: signed by Microsoft; the pinned SHA-256
+against the package NuGet serves). With nothing configured the Azure sign-in
+is skipped and the log says why, the file is left as it was, and the
+pre-publishing check lists it; an account without a sign-in, required signing
+with no signer, and a signtool or dlib of one's own in CI each fail.
+`tests/test_sign_windows.py` runs both scripts with a stand-in signtool for
+every signer, in Windows PowerShell and PowerShell 7.
 
 ## macOS
 
@@ -192,14 +232,24 @@ the owner configures it (Settings › Environments › `release`):
    `WINDOWS_SIGN_PFX_BASE64`, `WINDOWS_SIGN_PFX_PASSWORD`. The variables
    (`WINDOWS_SIGN_COMMAND`, `MACOS_SIGNING_REQUIRED`,
    `WINDOWS_SIGNING_REQUIRED`) can stay repository variables. Azure Artifact
-   Signing needs no secret; its six variables belong to the environment too
-   ([below](#azure-artifact-signing)).
+   Signing needs no secret; its variables, and `WINDOWS_SIGN_EXPECTED_SUBJECT`,
+   belong to the environment too ([below](#azure-artifact-signing)).
 3. **Required reviewers:** the owner, so a person approves each release run.
    Optional until an OIDC identity trusts the environment; required from then
    on (below).
 
+And one repository setting: **a tag ruleset** (Settings › Rules › Rulesets ›
+New ruleset › *New tag ruleset*), named e.g. `release tags`, enforcement
+*Active*, target *Include by pattern* `v*`, with the rules *Restrict
+creations*, *Restrict updates* and *Restrict deletions*, and only the
+*Repository admin* role (the owner's) in the bypass list. Then collaborators
+with write access can't push, move or delete the tag that starts a release.
+`build`, `release` and `macos` also check that the tag's commit is on main
+(`git merge-base --is-ancestor`, with main fetched by the checkout) and stop
+otherwise, so a tag on an unmerged branch releases nothing.
+
 All of this is free for a public repository. A private one needs GitHub Team
-or Enterprise for environments, their secrets and the tag rule, and
+or Enterprise for environments, their secrets, the tag rule and rulesets, and
 Enterprise for required reviewers; make the repository private only on such a
 plan, or the release jobs lose the protection above. Keep the name `release`:
 Azure Artifact Signing's identity trusts GitHub's OIDC subject
@@ -210,9 +260,14 @@ credential trusts that subject: while the environment is unprotected, a job
 from any branch a collaborator pushes can name it, get a token with that
 subject, and sign any file as Luminary Analytics. Only `release.yml`'s
 `release` job may ask for a token (`permissions: id-token: write`), never the
-whole workflow and never the `build` job, which runs the tests and the
-packages they install from PyPI; `tests/test_release_supply_chain.py` fails if
-any other job, workflow or action asks.
+whole workflow, never `test`, which runs the tests and the packages they
+install from PyPI, and never `build`. `tests/test_release_supply_chain.py`
+reads every workflow as GitHub does (YAML: `write-all`, flow style, quoted
+keys, `.yaml` files, a key given twice) and fails if any other job, workflow
+or action can ask, if a workflow leaves its token's permissions to the
+repository's default, or if a job whose output is released (`build`,
+`release`, `macos`, `publish-macos`) installs anything at run time that isn't
+hash-checked: its steps, the local actions they use, and the scripts those run.
 
 The workflow is hardened in the same spirit:
 
@@ -238,9 +293,10 @@ profile created:
 
 1. **Protect the `release` environment first** (Settings › Environments ›
    `release`): *Deployment branches and tags* › *Selected branches and tags*
-   with the one tag rule `v*`, and **Required reviewers** with the owner.
-   Do this before step 3: until then any job that names the environment gets
-   a token the credential would trust.
+   with the one tag rule `v*`, and **Required reviewers** with the owner. Add
+   the [tag ruleset](#the-release-environment) that lets only the owner
+   create `v*` tags. Do this before step 3: until then any job that names the
+   environment gets a token the credential would trust.
 2. **Create the app registration** (Microsoft Entra ID › App registrations ›
    New registration, e.g. `lumi-release-signing`, single tenant, no redirect
    URI), and its service principal. Note the Application (client) ID and the
@@ -276,11 +332,17 @@ profile created:
    | `AZURE_CLIENT_ID` | The app registration's Application (client) ID |
    | `AZURE_TENANT_ID` | The Directory (tenant) ID |
    | `AZURE_SUBSCRIPTION_ID` | The subscription the signing account is in |
+   | `WINDOWS_SIGN_EXPECTED_SUBJECT` | The subject of the profile's certificates, exactly as Windows shows it, e.g. `CN=Luminary Analytics, O=Luminary Analytics, L=<city>, S=<state>, C=US` |
 
    For example
    `gh variable set ARTIFACT_SIGNING_ENDPOINT --env release --body "https://eus.codesigning.azure.net" --repo Luminary-Analytics/resonant-client`.
-6. **Release a beta**, and check the installer and MSI (Properties › Digital
-   Signatures: Luminary Analytics, with a timestamp from Microsoft). Then set
+   The expected subject comes from the identity validation (the certificate
+   profile shows it). If it isn't exactly right, the first signing run fails
+   after signing `lumi.exe` and before anything is published, and its error
+   names the subject the certificate has: set that one and run it again.
+6. **Release a beta**, and check the installer (Properties › Digital
+   Signatures: Luminary Analytics, with a timestamp from Microsoft); a beta
+   has no MSI, so check that on the first stable release. Then set
    `WINDOWS_SIGNING_REQUIRED` to `true`.
 
 If the sign-in fails because the identity sees no subscription (its only
@@ -375,7 +437,8 @@ release lines (for installs pinned to one), and betas newer than the newest
 stable release. A stable tag also regenerates the download page.
 
 For stable tags the workflow also builds `lumi-X.Y.Z.msi` with WiX 5
-(`packaging/build_msi.ps1`, `packaging/lumi.wxs`), Authenticode-signs it like
+(`packaging/build_msi.ps1`, `packaging/lumi.wxs`; WiX from
+`packaging/fetch_wix.ps1`, pinned by SHA-256), Authenticode-signs it like
 the EXE, attaches it to the release and copies it beside the installer on
 Pages, where the download page offers it to administrators. Betas get no MSI;
 an MSI version is three numbers. The build-check workflow builds the MSI on
@@ -422,7 +485,7 @@ ordinary CI. Keep mocked wire-contract tests distinct from live model evidence.
 
 | File | Responsibility |
 | --- | --- |
-| `.github/workflows/release.yml` | Test, build, sign, release, publish Pages site |
+| `.github/workflows/release.yml` | Test; build from pinned inputs; sign, release and publish the Pages site |
 | `packaging/publish_pages.py` | Pages-hosted installers and download page |
 | `.github/workflows/tests.yml` | Source correctness checks |
 | `.github/workflows/build-check.yml` | Packaging checks without publication |
@@ -434,9 +497,11 @@ ordinary CI. Keep mocked wire-contract tests distinct from live model evidence.
 | `packaging/third_party_notices.py`, `packaging/third-party-components.json` | Notices, license gate, SBOM additions |
 | `.github/actions/authenticode-sign/action.yml`, `packaging/sign_windows.ps1` | Authenticode signing: the Azure sign-in (OIDC), the signer's choice and each signature's check |
 | `packaging/fetch_artifact_signing.ps1` | Microsoft's Artifact Signing client (the signtool dlib), pinned by SHA-256 |
+| `packaging/check_release_files.ps1` | What the release takes from `build`, and publishes: only the files it signed, unchanged |
 | `packaging/check_bundle.py`, `packaging/bundle-policy.json` | Bundle contents and size gate |
 | `packaging/installer.iss` | Windows installer (EXE) |
 | `packaging/lumi.wxs`, `packaging/build_msi.ps1` | MSI for device management |
+| `packaging/fetch_wix.ps1` | WiX 5, the MSI's build tool, pinned by SHA-256 and installed from its checked package alone |
 | `packaging/update_appcast.py` | Stable, beta and release-line update feeds, for Windows and macOS |
 | `lumi/updater.py`, `lumi/update_channels.py` | WinSparkle client and verification key; update mode, channel, pin and platform |
 | `packaging/build_macos.sh`, `packaging/fetch_sparkle.sh` | macOS app, DMG and PKG; pinned Sparkle; Apple signing and notarization |

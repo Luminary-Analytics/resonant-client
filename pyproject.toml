@@ -86,6 +86,8 @@ dev = [
     # change. Raise this bound intentionally, then fix whatever the new
     # version reports. See [tool.ruff.lint] for the rule-set contract.
     "ruff>=0.15.0,<0.17.0",
+    # tests/test_release_supply_chain.py reads the workflows as GitHub does.
+    "pyyaml>=6.0",
 ]
 code-intelligence = [
     "tree-sitter-language-pack>=0.7.0",

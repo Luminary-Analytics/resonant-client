@@ -21,6 +21,9 @@ packaging/sparkle/
 # Microsoft's Artifact Signing client (the signtool dlib), fetched and hash-checked by
 # packaging/fetch_artifact_signing.ps1 when a release signs with Azure. Same reasoning again.
 packaging/artifact-signing/
+# WiX, the MSI's build tool, installed from its hash-checked package by
+# packaging/fetch_wix.ps1. Same reasoning again.
+packaging/wix/
 
 # Virtual environments
 .venv/

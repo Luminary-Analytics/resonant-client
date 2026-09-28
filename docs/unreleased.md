@@ -27,35 +27,74 @@ with a warning, exactly as before. See
   (`packaging/fetch_artifact_signing.ps1`: `Microsoft.ArtifactSigning.Client`
   1.0.128, pinned by SHA-256), which may use only that Azure CLI sign-in, and
   Microsoft's timestamp server.
-- **Every signature must be timestamped** as well as `Valid`, whichever the
-  signer: an Artifact Signing certificate lasts about three days.
+- **Really signed, by the right certificate.** Each file must carry no
+  signature before it's signed, and afterwards one that is `Valid`,
+  timestamped (an Artifact Signing certificate lasts about three days) and by
+  the subject in the new `WINDOWS_SIGN_EXPECTED_SUBJECT` variable, which
+  every signer needs. A signer that exits 0 without signing, on an unsigned
+  or an already-signed file, or that signs with another certificate, fails
+  the release.
 - **Configured means configured.** A signer set up in part, two signers at
-  once, an account without the sign-in (or the other way round), and a
+  once, an account without the sign-in (or the other way round), a signer
+  without the expected subject (or the subject without a signer), and a
   failed or unstamped signature fail the release; `WINDOWS_SIGNING_REQUIRED`
   still fails one with no signer at all.
-- **Only the signing job can get an OIDC token.** The Windows release is two
-  jobs now: `build` runs the tests, which install packages from PyPI, and
-  builds the bundle, with no secret, token or environment; `release`, in the
-  `release` environment, signs, packages and publishes, and is the only job
-  with `id-token: write`. A test fails if any other job, workflow or action
-  asks for it, or if an action isn't pinned to a commit.
+- **Only pinned inputs make what's signed.** The Windows release is three
+  jobs. `test` runs Ruff and pytest on packages from PyPI, and nothing it
+  makes is used. `build` makes the bundle in a fresh Python with only
+  hash-pinned packages and no pip cache: `build_clean.ps1`, `build_macos.sh`
+  and `build_linux.sh` no longer upgrade pip, and install Lumi from the
+  checkout with the pinned setuptools and no index. `release`, after both,
+  signs, packages and publishes, running only pinned code: WiX now comes from
+  its NuGet package checked against a pinned SHA-256 and installed from a
+  folder holding only that file (`packaging/fetch_wix.ps1`, which
+  build-check uses too), and in CI `sign_windows.ps1` refuses the
+  `WINDOWS_SIGNTOOL` and `ARTIFACT_SIGNING_DLIB` overrides and signs only
+  with the Windows SDK's signtool, checked as signed by Microsoft. The macOS
+  build job and the build check drop their pip cache too.
+- **Only the signing job can get an OIDC token.** `release`, in the
+  `release` environment, is the only job with `id-token: write`.
+  `tests/test_release_supply_chain.py` reads the workflows as YAML
+  (`write-all`, flow style, quoted keys, `.yaml` files, a key given twice)
+  and fails if another job, workflow or action can ask for a token, a
+  workflow leaves its token's permissions to the repository default (five
+  now say `contents: read`), a job whose output is released installs
+  anything at run time that isn't hash-checked (its steps, the local actions
+  they use and the scripts those run), or an action isn't pinned to a
+  commit.
+- **Only commits on main are released.** `build`, `release` and `macos` stop
+  unless the tag's commit is on main (`git merge-base --is-ancestor`), and
+  the docs add a tag ruleset so that only the owner can create `v*` tags.
+- **Only what the job signed is published.** `release` takes only the
+  bundle, SBOM and notices from `build`'s artifact. `sign_windows.ps1`
+  records each file it signs with its SHA-256, and
+  `packaging/check_release_files.ps1` runs before the GitHub Release and
+  again before the Pages site: `dist/installer` must hold just the installer
+  and, for a stable tag, the MSI (a beta gets none), each unchanged and
+  signed as recorded. The release uploads the list it outputs.
+  `build_msi.ps1` no longer leaves a `.wixpdb` beside the MSI.
 - **Protect the environment first.** The docs give the owner's steps in
-  order: the `v*` tag rule and the owner as required reviewer on `release`
-  before the app registration's federated credential
+  order: the `v*` tag rule and the owner as required reviewer on `release`,
+  and the tag ruleset, before the app registration's federated credential
   (`repo:Luminary-Analytics/resonant-client:environment:release`, audience
-  `api://AzureADTokenExchange`), then the "Artifact Signing Certificate Profile
-  Signer" role on the certificate profile, then the six variables. The
-  subject to use after an opt-in to immutable OIDC subjects, or a rename, is
-  there too.
+  `api://AzureADTokenExchange`), then the "Artifact Signing Certificate
+  Profile Signer" role on the certificate profile, then the seven variables.
+  The subject to use after an opt-in to immutable OIDC subjects, or a
+  rename, is there too.
 - **Checked without credentials.** `build-check.yml`'s `signing-dry-run`
-  runs the same action as a pull request can: the sign-in is skipped with
-  its reason, the file is untouched, an account without a sign-in and
-  required signing with no signer both fail, and the client's pinned hash
-  matches NuGet's package. `tests/test_sign_windows.py` runs every signer's
-  path with a stand-in signtool, in Windows PowerShell and PowerShell 7.
+  runs the same action and the same pre-publishing check as a pull request
+  can: it finds signtool and fetches the client as the release would and
+  checks both (`sign_windows.ps1 -CheckTools`), the sign-in is skipped with
+  its reason, the file is untouched and listed for publishing, and an
+  account without a sign-in, required signing with no signer, and a
+  signtool or dlib of one's own in CI each fail. `tests/test_sign_windows.py`
+  runs every signer's path and the pre-publishing check with a stand-in
+  signtool, in Windows PowerShell and PowerShell 7.
 
-Not verified: a real signature. Nothing has signed through Azure yet, because
-the account, its identity validation and the certificate profile are still
+Not verified: a real signature, and a tagged run of the new job layout (the
+tag check, the handover, the publishing list and WiX from its checked
+package inside `release`). Nothing has signed through Azure yet, because the
+account, its identity validation and the certificate profile are still
 being set up.
 
 ## September 27 macOS alpha: Sparkle updates and release publishing (source only, not released)

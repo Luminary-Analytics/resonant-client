@@ -4,32 +4,41 @@ name: Release
 # Tag-only — never on plain commits to main, never on branches.
 #
 # What this workflow does end-to-end:
-#   1. Job `build`, with no secret and no OIDC token: lint and tests, then the
-#      PyInstaller bundle for the tagged version from the hash-pinned
-#      packaging/requirements-release.txt, with third-party notices and a
-#      CycloneDX SBOM, handed to the next job as an artifact
-#   2. Job `release`: Authenticode-signs lumi.exe, wraps the bundle into an
-#      Inno Setup installer (lumi-setup-X.Y.Z.exe) and, for stable tags, an MSI
-#      for device management (lumi-X.Y.Z.msi), and Authenticode-signs both when
-#      a signer is configured (.github/actions/authenticode-sign, then
+#   1. Job `test`: lint and tests. They install packages from PyPI within
+#      pyproject.toml's ranges, so nothing this job makes is used; `release`
+#      only waits for it to pass.
+#   2. Job `build`, from pinned inputs only: checks that the tag's commit is
+#      on main and matches __version__, then builds the PyInstaller bundle in
+#      a fresh Python with nothing but hash-pinned packages
+#      (packaging/requirements-release.txt, --require-hashes, no pip cache),
+#      with third-party notices and a CycloneDX SBOM, handed to `release` as an
+#      artifact. No secret, no OIDC token, no environment.
+#   3. Job `release`, after both: checks the tag again and takes only the
+#      bundle, SBOM and notices from the artifact. Authenticode-signs lumi.exe,
+#      wraps the bundle into an Inno Setup installer (lumi-setup-X.Y.Z.exe)
+#      and, for stable tags, an MSI for device management (lumi-X.Y.Z.msi, WiX
+#      pinned by SHA-256), and Authenticode-signs both when a signer is
+#      configured (.github/actions/authenticode-sign, then
 #      packaging/sign_windows.ps1): Azure Artifact Signing with a short-lived
 #      OIDC sign-in, or a PFX or command
-#   3. Signs the installer with the EdDSA private key (from EDDSA_PRIVATE_KEY secret)
-#   4. Creates a GitHub Release with the installer, SBOM and notices
-#   5. Copies the installer to the GitHub Pages site (downloads/vX.Y.Z/),
+#   4. Signs the installer with the EdDSA private key (from EDDSA_PRIVATE_KEY secret)
+#   5. Checks what it signed, unchanged and signed as recorded
+#      (packaging/check_release_files.ps1), and creates a GitHub Release with
+#      those files, the SBOM and the notices
+#   6. Copies the installer to the GitHub Pages site (downloads/vX.Y.Z/),
 #      prunes old installers and adds the release to the update feeds: a
 #      stable tag to appcast.xml, the beta feed and its release line's feed;
 #      a beta tag (vX.Y.Z-beta.N) to the beta feed only
-#   6. Publishes gh-pages as one fresh commit. WinSparkle in installed copies
+#   7. Publishes gh-pages as one fresh commit. WinSparkle in installed copies
 #      picks up the release within 24h (or on next launch if the check is stale)
 #
 # macOS, alongside (jobs `macos` and `publish-macos`):
-#   7. Builds Lumi.app with Sparkle, the DMG and the PKG (packaging/build_macos.sh)
-#      on Apple silicon. With the Apple secrets (docs/macos.md) they are signed
-#      with the Developer ID, notarized and stapled; without them the app is
-#      signed ad hoc, and the run, the release and the download page say it
-#      isn't notarized.
-#   8. Once the Windows job has published, signs the DMG with the same EdDSA
+#   8. Builds Lumi.app with Sparkle, the DMG and the PKG (packaging/build_macos.sh)
+#      on Apple silicon, from pinned inputs as on Windows. With the Apple
+#      secrets (docs/macos.md) they are signed with the Developer ID,
+#      notarized and stapled; without them the app is signed ad hoc, and the
+#      run, the release and the download page say it isn't notarized.
+#   9. Once the Windows job has published, signs the DMG with the same EdDSA
 #      key, adds the DMG and PKG to the GitHub Release, copies the DMG to the
 #      Pages site beside the installer and adds it to the macOS feeds
 #      (appcast-macos*.xml; the Windows feeds are left as they are). Sparkle in
@@ -37,12 +46,19 @@ name: Release
 #   A failed macOS build doesn't hold the Windows release back; rerun its jobs.
 #
 # Hardening (docs/release-pipeline.md#the-release-environment):
+#   - Only commits on main are released: `build`, `release` and `macos` stop
+#     unless the tag's commit is on main, and a tag ruleset lets only the
+#     owner create v* tags.
 #   - Jobs that use the EdDSA key or the Apple or Windows signing secrets run
 #     in the `release` environment, which the owner restricts to v* tags.
 #   - Only the `release` job may ask for an OIDC token (id-token: write), for
 #     the Azure sign-in Artifact Signing uses; the Azure identity trusts only
-#     this environment's subject. The tests, and every package they install
-#     from PyPI, run in `build`, which has no token, secret or environment.
+#     this environment's subject. It runs this repository's code, actions
+#     pinned by commit and tools pinned by SHA-256, and installs nothing else.
+#     The tests, and every package they install from PyPI, run in `test`; the
+#     bytes it signs come from `build`. tests/test_release_supply_chain.py
+#     fails on another job with a token, or a run-time install that isn't
+#     hash-checked.
 #   - Only the two publishing jobs get contents: write; the macOS build reads.
 #     Checkouts that never push keep no credentials.
 #   - The jobs that write gh-pages share one concurrency group and push with a
@@ -66,21 +82,76 @@ permissions:
   contents: read
 
 jobs:
-  build:
-    # Lint, tests and the unsigned bundle. No secret, no OIDC token and no
-    # environment: the test run installs packages from PyPI, and nothing it
-    # runs may reach a signing identity.
+  test:
+    # Correctness gate. A signed installer that auto-updates every deployed
+    # copy of Lumi is the last artifact that should ever be cut from a red
+    # tree, and a tag push can race ahead of the PR that `tests.yml` gated.
+    # The test run installs packages from PyPI, so nothing it makes is used:
+    # no artifact, no secret, no OIDC token, no environment.
     runs-on: windows-latest
     timeout-minutes: 30
     permissions:
       contents: read
 
     steps:
-      - name: Checkout main
+      - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
-          fetch-depth: 0
           persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.13'
+          cache: 'pip'
+
+      - name: Install for tests
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[all,dev]"
+
+      - name: Lint
+        run: python -m ruff check .
+
+      - name: Test
+        run: python -m pytest -q
+
+  build:
+    # The bundle `release` signs, from pinned inputs only: this repository at
+    # the tagged commit, a fresh Python from setup-python without a pip cache,
+    # and packages installed only with --require-hashes (the SBOM tools here;
+    # packaging/requirements-release.txt in scripts/build_clean.ps1, which
+    # also fetches ripgrep and the web assets by SHA-256). No tests, no
+    # secret, no OIDC token, no environment.
+    runs-on: windows-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0   # all branches: main, for the check below
+          persist-credentials: false
+
+      # Only a commit on main is released: a tag on any other commit (a
+      # branch nobody merged) stops here, before anything is built or signed.
+      - name: Check the tag is on main
+        shell: bash
+        run: |
+          set -euo pipefail
+          tagged="$(git rev-parse "${GITHUB_REF}^{commit}")"
+          if [ "$tagged" != "$(git rev-parse HEAD)" ]; then
+            echo "::error::The checkout isn't the commit ${GITHUB_REF_NAME} tags ($tagged)."
+            exit 1
+          fi
+          git rev-parse --verify --quiet refs/remotes/origin/main > /dev/null || { echo "::error::main wasn't fetched."; exit 1; }
+          if ! git merge-base --is-ancestor "$tagged" refs/remotes/origin/main; then
+            echo "::error::${GITHUB_REF_NAME} tags $tagged, which isn't on main. Only commits on main are released."
+            exit 1
+          fi
+          echo "${GITHUB_REF_NAME} tags $tagged, which is on main."
 
       - name: Extract version from tag
         id: version
@@ -105,25 +176,9 @@ jobs:
         uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: '3.13'
-          cache: 'pip'
-
-      # Correctness gate. A signed installer that auto-updates every deployed
-      # copy of Lumi is the last artifact that should ever be cut from a red
-      # tree, and a tag push can race ahead of the PR that `tests.yml` gated.
-      # ~2 minutes against a 30-minute job budget.
-      - name: Install for tests
-        run: |
-          python -m pip install --upgrade pip
-          pip install -e ".[all,dev]"
-
-      - name: Lint
-        run: python -m ruff check .
-
-      - name: Test
-        run: python -m pytest -q
 
       - name: Install the pinned SBOM tools
-        run: python -m pip install --require-hashes -r packaging/tools-requirements.txt
+        run: python -m pip install --disable-pip-version-check --no-cache-dir --require-hashes -r packaging/tools-requirements.txt
 
       - name: Build PyInstaller bundle
         shell: pwsh
@@ -166,10 +221,11 @@ jobs:
           retention-days: 7
 
   release:
-    # Signs, packages and publishes what `build` made. Its steps run only code
-    # from this repository and pinned actions and tools: this job holds the
-    # EdDSA key and the Azure signing identity.
-    needs: build
+    # Signs, packages and publishes what `build` made, once `test` passed too.
+    # This job holds the EdDSA key and the Azure signing identity, so it runs
+    # only this repository's code at the tagged commit, actions pinned by
+    # commit and tools pinned by SHA-256, and installs nothing else.
+    needs: [test, build]
     runs-on: windows-latest
     timeout-minutes: 30
     environment: release
@@ -184,7 +240,25 @@ jobs:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
+          fetch-depth: 0   # all branches: main, for the check below
           persist-credentials: false
+
+      # As in `build`, and before anything is signed.
+      - name: Check the tag is on main
+        shell: bash
+        run: |
+          set -euo pipefail
+          tagged="$(git rev-parse "${GITHUB_REF}^{commit}")"
+          if [ "$tagged" != "$(git rev-parse HEAD)" ]; then
+            echo "::error::The checkout isn't the commit ${GITHUB_REF_NAME} tags ($tagged)."
+            exit 1
+          fi
+          git rev-parse --verify --quiet refs/remotes/origin/main > /dev/null || { echo "::error::main wasn't fetched."; exit 1; }
+          if ! git merge-base --is-ancestor "$tagged" refs/remotes/origin/main; then
+            echo "::error::${GITHUB_REF_NAME} tags $tagged, which isn't on main. Only commits on main are released."
+            exit 1
+          fi
+          echo "${GITHUB_REF_NAME} tags $tagged, which is on main."
 
       - name: Extract version from tag
         id: version
@@ -205,12 +279,19 @@ jobs:
           name: lumi-windows-bundle
           path: dist
 
+      # The bundle, SBOM and notices come from `build`, and nothing else does:
+      # the installers are made and signed here.
+      - name: Take only the bundle, SBOM and notices from the build
+        shell: pwsh
+        run: ./packaging/check_release_files.ps1 -Version "${{ steps.version.outputs.version }}" -Handover
+
       # Authenticode is Windows' publisher signature (SmartScreen, company
       # policies); EdDSA below is the update feed's. The action decides from
       # the release environment's variables and secrets: Azure Artifact
       # Signing, a PFX or a command, or unsigned with a warning until one is
       # configured (docs/release-pipeline.md). Each signing signs in to Azure
-      # afresh, so a sign-in never outlives GitHub's short-lived token.
+      # afresh, so a sign-in never outlives GitHub's short-lived token, and
+      # records the file and its SHA-256 for the check before publishing.
       - name: Authenticode-sign lumi.exe
         uses: ./.github/actions/authenticode-sign
         with:
@@ -224,6 +305,7 @@ jobs:
           pfx-base64: ${{ secrets.WINDOWS_SIGN_PFX_BASE64 }}
           pfx-password: ${{ secrets.WINDOWS_SIGN_PFX_PASSWORD }}
           command: ${{ vars.WINDOWS_SIGN_COMMAND }}
+          expected-subject: ${{ vars.WINDOWS_SIGN_EXPECTED_SUBJECT }}
           required: ${{ vars.WINDOWS_SIGNING_REQUIRED }}
 
       # NOTE: windows-latest GitHub-hosted runners ship Inno Setup pre-installed
@@ -248,13 +330,16 @@ jobs:
           Write-Host "Installer: $installer ($([math]::Round($size / 1MB, 1)) MB)"
 
       # An MSI for Intune, Configuration Manager and Group Policy. MSI versions
-      # are three numbers, so betas get none.
+      # are three numbers, so betas get none. WiX is its NuGet package, checked
+      # against its pinned SHA-256 and installed from a folder that holds only
+      # that file (packaging/fetch_wix.ps1): nothing in this job, which holds
+      # the Azure sign-in, is resolved at run time.
       - name: Build the MSI
         if: ${{ !contains(steps.version.outputs.version, '-') }}
         shell: pwsh
         run: |
-          dotnet tool install --global wix --version 5.0.2
-          ./packaging/build_msi.ps1 -Version "${{ steps.version.outputs.version }}"
+          $wix = ./packaging/fetch_wix.ps1 -Destination (Join-Path $env:RUNNER_TEMP "wix") | Select-Object -Last 1
+          ./packaging/build_msi.ps1 -Version "${{ steps.version.outputs.version }}" -Wix $wix
 
       - name: Authenticode-sign the MSI
         if: ${{ !contains(steps.version.outputs.version, '-') }}
@@ -270,6 +355,7 @@ jobs:
           pfx-base64: ${{ secrets.WINDOWS_SIGN_PFX_BASE64 }}
           pfx-password: ${{ secrets.WINDOWS_SIGN_PFX_PASSWORD }}
           command: ${{ vars.WINDOWS_SIGN_COMMAND }}
+          expected-subject: ${{ vars.WINDOWS_SIGN_EXPECTED_SUBJECT }}
           required: ${{ vars.WINDOWS_SIGNING_REQUIRED }}
 
       # Before the EdDSA signature, so the update feed signs the final bytes.
@@ -286,6 +372,7 @@ jobs:
           pfx-base64: ${{ secrets.WINDOWS_SIGN_PFX_BASE64 }}
           pfx-password: ${{ secrets.WINDOWS_SIGN_PFX_PASSWORD }}
           command: ${{ vars.WINDOWS_SIGN_COMMAND }}
+          expected-subject: ${{ vars.WINDOWS_SIGN_EXPECTED_SUBJECT }}
           required: ${{ vars.WINDOWS_SIGNING_REQUIRED }}
 
       - name: Sign installer with EdDSA
@@ -318,6 +405,20 @@ jobs:
           Write-Host "EdDSA signature: $($signature.Substring(0, [Math]::Min(20, $signature.Length)))..."
           echo "signature=$signature" >> $env:GITHUB_OUTPUT
 
+      # Just before anything is published, and only what this job made: the
+      # installer (and, for a stable tag, the MSI), each unchanged since
+      # sign_windows.ps1 signed and recorded it, and signed as recorded
+      # (Valid, timestamped, by WINDOWS_SIGN_EXPECTED_SUBJECT), plus the
+      # build's SBOM and notices. The list it outputs is what's published.
+      - name: Check the release files
+        id: files
+        shell: pwsh
+        env:
+          WINDOWS_SIGN_RECORD: ${{ runner.temp }}/lumi-authenticode.jsonl
+          WINDOWS_SIGN_EXPECTED_SUBJECT: ${{ vars.WINDOWS_SIGN_EXPECTED_SUBJECT }}
+          WINDOWS_SIGNING_REQUIRED: ${{ vars.WINDOWS_SIGNING_REQUIRED }}
+        run: ./packaging/check_release_files.ps1 -Version "${{ steps.version.outputs.version }}"
+
       - name: Create GitHub Release with installer
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
@@ -326,11 +427,7 @@ jobs:
           draft: false
           prerelease: ${{ contains(steps.version.outputs.version, '-') }}
           generate_release_notes: true
-          files: |
-            dist/installer/lumi-setup-${{ steps.version.outputs.version }}.exe
-            dist/installer/lumi-${{ steps.version.outputs.version }}.msi
-            dist/lumi-${{ steps.version.outputs.version }}-sbom.cdx.json
-            dist/lumi-${{ steps.version.outputs.version }}-THIRD_PARTY_NOTICES.txt
+          files: ${{ steps.files.outputs.files }}
 
       # Installed apps poll the GitHub Pages feeds and download installers
       # anonymously. The source repository may be private, so Release assets
@@ -352,6 +449,16 @@ jobs:
           ref: gh-pages
           path: gh-pages-checkout
 
+      # Again, just before the Pages site gets them.
+      - name: Check the release files again
+        id: pages-files
+        shell: pwsh
+        env:
+          WINDOWS_SIGN_RECORD: ${{ runner.temp }}/lumi-authenticode.jsonl
+          WINDOWS_SIGN_EXPECTED_SUBJECT: ${{ vars.WINDOWS_SIGN_EXPECTED_SUBJECT }}
+          WINDOWS_SIGNING_REQUIRED: ${{ vars.WINDOWS_SIGNING_REQUIRED }}
+        run: ./packaging/check_release_files.ps1 -Version "${{ steps.version.outputs.version }}"
+
       - name: Publish installer and appcast to the Pages site
         shell: pwsh
         run: |
@@ -360,8 +467,8 @@ jobs:
           $pages = "https://$owner.github.io/$repo"
           $installer = "dist/installer/lumi-setup-${{ steps.version.outputs.version }}.exe"
           $extras = @()
-          $msi = "dist/installer/lumi-${{ steps.version.outputs.version }}.msi"
-          if (Test-Path $msi) { $extras = @("--extra", $msi) }
+          $msi = "${{ steps.pages-files.outputs.msi }}"
+          if ($msi) { $extras = @("--extra", $msi) }
           python packaging/publish_pages.py `
               --site "gh-pages-checkout" `
               --installer $installer `
@@ -395,9 +502,10 @@ jobs:
 
   macos:
     # Lumi.app in a DMG (Sparkle updates it from the macOS feeds) and a PKG for
-    # device management, built on Apple silicon by packaging/build_macos.sh.
-    # It only builds: read access, and the release environment for the Apple
-    # secrets.
+    # device management, built on Apple silicon by packaging/build_macos.sh
+    # from pinned inputs, as `build` is: no tests, no pip cache, packages only
+    # with --require-hashes. It only builds: read access, and the release
+    # environment for the Apple secrets.
     runs-on: macos-latest
     timeout-minutes: 60
     environment: release
@@ -411,7 +519,25 @@ jobs:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
+          fetch-depth: 0   # all branches: main, for the check below
           persist-credentials: false
+
+      # As in `build`: before the Developer ID signs anything.
+      - name: Check the tag is on main
+        shell: bash
+        run: |
+          set -euo pipefail
+          tagged="$(git rev-parse "${GITHUB_REF}^{commit}")"
+          if [ "$tagged" != "$(git rev-parse HEAD)" ]; then
+            echo "::error::The checkout isn't the commit ${GITHUB_REF_NAME} tags ($tagged)."
+            exit 1
+          fi
+          git rev-parse --verify --quiet refs/remotes/origin/main > /dev/null || { echo "::error::main wasn't fetched."; exit 1; }
+          if ! git merge-base --is-ancestor "$tagged" refs/remotes/origin/main; then
+            echo "::error::${GITHUB_REF_NAME} tags $tagged, which isn't on main. Only commits on main are released."
+            exit 1
+          fi
+          echo "${GITHUB_REF_NAME} tags $tagged, which is on main."
 
       - name: Extract version from tag
         id: version
@@ -434,10 +560,9 @@ jobs:
         uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: '3.13'
-          cache: 'pip'
 
       - name: Install the pinned SBOM tools
-        run: python3 -m pip install --require-hashes -r packaging/tools-requirements.txt
+        run: python3 -m pip install --disable-pip-version-check --no-cache-dir --require-hashes -r packaging/tools-requirements.txt
 
       # Signed with the Developer ID, notarized and stapled when these secrets
       # exist (RELEASING.md, docs/macos.md); otherwise signed ad hoc, unless

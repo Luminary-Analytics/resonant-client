@@ -29,9 +29,11 @@ git diff --check
 ```
 
 On Windows, run `./scripts/build_clean.ps1`. It builds in a fresh environment
-from the hash-pinned `packaging/requirements-release.txt`, fetches verified
-ripgrep/web assets, writes the third-party notices (failing on unreviewed
-copyleft licenses), runs PyInstaller, and enforces the bundle policy. Add
+from the hash-pinned `packaging/requirements-release.txt` and nothing else
+(the pip that comes with the Python, and Lumi from the checkout with no index),
+fetches verified ripgrep/web assets, writes the third-party notices (failing
+on unreviewed copyleft licenses), runs PyInstaller, and enforces the bundle
+policy. Add
 `-SbomPath dist/lumi-sbom.cdx.json` for the CycloneDX SBOM; that needs the
 pinned tools (`python -m pip install --require-hashes -r
 packaging/tools-requirements.txt`) in the Python running the script. Do not
@@ -164,7 +166,11 @@ approved can use them: pull requests run workflow files from their own
 branch, and a repository secret could be read out by one that names it.
 Settings › Environments › `release` › Deployment branches and tags ›
 *Selected branches and tags* › add the tag rule `v*`; Required reviewers ›
-the owner. Then add each secret to the environment and delete the
+the owner. Add a tag ruleset too (Settings › Rules › Rulesets › *New tag
+ruleset*: target `v*`; *Restrict creations*, *Restrict updates* and *Restrict
+deletions*; only the Repository admin role may bypass), so that only the owner
+can push a release tag; the release jobs also refuse a tag whose commit isn't
+on main. Then add each secret to the environment and delete the
 repository copy:
 
 ```sh
@@ -190,15 +196,21 @@ release job signs in to Azure with its short-lived GitHub OIDC token, the
 only job allowed to ask for one. The owner's setup, in this order, is in
 [Azure Artifact Signing](docs/release-pipeline.md#azure-artifact-signing):
 protect the `release` environment (the `v*` tag rule and the owner as
-required reviewer) before anything trusts it; create the app registration;
+required reviewer) and add the tag ruleset before anything trusts it; create
+the app registration;
 add its federated credential for
 `repo:Luminary-Analytics/resonant-client:environment:release` with audience
 `api://AzureADTokenExchange`; give it the "Artifact Signing Certificate
 Profile Signer" role on the certificate profile; and fill in the environment
 variables `ARTIFACT_SIGNING_ENDPOINT`, `ARTIFACT_SIGNING_ACCOUNT`,
-`ARTIFACT_SIGNING_PROFILE`, `AZURE_CLIENT_ID`, `AZURE_TENANT_ID` and
-`AZURE_SUBSCRIPTION_ID`. A PFX certificate or another signer's command works
-too, one at a time. Once signing works, set `WINDOWS_SIGNING_REQUIRED` to
+`ARTIFACT_SIGNING_PROFILE`, `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`,
+`AZURE_SUBSCRIPTION_ID` and `WINDOWS_SIGN_EXPECTED_SUBJECT` (the certificate's
+subject, exactly as Windows shows it: a signature by any other fails the
+release). A PFX certificate or another signer's command works too, one at a
+time, with the expected subject. The release publishes only the files it
+signed, checked unchanged just before each upload
+(`packaging/check_release_files.ps1`). Once signing works, set
+`WINDOWS_SIGNING_REQUIRED` to
 `true` (`gh variable set WINDOWS_SIGNING_REQUIRED --body true --repo
 Luminary-Analytics/resonant-client`), so losing the signer fails the release
 instead of shipping unsigned files.

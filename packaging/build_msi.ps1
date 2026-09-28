@@ -4,19 +4,21 @@
 
 .DESCRIPTION
     Run after the bundle exists (scripts/build_clean.ps1). Needs the WiX v5
-    .NET tool:
-
-        dotnet tool install --global wix --version 5.0.2
+    .NET tool: packaging/fetch_wix.ps1 installs the pinned package, checked
+    against its SHA-256, and prints the wix.exe to pass as -Wix (the release
+    does this). Without -Wix, a wix on PATH is used.
 
     The MSI's version is the release's three numbers; a pre-release or dev
     suffix can't be expressed in an MSI version, so betas get no MSI.
     packaging/lumi.wxs documents what the package installs.
 
 .EXAMPLE
-    ./packaging/build_msi.ps1 -Version 0.21.0
+    $wix = ./packaging/fetch_wix.ps1 | Select-Object -Last 1
+    ./packaging/build_msi.ps1 -Version 0.21.0 -Wix $wix
 #>
 param(
     [string]$Version = "",
+    [string]$Wix = "",
     [string]$Bundle = "dist/lumi",
     [string]$OutDir = "dist/installer"
 )
@@ -32,8 +34,14 @@ if (-not $Version) {
 if ($Version -notmatch '^(\d+)\.(\d+)\.(\d+)') { throw "Can't make an MSI version from '$Version'" }
 $msiVersion = "$($Matches[1]).$($Matches[2]).$($Matches[3])"
 
-if (-not (Get-Command wix -ErrorAction SilentlyContinue)) {
-    throw "WiX v5 isn't installed. Run: dotnet tool install --global wix --version 5.0.2"
+if ($Wix) {
+    if (-not (Test-Path -LiteralPath $Wix)) { throw "No WiX at $Wix" }
+} else {
+    $onPath = Get-Command wix -ErrorAction SilentlyContinue
+    if (-not $onPath) {
+        throw "WiX v5 isn't installed. Run packaging/fetch_wix.ps1 and pass the wix.exe it prints as -Wix."
+    }
+    $Wix = $onPath.Source
 }
 $bundlePath = (Resolve-Path (Join-Path $root $Bundle)).Path
 if (-not (Test-Path (Join-Path $bundlePath "lumi.exe"))) {
@@ -49,9 +57,11 @@ try {
     $outDirPath = Join-Path $root $OutDir
     New-Item -ItemType Directory -Force -Path $outDirPath | Out-Null
     $out = Join-Path $outDirPath "lumi-$Version.msi"
-    & wix build (Join-Path $root "packaging/lumi.wxs") -arch x64 -d "Version=$msiVersion" `
+    # No .wixpdb beside it: Lumi ships no MSI patches, and the release checks
+    # that dist/installer holds only what it publishes.
+    & $Wix build (Join-Path $root "packaging/lumi.wxs") -arch x64 -d "Version=$msiVersion" `
         -bindpath "bundle=$bundlePath" -bindpath "extra=$extra" `
-        -bindpath "brand=$(Join-Path $root 'lumi/gui/static')" -o $out
+        -bindpath "brand=$(Join-Path $root 'lumi/gui/static')" -pdbtype none -o $out
     if ($LASTEXITCODE -ne 0) { throw "wix build failed with exit code $LASTEXITCODE" }
     Write-Host "MSI: $out ($([math]::Round((Get-Item $out).Length / 1MB, 1)) MB, version $msiVersion)"
 } finally {

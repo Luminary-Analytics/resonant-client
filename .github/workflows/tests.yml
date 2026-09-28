@@ -25,6 +25,9 @@ concurrency:
   group: tests-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
 jobs:
   pytest:
     # windows-latest matches the platform Lumi mostly ships on, and the

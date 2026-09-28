@@ -2,10 +2,13 @@ name: Authenticode-sign release files
 description: >-
   Signs Windows release files with packaging/sign_windows.ps1, which decides how
   (Azure Artifact Signing, a PFX certificate or a signing command) and checks each
-  signature. For Azure it first signs in with GitHub's OIDC token (azure/login), so
-  no secret is stored; that needs the job's id-token permission, which only
-  release.yml's release job has. With nothing configured, the files stay as they
-  are and a warning says so.
+  signature: Valid, timestamped and by the expected subject, on a file that was
+  unsigned before. For Azure it first signs in with GitHub's OIDC token
+  (azure/login), so no secret is stored; that needs the job's id-token permission,
+  which only release.yml's release job has. With nothing configured, the files stay
+  as they are and a warning says so. Each file is recorded, with its SHA-256, in
+  $RUNNER_TEMP/lumi-authenticode.jsonl, which packaging/check_release_files.ps1
+  checks before anything is published.
 
 inputs:
   files:
@@ -45,6 +48,12 @@ inputs:
     default: ''
   command:
     description: Another signer's command line, with {file} (WINDOWS_SIGN_COMMAND).
+    required: false
+    default: ''
+  expected-subject:
+    description: >-
+      The subject of the certificate that must sign, exactly as Windows shows it
+      (WINDOWS_SIGN_EXPECTED_SUBJECT); a signer needs it.
     required: false
     default: ''
   required:
@@ -87,7 +96,9 @@ runs:
         WINDOWS_SIGN_PFX_BASE64: ${{ inputs.pfx-base64 }}
         WINDOWS_SIGN_PFX_PASSWORD: ${{ inputs.pfx-password }}
         WINDOWS_SIGN_COMMAND: ${{ inputs.command }}
+        WINDOWS_SIGN_EXPECTED_SUBJECT: ${{ inputs.expected-subject }}
         WINDOWS_SIGNING_REQUIRED: ${{ inputs.required }}
+        WINDOWS_SIGN_RECORD: ${{ runner.temp }}/lumi-authenticode.jsonl
       run: |
         $files = @($env:FILES_TO_SIGN -split "`r?`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ })
         & (Join-Path $env:GITHUB_WORKSPACE "packaging/sign_windows.ps1") -Files $files

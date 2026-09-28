@@ -42,17 +42,38 @@
     quietly shipping unsigned files. A signer that is configured only in
     part, or fails, always fails the release, as do two signers at once.
 
-    Every signature is checked with Get-AuthenticodeSignature: it must be
-    Valid and timestamped, since an unstamped signature stops being valid
-    when its certificate expires (in days, for Artifact Signing).
+    WINDOWS_SIGN_EXPECTED_SUBJECT (a variable, set with the signer's) is the
+    subject of the certificate that must sign, exactly as Windows shows it,
+    for example "CN=Luminary Analytics, O=Luminary Analytics, L=..., S=...,
+    C=US"; a signer needs it. Each file must carry no signature before it is
+    signed, and afterwards a signature that is Valid (Get-AuthenticodeSignature),
+    timestamped and by that subject. So a signer that exits 0 without
+    signing, on an unsigned file or on one signed already, or that signs with
+    another certificate, fails the release; and an unstamped signature, which
+    stops being valid when its certificate expires (in days, for Artifact
+    Signing), fails it too.
+
+    With WINDOWS_SIGN_RECORD set (the action sets it), each file's path,
+    SHA-256 and whether it was signed are added there as a line of JSON.
+    -Verify checks files against that record: unchanged since, and signed as
+    recorded (packaging/check_release_files.ps1 runs it just before the
+    release publishes anything, and publishes only files it recorded).
 
     WINDOWS_SIGN_TIMESTAMP_URL overrides the PFX signer's timestamp server
-    (default http://timestamp.digicert.com). WINDOWS_SIGNTOOL names the
-    signtool to use (default: the Windows SDK's newest x64 signtool), and
-    ARTIFACT_SIGNING_DLIB a dlib to use instead of the pinned one.
+    (default http://timestamp.digicert.com). Outside CI, WINDOWS_SIGNTOOL names
+    the signtool to use and ARTIFACT_SIGNING_DLIB a dlib instead of the pinned
+    one; in GitHub Actions (GITHUB_ACTIONS=true) either stops the script, and
+    only the Windows SDK's signtool, validly signed by Microsoft, and the
+    pinned client sign. -CheckTools finds and checks both, and signs nothing
+    (build-check.yml's dry run).
 #>
+[CmdletBinding(DefaultParameterSetName = "Sign")]
 param(
-    [Parameter(Mandatory = $true)][string[]]$Files
+    [Parameter(Mandatory = $true, ParameterSetName = "Sign")]
+    [Parameter(Mandatory = $true, ParameterSetName = "Verify")]
+    [string[]]$Files,
+    [Parameter(Mandatory = $true, ParameterSetName = "Verify")][switch]$Verify,
+    [Parameter(Mandatory = $true, ParameterSetName = "CheckTools")][switch]$CheckTools
 )
 
 $ErrorActionPreference = "Stop"
@@ -69,6 +90,7 @@ $ExcludedCredentials = @(
     "AzurePowerShellCredential", "AzureDeveloperCliCredential", "InteractiveBrowserCredential"
 )
 $AzureSettings = @("ARTIFACT_SIGNING_ENDPOINT", "ARTIFACT_SIGNING_ACCOUNT", "ARTIFACT_SIGNING_PROFILE")
+$Overrides = @("WINDOWS_SIGNTOOL", "ARTIFACT_SIGNING_DLIB")
 
 function Get-Setting([string]$Name) {
     $value = [Environment]::GetEnvironmentVariable($Name)
@@ -76,27 +98,64 @@ function Get-Setting([string]$Name) {
     return ""
 }
 
+function Get-Sha256([string]$Path) {
+    return (Get-FileHash -Algorithm SHA256 -LiteralPath $Path).Hash.ToLowerInvariant()
+}
+
+function Assert-MicrosoftSigned([string]$Path, [string]$What) {
+    $signature = Get-AuthenticodeSignature -LiteralPath $Path
+    if ($signature.Status -ne "Valid" -or "$($signature.SignerCertificate.Subject)" -notmatch "(^|, )O=Microsoft Corporation(,|$)") {
+        throw "$What at $Path isn't validly signed by Microsoft ($($signature.Status): $($signature.SignerCertificate.Subject))"
+    }
+}
+
 function Find-SignTool([switch]$X64) {
+    # An override is the person's own choice, and never reaches CI (refused below).
     $chosen = Get-Setting "WINDOWS_SIGNTOOL"
     if ($chosen) {
         if (-not (Test-Path -LiteralPath $chosen)) { throw "WINDOWS_SIGNTOOL names no file: $chosen" }
         return $chosen
     }
+    $found = $null
     if (-not $X64) {
         $onPath = Get-Command signtool.exe -ErrorAction SilentlyContinue
-        if ($onPath) { return $onPath.Source }
+        if ($onPath) { $found = $onPath.Source }
     }
-    $kits = "${env:ProgramFiles(x86)}\Windows Kits\10\bin"
-    if (Test-Path $kits) {
-        $found = Get-ChildItem $kits -Recurse -Filter signtool.exe -ErrorAction SilentlyContinue |
-            Where-Object { $_.FullName -match '\\x64\\' } |
-            Sort-Object FullName -Descending | Select-Object -First 1
-        if ($found) { return $found.FullName }
+    if (-not $found) {
+        $kits = "${env:ProgramFiles(x86)}\Windows Kits\10\bin"
+        if (Test-Path $kits) {
+            $found = Get-ChildItem $kits -Recurse -Filter signtool.exe -ErrorAction SilentlyContinue |
+                Where-Object { $_.FullName -match '\\x64\\' } |
+                Sort-Object FullName -Descending | Select-Object -First 1 -ExpandProperty FullName
+        }
     }
-    throw "signtool.exe was not found. Install the Windows SDK signing tools."
+    if (-not $found) { throw "signtool.exe was not found. Install the Windows SDK signing tools." }
+    # The SDK's signtool is Microsoft's; anything else answering to the name doesn't sign.
+    Assert-MicrosoftSigned $found "signtool.exe"
+    return $found
 }
 
-function Assert-Signature([string]$Path) {
+function Get-ArtifactSigningDlib([string]$Work) {
+    $dlib = Get-Setting "ARTIFACT_SIGNING_DLIB"
+    if (-not $dlib) {
+        # Checked against its pinned SHA-256, and as signed by Microsoft, before it's used.
+        $dlib = & (Join-Path $PSScriptRoot "fetch_artifact_signing.ps1") -Destination (Join-Path $Work "lumi-artifact-signing") |
+            Select-Object -Last 1
+    }
+    if (-not (Test-Path -LiteralPath $dlib)) { throw "No Artifact Signing dlib at $dlib" }
+    return $dlib
+}
+
+function Assert-Unsigned([string]$Path) {
+    $signature = Get-AuthenticodeSignature -LiteralPath $Path
+    if ($signature.Status -ne "NotSigned") {
+        throw ("$Path already carries a signature, or can't be checked ($($signature.Status): " +
+               "$($signature.StatusMessage)). Only unsigned files are signed, so a signer that signs nothing " +
+               "can't pass for one that did.")
+    }
+}
+
+function Assert-Signature([string]$Path, [string]$Subject) {
     $signature = Get-AuthenticodeSignature -LiteralPath $Path
     if ($signature.Status -ne "Valid") {
         throw "The signature on $Path is $($signature.Status): $($signature.StatusMessage)"
@@ -104,11 +163,70 @@ function Assert-Signature([string]$Path) {
     if (-not $signature.TimeStamperCertificate) {
         throw "The signature on $Path has no timestamp, so it would stop being valid when its certificate expires."
     }
-    Write-Output "Signed $Path by $($signature.SignerCertificate.Subject), timestamped by $($signature.TimeStamperCertificate.Subject)"
+    $signer = "$($signature.SignerCertificate.Subject)"
+    if (-not $Subject -or $signer -cne $Subject) {
+        throw "$Path is signed by `"$signer`", not by WINDOWS_SIGN_EXPECTED_SUBJECT (`"$Subject`")."
+    }
+    Write-Output "Signed $Path by $signer, timestamped by $($signature.TimeStamperCertificate.Subject)"
 }
 
+function Add-Record([string]$Path, [bool]$Signed) {
+    $record = Get-Setting "WINDOWS_SIGN_RECORD"
+    if (-not $record) { return }
+    $entry = [ordered]@{ path = $Path; sha256 = (Get-Sha256 $Path); signed = $Signed }
+    [IO.File]::AppendAllText($record, (($entry | ConvertTo-Json -Compress) + "`n"), (New-Object System.Text.UTF8Encoding $false))
+}
+
+$inCI = (Get-Setting "GITHUB_ACTIONS") -eq "true"
+if ($inCI) {
+    foreach ($name in $Overrides) {
+        if (Get-Setting $name) {
+            throw ("$name is set, but in GitHub Actions only the pinned tools sign: the Windows SDK's signtool, " +
+                   "checked as signed by Microsoft, and the Artifact Signing client fetch_artifact_signing.ps1 " +
+                   "verifies. Unset $name.")
+        }
+    }
+}
+$work = if ($env:RUNNER_TEMP) { $env:RUNNER_TEMP } else { [IO.Path]::GetTempPath() }
+$expectedSubject = Get-Setting "WINDOWS_SIGN_EXPECTED_SUBJECT"
+$required = (Get-Setting "WINDOWS_SIGNING_REQUIRED") -eq "true"
+
+if ($CheckTools) {
+    $signtool = Find-SignTool -X64
+    Write-Output "signtool: $signtool"
+    $dlib = Get-ArtifactSigningDlib $work
+    Write-Output "Artifact Signing dlib: $dlib"
+    return
+}
+
+$full = @()
 foreach ($file in $Files) {
-    if (-not (Test-Path -LiteralPath $file)) { throw "Nothing to sign at $file" }
+    if (-not (Test-Path -LiteralPath $file -PathType Leaf)) { throw "No file at $file" }
+    $full += (Resolve-Path -LiteralPath $file).Path
+}
+
+if ($Verify) {
+    $recordPath = Get-Setting "WINDOWS_SIGN_RECORD"
+    if (-not $recordPath -or -not (Test-Path -LiteralPath $recordPath)) {
+        throw "Nothing was recorded as signed: WINDOWS_SIGN_RECORD names no record ($recordPath)."
+    }
+    $entries = @(Get-Content -LiteralPath $recordPath | Where-Object { $_.Trim() } | ForEach-Object { $_ | ConvertFrom-Json })
+    foreach ($path in $full) {
+        $entry = $entries | Where-Object { $_.path -eq $path } | Select-Object -Last 1
+        if (-not $entry) { throw "$path wasn't signed by sign_windows.ps1 in this job: it isn't in $recordPath." }
+        $hash = Get-Sha256 $path
+        if ($hash -ne $entry.sha256) {
+            throw "$path changed after it was signed (SHA-256 $hash; recorded $($entry.sha256))."
+        }
+        if ($entry.signed) {
+            Assert-Signature $path $expectedSubject
+        } else {
+            if ($required) { throw "$path was left unsigned, but WINDOWS_SIGNING_REQUIRED is true." }
+            Assert-Unsigned $path
+            Write-Output "$path is unsigned, as recorded: no signer is configured."
+        }
+    }
+    return
 }
 
 $azure = @{}
@@ -134,30 +252,40 @@ if ($signedIn -and $azureCount -eq 0) {
            "$($AzureSettings -join ', ') aren't: set them too, or remove the sign-in's variables.")
 }
 if ($signers.Count -eq 0) {
-    if ($env:WINDOWS_SIGNING_REQUIRED -eq "true") {
+    if ($expectedSubject) {
+        throw ("WINDOWS_SIGN_EXPECTED_SUBJECT is set, but no signer is configured (Azure Artifact Signing, " +
+               "WINDOWS_SIGN_PFX_BASE64 or WINDOWS_SIGN_COMMAND): configure it too, or unset the subject.")
+    }
+    if ($required) {
         throw ("WINDOWS_SIGNING_REQUIRED is true but no signer is configured (Azure Artifact Signing, " +
                "WINDOWS_SIGN_PFX_BASE64 or WINDOWS_SIGN_COMMAND); refusing to release unsigned files.")
     }
+    foreach ($path in $full) {
+        Assert-Unsigned $path
+        Add-Record $path $false
+    }
     Write-Output "::warning::Not Authenticode-signed: no signer is configured (see docs/release-pipeline.md)."
     return
+}
+if (-not $expectedSubject) {
+    throw ("$($signers[0]) is configured, but WINDOWS_SIGN_EXPECTED_SUBJECT isn't: set it to the subject of the " +
+           "certificate that signs, as Windows shows it (for example `"CN=Luminary Analytics, O=Luminary Analytics, " +
+           "L=..., S=..., C=US`"), so a signature by any other certificate fails the release.")
 }
 if ($signers[0] -eq "Azure Artifact Signing" -and -not $signedIn) {
     throw ("Azure Artifact Signing is configured, but there was no Azure sign-in to sign with (the release " +
            "environment's AZURE_CLIENT_ID and AZURE_TENANT_ID variables, and the job's id-token permission).")
 }
+# Before anything is signed: a file signed already would let a signer that
+# does nothing look as if it had signed.
+foreach ($path in $full) { Assert-Unsigned $path }
 
-$work = if ($env:RUNNER_TEMP) { $env:RUNNER_TEMP } else { [IO.Path]::GetTempPath() }
 $certPath = $null
 $metadataPath = $null
 try {
     if ($signers[0] -eq "Azure Artifact Signing") {
         $signtool = Find-SignTool -X64
-        $dlib = Get-Setting "ARTIFACT_SIGNING_DLIB"
-        if (-not $dlib) {
-            $dlib = & (Join-Path $PSScriptRoot "fetch_artifact_signing.ps1") -Destination (Join-Path $work "lumi-artifact-signing") |
-                Select-Object -Last 1
-        }
-        if (-not (Test-Path -LiteralPath $dlib)) { throw "No Artifact Signing dlib at $dlib" }
+        $dlib = Get-ArtifactSigningDlib $work
         $metadataPath = Join-Path $work ("lumi-artifact-signing-" + [guid]::NewGuid().ToString("N") + ".json")
         Write-Output ("Signing with Azure Artifact Signing: account $($azure.ARTIFACT_SIGNING_ACCOUNT), " +
                       "certificate profile $($azure.ARTIFACT_SIGNING_PROFILE), $($azure.ARTIFACT_SIGNING_ENDPOINT)")
@@ -167,14 +295,13 @@ try {
         [IO.File]::WriteAllBytes($certPath, [Convert]::FromBase64String($pfx))
     }
     $timestamp = if ($env:WINDOWS_SIGN_TIMESTAMP_URL) { $env:WINDOWS_SIGN_TIMESTAMP_URL } else { "http://timestamp.digicert.com" }
-    foreach ($file in $Files) {
-        $full = (Resolve-Path -LiteralPath $file).Path
+    foreach ($path in $full) {
         if ($metadataPath) {
             # Named in the service's signing history, to trace a signature to its run.
             $correlation = if ($env:GITHUB_RUN_ID) {
-                "$env:GITHUB_REPOSITORY run $env:GITHUB_RUN_ID/$env:GITHUB_RUN_ATTEMPT $(Split-Path -Leaf $full)"
+                "$env:GITHUB_REPOSITORY run $env:GITHUB_RUN_ID/$env:GITHUB_RUN_ATTEMPT $(Split-Path -Leaf $path)"
             } else {
-                "Lumi signing $(Split-Path -Leaf $full)"
+                "Lumi signing $(Split-Path -Leaf $path)"
             }
             $metadata = [ordered]@{
                 Endpoint = $azure.ARTIFACT_SIGNING_ENDPOINT
@@ -184,18 +311,19 @@ try {
                 ExcludeCredentials = $ExcludedCredentials
             }
             [IO.File]::WriteAllText($metadataPath, ($metadata | ConvertTo-Json), (New-Object System.Text.UTF8Encoding $false))
-            & $signtool sign /v /fd SHA256 /tr $MicrosoftTimestamp /td SHA256 /dlib $dlib /dmdf $metadataPath $full
-            if ($LASTEXITCODE -ne 0) { throw "signtool (Azure Artifact Signing) failed on $full with exit code $LASTEXITCODE" }
+            & $signtool sign /v /fd SHA256 /tr $MicrosoftTimestamp /td SHA256 /dlib $dlib /dmdf $metadataPath $path
+            if ($LASTEXITCODE -ne 0) { throw "signtool (Azure Artifact Signing) failed on $path with exit code $LASTEXITCODE" }
         } elseif ($pfx) {
-            & $signtool sign /fd SHA256 /td SHA256 /tr $timestamp /f $certPath /p $env:WINDOWS_SIGN_PFX_PASSWORD $full
-            if ($LASTEXITCODE -ne 0) { throw "signtool failed on $full with exit code $LASTEXITCODE" }
+            & $signtool sign /fd SHA256 /td SHA256 /tr $timestamp /f $certPath /p $env:WINDOWS_SIGN_PFX_PASSWORD $path
+            if ($LASTEXITCODE -ne 0) { throw "signtool failed on $path with exit code $LASTEXITCODE" }
         } else {
             # The command is the operator's own configuration, run as written.
-            $line = $command.Replace("{file}", '"' + $full + '"')
+            $line = $command.Replace("{file}", '"' + $path + '"')
             & cmd.exe /d /c $line
-            if ($LASTEXITCODE -ne 0) { throw "The signing command failed on $full with exit code $LASTEXITCODE" }
+            if ($LASTEXITCODE -ne 0) { throw "The signing command failed on $path with exit code $LASTEXITCODE" }
         }
-        Assert-Signature $full
+        Assert-Signature $path $expectedSubject
+        Add-Record $path $true
     }
 } finally {
     if ($certPath -and (Test-Path -LiteralPath $certPath)) { Remove-Item -LiteralPath $certPath -Force }

@@ -240,15 +240,15 @@
                     <button id="echo-hide" type="button" aria-label="Hide Echo" title="Hide Echo">×</button>
                 </div>
                 <div id="account-popover" class="account-popover" role="dialog" aria-label="Your profile and account" hidden>
-                    <div class="account-summary"><strong id="account-menu-name">SONN account</strong><span id="account-menu-detail">Not connected to SONN</span><small id="account-menu-status"></small></div>
+                    <div class="account-summary"><strong id="account-menu-name">Profile</strong><span id="account-menu-detail">Settings and connections</span><small id="account-menu-status" hidden></small></div>
                     <button type="button" id="account-usage">SONN account &amp; credits</button>
                     <button type="button" id="account-connections">Provider connections <span aria-hidden="true">↗</span></button>
                     <button type="button" id="account-pet" aria-pressed="false">Show Echo <span aria-hidden="true">✧</span></button>
                     <button type="button" id="account-settings">Settings <kbd>Ctrl+,</kbd></button>
                 </div>
                 <button type="button" id="sidebar-account" class="sidebar-account" aria-label="Profile and settings" aria-haspopup="dialog" aria-expanded="false" aria-controls="account-popover">
-                    <span id="account-avatar" class="account-avatar" aria-hidden="true">S</span>
-                    <span class="account-copy"><strong id="account-name">SONN account</strong><small id="account-detail">Not connected to SONN</small></span>
+                    <span id="account-avatar" class="account-avatar" aria-hidden="true">P</span>
+                    <span class="account-copy"><strong id="account-name">Profile</strong><small id="account-detail">Settings and connections</small></span>
                     <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="m5 9 3-3 3 3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
                 </button>
                 <!-- Hidden DOM nodes preserved so existing JS that reads sidebar-project-name / sidebar-cwd
@@ -459,8 +459,8 @@
                                             aria-label="Start an autonomous session">&infin;</button>
                                     <div class="permission-dropdown" id="permission-dropdown">
                                         <button class="permission-toggle" id="permission-toggle" title="Permission mode &mdash; how the agent treats risky actions" aria-haspopup="menu" aria-expanded="false" aria-controls="permission-menu">
-                                            <span class="perm-icon" id="perm-icon" aria-hidden="true">&#9881;</span>
-                                            <span id="perm-label">Full-auto</span>
+                                            <span class="perm-icon" id="perm-icon" aria-hidden="true">&#9998;</span>
+                                            <span id="perm-label">Auto-edit</span>
                                             <span class="perm-chevron" aria-hidden="true">&#9662;</span>
                                         </button>
                                         <div class="permission-menu" id="permission-menu" role="menu" aria-label="Permission mode">
@@ -471,12 +471,13 @@
                                                     <span class="perm-opt-desc">Always ask before making changes</span>
                                                 </span>
                                             </button>
-                                            <button type="button" class="perm-option" role="menuitemradio" aria-checked="false" tabindex="-1" data-mode="auto-edit">
+                                            <button type="button" class="perm-option active" role="menuitemradio" aria-checked="true" tabindex="-1" data-mode="auto-edit">
                                                 <span class="perm-opt-icon" aria-hidden="true">&lt;/&gt;</span>
                                                 <span class="perm-opt-text">
                                                     <span class="perm-opt-name">Auto accept edits</span>
-                                                    <span class="perm-opt-desc">Accept file edits; ask before commands and other actions</span>
+                                                    <span class="perm-opt-desc">Accept file edits in the project; ask before commands and other actions</span>
                                                 </span>
+                                                <span class="perm-check" aria-hidden="true">&#10003;</span>
                                             </button>
                                             <button type="button" class="perm-option" role="menuitemradio" aria-checked="false" tabindex="-1" data-mode="plan">
                                                 <span class="perm-opt-icon" aria-hidden="true">&#9776;</span>
@@ -485,13 +486,12 @@
                                                     <span class="perm-opt-desc">Create a plan before making changes</span>
                                                 </span>
                                             </button>
-                                            <button type="button" class="perm-option active" role="menuitemradio" aria-checked="true" tabindex="-1" data-mode="bypass">
-                                                <span class="perm-opt-icon" aria-hidden="true">🛡</span>
+                                            <button type="button" class="perm-option" role="menuitemradio" aria-checked="false" tabindex="-1" data-mode="bypass">
+                                                <span class="perm-opt-icon" aria-hidden="true">&#9889;</span>
                                                 <span class="perm-opt-text">
-                                                    <span class="perm-opt-name">Full-auto (sandboxed)</span>
-                                                    <span class="perm-opt-desc">Accepts all permissions</span>
+                                                    <span class="perm-opt-name">Full-auto</span>
+                                                    <span class="perm-opt-desc">Runs everything without asking. File changes stay in the project; shell commands run without a sandbox.</span>
                                                 </span>
-                                                <span class="perm-check" aria-hidden="true">&#10003;</span>
                                             </button>
                                         </div>
                                     </div>

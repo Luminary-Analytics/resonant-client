@@ -78,6 +78,24 @@ def _capture(state, message, manager) -> CapturedSession:
     return manager.execution_capture(capture, message.get("execution_mode", "personal"))
 
 
+def _full_auto_needed(state, manager, capture, message):
+    """Why a team the orchestrator runs can't start in this conversation's mode, or None.
+
+    The orchestrator approves plans and accepts results for the owner, so
+    starting one, or continuing one after a recovery, needs Full-auto
+    (AppState.full_auto_needed). A team the owner reviews needs nothing more.
+    """
+    action = message.get("action")
+    if action == "start" and message.get("autonomy"):
+        work = "team"
+    elif action == "continue_recovered" and message.get("run_id") and manager.orchestrated(capture, message["run_id"]):
+        work = "team_continue"
+    else:
+        return None
+    check = getattr(state, "full_auto_needed", None)
+    return check(work) if callable(check) else None
+
+
 async def command(state, send, message, *, chat_busy=False):
     """Capture ownership before yielding; all SQLite/provider setup runs off-loop."""
     reply = {"event": "swarm_state", "request_id": message.get("request_id"),
@@ -95,6 +113,12 @@ async def command(state, send, message, *, chat_busy=False):
         if manager is None:
             manager = state._swarm_desktop = SwarmRuntime(state.settings, managed_desktop=getattr(state, "_swarm_managed", None))
         capture = _capture(state, message, manager)
+        needed = await asyncio.to_thread(_full_auto_needed, state, manager, capture, message)
+        if needed:
+            # The page offers one click that switches to Full-auto and asks again.
+            reply.update(error=needed["message"], code=needed["code"], can_switch=needed["can_switch"])
+            await send(reply)
+            return
         if message.get("action") in {"start", "request_plan", "collaboration_prepare", "collaboration_accept_work", "managed_sharing_prepare", "managed_sharing_accept_work"}:
             state._swarm_starting = starting = True
         reply.update(await asyncio.to_thread(manager.operate, capture, copy.deepcopy(message)))

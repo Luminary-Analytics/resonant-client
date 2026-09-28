@@ -149,7 +149,11 @@ URL credentials, query strings, and fragments are rejected.
 
 ### SONN account and credits
 
-The bottom-left profile belongs to SONN. **SONN account & credits** reads
+The bottom-left profile shows the local display name (Settings > Profile),
+or "Profile". For someone who uses SONN (a SONN key or project URL is set, or
+its models were found) it also shows SONN's status and the **SONN account &
+credits** item, and opening it checks the account; for anyone else it asks
+SONN nothing. **SONN account & credits** reads
 `GET /v1/workspace` with the configured invitation as a Bearer credential, at the
 same origin/prefix as the documented project URL. The invitation is account-wide;
 the project URL chooses the inference project. It is not a project-restricted key.

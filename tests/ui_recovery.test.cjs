@@ -540,32 +540,50 @@ function accountView(settings = {}, sonnAccount, document = {}) {
     return app;
 }
 
+// Someone who uses SONN: a SONN key or project URL is set (settings_view.js _sonnConfigured).
+const SONN = {_meta: {api_keys_present: {sonn: true}}};
+
 test('a Codex connection never supplies the SONN account identity', () => {
     const app = accountView();
-    assert.equal(app._accountSummary().name, 'SONN account');
-    assert.equal(app._accountSummary().detail, 'Not connected to SONN');
-    assert.equal(app._accountSummary().initials, 'S');
+    assert.equal(app._accountSummary().name, 'Profile');
+    assert.equal(app._accountSummary().detail, 'Settings and connections');
+    assert.equal(app._accountSummary().initials, 'P');
+    app.settings = {...SONN};
+    assert.equal(app._accountSummary().name, 'Profile');
+    assert.equal(app._accountSummary().detail, 'SONN not connected');
+});
+
+test('the profile shows SONN only to someone who uses it', () => {
+    // An account answer left from before the key was removed says nothing now.
+    const app = accountView({general: {display_name: 'Alex Morgan'}}, {user: 'user-fixture', billing: {enabled: true}});
+    const summary = app._accountSummary();
+    assert.equal(summary.name, 'Alex Morgan');
+    assert.equal(summary.detail, 'Settings and connections');
+    assert.equal(summary.status, '');
+    assert.equal(summary.sonn, false);
+    app.settings = {network: {sonn_url: 'https://sonn.example.test/v1/projects/p'}};
+    assert.equal(app._accountSummary().sonn, true);
 });
 
 test('local display name preserves the authenticated SONN identifier and prepaid status', () => {
-    const app = accountView({general: {display_name: 'Alex Morgan'}}, {
+    const app = accountView({...SONN, general: {display_name: 'Alex Morgan'}}, {
         user: 'user-fixture', billing: {enabled:true},
     });
     const summary = app._accountSummary();
     assert.equal(summary.name, 'Alex Morgan');
     assert.equal(summary.initials, 'AM');
     assert.equal(summary.detail, 'SONN · Prepaid credits');
-    assert.equal(summary.status, 'Account: user-fixture');
+    assert.equal(summary.status, 'SONN account: user-fixture');
     app.settings.general.display_name = ' ';
     assert.equal(app._accountSummary().name, 'user-fixture');
 });
 
 test('billing-off and failed SONN discovery never appear as a paid subscription', () => {
-    const app = accountView({}, {user:'user-fixture',billing:{enabled:false}});
+    const app = accountView({...SONN}, {user:'user-fixture',billing:{enabled:false}});
     assert.equal(app._accountSummary().detail, 'SONN · Billing off');
     app.sonnAccount = {error:'Account unavailable'};
-    assert.equal(app._accountSummary().detail, 'Not connected to SONN');
-    assert.equal(app._accountSummary().name, 'SONN account');
+    assert.equal(app._accountSummary().detail, 'SONN not connected');
+    assert.equal(app._accountSummary().name, 'Profile');
 });
 
 test('Settings say device management updates an MSI or PKG copy', () => {
@@ -2862,4 +2880,71 @@ test('a notice that says nothing is collected asks for no confirmation and locks
     assert.equal(elements['user-input'].disabled, false);
     app._confirmOversightNotice();
     assert.deepEqual(app.sent, []);
+});
+
+test('a refused message ends the running state and gives its text back', () => {
+    const app = setup(async () => ({ok: true}));
+    let running = true;
+    app.setRunning = value => { running = value; };
+    app.clearTerminals = () => {};
+    app._queuedMessages = new Map();
+    app._pendingTurnText = 'Fix the failing test';
+    // Nothing more to skip: the refusal is shown as the turn's error.
+    assert.equal(app._endRefusedTurn({refused: true, message: 'No model is running.'}), false);
+    assert.equal(running, false);
+    assert.equal(app.userInput.value, 'Fix the failing test');
+    assert.equal(app._pendingTurnText, '');
+    // A draft typed since then is never replaced.
+    app._pendingTurnText = 'another message';
+    app.userInput.value = 'typing';
+    app._endRefusedTurn({refused: true, message: 'Busy'});
+    assert.equal(app.userInput.value, 'typing');
+});
+
+test('a refused follow-up leaves the queue and the turn it followed keeps running', () => {
+    const app = setup(async () => ({ok: true}));
+    let running = true;
+    const removed = [], toasts = [];
+    app.setRunning = value => { running = value; };
+    app.clearTerminals = () => {};
+    app._syncComposerQueue = () => {};
+    app.showToastMessage = text => toasts.push(text);
+    app._queuedMessages = new Map([['m-2', {text: 'also update the docs', el: {remove: () => removed.push('m-2')}}]]);
+    assert.equal(app._endRefusedTurn({refused: true, message_id: 'm-2', message: 'The team is still working.'}), true);
+    assert.equal(running, true);
+    assert.deepEqual(removed, ['m-2']);
+    assert.equal(app._queuedMessages.size, 0);
+    assert.equal(app.userInput.value, 'also update the docs');
+    assert.deepEqual(toasts, ['The team is still working.']);
+});
+
+test('"Connect a model" is done only once a model answered', () => {
+    const app = setup(async () => ({ok: true}));
+    app.settings = {onboarding: {}};
+    // Listed but never checked: a Codex CLI nobody signed in to.
+    app.backends = {codex: {models: ['gpt-5-codex']}};
+    assert.equal(app._onboardingSteps().model, false);
+    app.providerConnections = {codex: {error: 'Signing in with ChatGPT uses the Codex CLI'}};
+    assert.equal(app._onboardingSteps().model, false);
+    app.backends.ollama = {models: ['qwen3-coder:30b']};  // the Ollama probe found chat models
+    assert.equal(app._onboardingSteps().model, true);
+    delete app.backends.ollama;
+    app._modelRunning = true;  // this conversation's model runs
+    assert.equal(app._onboardingSteps().model, true);
+    app._modelRunning = false;
+    app.providerConnections = {openrouter: {status: 'ready'}};  // a connection check succeeded
+    assert.equal(app._onboardingSteps().model, true);
+});
+
+test('Full-auto is called sandboxed only while the shell sandbox is on', () => {
+    const app = setup(async () => ({ok: true}));
+    app.settings = {security: {shell_sandbox: 'off'}};
+    assert.equal(app._fullAutoCopy().name, 'Full-auto');
+    assert.match(app._fullAutoCopy().description, /shell commands run without a sandbox/);
+    app.settings.security.shell_sandbox = 'project';
+    assert.equal(app._fullAutoCopy().name, 'Full-auto (sandboxed)');
+    app.permissionMode = 'auto-edit';
+    assert.match(app._onboardingModeNote(), /changes files in this project without asking, and asks before running commands/);
+    app.permissionMode = 'ask';
+    assert.match(app._onboardingModeNote(), /asks before changing files/);
 });

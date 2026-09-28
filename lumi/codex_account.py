@@ -9,10 +9,25 @@ from __future__ import annotations
 import atexit
 import json
 import queue
+import shutil
 import subprocess
 import threading
 
 from .backends import resolve_codex_cli_path
+
+
+class CodexCliMissing(ValueError):
+    """Signing in with ChatGPT needs the Codex CLI, which isn't installed here."""
+
+
+def missing_cli_message() -> str:
+    """What to install before signing in with ChatGPT: the Codex CLI, and Node.js for it."""
+    if shutil.which("node") and shutil.which("npm"):
+        return ("Signing in with ChatGPT uses the Codex CLI, which isn't installed. In a terminal, run "
+                "npm install -g @openai/codex, then choose Refresh account & models.")
+    return ("Signing in with ChatGPT uses the Codex CLI, which needs Node.js; neither is installed. "
+            "Install Node.js from https://nodejs.org, then in a terminal run npm install -g @openai/codex, "
+            "and choose Refresh account & models.")
 
 
 class CodexAccount:
@@ -44,7 +59,7 @@ class CodexAccount:
             return
         path = resolve_codex_cli_path()
         if not path:
-            raise ValueError("Install Codex CLI to connect your ChatGPT subscription, then refresh.")
+            raise CodexCliMissing(missing_cli_message())
         self.close()
         responses = self._responses = queue.Queue()
         self._process = proc = subprocess.Popen(

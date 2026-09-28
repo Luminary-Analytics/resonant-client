@@ -78,9 +78,11 @@ from .ws_commands import (  # noqa: F401  (re-exported public surface)
     _save_resonant_md,
     _skill_list_payload,
     _skill_view_payload,
+    needs_full_auto,
+    refused_turn,
 )
 from .sessions import ProjectManager
-from .settings import SettingsManager
+from .settings import DEFAULT_PERMISSION_MODE, SettingsManager
 from .workspace_trust import WorkspaceTrust
 from .costs import CostTracker
 from .project_instructions import (
@@ -245,7 +247,7 @@ class AppState:
         self._migrate_stale_defaults()
         self._apply_big_context_preset()
         self.permission_mode = self.policy_permission_mode(
-            self.settings.get("general", "default_permission_mode", "bypass")
+            self.settings.get("general", "default_permission_mode", DEFAULT_PERMISSION_MODE)
         )
         self.costs = CostTracker()
         # Every recorded model call adds to the totals Settings shows: turns,
@@ -406,9 +408,10 @@ class AppState:
 
     @classmethod
     def normalize_permission_mode(cls, mode: Any) -> str:
-        """A known permission mode. Empty means the default (Full-auto); an
-        unrecognized value fails closed to Ask instead of granting anything."""
-        value = str(mode or "").strip() or "bypass"
+        """A known permission mode. Empty means a new install's default
+        (Auto-edit, settings.DEFAULT_PERMISSION_MODE); an unrecognized value
+        fails closed to Ask instead of granting anything."""
+        value = str(mode or "").strip() or DEFAULT_PERMISSION_MODE
         return value if value in cls.PERMISSION_MODES else "ask"
 
     @classmethod
@@ -596,6 +599,59 @@ class AppState:
         if policy and not policy.mode_allowed(normalized):
             return policy.allowed_modes[0]
         return normalized
+
+    # Work that runs with nobody there to approve its steps, what it does, and
+    # what the one-click switch continues with (full_auto_needed).
+    _FULL_AUTO_WORK = {
+        "plan": ("A plan runs its steps in Full-auto: they change files and run commands without asking, "
+                 "because nobody is there to approve each one.", "start the plan"),
+        "roadmap": ("A roadmap is built in Full-auto: its steps change files and run commands without asking, "
+                    "because nobody is there to approve each one.", "build it"),
+        "autonomous": ("An autonomous session runs in Full-auto: its steps change files and run commands, its "
+                       "acceptance checks included, without asking, because nobody is there to approve them.",
+                       "start it"),
+        "autonomous_resume": ("An autonomous session runs in Full-auto: its steps change files and run commands, "
+                              "its acceptance checks included, without asking, because nobody is there to "
+                              "approve them.", "resume it"),
+        "team": ("A team the orchestrator runs needs Full-auto: the orchestrator approves its plans and accepts "
+                 "its results for you, without asking.", "start the team"),
+        "team_continue": ("A team the orchestrator runs needs Full-auto: the orchestrator approves its plans and "
+                          "accepts its results for you, without asking.", "continue the team"),
+    }
+    _MODE_NAMES = {"ask": "Ask", "auto-edit": "Auto-edit", "plan": "Plan", "bypass": "Full-auto"}
+
+    def full_auto_needed(self, work: str) -> Optional[dict[str, Any]]:
+        """Why unattended ``work`` can't start in this conversation's mode, or None.
+
+        Plans, missions, autonomous sessions and a team the orchestrator runs
+        take their steps with nobody there to answer an approval, so they run
+        in Full-auto whatever mode the conversation is in. Starting one from
+        Auto-edit, Ask or Plan would quietly give it more than the person
+        chose, so it's refused with ``code: "needs_full_auto"`` and the page
+        offers one click that switches to Full-auto and asks again. Pausing
+        and resuming work that is still running doesn't ask again; resuming
+        an interrupted autonomous session or continuing an interrupted
+        orchestrated team starts it again, and does.
+
+        None when the conversation is in Full-auto, or when the organization
+        doesn't allow Full-auto: policy.full_auto_refusal (and, for a team,
+        swarming.organization.mode_refusal) refuses that with its own words.
+        """
+        if self.permission_mode == "bypass":
+            return None
+        from ..policy import current
+
+        policy = current()
+        if policy and not policy.mode_allowed("bypass"):
+            return None
+        what, action = self._FULL_AUTO_WORK[work]
+        mode = self._MODE_NAMES.get(self.permission_mode, self.permission_mode)
+        return {
+            "message": f"{what} This conversation is in {mode}. Switch to Full-auto to {action}.",
+            "code": "needs_full_auto",
+            "can_switch": True,
+            "permission_mode": self.permission_mode,
+        }
 
     def apply_permission_mode(self, mode: str, session: Optional[Session] = None) -> str:
         self.permission_mode = self.policy_permission_mode(mode)
@@ -2189,7 +2245,7 @@ class AppState:
 
         if section == "general" and key == "default_permission_mode":
             configured_mode = str(
-                self.settings.get("general", "default_permission_mode", self.permission_mode) or "bypass"
+                self.settings.get("general", "default_permission_mode", self.permission_mode) or ""
             )
             self.apply_permission_mode(configured_mode, session=self.session)
         elif self.session:
@@ -2787,7 +2843,7 @@ async def _process_chat_message(ws: WebSocket, msg: dict[str, Any]) -> None:
         refusal = await asyncio.to_thread(oversight.refusal, "app")
         if refusal:
             await ws.send_json({"event": "oversight_status", "data": await asyncio.to_thread(oversight.status)})
-            await ws.send_json({"event": "error", "message": refusal, "code": oversight.REFUSAL_CODE})
+            await ws.send_json(refused_turn(msg, refusal, code=oversight.REFUSAL_CODE))
             return
     if msg.get('command') == 'employee_task':
         from .employee_tasks import command as task_command
@@ -2797,10 +2853,7 @@ async def _process_chat_message(ws: WebSocket, msg: dict[str, Any]) -> None:
     if not text:
         return
     if not state.session:
-        await ws.send_json({
-            "event": "error",
-            "message": state.runtime_unavailable_reason(),
-        })
+        await ws.send_json(refused_turn(msg, state.runtime_unavailable_reason()))
         return
 
     images = None
@@ -3207,6 +3260,11 @@ async def websocket_endpoint(ws: WebSocket):
                     await ws.send_json({"event": "error", "source": "mission_dispatch",
                                         "message": "spec_markdown required for autonomous dispatch"})
                     continue
+                # It runs in Full-auto; outside it, say so and offer the switch.
+                needed = state.full_auto_needed("autonomous")
+                if needed:
+                    await ws.send_json(needs_full_auto(needed, source="mission_dispatch"))
+                    continue
                 feature = (
                     state.project.current_session.title
                     or ms.get("seed_feature", "")
@@ -3310,6 +3368,13 @@ async def websocket_endpoint(ws: WebSocket):
                 if not target_intent:
                     await ws.send_json({"event": "error",
                                         "message": "intent_id required for resume"})
+                    continue
+                # Resuming starts its daemon again, in Full-auto: before the
+                # conversation switch below, so a refusal changes nothing.
+                needed = state.full_auto_needed("autonomous_resume")
+                if needed:
+                    await ws.send_json(needs_full_auto(needed, source="autonomous_resume", intent_id=target_intent,
+                                                       session_id=str(msg.get("session_id") or "")))
                     continue
 
                 # Optional: switch to the originating session first so

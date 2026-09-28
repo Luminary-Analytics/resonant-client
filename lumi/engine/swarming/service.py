@@ -502,6 +502,17 @@ class SwarmRuntime:
             ).fetchone()
             return row[0] if row else None
 
+    def orchestrated(self, capture: CapturedSession, run_id: str) -> bool:
+        """Whether this conversation's retained team was started with the orchestrator running it.
+
+        Continuing it after a recovery starts the orchestrator again from the
+        owner's saved grant (``_continue_recovered``), so the desktop asks for
+        Full-auto first, as it does to start one (gui/swarming.py).
+        """
+        with self._lock:
+            store = self._store(capture)
+        return bool(self._setup(store, run_id)[0].get("autonomy"))
+
     @staticmethod
     def _setup(store, run_id, *, required=False):
         with store._connection() as connection:

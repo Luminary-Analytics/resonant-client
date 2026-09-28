@@ -118,8 +118,14 @@ never a colleague's. Your organization can turn this off with
 ## Sharing a conversation
 
 To show a colleague how you got somewhere, right-click a conversation in the
-sidebar (or use its **⋯** button) and choose **Share…**. Sign in to your
-organization's Lumi Cloud first; you don't need to enroll this computer.
+sidebar (or use its **⋯** button) and choose **Share in Lumi Cloud…**. Sign in
+to your organization's Lumi Cloud first; you don't need to enroll this
+computer. Without an account the dialog says that sharing needs one, and
+that everything else in Lumi works without it; a teammate hand-off says the
+same, while the CI hand-off works without an account. **Settings > Lumi
+account** says who it's for before anyone signs in. The menu names Lumi Cloud
+instead of hiding the item, so the same menus and documentation hold on every
+computer, and the dialog explains what an account adds.
 
 Lumi Cloud keeps a read-only copy at a link:
 
@@ -136,7 +142,7 @@ Lumi Cloud keeps a read-only copy at a link:
 - **It doesn't change** when the conversation does. To share a newer
   version, stop sharing and share again.
 
-**Share…** shows the link again later, with **Copy link** and **Stop
+**Share in Lumi Cloud…** shows the link again later, with **Copy link** and **Stop
 sharing**. Stopping makes the link show nothing. In Lumi Cloud, **Shared
 sessions** lists what you've shared, and an organization's owners and admins
 see and can stop everything shared in it.

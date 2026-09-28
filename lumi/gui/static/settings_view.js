@@ -27,17 +27,31 @@ const MANAGED_INSTALLERS = Object.freeze({
 });
 
 class LumiSettingsView {
+    /**
+     * Whether this person uses SONN: a SONN key or project URL is set, or its
+     * models were found. SONN needs a private invitation; without one the
+     * profile button is about this computer, and no SONN account is asked for.
+     */
+    _sonnConfigured() {
+        return Boolean(this.settings?._meta?.api_keys_present?.sonn)
+            || Boolean(String(this.settings?.network?.sonn_url || '').trim())
+            || Boolean(this.backends?.sonn);
+    }
+
     _accountSummary() {
         const account = this.sonnAccount;
         const text = value => typeof value === 'string' ? value.trim().slice(0, 160) : '';
-        const connected = !!account?.user && !account.error;
-        const name = text(this.settings?.general?.display_name) || (connected ? text(account.user) : 'SONN account');
-        const detail = connected ? (account.billing?.enabled ? 'SONN · Prepaid credits' : 'SONN · Billing off') : 'Not connected to SONN';
-        const status = this._sonnAccountPending ? 'Checking SONN account…' : account?.error || (connected
-            ? `Account: ${text(account.user)}` : 'Connect with your SONN private invitation');
-        const initials = name === 'SONN account' ? 'S' : name.includes('@') ? Array.from(name)[0].toUpperCase()
+        const sonn = this._sonnConfigured();
+        const connected = sonn && !!account?.user && !account.error;
+        // The local display name (Settings > Profile) first; never a ChatGPT identity.
+        const name = text(this.settings?.general?.display_name) || (connected ? text(account.user) : 'Profile');
+        const detail = !sonn ? 'Settings and connections'
+            : connected ? (account.billing?.enabled ? 'SONN · Prepaid credits' : 'SONN · Billing off') : 'SONN not connected';
+        const status = !sonn ? '' : this._sonnAccountPending ? 'Checking SONN account…' : account?.error || (connected
+            ? `SONN account: ${text(account.user)}` : 'Connect with your SONN private invitation');
+        const initials = name.includes('@') ? Array.from(name)[0].toUpperCase()
             : name.split(/\s+/).slice(0, 2).map(word => Array.from(word)[0]).join('').toUpperCase();
-        return {name, detail, status, initials};
+        return {name, detail, status, initials, sonn};
     }
 
     _requestSonnAccount() {
@@ -54,6 +68,11 @@ class LumiSettingsView {
         const money = value => Number.isSafeInteger(value)
             ? new Intl.NumberFormat('en-US', {style: 'currency', currency: 'USD'}).format(value / 1000000) : 'Unavailable';
         const billing = account?.billing;
+        if (!summary.sonn) {
+            return `<div class="provider-connection"><strong>SONN</strong>
+                <p>SONN is a separate service that you join by private invitation. With an invitation, add its project URL under Connections › Network and its key under API keys; this page then shows your SONN account and credits.</p>
+                <p class="provider-note">You don’t need SONN to use Lumi.</p></div>`;
+        }
         return `<div class="provider-connection">
             <strong>${escape(summary.name)}</strong><p>${escape(summary.detail)}</p><p role="status">${escape(summary.status)}</p>
             ${account?.user && !account.error ? `<div class="sonn-account-balances">
@@ -78,6 +97,11 @@ class LumiSettingsView {
             const element = document.getElementById(id);
             if (element) { element.textContent = value; element.title = value; }
         }
+        // SONN's account and credits only for someone who uses SONN.
+        const usage = document.getElementById('account-usage');
+        if (usage) usage.hidden = !summary.sonn;
+        const menuStatus = document.getElementById('account-menu-status');
+        if (menuStatus) menuStatus.hidden = !summary.status;
         const visible = this.settings?.general?.show_companion === true;
         const pet = document.getElementById('sidebar-companion');
         if (pet) { pet.hidden = !visible; pet.classList.toggle('working', !!this.isRunning); }
@@ -116,8 +140,9 @@ class LumiSettingsView {
             popover.hidden = false;
             trigger.setAttribute('aria-expanded', 'true');
             popover.querySelector('button')?.focus();
-            // Account reads never enter the startup or generation path.
-            if (!this.sonnAccount) this._requestSonnAccount();
+            // Account reads never enter the startup or generation path, and
+            // none is made for someone who doesn't use SONN.
+            if (!this.sonnAccount && this._sonnConfigured()) this._requestSonnAccount();
         });
         document.addEventListener('pointerdown', event => {
             if (!popover.hidden && !popover.contains(event.target) && !trigger.contains(event.target)) this._closeAccountMenu();
@@ -346,6 +371,12 @@ class LumiSettingsView {
         const row = (label, hint, value = '') => `<div class="settings-row"><div class="settings-row-copy"><span class="settings-row-label">${label}</span><div class="settings-row-hint">${hint}</div></div>${value ? `<div class="settings-row-value">${value}</div>` : ''}</div>`;
         const button = (action, label, extra = '') => `<button type="button" class="btn-sm" data-cloud-action="${action}" ${extra}>${label}</button>`;
         const parts = [];
+        if (!s.signed_in && !s.signing_in && !(s.device && s.device.id) && !s.managed_organization) {
+            parts.push(row('For teams and companies that use Lumi Cloud',
+                'A Lumi account applies your organization’s policy on this computer, reports usage to its administrators, '
+                + 'and lets you share conversations and hand work to teammates. You don’t need one: every tool, provider '
+                + 'and feature in Lumi works without it. If your organization gave you a Lumi Cloud address, sign in below.'));
+        }
         if (s.error) parts.push(`<p class="editor-error" role="alert">${esc(s.error)}</p>`);
         if (s.cloud_error) parts.push(`<p class="editor-error" role="alert">${esc(s.cloud_error)}</p>`);
         const device = s.device && s.device.id ? s.device : null;
@@ -1501,14 +1532,21 @@ class LumiSettingsView {
                 loginLink = `<a href="${this.escapeHtml(url.href)}" target="_blank" rel="noopener noreferrer">Continue sign-in in your browser</a><button class="btn-sm" data-provider="codex" data-provider-action="cancel">Cancel sign-in</button>`;
             }
         } catch (_) { /* No pending browser login. */ }
-        return this._renderApiProviderCard('anthropic', 'Anthropic', 'ANTHROPIC_API_KEY also works.')
+        // Without the Codex CLI, sign-in can't start: the card says what to install instead.
+        const signIn = codex.missing_cli ? ''
+            : '<button class="btn-sm" data-provider="codex" data-provider-action="login">Sign in with ChatGPT</button>';
+        const cliNote = codex.missing_cli
+            ? `<p class="provider-note"><a href="https://nodejs.org" target="_blank" rel="noopener noreferrer">Get Node.js</a> · <a href="https://developers.openai.com/codex/cli" target="_blank" rel="noopener noreferrer">About the Codex CLI</a></p>`
+            : '<p class="provider-note">Uses your installed Codex CLI and its sign-in. After signing in, refresh the account. <a href="https://developers.openai.com/codex/cli" target="_blank" rel="noopener noreferrer">Install Codex CLI</a></p>';
+        return this._renderOllamaCard()
+            + this._renderApiProviderCard('anthropic', 'Anthropic', 'ANTHROPIC_API_KEY also works.')
             + this._renderApiProviderCard('openai', 'OpenAI', 'OPENAI_API_KEY also works.')
             + `<div class="provider-connection">
-            <strong>ChatGPT / Codex</strong><p>${this.escapeHtml(codex.error || accountLabel)}</p>
+            <strong>ChatGPT / Codex</strong><p role="status">${this.escapeHtml(codex.error || accountLabel)}</p>
             ${quota}${subscription && !quota ? '<p class="provider-note">Usage limits unavailable. Refresh to try again.</p>' : ''}
-            <div class="provider-actions"><button class="btn-sm" data-provider="codex" data-provider-action="login">Sign in with ChatGPT</button>
+            <div class="provider-actions">${signIn}
             <button class="btn-sm" data-provider="codex" data-provider-action="status">Refresh account & models</button>${loginLink}</div>
-            <p class="provider-note">Uses your installed Codex CLI and its sign-in. After signing in, refresh the account. <a href="https://developers.openai.com/codex/cli" target="_blank" rel="noopener noreferrer">Install Codex CLI</a></p>
+            ${cliNote}
             </div><div class="provider-connection"><strong>OpenRouter</strong>
             <p>${this.escapeHtml(router.error || (router.status === 'ready' ? 'Connected · API usage is billed through OpenRouter' : 'Add an OpenRouter key in API keys below, then check the connection.'))}</p>
             ${typeof router.usage === 'number' ? `<p class="provider-note">Key usage: $${router.usage.toFixed(4)}${typeof router.limit_remaining === 'number' ? ` · key allowance remaining: $${router.limit_remaining.toFixed(2)}` : ''}</p>` : ''}
@@ -1517,6 +1555,36 @@ class LumiSettingsView {
             <p>${this.escapeHtml(sonn.error || (sonn.status === 'ready' ? `Connected · ${sonn.model_count} models available` : 'Set your project API base URL in Network and your SONN key in API keys below.'))}</p>
             <button class="btn-sm" data-provider="sonn" data-provider-action="status">Check SONN connection & refresh models</button></div>`
             + this._renderCustomConnections();
+    }
+
+    /**
+     * Ollama on this computer or another one: its address, Test (checks the
+     * typed address, saves nothing), Save (stores and checks it) and what the
+     * last check found (ws_commands._ollama_connection).
+     */
+    _renderOllamaCard() {
+        const esc = value => this.escapeHtml(String(value ?? ''));
+        const check = (this.providerConnections || {}).ollama || null;
+        const saved = String(this.settings?.network?.ollama_url || '');
+        const draft = this._ollamaUrlDraft ?? saved;
+        const found = this.backends?.ollama;
+        const count = n => `${n} chat model${n === 1 ? '' : 's'}`;
+        let status;
+        if (check?.error) status = check.saved ? check.error : `${check.error} Nothing was saved.`;
+        else if (check?.status === 'ready') status = check.saved
+            ? `Connected to ${check.url} · ${count(check.model_count)}. Choose one in the model menu.`
+            : `Ollama answered at ${check.url} with ${count(check.model_count)}. Save to use this address.`;
+        else if (found?.models?.length) status = `Connected to ${found.url || saved} · ${count(found.models.length)}.`;
+        else status = `No Ollama answered at ${saved || 'this computer'}. Start Ollama, or enter the address of the computer that runs it, then Test.`;
+        return `<div class="provider-connection provider-ollama" data-ollama-card>
+            <strong>Ollama: models on this computer or your network</strong>
+            <p role="status" data-ollama-status>${esc(status)}</p>
+            <label class="provider-field"><span>Address</span><input type="text" inputmode="url" id="ollama-url" data-ollama-url value="${esc(draft)}"
+                placeholder="http://127.0.0.1:11434" spellcheck="false" autocomplete="off" aria-describedby="ollama-url-help"></label>
+            <div class="provider-actions"><button class="btn-sm" id="ollama-test" data-ollama-action="test">Test</button>
+            <button class="btn-sm" id="ollama-save" data-ollama-action="save">Save</button></div>
+            <p class="provider-note" id="ollama-url-help">Test checks the address without saving it; Save uses it from now on. Leave it empty for this computer.
+            <a href="https://ollama.com/download" target="_blank" rel="noopener noreferrer">Get Ollama</a>, then pull a model in a terminal, for example: ollama pull qwen3-coder:30b</p></div>`;
     }
 
     openProviderPicker() {
@@ -2142,7 +2210,7 @@ class LumiSettingsView {
     _loadSettingsPage(page) {
         if (this._settingsLoadedPage === page) return;
         this._settingsLoadedPage = page;
-        if (page === 'sonn_account' && !this.sonnAccount) this._requestSonnAccount();
+        if (page === 'sonn_account' && !this.sonnAccount && this._sonnConfigured()) this._requestSonnAccount();
         if (page === 'provider_connections' && !this.providerConnections?.codex) this.send({command:'provider_connection', provider:'codex', action:'status'});
         if (page === 'provider_connections') this.send({command: 'connections_list'});
         if (page === 'privacy') {
@@ -2175,7 +2243,7 @@ class LumiSettingsView {
                 id: 'general', title: 'General', open: true,
                 fields: [
                     { key: 'display_name', label: 'Display name', type: 'text',
-                      placeholder: 'Your name', hint: 'Local sidebar label. Leave blank to use your SONN account identifier. This does not change your SONN account.' },
+                      placeholder: 'Your name', hint: 'The name the sidebar shows, on this computer only. It changes no account.' },
                     { key: 'show_companion', label: 'Show Echo, your sidebar companion', type: 'toggle',
                       hint: 'A quiet little companion. No model calls or notifications; respects reduced motion.' },
                     // v0.4.0 — single backend; the Auto option is the
@@ -2199,12 +2267,14 @@ class LumiSettingsView {
                       hint: 'Leave blank to use the first model reported by the chosen backend.' },
                     { key: 'default_permission_mode', label: 'Default permission mode', type: 'select',
                       options: [
-                          { value: 'bypass', label: 'Full-auto (sandboxed)' },
+                          { value: 'auto-edit', label: 'Auto-edit (file edits in the project apply, other actions ask)' },
                           { value: 'ask', label: 'Ask permissions (ask before every change)' },
-                          { value: 'auto-edit', label: 'Auto-edit (file edits OK, other actions ask)' },
                           { value: 'plan', label: 'Plan mode' },
-                      ]
-                    },
+                          { value: 'bypass', label: this.settings?.security?.shell_sandbox === 'project'
+                              ? 'Full-auto (sandboxed: commands write only in the project)'
+                              : 'Full-auto (nothing asks; shell commands run without a sandbox)' },
+                      ],
+                      hint: 'New installs start in Auto-edit. Plans, missions, autonomous sessions and a team the orchestrator runs need Full-auto, and offer to switch when you start one.' },
                     { key: 'auto_lint_after_edits', label: 'Auto-lint after edits', type: 'toggle',
                       hint: 'After every file_edit/file_write, run the project linter (ruff/eslint/flake8) on the changed file. Errors are injected back as a follow-up turn.' },
                     { key: 'auto_test_after_edits', label: 'Auto-test after edits', type: 'toggle',
@@ -2832,6 +2902,26 @@ class LumiSettingsView {
                 btn.disabled = true;
                 btn.textContent = 'Connecting…';
                 this.send({command: 'provider_connection', provider: btn.dataset.provider, action: btn.dataset.providerAction});
+            });
+        });
+        const ollamaUrl = this.settingsBody.querySelector('[data-ollama-url]');
+        ollamaUrl?.addEventListener('input', () => { this._ollamaUrlDraft = ollamaUrl.value; });
+        ollamaUrl?.addEventListener('keydown', event => {
+            if (event.key !== 'Enter') return;
+            event.preventDefault();
+            this.settingsBody.querySelector('[data-ollama-action="test"]')?.click();
+        });
+        this.settingsBody.querySelectorAll('[data-ollama-action]').forEach(button => {
+            button.addEventListener('click', () => {
+                const action = button.dataset.ollamaAction;
+                const url = (ollamaUrl?.value || '').trim();
+                button.disabled = true;
+                button.textContent = action === 'save' ? 'Saving…' : 'Testing…';
+                // A saved address becomes the setting; the field then shows it.
+                if (action === 'save') this._ollamaUrlDraft = null;
+                // Disabling the button drops its focus; the result gives it back (app.js).
+                this._ollamaFocus = action;
+                this.send({command: 'provider_connection', provider: 'ollama', action, url});
             });
         });
         this.settingsBody.querySelectorAll('input.settings-input[type="text"][data-section]').forEach(input => {

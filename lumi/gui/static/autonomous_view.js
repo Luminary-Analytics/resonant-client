@@ -163,8 +163,13 @@ class LumiAutonomousView {
      */
     _missionDispatchRefused() {
         const restore = this._pendingMissionDispatch;
+        const retry = this._pendingMissionDispatchRetry;
         this._pendingMissionDispatch = null;
+        this._pendingMissionDispatchRetry = null;
         if (typeof restore === 'function') restore();
+        // Dispatching again as the same click did, for a notice that offers
+        // to switch to Full-auto first (app.js _showFullAutoNotice).
+        return typeof retry === 'function' ? retry : null;
     }
 
 
@@ -1877,6 +1882,7 @@ class LumiAutonomousView {
                     btn.disabled = false;
                     label.textContent = 'Build this roadmap';
                 };
+                this._pendingMissionDispatchRetry = () => btn.click();
                 // Surface the planner UI proactively so the user sees
                 // the graph populate as it builds.
                 this.openPlanTab(true);
@@ -2183,6 +2189,7 @@ class LumiAutonomousView {
             this._pendingMissionDispatch = () => {
                 if (chip && chip.parentNode) chip.parentNode.replaceChild(wrap, chip);
             };
+            this._pendingMissionDispatchRetry = () => buildBtn.click();
             this.openPlanTab(true);
         });
 

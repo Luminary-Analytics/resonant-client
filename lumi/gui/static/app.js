@@ -1066,6 +1066,7 @@ class LumiApp {
         this._bindAttachments();
         this._bindPreviewPanel();
         this._bindGlobalSurfaces();
+        this._bindWelcomeProjectStep();
     }
 
     /** Wires the message composer: send, mission toggle, textarea
@@ -1236,7 +1237,9 @@ class LumiApp {
         });
 
         // Permission dropdown
-        this.permissionMode = 'bypass'; // default: bypass permissions
+        // Until init names the conversation's mode: a new install's default
+        // (settings.DEFAULT_PERMISSION_MODE).
+        this.permissionMode = 'auto-edit';
         const permToggle = document.getElementById('permission-toggle');
         const permMenu = document.getElementById('permission-menu');
 
@@ -1881,6 +1884,7 @@ class LumiApp {
         this._queuedMessages.delete(event.message_id);
         this._syncComposerQueue();
         this._prepareTurnUI(text, images);
+        this._pendingTurnText = text;
         this.setRunning(true);
     }
 
@@ -2012,6 +2016,8 @@ class LumiApp {
         }
 
         this._prepareTurnUI(text, this.attachedImages);
+        // Given back if the server refuses the message (_endRefusedTurn).
+        this._pendingTurnText = text;
 
         // Send to server (include images if attached)
         const msg = { command: 'message', text };
@@ -3638,7 +3644,22 @@ class LumiApp {
                 }
                 if (event.request_id && event.request_id === this._newSessionRequestId) this._releaseNewSessionGuard();
                 // A refused mission dispatch un-marks its Build button or card (autonomous_view.js).
-                if (event.source === 'mission_dispatch') this._missionDispatchRefused();
+                if (event.source === 'mission_dispatch') {
+                    const retry = this._missionDispatchRefused();
+                    // Unattended work outside Full-auto: explain, and offer the switch.
+                    if (event.code === 'needs_full_auto') {
+                        this._showFullAutoNotice(event, retry, 'Switch to Full-auto and build');
+                        break;
+                    }
+                }
+                if (event.source === 'autonomous_resume' && event.code === 'needs_full_auto') {
+                    this._autonomousResumeNeedsFullAuto(event);
+                    break;
+                }
+                // The server started no turn for a message (`refused`; a team this
+                // conversation owns refuses one with `team_active`).
+                if ((event.refused || (event.code === 'team_active' && this._pendingTurnText))
+                    && this._endRefusedTurn(event)) break;
                 // Organization oversight refused work before any turn started: the
                 // notice above the message box says why (settings_view.js), so this
                 // is no failed turn with retries.
@@ -4122,7 +4143,7 @@ class LumiApp {
                 // v0.3.4 \u2014 Help \u2192 Save Diagnostics result. Show the path
                 // and size so the user knows what to attach to a GitHub
                 // issue. The size confirms the bundle isn't empty.
-                this._showDiagnosticsToast(event.path || '', event.size_bytes || 0);
+                this._showDiagnosticsToast(event.path || '', event.size_bytes || 0, Boolean(event.can_reveal));
                 break;
             case 'model_warmup_started':
                 // Big cloud / MoE models can take 30-90s to load on first call.
@@ -4169,7 +4190,13 @@ class LumiApp {
                 this.providerConnections ||= {};
                 this.providerConnections[event.provider] = event.data || {};
                 this._renderAccountMenu();
-                if (this.currentView === 'settings') this.renderSettingsView();
+                if (this.currentView === 'settings') this.renderSettingsView({force: event.provider === 'ollama'});
+                if (event.provider === 'ollama' && this._ollamaFocus) {
+                    document.getElementById(`ollama-${this._ollamaFocus}`)?.focus({preventScroll: true});
+                    this._ollamaFocus = null;
+                }
+                // The first-run checklist's "Connect a model" follows a successful check.
+                if (this.chatMessages?.querySelector('.chat-empty-state')) this._maybeRenderChatEmptyState();
                 break;
             case 'voice_status':
                 // Whether dictation may listen now (after the oversight notice was confirmed, say).
@@ -4186,7 +4213,8 @@ class LumiApp {
                 else request.reject(new Error(event.message || 'Transcription failed.'));
                 break;
             }
-            case 'settings':
+            case 'settings': {
+                const previousDefaultMode = this.settings?.general?.default_permission_mode;
                 this.settings = event.data || {};
                 this._syncAutonomousSwitch();
                 this._syncDictationButton();
@@ -4204,14 +4232,20 @@ class LumiApp {
                 if (this.currentView === 'settings' && this._settingsActivePage === 'cost_tracking') {
                     this.send({ command: 'get_costs' });
                 }
-                if (!this.isRunning) {
-                    this.setPermissionMode(
-                        this.settings.general?.default_permission_mode || this.permissionMode || 'bypass',
-                        false
-                    );
+                // A changed default mode applies to this conversation, as the
+                // server applies it (app.py apply_settings). Any other save
+                // keeps the mode the conversation is in, which the mode menu
+                // or a "Switch to Full-auto" may have changed since.
+                const defaultMode = this.settings.general?.default_permission_mode;
+                if (defaultMode && previousDefaultMode !== undefined && defaultMode !== previousDefaultMode) {
+                    this.setPermissionMode(defaultMode, false);
+                } else {
+                    // Full-auto's description follows the shell sandbox setting.
+                    this._renderPermissionCopy();
                 }
                 this.renderSettingsView();
                 break;
+            }
             case 'prompt_inspector':
                 this.promptInspector = event.data || null;
                 if (this.currentView === 'settings') this.renderSettingsView();
@@ -4538,6 +4572,11 @@ class LumiApp {
             this._pendingProjectSwitchId = '';
             this._pendingProjectPath = '';
         }
+        // Whether this conversation's model runs: part of the first-run
+        // checklist's "Connect a model" (_onboardingSteps).
+        this._modelRunning = Boolean(event?.current_backend) && event?.runtime_ready !== false;
+        // Whether Git is installed, and what needs it (lumi/git_support.py).
+        if (event?.git && typeof event.git === 'object') this._gitStatus = event.git;
 
         const {
             backends,
@@ -4643,7 +4682,7 @@ class LumiApp {
             option.hidden = Boolean(allowedModes) && !allowedModes.includes(option.dataset.mode);
         });
         this.setPermissionMode(
-            event.permission_mode || this.settings.general?.default_permission_mode || 'bypass',
+            event.permission_mode || this.settings.general?.default_permission_mode || 'auto-edit',
             false
         );
 
@@ -4813,17 +4852,17 @@ class LumiApp {
             haveProviders ? 'No model loaded' : 'No model server');
         this._applyRuntimeError(event);
 
+        // The model step refreshes only while the welcome screen shows it; a
+        // folder opened from the chat stays in the chat (selectProjectFolder).
+        const backendStep = document.getElementById('backend-step');
+        const onBackendStep = Boolean(backendStep) && backendStep.style.display !== 'none' && this._welcomeVisible();
         if (refresh_only) {
-            const backendStep = document.getElementById('backend-step');
-            if (backendStep && backendStep.style.display !== 'none') {
-                this.showBackendSelector(backends);
-            }
+            if (onBackendStep) this.showBackendSelector(backends);
             return;
         }
 
         // If we're on the backend step (project already selected), refresh backend cards
-        const backendStep = document.getElementById('backend-step');
-        if (backendStep && backendStep.style.display !== 'none') {
+        if (onBackendStep) {
             this.showBackendSelector(backends);
             return;
         }
@@ -5008,12 +5047,26 @@ class LumiApp {
      */
     _onboardingSteps() {
         const onboarding = this.settings?.onboarding || {};
-        const modelReady = Object.values(this.backends || {}).some(info => Array.isArray(info?.models) && info.models.length > 0);
+        // Done once a model answered: this conversation's model runs, Ollama
+        // answered with chat models, or a connection check succeeded. A provider
+        // listed without one (a Codex CLI nobody signed in to) isn't enough.
+        const modelReady = Boolean(this._modelRunning)
+            || Boolean(this.backends?.ollama?.models?.length)
+            || Object.values(this.providerConnections || {}).some(info => info?.status === 'ready');
         const playground = this._normalizeProjectPath(this.playgroundProject?.path || '');
         const cwd = this._normalizeProjectPath(this.currentCwd || '');
         const projectReady = Boolean(cwd) && cwd !== playground;
         return {model: modelReady, project: projectReady, task: Boolean(onboarding.first_task_done),
                 dismissed: Boolean(onboarding.dismissed)};
+    }
+
+    /** What the conversation's mode lets Lumi do, for someone about to start (see _fullAutoCopy). */
+    _onboardingModeNote() {
+        const mode = this.permissionMode;
+        if (mode === 'bypass') return `Lumi is in Full-auto: it doesn’t ask before anything. ${this.settings?.security?.shell_sandbox === 'project' ? 'Commands can write only in the project.' : 'File changes stay in the project; shell commands run without a sandbox.'} Change it in the mode menu under the message box.`;
+        if (mode === 'ask') return 'Lumi asks before changing files and before running commands. Change it in the mode menu under the message box.';
+        if (mode === 'plan') return 'Lumi is in Plan mode: it proposes a plan first, changes files in this project without asking, and asks before running commands. Change it in the mode menu under the message box.';
+        return 'Lumi starts in Auto-edit: it changes files in this project without asking, and asks before running commands. Change it in the mode menu under the message box.';
     }
 
     _renderOnboardingChecklist(container) {
@@ -5040,7 +5093,8 @@ class LumiApp {
                 <li class="${steps.task ? 'done' : ''}">${mark(steps.task)}<div><strong>Finish a first task</strong>${state(steps.task)}
                     <p>${sample ? 'The sample has a bug. Let Lumi write tests, run them and fix it.' : 'Describe what you want below, or start from a suggestion.'}</p>
                     ${steps.task || !steps.model || !steps.project ? '' : '<button type="button" class="btn-sm" data-onboarding="task">Use a suggested task</button>'}</div></li>
-            </ol>`;
+            </ol>
+            <p class="onboarding-mode-note">${this._onboardingModeNote()}</p>`;
         card.querySelector('[data-onboarding="dismiss"]').addEventListener('click', () => {
             this.settings = {...(this.settings || {}), onboarding: {...(this.settings?.onboarding || {}), dismissed: true}};
             this.send({command: 'update_settings', section: 'onboarding', key: 'dismissed', value: true});
@@ -5098,22 +5152,22 @@ class LumiApp {
     setPermissionMode(mode, notifyServer = true) {
         this.permissionMode = mode;
 
-        // Use a shield (🛡) for the safe sandboxed default instead of a triangle —
-        // the triangle reads as a warning glyph and looks alarming on the safe path.
-        const icons = { ask: '⚙', 'auto-edit': '✎', plan: '☰', bypass: '🛡' };
+        const fullAuto = this._fullAutoCopy();
+        const icons = { ask: '⚙', 'auto-edit': '✎', plan: '☰', bypass: fullAuto.icon };
         const labels = { ask: 'Ask', 'auto-edit': 'Auto-edit', plan: 'Plan', bypass: 'Full-auto' };
 
-        document.getElementById('perm-icon').textContent = icons[mode] || '🛡';
+        document.getElementById('perm-icon').textContent = icons[mode] || '✎';
         document.getElementById('perm-label').textContent = labels[mode] || mode;
         // Tooltip on the toggle reflects the current mode + a one-line explanation
         const tooltips = {
             ask: 'Ask permissions — confirm before every change',
-            'auto-edit': 'Auto-edit — file edits run; commands and other actions ask',
+            'auto-edit': 'Auto-edit — file edits in the project apply; commands and other actions ask',
             plan: 'Plan mode — propose a plan before acting',
-            bypass: 'Full-auto (sandboxed) — accept all changes inside the project',
+            bypass: fullAuto.tooltip,
         };
         const toggle = document.getElementById('permission-toggle');
         if (toggle) toggle.title = tooltips[mode] || 'Permission mode';
+        this._renderPermissionCopy();
 
         // Update active state + checkmark
         document.querySelectorAll('.perm-option').forEach(opt => {
@@ -5139,6 +5193,51 @@ class LumiApp {
         // Notify server of permission mode change
         if (notifyServer) {
             this.send({ command: 'set_permission_mode', mode });
+        }
+    }
+
+    /**
+     * What Full-auto does here. "Sandboxed" only while the shell sandbox is on
+     * (Settings > Privacy & security, security.shell_sandbox "project",
+     * engine/os_sandbox.py), which keeps commands from writing outside the
+     * project. Without it, file tools still stay inside the project (the path
+     * sandbox), but commands run as you, anywhere.
+     */
+    _fullAutoCopy() {
+        if (this.settings?.security?.shell_sandbox === 'project') {
+            return {
+                icon: '🛡',
+                name: 'Full-auto (sandboxed)',
+                description: 'Runs everything without asking. Commands can write only in the project and temporary folders.',
+                tooltip: 'Full-auto (sandboxed) — runs everything without asking; commands can write only in the project and temporary folders',
+            };
+        }
+        return {
+            icon: '⚡',
+            name: 'Full-auto',
+            description: 'Runs everything without asking. File changes stay in the project; shell commands run without a sandbox.',
+            tooltip: 'Full-auto — runs everything without asking. File changes stay in the project; shell commands run without a sandbox',
+        };
+    }
+
+    /** Full-auto's name and description in the mode menu (see _fullAutoCopy). */
+    _renderPermissionCopy() {
+        const note = document.querySelector('.onboarding-mode-note');
+        if (note) note.textContent = this._onboardingModeNote();
+        const option = document.querySelector('#permission-menu .perm-option[data-mode="bypass"]');
+        if (!option) return;
+        const copy = this._fullAutoCopy();
+        const name = option.querySelector('.perm-opt-name');
+        const description = option.querySelector('.perm-opt-desc');
+        const icon = option.querySelector('.perm-opt-icon');
+        if (name) name.textContent = copy.name;
+        if (description) description.textContent = copy.description;
+        if (icon) icon.textContent = copy.icon;
+        if (this.permissionMode === 'bypass') {
+            const toggleIcon = document.getElementById('perm-icon');
+            const toggle = document.getElementById('permission-toggle');
+            if (toggleIcon) toggleIcon.textContent = copy.icon;
+            if (toggle) toggle.title = copy.tooltip;
         }
     }
 
@@ -5542,6 +5641,7 @@ class LumiApp {
     // ── Step Handling ────────────────────────────────────────────
 
     handleSessionStart(event) {
+        this._pendingTurnText = '';
         this._setSessionActivity('working');
         // Show tool mode indicator for adaptive backends
         const toolMode = event.tool_mode || 'native';
@@ -7149,13 +7249,14 @@ class LumiApp {
 
         switch (viewName) {
             case 'agents':
-                if (this.currentSessionId || (this.backends && Object.keys(this.backends).length > 0)) {
+                if (this.currentSessionId || this.currentCwd || (this.backends && Object.keys(this.backends).length > 0)) {
                     if (this.agentPanel) this.agentPanel.style.display = 'flex';
                     else this.chatContainer.style.display = 'flex';
                     this.inputBar.style.display = 'flex';
                     this._syncComposerGutter?.();
+                    this._maybeRenderChatEmptyState();
                 } else {
-                    this.welcomeScreen.style.display = 'flex';
+                    this.showNewSessionSetup();
                 }
                 break;
             case 'settings':
@@ -7972,6 +8073,7 @@ class LumiApp {
     }
 
     handleSessionEnd(event) {
+        this._pendingTurnText = '';
         const finishedTask = this._activeTask;
         this.removeThinking();
         this._removeLiveAgentTodoStrip();
@@ -8270,8 +8372,23 @@ class LumiApp {
         const refusal = /^(?:Connect a backend before starting an intent|intent_start failed|intent text is required)/;
         if (!pending.length || !refusal.test(message)) return false;
         const run = pending.shift();
-        run.error = message;
+        const needsFullAuto = event.code === 'needs_full_auto';
+        run.error = needsFullAuto ? String(event.detail || message) : message;
         this._setPlanStatus(run, 'not_started');
+        if (needsFullAuto && run.card?.el) {
+            run.card.el.querySelector('.full-auto-notice')?.remove();
+            const notice = this._fullAutoNotice(event, () => {
+                // The same card starts again, as the plan it asked for.
+                notice.remove();
+                run.error = '';
+                this._planRegistry().pending.push(run);
+                this._setPlanStatus(run, 'starting');
+                this.send({ command: 'intent_start', text: run.intentText });
+                this.openPlanTab(true);
+            }, 'Switch to Full-auto and start the plan');
+            run.card.statusEl.after(notice);
+            notice.querySelector('button')?.focus({preventScroll: true});
+        }
         return true;
     }
 
@@ -9747,6 +9864,125 @@ class LumiApp {
 
     // ── Error ───────────────────────────────────────────────────
 
+    /**
+     * Git is optional (lumi/git_support.py, init.git): without it, name what
+     * needs it and where to get it. Nothing when init doesn't say.
+     */
+    _gitMissingCopy() {
+        const git = this._gitStatus;
+        if (!git || git.available !== false) return null;
+        const names = {writer_teams: 'writer teams', worktrees: 'agent worktrees',
+                       mission_checkpoints: 'mission checkpoints', model_comparisons: 'model comparisons'};
+        const needs = (git.unavailable || []).map(id => names[id]).filter(Boolean);
+        const list = needs.length > 1 ? `${needs.slice(0, -1).join(', ')} and ${needs[needs.length - 1]}` : (needs[0] || 'some features');
+        let url = 'https://git-scm.com/downloads';
+        try {
+            const parsed = new URL(String(git.download_url || ''));
+            if (parsed.protocol === 'https:') url = parsed.href;
+        } catch (_) { /* the default */ }
+        const product = /win/i.test(navigator.platform || navigator.userAgent || '') ? 'Git for Windows' : 'Git';
+        return {
+            text: `${product} isn’t installed on this computer. ${list.charAt(0).toUpperCase()}${list.slice(1)} need it; everything else works without it.`,
+            url, product,
+        };
+    }
+
+    /**
+     * Unattended work (a plan, a roadmap, an autonomous session, a team the
+     * orchestrator runs) runs in Full-auto, and the server refused to start
+     * it from another mode (code "needs_full_auto", AppState.full_auto_needed).
+     * The notice says why; when the organization allows Full-auto
+     * (`can_switch`), one button switches this conversation to it and asks
+     * again. The mode menu shows the switch like any other.
+     */
+    _fullAutoNotice(event, retry, label = 'Switch to Full-auto and continue') {
+        const notice = document.createElement('div');
+        notice.className = 'full-auto-notice';
+        notice.setAttribute('role', 'status');
+        const text = document.createElement('p');
+        text.className = 'full-auto-notice-text';
+        text.textContent = event.detail || event.message || 'This needs Full-auto.';
+        notice.appendChild(text);
+        if (event.can_switch && typeof retry === 'function') {
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.className = 'btn-sm full-auto-switch';
+            button.textContent = label;
+            button.addEventListener('click', () => {
+                button.disabled = true;
+                this.setPermissionMode('bypass');
+                text.textContent = 'Switched this conversation to Full-auto.';
+                retry();
+            });
+            notice.appendChild(button);
+        }
+        return notice;
+    }
+
+    /** A Full-auto notice in the conversation, for work refused away from its own card. */
+    _showFullAutoNotice(event, retry, label) {
+        const notice = this._fullAutoNotice(event, retry, label);
+        notice.classList.add('full-auto-notice-chat');
+        this.chatMessages.appendChild(notice);
+        this.scrollToBottom();
+        notice.querySelector('button')?.focus({preventScroll: true});
+        return notice;
+    }
+
+    /** Resume on an interrupted autonomous session was refused outside Full-auto: its card offers the switch. */
+    _autonomousResumeNeedsFullAuto(event) {
+        const intentId = String(event.intent_id || '');
+        const button = [...document.querySelectorAll('.autonomous-orphan-resume')]
+            .find(node => node.dataset.intentId === intentId);
+        const card = button?.closest('.autonomous-orphan-card');
+        const retry = () => this._handleResumeOrphanClick(intentId, event.session_id || '', button || null);
+        if (!card) {
+            this._showFullAutoNotice(event, retry, 'Switch to Full-auto and resume');
+            return;
+        }
+        card.querySelectorAll('button').forEach(node => { node.disabled = false; });
+        button.textContent = 'Resume';
+        card.querySelector('.full-auto-notice')?.remove();
+        const notice = this._fullAutoNotice(event, () => { notice.remove(); retry(); }, 'Switch to Full-auto and resume');
+        card.appendChild(notice);
+        notice.querySelector('button')?.focus({preventScroll: true});
+    }
+
+    /**
+     * The server refused a chat message before any turn started. A refused
+     * follow-up leaves the queue, and the turn it followed keeps running;
+     * otherwise the running state sendMessage set ends. The text goes back
+     * into an empty message box either way. Returns true when nothing more is
+     * shown: a follow-up's refusal is a toast, not a failed turn.
+     */
+    _endRefusedTurn(event) {
+        const queued = event.message_id ? this._queuedMessages?.get(event.message_id) : null;
+        if (queued) {
+            queued.el?.remove();
+            this._queuedMessages.delete(event.message_id);
+            this._syncComposerQueue();
+            this._restoreRefusedText(queued.text);
+            this.showToastMessage(event.message || 'That follow-up wasn’t sent.');
+            return true;
+        }
+        const text = this._pendingTurnText;
+        this._pendingTurnText = '';
+        this.clearTerminals();
+        this.setRunning(false);
+        this._restoreRefusedText(text);
+        return false;
+    }
+
+    _restoreRefusedText(text) {
+        if (!text || this.userInput.value.trim()) return;
+        this.userInput.value = text;
+        this._markDraftEdited();
+        this._saveDraft();
+        this.userInput.style.height = 'auto';
+        this.userInput.style.height = Math.min(this.userInput.scrollHeight, 200) + 'px';
+        this._syncComposerGutter?.();
+    }
+
     handleError(event) {
         this.removeThinking();
         this._finalizeLiveCollapsedGroup();
@@ -10945,7 +11181,10 @@ class LumiApp {
                 : `This project brings ${parts.join(' and ')}. Lumi isn't using them until you trust the project.`;
         }
 
-        if (!reason && !mcpNote && !packNote && !trustNote) {
+        const git = this._gitMissingCopy();
+        const gitNote = git ? git.text : '';
+
+        if (!reason && !mcpNote && !packNote && !trustNote && !gitNote) {
             el.hidden = true;
             el.textContent = '';
             this._dismissedRuntimeNotice = '';
@@ -10956,7 +11195,7 @@ class LumiApp {
         // with no way to close it is just noise once the user has read it —
         // but silencing it forever would hide a *different*, later problem, so
         // a changed message brings it back.
-        const signature = `${reason}||${mcpNote}||${packNote}||${trustNote}`;
+        const signature = `${reason}||${mcpNote}||${packNote}||${trustNote}||${gitNote}`;
         if (this._dismissedRuntimeNotice === signature) {
             el.hidden = true;
             return;
@@ -11003,6 +11242,20 @@ class LumiApp {
                 });
                 line.appendChild(button);
             }
+            el.appendChild(line);
+        }
+
+        if (gitNote) {
+            const line = document.createElement('div');
+            line.className = 'runtime-banner-git';
+            line.textContent = gitNote;
+            const link = document.createElement('a');
+            link.className = 'runtime-banner-action';
+            link.href = git.url;
+            link.target = '_blank';
+            link.rel = 'noopener noreferrer';
+            link.textContent = `Get ${git.product}`;
+            line.appendChild(link);
             el.appendChild(line);
         }
 
@@ -11392,7 +11645,7 @@ class LumiApp {
      * the on-disk path + size, with a "copy path" button so the user
      * can paste straight into a GitHub issue.
      */
-    _showDiagnosticsToast(zipPath, sizeBytes) {
+    _showDiagnosticsToast(zipPath, sizeBytes, canReveal = false) {
         if (!zipPath) {
             this.showStatusMessage('Diagnostics saved (path unknown).');
             return;
@@ -11405,15 +11658,17 @@ class LumiApp {
                 <span class="diagnostics-toast-icon" aria-hidden="true">📦</span>
                 <span class="diagnostics-toast-text">
                     Diagnostics ZIP saved
-                    <span class="diagnostics-toast-meta">${sizeKB} KB · attach to a GitHub issue</span>
+                    <span class="diagnostics-toast-meta">${sizeKB} KB · Lumi’s logs and recent session logs, with API keys removed. Look it over, then send it to Luminary Analytics support with your report.</span>
                 </span>
             </div>
             <code class="diagnostics-toast-path">${this.escapeHtml(zipPath)}</code>
             <div class="diagnostics-toast-actions">
+                ${canReveal ? '<button type="button" class="diagnostics-toast-reveal">Show in folder</button>' : ''}
                 <button type="button" class="diagnostics-toast-copy">Copy path</button>
                 <button type="button" class="diagnostics-toast-dismiss">Dismiss</button>
             </div>
         `;
+        wrap.querySelector('.diagnostics-toast-reveal')?.addEventListener('click', () => this.send({ command: 'reveal_diagnostics' }));
         wrap.querySelector('.diagnostics-toast-copy').addEventListener('click', async () => {
             try {
                 await navigator.clipboard.writeText(zipPath);
@@ -12455,7 +12710,7 @@ class LumiApp {
         menu.innerHTML = `
             <button type="button" role="menuitem" class="ctx-item" data-action="pin">${pinLabel}</button>
             <button type="button" role="menuitem" class="ctx-item" data-action="rename">&#9998; Rename</button>
-            <button type="button" role="menuitem" class="ctx-item" data-action="share">&#128279; Share…</button>
+            <button type="button" role="menuitem" class="ctx-item" data-action="share">&#128279; Share in Lumi Cloud…</button>
             <button type="button" role="menuitem" class="ctx-item" data-action="handoff">&#8618; Hand off…</button>
             ${session.id === this.currentSessionId
                 ? '<button type="button" role="menuitem" class="ctx-item" data-action="timeline">&#10226; Timeline…</button>'
@@ -12576,8 +12831,8 @@ class LumiApp {
                 <p class="share-note">${who} The copy doesn’t change when this conversation does: stop sharing, then share again for a newer one.</p>
                 <div class="dialog-actions"><button type="button" class="dialog-btn deny" id="share-stop">Stop sharing</button></div>`);
         } else if (!event.signed_in) {
-            parts.push(`<p class="share-note">Sign in to your organization’s Lumi Cloud first.</p>
-                <div class="dialog-actions"><button type="button" class="dialog-btn allow" id="share-sign-in">Open Lumi account</button></div>`);
+            parts.push(`<p class="share-note">Sharing needs a Lumi Cloud account from your organization: the copy lives in its Lumi Cloud, where your teammates open it. Everything else in Lumi works without an account.</p>
+                <div class="dialog-actions"><button type="button" class="dialog-btn allow" id="share-sign-in">About Lumi accounts</button></div>`);
         } else if (!orgs.length) {
             parts.push('<p class="share-note">You aren’t in a Lumi Cloud organization yet.</p>');
         } else {
@@ -12779,7 +13034,7 @@ class LumiApp {
             return `<option value="${esc(value)}"${value === form.to ? ' selected' : ''}>${esc(label)}</option>`;
         }).join('')}</optgroup>`).join('');
         const teammate = people ? `<select id="handoff-to" class="settings-select" aria-label="Teammate">${options}</select>`
-            : `<span class="share-note">${event.signed_in ? 'Nobody else is in your organization yet.' : 'Sign in to Lumi Cloud to hand work to a teammate.'}</span>`;
+            : `<span class="share-note">${event.signed_in ? 'Nobody else is in your organization yet.' : 'A teammate hand-off goes through your organization’s Lumi Cloud, so it needs a Lumi Cloud account. The CI hand-off below works without one.'}</span>`;
         parts.push(`<fieldset class="share-who"><legend class="share-label">Hand it to</legend>
                 <label><input type="radio" name="handoff-target" value="teammate"${people ? '' : ' disabled'}${people && target === 'teammate' ? ' checked' : ''}> A teammate, through Lumi Cloud</label>
                 <div class="handoff-choice">${teammate}</div>
@@ -13411,6 +13666,46 @@ class LumiApp {
         }
     }
 
+    /**
+     * Open, Browse and Enter on the welcome screen's folder step. Bound when
+     * the page starts, not only when a new session is set up: the screen can
+     * also appear through View > Agents or Settings' Back, and its buttons
+     * did nothing then.
+     */
+    _bindWelcomeProjectStep() {
+        const input = document.getElementById('welcome-folder-input');
+        const openBtn = document.getElementById('welcome-folder-open');
+        const browseBtn = document.getElementById('welcome-folder-browse');
+        if (!input || !openBtn || !browseBtn) return;
+        openBtn.onclick = () => {
+            const path = (input.value.trim() || (this.currentCwd || '').trim());
+            if (path) this.selectProjectFolder(path);
+        };
+        browseBtn.onclick = () => {
+            this.openProjectFolder();
+        };
+        input.onkeydown = (e) => {
+            if (e.key === 'Enter') {
+                const path = input.value.trim();
+                if (path) this.selectProjectFolder(path);
+            }
+        };
+        // Dir browsing on input change
+        input.oninput = () => {
+            const val = input.value.trim();
+            if (val.length > 2) {
+                this._dirBrowserTarget = 'welcome-dir-browser';
+                this.send({ command: 'list_dirs', path: val });
+            }
+        };
+    }
+
+    /** Whether the welcome screen (folder and model steps) is what the person sees. */
+    _welcomeVisible() {
+        return Boolean(this.welcomeScreen) && this.welcomeScreen.style.display !== 'none'
+            && getComputedStyle(this.welcomeScreen).display !== 'none';
+    }
+
     showNewSessionSetup() {
         if (this.agentPanel) this.agentPanel.style.display = 'none';
         else this.chatContainer.style.display = 'none';
@@ -13449,34 +13744,7 @@ class LumiApp {
         const hint = (this.currentCwd || '').trim();
         input.placeholder = hint ? `Enter folder path or pick from Recent (default: ${hint})` : 'Enter folder path...';
 
-        // Bind folder open
-        const openBtn = document.getElementById('welcome-folder-open');
-        openBtn.onclick = () => {
-            const path = (input.value.trim() || (this.currentCwd || '').trim());
-            if (path) this.selectProjectFolder(path);
-        };
-
-        // Bind native folder browse button
-        const browseBtn = document.getElementById('welcome-folder-browse');
-        browseBtn.onclick = () => {
-            this.openProjectFolder();
-        };
-
-        input.onkeydown = (e) => {
-            if (e.key === 'Enter') {
-                const path = input.value.trim();
-                if (path) this.selectProjectFolder(path);
-            }
-        };
-
-        // Dir browsing on input change
-        input.oninput = () => {
-            const val = input.value.trim();
-            if (val.length > 2) {
-                this._dirBrowserTarget = 'welcome-dir-browser';
-                this.send({ command: 'list_dirs', path: val });
-            }
-        };
+        this._bindWelcomeProjectStep();
 
         // Render recent projects
         const recentSection = document.getElementById('welcome-recent-projects');
@@ -13657,12 +13925,16 @@ class LumiApp {
             this.chatMessages.innerHTML = '';
             this._resetTaskCardState();
         }
+        const inSetup = this._welcomeVisible();
+        if (!inSetup) this._maybeRenderChatEmptyState();
         this.clearPreviewPanel?.();
         // 2. Request a fresh git_status for the new project so the bottom
         //    git pill reflects the new branch / dirty count instead of the
         //    previous project's. The backend will respond with a git_status
         //    event that handleGitStatus consumes.
         this.send({ command: 'git_status' });
+
+        if (!inSetup) return;
 
         // Show backend step
         const projectStep = document.getElementById('project-step');

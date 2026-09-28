@@ -8,6 +8,99 @@ The heartbeat remains paused. Documentation maintenance does not resume work,
 spending or grants, and changes no native implementation or installed bundle.
 The dated September 15/18 records below are historical.
 
+## September 27 A new tester's first hour: Auto-edit for new installs, clear refusals and labels (source only, not released)
+
+Found running the packaged app the way a new alpha tester would, on a new
+Windows computer. The engine and runtime fixes are in the clean-machine pull
+request (#102); these are the page's.
+
+- **New installs start in Auto-edit** (the owner's decision): file edits in
+  the project apply without asking; shell commands and everything else ask
+  (`settings.DEFAULT_PERMISSION_MODE`). Only new installs change. Every
+  earlier first launch wrote its Full-auto default into `settings.json`, so
+  an existing install keeps the mode its file names. A file without one
+  (written by hand or by a tool) keeps Full-auto; an unreadable one gets the
+  new default with its other defaults, as before. The terminal UI (Full-auto
+  unless `--approve`) and `lumi run` (Auto-edit already) don't read this
+  setting and are unchanged.
+- **Unattended work asks for Full-auto.** A plan (`/plan`), **Build this
+  roadmap**, an autonomous session (**Build autonomously**, and **Resume**
+  after an interruption) and a team the orchestrator runs (**Start**, and
+  **Continue** after a recovery) ran in Full-auto whatever the conversation's
+  mode. From another mode they now start nothing and say why where they were
+  asked for (the /plan card, the conversation, the interrupted session's card,
+  the Team panel), with one button that switches the conversation to Full-auto
+  and asks again (`AppState.full_auto_needed`, `code: "needs_full_auto"`).
+  Where the organization's policy doesn't allow Full-auto, its own refusal
+  applies as before, with no switch. Pausing and resuming work that is still
+  running doesn't ask again. The Team form says so beside the orchestrator
+  switch, and Settings > General beside the default mode.
+- **Full-auto says what it does.** "Sandboxed" only while the shell sandbox
+  is on (macOS and Linux); otherwise the mode menu says file changes stay in
+  the project and shell commands run without a sandbox, with ⚡ instead of the
+  shield. The first-run checklist says what the conversation's mode lets Lumi
+  do. A settings save no longer re-labels the mode menu with the default (the
+  server kept the conversation's mode, so the label could disagree).
+- **A refused message ends the "running" state.** The server marks a message
+  it starts no turn for (`refused: true`, `ws_commands.refused_turn`: no
+  model running, the organization's oversight notice); #102's team refusal
+  carries `code: "team_active"`. The page ends its running state, and the text
+  goes back into an empty message box; a refused queued follow-up leaves the
+  queue with a note.
+- **Opening a folder without a model** (File > Open Folder from the chat)
+  keeps the chat, with its empty state and checklist for the new project; it
+  used to go blank. The welcome screen's **Open**, browse and Enter work
+  however the screen appeared (they were bound only by New session, so View >
+  Agents could show dead buttons), and View > Agents with a project open shows
+  the chat.
+- **Settings > Connections: Ollama.** A card with the address, **Test** (the
+  typed address; saves nothing), **Save** (stores `network.ollama_url`, which a
+  policy can lock, audited; then checks it and starts a model when none runs)
+  and what the last check found. `network.ollama_url` is checked like the
+  other addresses. The checklist's "Connect a model" is done only once a model
+  answered: the conversation's model runs, Ollama answered with chat models,
+  or a connection check succeeded.
+- **Without Git** (#102's `init.git`), the banner above the message box names
+  what needs it and links Git for Windows, and the Team panel keeps "Allow
+  scoped file changes" off with the same explanation.
+- **Sign in with ChatGPT without the Codex CLI** says what to install
+  (Node.js, then `npm install -g @openai/codex`) instead of offering a sign-in
+  that can't start (`codex_account.CodexCliMissing`).
+- **Team panel.**
+  - `/team` after a finished team opens a new team's form, as **New team**
+    does; while the conversation's team works, the panel says so.
+  - Two quick acceptances no longer fail with "Run revision changed": an owner
+    decision on an immutable target (a submission, a plan) is sent once more
+    after a refresh, and the server still checks that target.
+  - A writer's task is "Change n" and a verifier's "Check n", not
+    "Investigation n".
+  - An error brings the panel's notice into view.
+- **Lumi Cloud features are labeled, not hidden.**
+  - Settings > Lumi account says it's for teams and companies that use Lumi
+    Cloud, what it adds, and that Lumi works without it.
+  - **Share in Lumi Cloud…** names what it needs, and its dialog explains.
+  - A teammate hand-off says it needs Lumi Cloud; the CI hand-off works
+    without it.
+  - "Organization managed team (set up by your organization)".
+  - Labels keep the menus and documentation the same on every computer and
+    say what an account adds; hidden items would leave people who later get
+    an account without a way to find them.
+- **The profile button** shows the local display name, or "Profile". SONN's
+  status, its menu item and the account check appear only for someone who
+  uses SONN (a SONN key or project URL, or its models); the profile never
+  shows "SONN account" to anyone else, and never a ChatGPT identity.
+- **Diagnostics.** The saved ZIP's note says what's in it (Lumi's logs and
+  recent session logs, keys removed) and to send it to Luminary Analytics
+  support, not to a GitHub issue; Help > Send Feedback (#101) isn't merged
+  yet. **Show in folder** selects it (`reveal_diagnostics`, only the file the
+  last save made). It goes to Downloads, else the Desktop, else home, as
+  before.
+- **Tests:** `tests/test_first_run_polish.py` (the default mode for new and
+  existing settings, refused turns, each Full-auto gate, the orchestrated-team
+  check, Ollama's address, probe, Test and Save, the Codex CLI message and
+  Show in folder) and `tests/ui_recovery.test.cjs` (the page's refused turn,
+  model readiness and Full-auto wording).
+
 ## September 27 Lumi is commercial software: a proprietary license (source only, not released)
 
 The owner decided that Lumi is a commercial, proprietary product. The new

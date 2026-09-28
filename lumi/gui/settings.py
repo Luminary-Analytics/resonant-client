@@ -13,6 +13,16 @@ from ..secrets_store import PLACEHOLDER, SecretStore, credential_store_name
 
 logger = logging.getLogger(__name__)
 
+# The permission mode a new install starts in: Auto-edit, where file edits
+# inside the project apply without asking and commands and everything else ask
+# (engine/policies.py). New installs started in Full-auto ("bypass") before
+# September 27, 2026. Every earlier first launch wrote that default into
+# settings.json (``_load`` saves the merged defaults), so an existing install
+# keeps the mode its file names; a file without one keeps Full-auto too
+# (``_keep_earlier_permission_mode``).
+DEFAULT_PERMISSION_MODE = "auto-edit"
+EARLIER_DEFAULT_PERMISSION_MODE = "bypass"
+
 DEFAULTS = {
     "general": {
         "display_name": "",
@@ -23,7 +33,7 @@ DEFAULTS = {
         # ("provider:model"), and models for roles ("role provider:model").
         "fallback_models": [],
         "role_models": [],
-        "default_permission_mode": "bypass",
+        "default_permission_mode": DEFAULT_PERMISSION_MODE,
         "theme": "dark",
         "max_model_requests": 0,
         # Sprint workflow (planner / generator / evaluator). Off by default — most
@@ -396,12 +406,29 @@ class SettingsManager:
                 except (json.JSONDecodeError, OSError) as exc:
                     logger.warning(f"Failed to read settings: {exc}")
                     self._data = {}
+                else:
+                    self._keep_earlier_permission_mode()
             else:
                 self._data = {}
             self._apply_defaults()
             self._migrate()
             self._secure_api_keys_locked()
             self._save_locked()
+
+    def _keep_earlier_permission_mode(self) -> None:
+        """Give a settings file that names no permission mode the earlier default.
+
+        Only a new install starts in Auto-edit. Earlier versions wrote their
+        Full-auto default into settings.json on first launch, so a file without
+        the key, or with an empty one, was written by hand or by another tool,
+        and ran in Full-auto until now. An unreadable file is read as empty, as
+        before, and gets the new default with the rest.
+        """
+        if not isinstance(self._data, dict):
+            return
+        general = self._data.setdefault("general", {})
+        if isinstance(general, dict) and not str(general.get("default_permission_mode") or "").strip():
+            general["default_permission_mode"] = EARLIER_DEFAULT_PERMISSION_MODE
 
     def _migrate(self) -> None:
         """Retire settings that shipped as defaults and no longer apply.

@@ -108,7 +108,7 @@ for their context-handoff and verification boundaries.
   in Lumi Cloud ([second-person approval](docs/second-approval.md))
 - Built-in browser control (native CDP) and desktop computer use, with an
   on-screen indicator while the agent drives the machine
-- Permission modes and a project-root path sandbox
+- Permission modes (new installs start in Auto-edit) and a project-root path sandbox
 - Optional codebase indexing, RAG, and Engram memory
 
 ### Desktop client

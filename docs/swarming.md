@@ -196,9 +196,18 @@ attachment is read without creating team state. See
 
 With a coordinator plan, **Let the orchestrator run the team** and choose
 **Orchestrator rounds** (one to eight). From the chat, `/team <objective>`
-opens this panel with the objective filled in and this option chosen. Check
-the limits and press **Start orchestrated team**. The coordinator becomes the
-team's orchestrator, and you don't approve each step:
+opens this panel with the objective filled in and this option chosen; after a
+finished team it opens a new team's form, as **New team** does, and while the
+conversation's team still works the panel says so. Check the limits and press
+**Start orchestrated team**. The coordinator becomes the team's orchestrator,
+and you don't approve each step.
+
+The orchestrator decides for you, so it needs Full-auto, as a mission does. In
+another mode the form says so, and **Start** (or **Continue** after a
+recovery) is refused with **Switch to Full-auto and start the team**: one
+click switches the conversation and starts it (`gui/swarming.py`). A team you
+review yourself needs no particular mode. The orchestrator then works like
+this:
 
 - Its plans run after the checks your approval would get: the exact
   proposal, the team's policy, tools, criteria and dependencies. Each task

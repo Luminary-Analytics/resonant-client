@@ -75,6 +75,36 @@ STATUS_UPDATE_STEER = (
 PERMISSION_MODES = frozenset({"ask", "auto-edit", "plan", "bypass"})
 
 
+def refused_turn(msg: dict[str, Any], message: str, **fields: Any) -> dict[str, Any]:
+    """The error for a chat message the server didn't start a turn for.
+
+    The page shows a turn as running from the moment it sends the message;
+    ``refused`` tells it none started, so it ends that state and gives the
+    text back. ``message_id`` names a queued follow-up that won't run.
+    """
+    event: dict[str, Any] = {"event": "error", "message": message, "refused": True, **fields}
+    message_id = msg.get("message_id") if isinstance(msg, dict) else None
+    if message_id:
+        event["message_id"] = str(message_id)
+    return event
+
+
+def full_auto_needed(state: Any, work: str) -> Optional[dict[str, Any]]:
+    """``AppState.full_auto_needed`` for unattended ``work``, or None."""
+    check = getattr(state, "full_auto_needed", None)
+    return check(work) if callable(check) else None
+
+
+def needs_full_auto(needed: dict[str, Any], message: str = "", **fields: Any) -> dict[str, Any]:
+    """The error that refuses unattended work outside Full-auto (see full_auto_needed).
+
+    ``detail`` is the explanation alone, for a page that shows ``message``
+    with a prefix it matches on; ``can_switch`` offers the one-click switch.
+    """
+    return {"event": "error", "message": message or needed["message"], "detail": needed["message"],
+            "code": needed["code"], "can_switch": needed["can_switch"], **fields}
+
+
 def _is_connection_closed(exc: BaseException) -> bool:
     """Whether this exception means "the client is gone", not "we have a bug".
 
@@ -141,6 +171,10 @@ class CommandContext:
 
     async def send_error(self, message: str) -> None:
         await self.send({"event": "error", "message": message})
+
+    async def send_refusal(self, message: str, **fields: Any) -> None:
+        """Refuse a chat message before any turn starts (see ``refused_turn``)."""
+        await self.send(refused_turn(self.msg, message, **fields))
 
     @property
     def project_path(self) -> str:
@@ -2252,13 +2286,10 @@ async def _cmd_message(ctx: CommandContext) -> None:
     # confirmed (lumi/oversight.py); the page's message box is locked too.
     refusal = await _oversight_refusal(ctx)
     if refusal:
-        await ctx.send({"event": "error", "message": refusal, "code": "oversight_notice"})
+        await ctx.send_refusal(refusal, code="oversight_notice")
         return
     if not ctx.state.session:
-        await ctx.send({
-            "event": "error",
-            "message": ctx.state.runtime_unavailable_reason(),
-        })
+        await ctx.send_refusal(ctx.state.runtime_unavailable_reason())
         return
     await ctx.runs.enqueue(ctx.msg)
     return
@@ -2569,6 +2600,11 @@ async def _cmd_mission_dispatch_roadmap(ctx: CommandContext) -> None:
     # criteria, not just one paragraph. Refined intent stays
     # in mission_state for display.
     intent_text = spec_md or refined
+    # Its steps run in Full-auto; outside it, say so and offer the switch.
+    needed = full_auto_needed(ctx.state, "roadmap")
+    if needed:
+        await ctx.send(needs_full_auto(needed, source="mission_dispatch"))
+        return
 
     def _emit_intent(payload: dict, _ws=ctx.ws, _loop=asyncio.get_running_loop()):
         try:
@@ -3452,6 +3488,9 @@ async def _cmd_intent(ctx: CommandContext) -> None:
                                     "message": "intent text is required"})
             elif refusal:
                 await ctx.send({"event": "error", "message": refusal, "code": "oversight_notice"})
+            elif needed := full_auto_needed(ctx.state, "plan"):
+                # The page's /plan card matches the prefix (app.js _failStartingPlan).
+                await ctx.send(needs_full_auto(needed, f"intent_start failed: {needed['message']}"))
             else:
                 try:
                     # The page follows it in the Plan tab; its events go there.
@@ -3971,9 +4010,10 @@ async def _cmd_check_updates(ctx: CommandContext) -> None:
 @command("save_diagnostics")
 async def _cmd_save_diagnostics(ctx: CommandContext) -> None:
     # v0.3.4 — Help → Save diagnostics. Bundles redacted logs
-    # + intent audits + settings into a ZIP under ~/Downloads
-    # so the user can attach to a GitHub issue. No data ever
-    # leaves the machine without an explicit user action.
+    # + intent audits + settings into a ZIP in Downloads (else the
+    # Desktop, else home) for the person to send with a problem
+    # report. No data ever leaves the machine without an explicit
+    # user action.
     try:
         from . import diagnostics
         from .. import __version__ as _ver
@@ -3993,10 +4033,13 @@ async def _cmd_save_diagnostics(ctx: CommandContext) -> None:
             ),
         )
         size_bytes = zip_path.stat().st_size if zip_path.exists() else 0
+        # The one file reveal_diagnostics may show: the page names no path.
+        ctx.state._last_diagnostics_zip = str(zip_path)
         await ctx.send({
             "event": "diagnostics_saved",
             "path": str(zip_path),
             "size_bytes": size_bytes,
+            "can_reveal": True,
         })
     except Exception as exc:
         logger.exception("save_diagnostics failed")
@@ -4005,6 +4048,30 @@ async def _cmd_save_diagnostics(ctx: CommandContext) -> None:
             "message": f"Failed to save diagnostics: {exc}",
         })
 
+
+
+@command("reveal_diagnostics")
+async def _cmd_reveal_diagnostics(ctx: CommandContext) -> None:
+    """Show the diagnostics ZIP the last save made, selected in its folder.
+
+    Only that file: the page can't name another path to open.
+    """
+    target = str(getattr(ctx.state, "_last_diagnostics_zip", "") or "")
+    if not target or not os.path.isfile(target):
+        await ctx.send({"event": "status_msg", "message": "That diagnostics file isn't there anymore. Save diagnostics again."})
+        return
+    try:
+        if sys.platform == "win32":
+            # Explorer takes the file after /select, in one argument.
+            subprocess.Popen(f'explorer /select,"{target}"', **background_process_kwargs())
+        elif sys.platform == "darwin":
+            subprocess.Popen(["open", "-R", target], **background_process_kwargs())
+        else:
+            subprocess.Popen(["xdg-open", os.path.dirname(target)], **background_process_kwargs())
+    except OSError as exc:
+        await ctx.send({"event": "status_msg", "message": f"Could not show the folder: {exc}"})
+        return
+    await ctx.send({"event": "status_msg", "message": f"Showing {os.path.basename(target)} in its folder"})
 
 
 @command("folder_dialog")
@@ -4249,6 +4316,58 @@ def _socket_mcp_server(value: Any) -> dict[str, Any]:
     return entry
 
 
+# Models that don't chat, as the startup probe leaves them out (AppState.detect_backends).
+_OLLAMA_NON_CHAT = ("embed", "bert", "bge", "nomic")
+
+
+def ollama_address(value: Any) -> str:
+    """An Ollama address to save or test: ``http(s)://host[:port]``, or "" for the default."""
+    from urllib.parse import urlsplit
+
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if "://" not in text:
+        text = "http://" + text
+    parts = urlsplit(text)
+    try:
+        parts.port
+    except ValueError:
+        raise ValueError("Enter a port from 1 to 65535, as in http://127.0.0.1:11434.") from None
+    if parts.scheme not in {"http", "https"} or not parts.hostname:
+        raise ValueError("Enter Ollama's address as http://host:11434, for example http://127.0.0.1:11434.")
+    if parts.username or parts.password:
+        raise ValueError("Ollama's address can't hold a user name or password.")
+    return text.rstrip("/")
+
+
+def probe_ollama(url: str) -> dict[str, Any]:
+    """What an Ollama server at ``url`` offers (Settings > Connections): its chat models, or why not.
+
+    Nothing is saved. ``status`` is ``ready`` (chat models found), ``empty``
+    (Ollama answered with none to chat with) or ``unreachable``.
+    """
+    import httpx
+
+    base = url.rstrip("/")
+    try:
+        response = httpx.get(f"{base}/api/tags", timeout=httpx.Timeout(connect=3.0, read=6.0, write=6.0, pool=6.0))
+        response.raise_for_status()
+        names = [str(row.get("name") or "") for row in response.json().get("models", []) if isinstance(row, dict)]
+    except httpx.HTTPStatusError as exc:
+        return {"status": "unreachable", "url": base,
+                "error": f"{base} answered HTTP {exc.response.status_code}. Is this Ollama's address?"}
+    except (httpx.HTTPError, ValueError, AttributeError):
+        return {"status": "unreachable", "url": base,
+                "error": f"Nothing answered as Ollama at {base}. Start Ollama there, or check the address."}
+    models = [name for name in names if name and not any(word in name.lower() for word in _OLLAMA_NON_CHAT)]
+    if not models:
+        return {"status": "empty", "url": base, "models": [], "model_count": 0,
+                "error": f"Ollama is running at {base} but has no chat models yet. "
+                         "Pull one in a terminal, for example: ollama pull qwen3-coder:30b"}
+    return {"status": "ready", "url": base, "models": models, "model_count": len(models)}
+
+
 def _socket_setting_value(section: Any, key: Any, value: Any) -> Any:
     """Return the value to store for one Settings write, or raise ValueError."""
     if section == "mcp_servers":
@@ -4366,6 +4485,8 @@ def _socket_setting_value(section: Any, key: Any, value: Any) -> Any:
         if isinstance(value, bool) or not isinstance(value, (int, float)) or not 0 <= value <= 3650:
             raise ValueError("Enter a number of days from 0 (keep) to 3650.")
         return int(value)
+    elif (section, key) == ("network", "ollama_url"):
+        return ollama_address(value)
     elif (section, key) == ("network", "proxy_url"):
         from .. import net
         return net.validate_proxy_url(value if isinstance(value, str) else "")
@@ -4528,12 +4649,51 @@ async def _cmd_sonn_account(ctx: CommandContext) -> None:
         await ctx.send({"event": "sonn_account", "data": data})
 
 
+async def _ollama_connection(ctx: CommandContext, action: str, resolve_ollama_url: Callable[[], str]) -> dict[str, Any]:
+    """Settings > Connections' Ollama card: Test an address, Save it, or check the saved one.
+
+    Test probes the address typed in the card and saves nothing. Save checks
+    and stores it as ``network.ollama_url`` (a policy can lock it; the audit
+    log records the change), then checks it as status does: the model picker
+    offers its models, and one starts when no model runs yet, so the first-run
+    checklist's "Connect a model" is done only once Ollama answered.
+    """
+    from .. import audit, offline
+    from ..policy import current as current_policy
+
+    if action == "save":
+        url = ollama_address(ctx.msg.get("url"))
+        policy = current_policy()
+        if policy and policy.locked("network", "ollama_url"):
+            raise ValueError(f"Ollama's address is managed by {policy.organization} and can't be changed here.")
+        before = str(ctx.state.settings.get("network", "ollama_url", "") or "")
+        settings_data = await asyncio.to_thread(ctx.state.update_setting_value, "network", "ollama_url", url)
+        if before != url:
+            audit.record("settings.change", section="network", keys=["ollama_url"])
+        await ctx.send({"event": "settings", "data": settings_data})
+    url = (ollama_address(ctx.msg.get("url")) if action == "test" else ctx.state.ollama_url) or resolve_ollama_url()
+    reason = offline.provider_refusal("ollama", url, label="Ollama")
+    if reason:
+        return {"status": "unreachable", "url": url, "error": reason, "saved": action != "test"}
+    data = await asyncio.to_thread(probe_ollama, url)
+    data["saved"] = action != "test"
+    if action != "test":
+        # The saved address: offer its models, and start one if no model runs yet.
+        await asyncio.to_thread(ctx.state.detect_backends, force=True)
+        if data["status"] == "ready" and not ctx.state.backend:
+            try:
+                await asyncio.to_thread(ctx.state.ensure_default_runtime_session)
+            except Exception:
+                logger.exception("default runtime session after the Ollama check failed")
+    return data
+
+
 @command("provider_connection")
 async def _cmd_provider_connection(ctx: CommandContext) -> None:
     from ..codex_account import codex_account
     from ..openrouter import OpenRouterBackend
     from ..sonn import SonnBackend
-    from ..network_defaults import resolve_sonn_url
+    from ..network_defaults import resolve_ollama_url, resolve_sonn_url
 
     provider = ctx.msg.get("provider")
     action = ctx.msg.get("action", "status")
@@ -4591,6 +4751,8 @@ async def _cmd_provider_connection(ctx: CommandContext) -> None:
             data = await asyncio.to_thread(backend_class(api_key, backend_class.DEFAULT_MODEL).health)
             data["model_count"] = len(data.get("models") or [])
             await asyncio.to_thread(ctx.state.detect_backends, force=True)
+        elif provider == "ollama" and action in {"test", "save", "status"}:
+            data = await _ollama_connection(ctx, action, resolve_ollama_url)
         elif provider == "sonn" and action == "status":
             api_key, _, _, _ = ctx.state._api_key_details("sonn", "SONN_API_KEY")
             base_url = resolve_sonn_url(settings_data=ctx.state.settings.get_all())
@@ -4601,10 +4763,16 @@ async def _cmd_provider_connection(ctx: CommandContext) -> None:
         else:
             raise ValueError("Unknown provider connection.")
         await ctx.send({"event": "provider_connection", "provider": provider, "data": data})
-        if action == "status":
+        if action in {"status", "save"}:
             await ctx.send(ctx.state.get_init_data(refresh_only=True))
     except Exception as exc:
-        await ctx.send({"event": "provider_connection", "provider": provider, "data": {"error": str(exc)}})
+        from ..codex_account import CodexCliMissing
+
+        data = {"error": str(exc)}
+        if isinstance(exc, CodexCliMissing):
+            # The card says what to install instead of offering a sign-in that can't start.
+            data["missing_cli"] = True
+        await ctx.send({"event": "provider_connection", "provider": provider, "data": data})
 
 # ── Model connections (gateways, Azure, Bedrock, Vertex) ───────────
 

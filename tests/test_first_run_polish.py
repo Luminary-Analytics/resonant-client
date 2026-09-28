@@ -176,14 +176,22 @@ def test_an_autonomous_session_outside_full_auto_neither_starts_nor_resumes(monk
     mission = SimpleNamespace(id="s1", title="Counter", mission_state={"phase": "drafting"})
     monkeypatch.setattr(gui_app.state, "permission_mode", "auto-edit")
     monkeypatch.setattr(gui_app.state.project, "current_session", mission)
+    def first_error(websocket):
+        # Connecting can bring other events first (status, oversight).
+        for _ in range(20):
+            event = websocket.receive_json()
+            if event.get("event") == "error":
+                return event
+        raise AssertionError("no error event")
+
     with LocalClient(gui_app.app) as client:
         with client.websocket_connect("/ws") as websocket:
             websocket.send_json({"command": "mission_dispatch_autonomous", "spec_markdown": "## Final spec",
                                  "time_budget": "4h"})
-            dispatch = websocket.receive_json()
+            dispatch = first_error(websocket)
             # Refused before the switch to the interrupted session's conversation.
             websocket.send_json({"command": "autonomous_mission_resume", "intent_id": "auto-1", "session_id": "s-other"})
-            resume = websocket.receive_json()
+            resume = first_error(websocket)
     assert dispatch["source"] == "mission_dispatch" and dispatch["code"] == "needs_full_auto"
     assert dispatch["message"].startswith("An autonomous session runs in Full-auto")
     assert (resume["source"], resume["intent_id"], resume["session_id"]) == ("autonomous_resume", "auto-1", "s-other")

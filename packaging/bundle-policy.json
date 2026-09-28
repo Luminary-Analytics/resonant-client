@@ -44,6 +44,7 @@
     "_internal/lumi/code_editors/vscode/bridge.js",
     "_internal/lumi/code_editors/vscode/package.json",
     "_internal/keyring-*.dist-info/entry_points.txt",
+    "_internal/PIL/_imagingft*.pyd",
     "_internal/licenses/THIRD_PARTY_NOTICES.txt"
   ],
   "required_executables": [

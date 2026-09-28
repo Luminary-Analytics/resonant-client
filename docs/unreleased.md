@@ -8,6 +8,45 @@ The heartbeat remains paused. Documentation maintenance does not resume work,
 spending or grants, and changes no native implementation or installed bundle.
 The dated September 15/18 records below are historical.
 
+## September 27 Computer use: a sharper on-screen indicator (source only, not released)
+
+**The indicator keeps its look and behaviour, drawn with more care.** The
+purple edge glow, its pulse, the cursor glow and the click ripple work as
+before (`engine/screen_overlay.py`).
+
+- **Banner.** "Lumi is using the computer" is now a rounded pill sized to its
+  text: Segoe UI Variable (Segoe UI on Windows 10) rendered by FreeType through
+  Pillow, with "Lumi" a weight heavier, a status light, a hairline edge and a
+  soft shadow. It has its own window, so it stays solid while the glow
+  breathes. It used to be a 624 px dark rectangle with 8-point dialog text.
+  Without Pillow, GDI draws the text.
+- **Edge glow.** Same reach, colour and pulse. The corners now turn smoothly
+  instead of meeting in a diagonal crease, and a 2 px lighter rim defines the
+  edge. The pulse changes only the window's opacity rather than copying a whole
+  monitor's bitmap 25 times a second, and the glow no longer flashes to full
+  when it comes back after a screenshot.
+- **Cursor glow and click ripple.** The outline follows the cursor's
+  antialiased edge instead of stepping with its pixels, at the same overall
+  weight, and the ripple eases out over 12 frames instead of 9. The frames
+  build in about 15 ms instead of 100–300 ms, so a cursor change (arrow to
+  I-beam or hand) no longer stalls the indicator.
+- **Scaling.** Each monitor's glow, banner and ripple are drawn at its DPI, so
+  at 150% they are 1.5 times larger; at 100% the sizes are unchanged. A large
+  cursor bitmap (64 px is common at 100%) doesn't enlarge the glow.
+- **Fades.** It fades in over 0.16 s and out over 0.28 s. A screenshot still
+  hides it at once and restores it at once.
+- **Packaging.** `packaging/lumi.spec` names `PIL.ImageDraw` and
+  `PIL.ImageFont`, and `bundle-policy.json` requires Pillow's FreeType
+  extension, so an installer can't silently fall back to the GDI text.
+
+**Verified:** new pixel tests in `tests/test_computer_use_indicator.py` for
+the corners, rim, banner, fallback text, contour, ripple, scaling and fades
+(each of five targeted regressions fails one of them); a real-GDI surface test
+in `tests/test_computer_use.py`; offline before/after renders; and a live run
+on the primary monitor of a two-monitor Windows 11 desk at 100%: fade-in,
+pulse, click ripple, hidden during a capture and restored at full, fade-out.
+Not yet exercised in a packaged build or on a display above 100%.
+
 ## September 27 Team: under an organization policy (source only, not released)
 
 **Personal teams run where a policy applies.** Before, any organization policy

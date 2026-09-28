@@ -1,11 +1,12 @@
 """Computer-use capability gating and the on-screen indicator.
 
-The overlay itself is Win32 and is verified by eye on Windows. What is tested
-here is everything that decides *whether* it runs and *which* screen it points
-at, plus the capability rule that decides which models are offered the desktop
-tools at all — all of which fail silently.
+The overlay's windows are Win32 and are verified by eye on Windows. What is
+tested here is everything that decides *whether* it runs and *which* screen it
+points at, the capability rule that decides which models are offered the
+desktop tools at all — all of which fail silently — and the pixels it draws.
 """
 
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -456,3 +457,250 @@ def test_click_pulse_fires_while_showing(monkeypatch):
     screen_overlay.note_click()
 
     assert calls == [1]
+
+
+def _alpha_in(frame: bytearray, box: int, x: int, y: int) -> int:
+    return frame[(y * box + x) * 4 + 3]
+
+
+def test_cursor_outline_follows_a_partially_covered_edge():
+    """The outline moves with antialiasing instead of jumping a whole pixel.
+
+    Distances used to be measured from the centres of pixels past a faint
+    alpha threshold, so the outline stepped with the cursor's pixel grid along
+    every slanted edge. A column that is only partly covered now moves the
+    glow partway: between no column at all and a solid one.
+    """
+    width, height = 9, 10
+    anchor = screen_overlay._CURSOR_ANCHOR
+    glows = []
+    for column_zero in (0, 96, 255):
+        mask = bytearray(width * height)
+        for y in range(height):
+            mask[y * width] = column_zero
+            for x in range(1, width):
+                mask[y * width + x] = 255
+        frame = screen_overlay._build_cursor_glow_frame(mask, width, height, 1, 1)
+        # Two pixels left of column 0, level with the middle of the mask.
+        glows.append(_alpha_at(frame, anchor - 3, anchor + 3))
+
+    assert glows[0] < glows[1] < glows[2]
+
+
+def test_a_large_cursor_bitmap_keeps_the_glow_its_usual_size():
+    """Big cursor bitmaps are common at 100% and must not inflate the glow.
+
+    Applications and pointer settings hand Windows 64 px bitmaps holding an
+    ordinary arrow in one corner. Sizing the glow from the bitmap would double
+    the outline and the click ripple on exactly those desktops.
+    """
+    width = height = 64
+    mask = bytearray(width * height)
+    for y in range(20):
+        for x in range(12):
+            mask[y * width + x] = 255
+
+    frames, box, anchor = screen_overlay._build_cursor_frames(mask, width, height, 0, 0)
+
+    assert box == screen_overlay.RING_BOX
+    # The bloom still ends about eight pixels out from the arrow's left edge.
+    assert _alpha_at(frames[0], anchor - 5, anchor + 10) > 0
+    assert _alpha_at(frames[0], anchor - 10, anchor + 10) == 0
+
+
+def test_cursor_glow_and_ripple_scale_with_the_display():
+    """At 200% the ripple travels twice as far, in a window large enough."""
+    mask, width, height, hotspot_x, hotspot_y = _test_cursor_mask()
+    normal, normal_box, anchor = screen_overlay._build_cursor_frames(
+        mask, width, height, hotspot_x, hotspot_y
+    )
+    double, double_box, double_anchor = screen_overlay._build_cursor_frames(
+        mask, width, height, hotspot_x, hotspot_y, scale=2.0
+    )
+
+    assert double_box > normal_box
+    halfway = len(normal) // 2
+    # Halfway through the pulse the ring sits at 42.5 px, or 85 px at 200%.
+    assert _alpha_in(normal[halfway], normal_box, anchor, anchor - 42) > 0
+    assert _alpha_in(double[halfway], double_box, double_anchor, double_anchor - 85) > 0
+    assert _alpha_in(normal[halfway], normal_box, anchor, anchor - 70) == 0
+
+
+def test_click_ripple_eases_out_as_it_fades():
+    """Fast off the click point, settling as it fades, not a linear sweep."""
+    mask, width, height, hotspot_x, hotspot_y = _test_cursor_mask()
+    frames, box, anchor = screen_overlay._build_cursor_frames(
+        mask, width, height, hotspot_x, hotspot_y
+    )
+    radii, peaks = [], []
+    # Above the hot spot, clear of the cursor's own glow; the last frame has
+    # faded out completely.
+    for frame in frames[1:-1]:
+        column = {r: _alpha_in(frame, box, anchor, anchor - r) for r in range(12, box // 2)}
+        radii.append(sum(r * alpha for r, alpha in column.items()) / sum(column.values()))
+        peaks.append(max(column.values()))
+
+    steps = [later - earlier for earlier, later in zip(radii, radii[1:])]
+    # Expanding throughout (the last faint frames all but stop, within the
+    # rounding of a few alpha levels) and decelerating as it goes.
+    assert radii[-1] - radii[0] > 20
+    assert all(step > -0.1 for step in steps)
+    assert steps[0] > 4 * max(steps[-3:])
+    assert peaks == sorted(peaks, reverse=True) and peaks[0] > peaks[-1]
+
+
+# ── edge glow ────────────────────────────────────────────────────────
+
+def test_glow_corners_turn_smoothly_instead_of_creasing():
+    """The nearer-edge distance alone meets itself in a hard diagonal crease.
+
+    Stepping one pixel across a corner's diagonal drops that distance by a
+    whole pixel, so the glow folds along the diagonal. The rounded distance
+    barely changes there, and away from the corner it is the same as before.
+    """
+    distance = screen_overlay._corner_distance
+
+    assert distance(31.0, 29.0) == pytest.approx(distance(30.0, 30.0), abs=0.2)
+    assert distance(200.0, 10.0) == 10.0
+    assert distance(10.0, 200.0) == 10.0
+
+
+def test_edge_glow_has_a_crisp_rim_and_fades_inward():
+    width, height = 400, 300
+    glow = screen_overlay._build_glow_rows(width, height)
+    column = [glow[(y * width + width // 2) * 4 + 3] for y in range(height // 2)]
+    rim = int(screen_overlay._RIM_PX)
+
+    assert len(glow) == width * height * 4
+    # A distinct step at the rim's inner edge, then a smooth falloff.
+    assert column[rim - 1] - column[rim] > 4 * (column[rim] - column[rim + 1])
+    assert column[rim] > column[10] > column[60] > 0
+    assert column[screen_overlay.GLOW_PX] == 0
+    assert glow[((height // 2) * width + width // 2) * 4 + 3] == 0
+
+
+def test_edge_glow_reaches_further_on_a_high_density_display():
+    width, height = 600, 500
+    normal = screen_overlay._build_glow_rows(width, height)
+    double = screen_overlay._build_glow_rows(width, height, 2.0)
+    probe = (120 * width + width // 2) * 4 + 3
+
+    assert normal[probe] == 0
+    assert double[probe] > 0
+
+
+# ── banner ───────────────────────────────────────────────────────────
+
+def _banner_row(pixels: bytes, width: int, y: int) -> list[tuple[int, ...]]:
+    start = y * width * 4
+    return [tuple(pixels[start + x * 4:start + x * 4 + 4]) for x in range(width)]
+
+
+def test_banner_is_a_premultiplied_pill_with_its_words_drawn():
+    pixels, width, height, pill_top = screen_overlay._build_banner_frame(1.0)
+
+    assert len(pixels) == width * height * 4
+    for offset in range(0, len(pixels), 4):
+        assert max(pixels[offset:offset + 3]) <= pixels[offset + 3], "not premultiplied"
+    # Only the pill and its shadow are drawn: the frame's corners are clear.
+    for x, y in ((0, 0), (width - 1, 0), (0, height - 1), (width - 1, height - 1)):
+        assert pixels[(y * width + x) * 4 + 3] == 0
+    row = _banner_row(pixels, width, pill_top + screen_overlay._BANNER_HEIGHT // 2)
+    # A near-opaque dark body carrying light text.
+    assert max(alpha for *_, alpha in row) >= 240
+    assert max(green for _, green, _, _ in row) > 180
+
+
+def test_banner_grows_with_the_display_scale():
+    """At 200% the pill is twice the size and twice as far from the top."""
+    _, width, height, _ = screen_overlay._build_banner_frame(1.0)
+    _, double_width, double_height, pill_top = screen_overlay._build_banner_frame(2.0)
+
+    assert double_height == 2 * height
+    assert abs(double_width - 2 * width) <= 6
+    left, top = screen_overlay._banner_origin(3840, double_width, pill_top, 2.0)
+    assert left == (3840 - double_width) // 2
+    assert top + pill_top == 2 * screen_overlay._BANNER_TOP
+
+
+@pytest.mark.skipif(not screen_overlay.IS_WINDOWS, reason="GDI fallback is Win32-only")
+def test_banner_keeps_its_words_without_pillow(monkeypatch):
+    """The announcement must survive a missing imaging library."""
+    def no_pillow(scale):
+        raise ImportError("No module named PIL")
+
+    monkeypatch.setattr(screen_overlay, "_freetype_text_mask", no_pillow)
+    monkeypatch.setattr(screen_overlay, "_banner_cache", {})
+
+    pixels, width, height, pill_top = screen_overlay._build_banner_frame(1.0)
+
+    row = _banner_row(pixels, width, pill_top + screen_overlay._BANNER_HEIGHT // 2)
+    assert max(green for _, green, _, _ in row) > 180
+
+
+# ── fades ────────────────────────────────────────────────────────────
+
+def test_the_indicator_fades_out_instead_of_vanishing():
+    overlay = screen_overlay._Overlay()
+    overlay._shown = True
+    overlay._set_fade(1.0)
+
+    overlay._apply_hide()
+
+    # Hidden as far as any caller is concerned, while it eases off screen.
+    assert overlay.visible is False
+    assert overlay._hiding
+    started = overlay._fade_started
+    overlay._advance_fade(started + screen_overlay._FADE_OUT_S / 2)
+    assert 0.0 < overlay._fade < 1.0
+    overlay._advance_fade(started + screen_overlay._FADE_OUT_S)
+    assert overlay._fade == 0.0
+
+
+@pytest.mark.skipif(not screen_overlay.IS_WINDOWS, reason="Win32-only")
+def test_a_capture_takes_the_indicator_down_at_once_even_mid_fade():
+    """Nothing may linger into a screenshot, and a fading glow is not restored."""
+    overlay = screen_overlay._Overlay()
+    overlay._shown = True
+    overlay._set_fade(1.0)
+    overlay._apply_hide()
+    result: dict = {}
+
+    overlay._commands.put(("suppress", (), None, result))
+    overlay._drain_commands()
+
+    assert result["was_shown"] is False
+    assert not overlay._hiding
+    assert overlay._fade == 0.0
+
+
+def test_restoring_after_a_capture_skips_the_fade(monkeypatch):
+    """A fade either side of every screenshot would blink the glow all run."""
+    calls = []
+
+    class FakeOverlay:
+        def suppress(self):
+            return True, (0, 0, 1920, 1080)
+
+        def show(self, *bounds, fade_in=True):
+            calls.append((bounds, fade_in))
+            return True
+
+    monkeypatch.setattr(screen_overlay, "_all_instances", lambda: [FakeOverlay()])
+    monkeypatch.setattr(screen_overlay, "_rearm_linger", lambda *args: None)
+
+    with screen_overlay.hidden_for_capture():
+        pass
+
+    assert calls == [((0, 0, 1920, 1080), False)]
+
+
+def test_a_fade_completes_on_time():
+    overlay = screen_overlay._Overlay()
+    now = time.monotonic()
+    overlay._start_fade(1.0, screen_overlay._FADE_IN_S, now)
+
+    assert overlay._advance_fade(now + screen_overlay._FADE_IN_S * 1.01)
+    assert overlay._fade == 1.0
+    # Finished: later ticks leave it alone.
+    assert overlay._advance_fade(now + 1.0) is False

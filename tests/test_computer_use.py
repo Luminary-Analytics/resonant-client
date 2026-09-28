@@ -581,10 +581,40 @@ class TestOverlayWin32Signatures:
         try:
             assert overlay._ensure_worker(), "overlay worker failed to start"
             assert overlay._hwnd, "window was never created"
+            assert overlay._banner_hwnd, "the banner's window was never created"
         finally:
             overlay._shutdown.set()
             if overlay._thread:
                 overlay._thread.join(timeout=3)
+
+    def test_the_overlay_can_actually_draw_its_surfaces(self):
+        """Every bitmap the windows show, built through the real GDI calls.
+
+        The same reasoning as window creation: DIB sections, memory DCs and the
+        GDI text fallback only work if all their declarations agree, and each
+        failure here would be swallowed at runtime, leaving a blank border or
+        banner rather than an error.
+        """
+        from lumi.engine import screen_overlay
+
+        if not screen_overlay.IS_WINDOWS:
+            import pytest
+            pytest.skip("Win32-only")
+
+        screen_overlay._declare_signatures()
+        overlay = screen_overlay._Overlay()
+        try:
+            assert overlay._build_surface(320, 200), "glow surface failed"
+            assert overlay._build_banner_surface(), "banner surface failed"
+            width, height, pill_top = overlay._banner_frame
+            assert width > 0 and height > pill_top > 0
+        finally:
+            overlay._release_surface()
+            overlay._release_banner()
+
+        coverage, width, height, _centre, _split = screen_overlay._gdi_text_mask(1.0)
+        assert len(coverage) == width * height
+        assert max(coverage) > 200, "GDI drew no text"
 
     def test_declaring_signatures_is_idempotent(self):
         """It runs on every window creation; repeating it must be harmless."""

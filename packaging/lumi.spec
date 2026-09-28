@@ -204,6 +204,11 @@ hiddenimports = [
     "PIL",
     "PIL.Image",
     "PIL.ImageGrab",
+    # The computer-use banner's text is FreeType through Pillow
+    # (engine/screen_overlay.py); without these it falls back to GDI's.
+    # bundle-policy.json requires the FreeType extension itself.
+    "PIL.ImageDraw",
+    "PIL.ImageFont",
 
     # pywebview (bundled v0.2.2+) — native desktop frame.
     # webview is the import name; the package is "pywebview" on PyPI.

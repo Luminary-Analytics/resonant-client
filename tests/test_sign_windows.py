@@ -39,7 +39,12 @@ SIGNER_SETTINGS = {*AZURE, "ARTIFACT_SIGNING_SIGNED_IN", "ARTIFACT_SIGNING_DLIB"
                    # Each PowerShell finds its own modules: under a PowerShell 7 parent (as in CI),
                    # Windows PowerShell given pwsh's module path can't load Get-FileHash or
                    # Get-AuthenticodeSignature.
-                   "PSModulePath"}
+                   "PSMODULEPATH"}
+
+
+def clean_environment() -> dict[str, str]:
+    """This process's environment without the signer's settings (os.environ's names are upper case on Windows)."""
+    return {key: value for key, value in os.environ.items() if key.upper() not in SIGNER_SETTINGS}
 FAKE_SIGNTOOL = """\
 import json, os, sys
 from pathlib import Path
@@ -74,7 +79,7 @@ def signing(request, tmp_path):
 
     def run(settings: dict[str, str], *, signature: tuple[str, bool] | None = None) -> subprocess.CompletedProcess:
         """sign_windows.ps1 on the target; ``signature`` is the (status, timestamped) a signer would leave."""
-        env = {key: value for key, value in os.environ.items() if key not in SIGNER_SETTINGS}
+        env = clean_environment()
         env.update(WINDOWS_SIGNTOOL=str(signtool), FAKE_SIGNTOOL_LOG=str(log), RUNNER_TEMP=str(runner))
         env.update(settings)
         script = SCRIPT
@@ -223,7 +228,7 @@ def test_the_signing_client_is_used_only_as_pinned(tmp_path):
     result = subprocess.run(["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
                              str(ROOT / "packaging" / "fetch_artifact_signing.ps1"), "-Destination", str(destination),
                              "-PackagePath", str(package)], capture_output=True, text=True, timeout=120,
-                            env={key: value for key, value in os.environ.items() if key != "PSModulePath"})
+                            env=clean_environment())
     assert result.returncode != 0
     assert "SHA-256 mismatch" in output(result)
     assert not (destination / "bin").exists() and list(destination.iterdir()) == []

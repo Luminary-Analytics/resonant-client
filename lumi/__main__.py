@@ -226,6 +226,10 @@ def main():
     if len(sys.argv) > 1 and sys.argv[1] == "license":
         from lumi.license import main as license_main
         raise SystemExit(license_main(sys.argv[2:]))
+    # Lumi's terms: whether they're accepted here, their texts, and accepting them (lumi/terms.py).
+    if len(sys.argv) > 1 and sys.argv[1] == "terms":
+        from lumi.terms import main as terms_main
+        raise SystemExit(terms_main(sys.argv[2:]))
     if len(sys.argv) > 1 and sys.argv[1] == "extension":
         from lumi.extension_check import main as extension_main
         raise SystemExit(extension_main(sys.argv[2:]))

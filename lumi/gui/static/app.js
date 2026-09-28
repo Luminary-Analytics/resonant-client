@@ -1337,6 +1337,7 @@ class LumiApp {
         });
         this._initAccountMenu();
         this._initOversightNotice?.();
+        this._initTermsView?.();
         document.getElementById('settings-back')?.addEventListener('click', () => {
             this.switchView('agents');
             if (this.userInput?.getClientRects().length) this.userInput.focus();
@@ -1913,10 +1914,12 @@ class LumiApp {
 
     sendMessage(options = {}) {
         if (this._oversightLocked) {
-            // Nothing goes to a model before the organization's notice is
-            // confirmed; the server refuses too (lumi/oversight.py).
-            this.showToastMessage('Confirm your organization’s oversight notice above the message box first.');
-            document.getElementById('oversight-notice')?.focus();
+            // Nothing goes to a model before Lumi's terms are accepted and the
+            // organization's notice is confirmed; the server refuses too
+            // (lumi/terms.py, lumi/oversight.py).
+            this.showToastMessage(this._composerLockMessage?.() || 'Confirm your organization’s oversight notice above the message box first.');
+            if (this._focusComposerLock) this._focusComposerLock();
+            else document.getElementById('oversight-notice')?.focus();
             return;
         }
         if (this._newSessionInflight || this._pendingProjectSwitchId) {
@@ -3177,11 +3180,12 @@ class LumiApp {
         this._setSessionActivity(running ? 'working' : 'idle');
         this.sendBtn.style.display = 'flex';
         this.stopBtn.style.display = running ? 'flex' : 'none';
-        // An organization's oversight notice that isn't confirmed yet keeps
-        // the message box locked (settings_view.js _setOversightLock).
+        // Lumi's terms waiting to be accepted, or an organization's oversight
+        // notice that isn't confirmed yet, keep the message box locked
+        // (settings_view.js _applyComposerLock).
         this.userInput.disabled = Boolean(this._oversightLocked);
         this.userInput.placeholder = this._oversightLocked
-            ? 'Confirm the notice above to start'
+            ? (this._composerLockPlaceholder?.() || 'Confirm the notice above to start')
             : running
             ? 'Write a follow-up for the running agent...'
             : 'Message Lumi';
@@ -3639,10 +3643,12 @@ class LumiApp {
                 if (event.request_id && event.request_id === this._newSessionRequestId) this._releaseNewSessionGuard();
                 // A refused mission dispatch un-marks its Build button or card (autonomous_view.js).
                 if (event.source === 'mission_dispatch') this._missionDispatchRefused();
-                // Organization oversight refused work before any turn started: the
-                // notice above the message box says why (settings_view.js), so this
-                // is no failed turn with retries.
-                if (event.code === 'oversight_notice' && !this.isRunning && !this._activeTask) {
+                // Lumi's terms or organization oversight refused work before any
+                // turn started: the notice above the message box says why
+                // (terms_view.js, settings_view.js), so this is no failed turn
+                // with retries.
+                if ((event.code === 'oversight_notice' || event.code === 'terms_not_accepted')
+                    && !this.isRunning && !this._activeTask) {
                     this.showToastMessage(event.message || 'Confirm your organization’s oversight notice first.');
                     break;
                 }
@@ -4342,6 +4348,14 @@ class LumiApp {
                 // The organization's oversight: the notice and Settings (settings_view.js).
                 this._applyOversight?.(event.data);
                 break;
+            case 'terms_status':
+                // Lumi's terms: the dialog, the notice and About (terms_view.js).
+                this._applyTerms?.(event.data);
+                break;
+            case 'legal_document':
+                // A text the terms dialog asked for (terms_view.js).
+                this._receiveLegalDocument?.(event.data);
+                break;
             case 'cloud_status':
                 this.cloudStatus = event.data;
                 if (event.data && !event.data.signing_in && event.data.signed_in) this._cloudUrlDraft = undefined;
@@ -4767,6 +4781,8 @@ class LumiApp {
         // What the organization's oversight receives: the notice beside the
         // message box, shown before anything is recorded (settings_view.js).
         if (event.oversight) this._applyOversight?.(event.oversight);
+        // Lumi's terms: asked for at first launch and when their version changes (terms_view.js).
+        if (event.terms) this._applyTerms?.(event.terms);
 
         // Plans still running when this page connected; only the socket's
         // own init lists them. Before the returns below: a plan runs on the
@@ -5456,10 +5472,10 @@ class LumiApp {
             if (event.code === 'Space' && event.ctrlKey && event.shiftKey && !event.altKey && !event.metaKey) {
                 if (this.currentView === 'settings') return;
                 event.preventDefault();
-                // Nothing listens while the organization's oversight notice waits: the
-                // webview's recognizer sends audio to its vendor like a model request.
+                // Nothing listens while Lumi's terms or the organization's oversight notice
+                // wait: the webview's recognizer sends audio to its vendor like a model request.
                 if (this._oversightLocked) {
-                    if (!event.repeat) this.showToastMessage('Confirm your organization’s oversight notice above the message box first.');
+                    if (!event.repeat) this.showToastMessage(this._composerLockMessage?.() || 'Confirm your organization’s oversight notice above the message box first.');
                     return;
                 }
                 if (!event.repeat && !shortcutHeld) {
@@ -5486,12 +5502,13 @@ class LumiApp {
 
     /**
      * Which ways of dictating may listen (lumi/voice.py, settings._meta.voice),
-     * and none while the organization's oversight notice locks the message box.
+     * and none while Lumi's terms or the organization's oversight notice lock
+     * the message box.
      */
     _dictationStatus() {
         const voice = this.settings?._meta?.voice;
         if (!this._oversightLocked) return voice;
-        const reason = 'Confirm your organization’s oversight notice above the message box first.';
+        const reason = this._composerLockMessage?.() || 'Confirm your organization’s oversight notice above the message box first.';
         return {...(voice || {}), browser: false, service_ready: false, browser_reason: reason, reason};
     }
 
@@ -13859,6 +13876,7 @@ function applyMixin(target, MixinClass, label) {
 
 applyMixin(LumiApp.prototype, window.LumiAutonomousView, 'autonomous-view');
 applyMixin(LumiApp.prototype, window.LumiSettingsView, 'settings-view');
+applyMixin(LumiApp.prototype, window.LumiTermsView, 'terms-view');
 applyMixin(LumiApp.prototype, window.LumiRunCards, 'run-cards');
 applyMixin(LumiApp.prototype, window.LumiEmployeeTasks, 'employee-tasks');
 applyMixin(LumiApp.prototype, window.LumiPanelsView, 'panels-view');

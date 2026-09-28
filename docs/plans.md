@@ -20,14 +20,17 @@ What leaves the computer:
   on the computer.
 
 Lumi is commercial software: © Luminary Analytics, all rights reserved,
-licensed under the Lumi End User License Agreement. Being free for
-individuals is a product decision, which the license text doesn't change.
-Versions 0.6.3 through 0.19.x were published under the MIT License and remain
-under it. The Extension SDK and the VS Code extension stay under the MIT
-License, so others can build and ship extensions. The installer ships the
+licensed under the [Lumi End User License Agreement](../lumi/legal/EULA.md)
+(and, for pre-release builds, the
+[Alpha and Beta Test Terms](../lumi/legal/ALPHA-TERMS.md)), which grants free
+individual use during the alpha. Versions 0.6.3 through 0.19.x were published
+under the MIT License and remain under it. The Extension SDK is under the
+[Lumi Extension SDK License](../sdk/LICENSE), so others can build and ship
+extensions; the VS Code extension is part of Lumi. The installer ships the
 licenses of its third-party components in `THIRD_PARTY_NOTICES.txt`.
-**Settings > About Lumi** shows the version, this summary and where those
-notices are.
+**Settings > About Lumi** shows the version, this summary, who accepted the
+terms, and opens the terms, the [privacy notice](../lumi/legal/PRIVACY.md)
+and those notices, offline.
 
 ## Teams and organizations (planned)
 

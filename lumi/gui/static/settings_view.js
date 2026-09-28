@@ -330,12 +330,24 @@ class LumiSettingsView {
         const oversight = this.oversightStatus?.configured
             ? `Your prompts, code and keys go to the model providers you choose. ${esc(this.oversightStatus.notice)} Privacy & security lists exactly what. Luminary Analytics also receives the update check, which you can turn off in Updates.`
             : 'Your prompts, code and keys go only to the model providers you choose. Luminary Analytics receives only the update check, which you can turn off in Updates.';
+        // Lumi's terms (lumi/terms.py): who accepted them, and every text Lumi ships,
+        // readable offline in the terms dialog (terms_view.js).
+        const terms = info.terms || this.termsStatus || {};
+        const legal = (id, label) => `<button type="button" class="btn-sm" id="about-legal-${id}" data-legal-doc="${id}">${label}</button>`;
+        const documents = [
+            terms.pending ? legal('terms', 'Review terms') : '',
+            legal('eula', 'License agreement'),
+            legal('alpha_terms', 'Alpha and beta test terms'),
+            legal('privacy', 'Privacy notice'),
+            legal('notices', 'Third-party notices'),
+        ].filter(Boolean).join(' ');
         return [
             row(`Lumi ${esc(info.version)}`, `The coding agent by Luminary Analytics. ${managed}`),
             row('Free for individuals', 'The whole agent, every tool, provider and feature in this app, works without an account: with your own API keys, your ChatGPT sign-in, or models on your own computer.'),
-            row('What leaves this computer', oversight),
+            row('What leaves this computer', `${oversight} The privacy notice below lists exactly what.`),
             row('For teams and organizations', 'Lumi Cloud adds central policy, members, devices and usage reporting; if your organization uses it, sign in from Lumi account. Without it, organizations set policy on each computer (see docs/enterprise-policy.md).'),
             row('License', `© Luminary Analytics. All rights reserved. Licensed under the ${esc(info.license)}.${info.notices ? ` Third-party components and their licenses: <code>${esc(info.notices)}</code>` : ''}`),
+            `<div class="settings-row"><div class="settings-row-copy"><span class="settings-row-label">Terms and notices</span><div class="settings-row-hint" id="about-terms-status">${this._termsAcceptanceText?.(terms) || ''}</div><div class="about-legal-documents">${documents}</div></div></div>`,
         ].join('');
     }
 
@@ -710,13 +722,25 @@ class LumiSettingsView {
     }
 
     _setOversightLock(locked) {
+        this._oversightNoticeLock = Boolean(locked);
+        this._applyComposerLock();
+    }
+
+    /**
+     * The message box is locked while Lumi's terms wait to be accepted
+     * (terms_view.js, _termsLocked) or the organization's oversight notice waits
+     * to be confirmed. `_oversightLocked` is that combined lock, which sending,
+     * dictation and the running state check; the server refuses too.
+     */
+    _applyComposerLock() {
+        const locked = Boolean(this._termsLocked || this._oversightNoticeLock);
         const was = Boolean(this._oversightLocked);
         this._oversightLocked = locked;
-        // Nothing may keep listening once the notice locks the message box.
+        // Nothing may keep listening once a notice locks the message box.
         if (locked && this._dictation && this._dictation.state !== 'idle') this._dictation.cancel({focus: false});
         if (locked !== was) {
             if (typeof this._syncDictationButton === 'function') this._syncDictationButton();
-            // Unlocked: ask again which ways of dictating may listen (lumi/voice.py follows the notice).
+            // Unlocked: ask again which ways of dictating may listen (lumi/voice.py follows the gate).
             if (!locked && typeof this.send === 'function') this.send({command: 'voice_status'});
         }
         const input = this.userInput || document.getElementById('user-input');
@@ -726,19 +750,44 @@ class LumiSettingsView {
             if (control) control.disabled = locked;
         }
         if (input) {
-            input.placeholder = locked ? 'Confirm the notice above to start'
-                : this.isRunning ? 'Write a follow-up for the running agent...' : 'Message Lumi';
+            input.placeholder = this._composerLockPlaceholder()
+                || (this.isRunning ? 'Write a follow-up for the running agent...' : 'Message Lumi');
             input.closest?.('.input-wrapper')?.classList.toggle('is-oversight-locked', locked);
         }
         if (locked && !was && hadFocus) {
             // The message box can't keep focus while locked: move it to the notice
-            // itself (not its button), where Tab reaches What’s shared and I’ve read this.
-            document.getElementById('oversight-notice')?.focus();
+            // itself (not its button), where Tab reaches the notice's buttons.
+            this._focusComposerLock();
         }
-        if (!locked && was && this._oversightFocusAfterConfirm && input) {
+        const focusAfter = this._oversightFocusAfterConfirm || this._termsFocusAfterAccept;
+        if (!locked && was && focusAfter && input) {
             this._oversightFocusAfterConfirm = false;
+            this._termsFocusAfterAccept = false;
             input.focus();
         }
+    }
+
+    /** What the locked message box says: Lumi's terms come first, then the organization's notice. */
+    _composerLockPlaceholder() {
+        if (this._termsLocked) return 'Accept Lumi’s terms to start';
+        return this._oversightLocked ? 'Confirm the notice above to start' : '';
+    }
+
+    /** Why the message box is locked, for a toast when someone tries anyway. */
+    _composerLockMessage() {
+        return this._termsLocked
+            ? 'Accept Lumi’s terms first: choose Review terms above the message box.'
+            : 'Confirm your organization’s oversight notice above the message box first.';
+    }
+
+    /** The notice that explains the lock: the terms' when they wait, else the organization's. */
+    _focusComposerLock() {
+        // The terms dialog is modal: while it's open, the focus stays in its text.
+        if (this._termsDialog) {
+            document.getElementById('terms-dialog-body')?.focus();
+            return;
+        }
+        document.getElementById(this._termsLocked ? 'terms-notice' : 'oversight-notice')?.focus();
     }
 
     _confirmOversightNotice() {
@@ -2053,7 +2102,7 @@ class LumiSettingsView {
             {id:'model_evaluations', title:'Model evaluations', group:'Advanced', icon:'chart', description:'Compare models on your own tasks, and review model quality and runtime diagnostics.', sections:['model_comparisons', 'model_evaluations'], keywords:'compare comparison benchmark evaluate models tasks switch pass rate'},
             {id:'iteration_checkpoints', title:'Checkpoints & recovery', group:'Advanced', icon:'history', description:'Inspect saved iterations and recovery options.', sections:['iteration_checkpoints']},
             {id:'lumi_account', title:'Lumi account', group:'Personal', icon:'person', description:'Sign in to Lumi Cloud and use your organization’s policy on this computer.', sections:['lumi_account'], keywords:'lumi cloud organization team company sign in enroll device computer managed policy seat slack teams microsoft chat tasks remote requests'},
-            {id:'about', title:'About Lumi', group:'Personal', icon:'book', description:'What Lumi is, what it costs and what it sends where.', sections:['about'], keywords:'version license EULA terms copyright free plan pricing account privacy telemetry notices'},
+            {id:'about', title:'About Lumi', group:'Personal', icon:'book', description:'What Lumi is, what it costs and what it sends where.', sections:['about'], keywords:'version license EULA terms agreement alpha beta test accept accepted copyright free plan pricing account privacy notice telemetry notices third-party'},
             {id:'updates', title:'Updates', group:'Advanced', icon:'history', description:'Choose how Lumi updates itself and which releases it takes.', sections:['updates','update_status','update_file'], keywords:'update upgrade version release beta channel pin stable automatic manual off file offline installer bundle air-gapped'},
         ];
     }
@@ -2821,6 +2870,13 @@ class LumiSettingsView {
         this._bindScheduledTasks();
         this._bindCodeEditors();
         this._bindModelComparisons();
+        // About Lumi: the terms and notices open in the terms dialog, readable offline (terms_view.js).
+        this.settingsBody.querySelectorAll('[data-legal-doc]').forEach(button => {
+            button.addEventListener('click', () => {
+                const doc = button.dataset.legalDoc;
+                this.openTermsDialog?.(doc === 'terms' ? {returnFocus: button} : {mode: 'read', doc, returnFocus: button});
+            });
+        });
         this.settingsBody.querySelectorAll('[data-trust-decision]').forEach(button => {
             button.addEventListener('click', () => {
                 button.disabled = true;

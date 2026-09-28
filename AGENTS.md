@@ -39,14 +39,31 @@ host enrollment and actual packaged/learned-benefit qualification remain open.
   `resonant-policy.json`) are still read; do not write new state under them.
   The update feed URL and repository name stay until a bridge release moves
   the feed (see [Unreleased](docs/unreleased.md)).
-- Lumi is proprietary ([LICENSE](LICENSE)). The Extension SDK (`sdk/`) and
-  the VS Code extension (`lumi/code_editors/vscode/`) are MIT-licensed so
-  others can build and ship extensions; never move app code into them.
-  Shipped third-party code keeps its notice in `THIRD_PARTY_NOTICES.txt`
-  (`packaging/third-party-components.json` for anything that isn't a Python
-  package), and the copyleft gate stays. Code ported from another project
-  keeps its license notice in the file and gets a components entry with the
-  license text (`packaging/licenses/`), as `engine/truncation.py` does.
+- Lumi is proprietary ([LICENSE](LICENSE), the EULA in `lumi/legal/`). The
+  Extension SDK (`sdk/`) is under the Lumi Extension SDK License, which lets
+  developers build and ship extensions for Lumi, and the VS Code extension
+  (`lumi/code_editors/vscode/`) is part of Lumi; versions published under the
+  MIT License stay MIT. Never move app code into the SDK. The legal texts are
+  rendered: edit `lumi/legal/templates/` or `lumi/legal/terms.json` (the one
+  file of facts and versions), then run `python packaging/legal_texts.py
+  render`; a release fails while a fact is `[[TO BE PROVIDED: ...]]`. Bump a
+  document's version for any change to what it says: that asks everyone to
+  accept it again. Shipped third-party code keeps its notice in
+  `THIRD_PARTY_NOTICES.txt` (`packaging/third-party-components.json` for
+  anything that isn't a Python package), and the copyleft gate stays. Code
+  ported from another project keeps its license notice in the file and gets
+  a components entry with the license text (`packaging/licenses/`), as
+  `engine/truncation.py` does.
+- Lumi's terms gate every model request (`lumi/terms.py`): `oversight.admit`
+  and `oversight.gate` ask them first, so every turn path and every request
+  outside a turn that asks oversight waits for them too, and a refusal
+  carries `terms.REFUSAL_CODE`. Acceptance comes only from the person (the
+  app's dialog on a trusted click, a typed yes at an interactive terminal,
+  `lumi terms accept`, `--accept-terms`), from `LUMI_ACCEPT_TERMS` outside the
+  app, or from a machine policy's `legal.accepted_by_organization` (never
+  `LUMI_POLICY_FILE`, a Lumi Cloud policy, settings or a project). A new
+  entry point that reaches a model asks the gate; tests accept the terms in
+  `tests/conftest.py` and test the gate itself in `tests/test_terms.py`.
 - Follow the [harness north star](docs/agentic-harness-north-star.md): correct
   completion, verification, maintainability, and time to a trustworthy result
   come before token efficiency.

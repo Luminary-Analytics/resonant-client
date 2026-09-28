@@ -79,10 +79,55 @@ optional.
 | `pricing.prices` | Negotiated prices in USD per million tokens by `provider:model` pattern (`input`, `output`, optional `cached_input` and `cache_write`). They win over users' prices and Lumi's list; see [usage records and prices](usage-and-costs.md). |
 | `oversight` | Share work with the organization's Lumi Cloud: `version` (1), `activity` (each turn's metadata), `messages` (`off`, `redacted` or `full`, with the session's title; secrets always removed), `security_flags`, `retention_days` (1 to 3650), `notice` (the organization's words), `project_paths` and `unattended` (`record`, the default, or `block`: what a scheduled task or a `lumi run` with no interactive terminal does while nobody confirmed the notice as that computer user; `record` runs it, prints the notice with its output and records it as that user and computer, `block` refuses it). Off unless set. People see a notice naming the organization and what it receives, and nothing is sent to a model until they confirm it (a signed record goes to Lumi Cloud). A key or version Lumi doesn't know turns oversight off, with the reason in Settings, and the rest of the policy still applies. See [organization oversight](organization-oversight.md). |
 | `dlp` | Data loss prevention rules checked on everything sent to a model provider: `version` (`1`), built-in `detectors` (`credit_card`, `us_ssn`, `iban`, `secrets`, `email`), keyword and pattern `rules`, each `flag`, `redact` or `block` with an optional `scope`, and an optional external `service`. See [data loss prevention](dlp.md). |
+| `legal.accepted_by_organization` | The organization's name: it accepts Lumi's terms for everyone who uses Lumi on the computer, so Lumi doesn't ask each person. Only in a machine policy. See [Lumi's terms for your organization](#lumis-terms-for-your-organization). |
 
 Patterns use `*` and `?` wildcards (the `dlp` section's `pattern` rules are
 regular expressions).
 
+
+## Lumi's terms for your organization
+
+Lumi asks each person to accept its
+[End User License Agreement](../lumi/legal/EULA.md), and on pre-release builds
+the [Alpha and Beta Test Terms](../lumi/legal/ALPHA-TERMS.md), at first launch
+and again when their version changes. Until they do, nothing is sent to a
+model: not from the app, `lumi run`, the terminal UI, the chat gateway, plans,
+missions or Team. An organization that deploys Lumi can accept the terms for
+its people in the machine policy:
+
+```json
+{
+  "schema": "lumi.policy/v1",
+  "organization": "Example Corp",
+  "legal": {"accepted_by_organization": "Example Corp"}
+}
+```
+
+- **Only a machine policy accepts:** the registry or Group Policy (`Policy` or
+  `PolicyFile`, which the MSI's `POLICYFILE` sets), a macOS configuration
+  profile, or the machine policy file. `LUMI_POLICY_FILE` and a Lumi Cloud
+  policy can't: a person can bring those themselves. A machine policy that
+  sets up Lumi Cloud keeps accepting while Lumi Cloud's policy is in force.
+- **What it covers:** the terms in force, including new versions that updates
+  bring, for everyone who uses Lumi on the computer, under your organization's
+  agreement with Luminary Analytics. Set it only with the authority to accept
+  for your organization.
+- **What people see:** no terms dialog. Settings > About Lumi says the terms
+  were accepted for everyone on the computer by Example Corp, through its
+  machine policy, and still opens every text. `lumi run` needs no
+  `--accept-terms`.
+- **A mistake:** a value that isn't a name (empty, not text, longer than 200
+  characters) makes the policy invalid, like any other mistake in it.
+- **Checking a computer:** `lumi terms` prints the state as JSON: `pending`,
+  `organization` and `acceptance_value` (what `--accept-terms` would take).
+
+Without it, each person accepts once in the app, or at a terminal, or with
+`lumi terms accept <value>`, and CI accepts with `--accept-terms` or
+`LUMI_ACCEPT_TERMS` ([Running Lumi without a UI](headless.md#lumis-terms)).
+Installing silently (the MSI with `/qn`, the EXE with `/VERYSILENT`, the PKG
+from device management) shows no license page; see
+[Deploying on Windows](deploy-windows.md#lumis-terms) and
+[Deploying on macOS](deploy-macos.md#lumis-terms).
 
 ## Commands a second person approves
 

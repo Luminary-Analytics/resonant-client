@@ -1975,7 +1975,8 @@ class Session:
         if admission.refusal:
             self.display_prompt = None
             tracker = None
-            turn = self._oversight_refused(admission.refusal)
+            # Lumi's terms (lumi/terms.py) or the organization's notice: the code says which.
+            turn = self._oversight_refused(admission.refusal, admission.code)
         else:
             # None unless the organization's policy records this turn.
             tracker = oversight.begin_turn(self, user_msg, images=len(images or ()), input_origin=input_origin,
@@ -2015,17 +2016,23 @@ class Session:
                 tracker.finish(outcome)
 
     def _oversight_checkpoint(self) -> str:
-        """Why organization oversight stops this turn before its next model request, or ''."""
+        """Why Lumi's terms or organization oversight stop this turn before its next model request, or ''.
+
+        The gate's code (``oversight.REFUSAL_CODE`` or ``terms.REFUSAL_CODE``) is kept for the error the
+        turn ends with.
+        """
         from .. import oversight
 
-        return oversight.admit(self).refusal
+        admission = oversight.admit(self)
+        self._oversight_stop_code = admission.code
+        return admission.refusal
 
     @staticmethod
-    def _oversight_refused(message: str) -> Iterator[dict]:
-        """A turn organization oversight refused (lumi/oversight.py): nothing reaches a model or the history."""
+    def _oversight_refused(message: str, code: str = "") -> Iterator[dict]:
+        """A turn the gate refused (lumi/oversight.py, lumi/terms.py): nothing reaches a model or the history."""
         from ..oversight import REFUSAL_CODE
 
-        yield make_event(EngineEvent.ERROR, message=message, code=REFUSAL_CODE)
+        yield make_event(EngineEvent.ERROR, message=message, code=code or REFUSAL_CODE)
 
     def _next_fallback(self, error: str) -> Iterator[dict]:
         """Switch to the next usable fallback model; returns whether it did.
@@ -4259,7 +4266,8 @@ class Session:
         if oversight_stop:
             from ..oversight import REFUSAL_CODE
 
-            yield make_event(EngineEvent.ERROR, message=oversight_stop, code=REFUSAL_CODE)
+            yield make_event(EngineEvent.ERROR, message=oversight_stop,
+                             code=getattr(self, "_oversight_stop_code", "") or REFUSAL_CODE)
 
         if request_limit_reached:
             terminal_error = (

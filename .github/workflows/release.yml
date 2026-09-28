@@ -101,6 +101,14 @@ jobs:
           python-version: '3.13'
           cache: 'pip'
 
+      # Lumi's terms ship with every installer and ask for acceptance in the
+      # app: a release fails while lumi/legal/terms.json still holds a fact
+      # [[TO BE PROVIDED: ...]], while a text isn't what
+      # packaging/legal_texts.py renders, or for a version below 0.20.0 (0.19.x
+      # was published under the MIT License). RELEASING.md.
+      - name: Legal texts are complete
+        run: python packaging/legal_texts.py release-check --release --version "${{ steps.version.outputs.version }}"
+
       # Correctness gate. A signed installer that auto-updates every deployed
       # copy of Lumi is the last artifact that should ever be cut from a red
       # tree, and a tag push can race ahead of the PR that `tests.yml` gated.
@@ -357,6 +365,10 @@ jobs:
         with:
           python-version: '3.13'
           cache: 'pip'
+
+      # As in the Windows job: no release while Lumi's terms are incomplete.
+      - name: Legal texts are complete
+        run: python3 packaging/legal_texts.py release-check --release --version "${{ steps.version.outputs.version }}"
 
       - name: Install the pinned SBOM tools
         run: python3 -m pip install --require-hashes -r packaging/tools-requirements.txt

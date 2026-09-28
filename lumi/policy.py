@@ -48,7 +48,8 @@ What a policy can do (every section is optional)::
                     "retention_days": 90, "notice": "Questions: security@acme.example",
                     "unattended": "record"},
       "dlp": {"version": 1, "detectors": {"credit_card": "block", "secrets": "redact"},
-              "rules": [{"name": "falcon", "keywords": ["Project Falcon"], "action": "block"}]}
+              "rules": [{"name": "falcon", "keywords": ["Project Falcon"], "action": "block"}]},
+      "legal": {"accepted_by_organization": "Acme"}
     }
 
 ``approvals`` lists commands (``fnmatch`` patterns over the whole command)
@@ -77,6 +78,16 @@ text they block isn't shared.
 (lumi/dlp.py, docs/dlp.md). A ``dlp`` section that can't be used doesn't make
 the policy vanish: the rest still applies, and model requests are refused
 (``blocked_reason``) until it's fixed.
+
+``legal`` accepts Lumi's terms for the organization's people:
+``{"accepted_by_organization": "Acme Corp"}`` (the organization's name) means
+the organization accepted the End User License Agreement, and the Alpha and
+Beta Test Terms for pre-release builds, for everyone who uses Lumi on the
+computer, under its agreement with Luminary Analytics, so Lumi doesn't ask
+each person (lumi/terms.py) and About says who accepted. Only a machine policy
+counts (``terms_accepted_by``): Group Policy or the registry, a configuration
+profile or the machine policy file, never ``LUMI_POLICY_FILE`` or a Lumi Cloud
+policy, which a person can bring themselves.
 
 Locked settings override the user's value and can't be changed in Settings,
 which shows who manages them. Lists match ``fnmatch`` patterns.
@@ -277,6 +288,10 @@ class Policy:
     # section can't be used, which refuses model requests (blocked_reason).
     dlp: Any = None
     dlp_error: str = ""
+    # The organization that accepted Lumi's terms for this computer's people
+    # (legal.accepted_by_organization); it counts only in a machine policy
+    # (terms_accepted_by, lumi/terms.py).
+    terms_accepted_by: str = ""
     raw: dict = field(default_factory=dict)
 
     # ── Queries ────────────────────────────────────────────────────────────
@@ -362,6 +377,7 @@ class Policy:
             # Rule names and actions only: keywords and patterns can name what they protect.
             "dlp": self.dlp.summary() if self.dlp is not None else None,
             "dlp_error": self.dlp_error,
+            "terms_accepted_by": self.terms_accepted_by,
         }
 
 
@@ -498,6 +514,22 @@ def _dlp_section(document: dict) -> tuple[Any, str]:
         return None, str(exc)
     except Exception as exc:  # anything else that stops the rules from being built
         return None, f"The dlp section couldn't be read ({type(exc).__name__})."
+
+
+def _terms_accepted_by(section: dict) -> str:
+    """``legal.accepted_by_organization``: the name of the organization that accepted Lumi's terms, or ''.
+
+    A value that isn't a name makes the policy invalid (model requests stop until it's fixed), like a
+    mistake in any section: read loosely, it could accept the terms for people nobody asked.
+    """
+    value = section.get("accepted_by_organization")
+    if value is None:
+        return ""
+    name = " ".join(value.split()) if isinstance(value, str) else ""
+    if not name or len(name) > 200:
+        raise PolicyError("legal.accepted_by_organization must be the name of the organization that accepts "
+                          "Lumi's terms for its people (at most 200 characters).")
+    return name
 
 
 def _grace_days(value: Any) -> int:
@@ -641,6 +673,7 @@ def parse(data: Any, *, source: str, trusted_keys: dict[str, str] | None = None,
         raise PolicyError("approvals.wait_minutes must be a whole number from 1 to 240.")
     oversight = _oversight(document.get("oversight"))
     dlp, dlp_error = _dlp_section(document)
+    terms_accepted_by = _terms_accepted_by(_section(document, "legal"))
 
     return Policy(
         organization=str(document.get("organization") or "your organization"),
@@ -681,6 +714,7 @@ def parse(data: Any, *, source: str, trusted_keys: dict[str, str] | None = None,
         oversight=oversight,
         dlp=dlp,
         dlp_error=dlp_error,
+        terms_accepted_by=terms_accepted_by,
         raw=document,
     )
 
@@ -855,6 +889,12 @@ def _load_text() -> tuple[str, str] | None:
     return None
 
 
+def _from_machine(source: str) -> bool:
+    """Whether a policy _load_text found came from where only an administrator writes, not LUMI_POLICY_FILE."""
+    override = os.environ.get("LUMI_POLICY_FILE", "").strip()
+    return not (override and source == str(Path(override)))
+
+
 def machine_keys() -> dict[str, str]:
     """Signing keys an administrator trusts: ``PolicyKeys`` in the registry or a configuration
     profile, or policy-keys.json beside the machine policy file."""
@@ -903,6 +943,11 @@ class PolicyState:
     machine: Policy | None = None
     # Why a downloaded Lumi Cloud policy isn't in force, if one exists.
     cloud_error: str = ""
+    # The machine policy (``machine``, or ``policy`` when it isn't Lumi
+    # Cloud's) came from where only an administrator writes: the registry,
+    # a configuration profile or the machine policy file, not
+    # LUMI_POLICY_FILE. Only then may it accept Lumi's terms (terms_accepted_by).
+    from_machine: bool = False
 
 
 # ── Lumi Cloud policy ───────────────────────────────────────────────────────
@@ -964,8 +1009,10 @@ def _with_cloud_policy(state: PolicyState, keys: dict[str, str]) -> PolicyState:
     except Exception as exc:  # any unusable download, not only the failures parse() names
         note = f"{machine.organization}'s machine policy applies instead." if machine else ""
         return PolicyState(policy=machine, source=state.source, machine=None,
-                           cloud_error=f"The Lumi Cloud policy can't be used: {exc} {note}".strip())
-    return PolicyState(policy=cloud, source=cloud.source, cloud=True, machine=machine)
+                           cloud_error=f"The Lumi Cloud policy can't be used: {exc} {note}".strip(),
+                           from_machine=state.from_machine)
+    return PolicyState(policy=cloud, source=cloud.source, cloud=True, machine=machine,
+                       from_machine=state.from_machine)
 
 
 _lock = threading.Lock()
@@ -1007,6 +1054,7 @@ def _read_state() -> PolicyState:
         keys = joined.get("trusted_keys") if isinstance(joined.get("trusted_keys"), dict) else {}
         return _with_cloud_policy(PolicyState(), {str(k): str(v) for k, v in keys.items()})
     text, source = found
+    from_machine = _from_machine(source)
     try:
         data = json.loads(text)
         keys = machine_keys()
@@ -1021,7 +1069,7 @@ def _read_state() -> PolicyState:
         # requests are refused until IT fixes it (see blocked_reason). That
         # holds for any failure, not only the mistakes parse() names.
         return PolicyState(error=f"The organization policy at {source} is invalid: {exc}", source=source)
-    state = PolicyState(policy=policy, source=source)
+    state = PolicyState(policy=policy, source=source, from_machine=from_machine)
     if isinstance(policy.raw.get("cloud"), dict):
         state = _with_cloud_policy(state, keys)
     return state
@@ -1063,6 +1111,21 @@ def enrolled_device() -> dict:
     return dict(_joined_device())
 
 
+def terms_accepted_by() -> tuple[str, str]:
+    """(organization, source) when the machine policy accepts Lumi's terms for this computer's people.
+
+    Only a machine policy an administrator set counts (``PolicyState.from_machine``): its
+    ``legal.accepted_by_organization`` holds while a Lumi Cloud policy it set up is in force. A Lumi Cloud
+    policy, ``LUMI_POLICY_FILE``, Settings and projects can't accept for anyone. ('', '') otherwise, and
+    while the policy can't be used.
+    """
+    state = load()
+    machine = state.machine if state.cloud else state.policy
+    if state.error or not state.from_machine or machine is None or not machine.terms_accepted_by:
+        return "", ""
+    return machine.terms_accepted_by, machine.source
+
+
 def blocked_reason() -> str:
     """Why model requests are refused under policy, or an empty string."""
     state = load()
@@ -1099,9 +1162,10 @@ def full_auto_refusal() -> str:
     return ""
 
 
-def set_for_tests(policy: Policy | None, error: str = "") -> None:
-    """Install a policy directly (tests and fixtures only)."""
+def set_for_tests(policy: Policy | None, error: str = "", *, machine: bool = False) -> None:
+    """Install a policy directly (tests and fixtures only); ``machine`` as if an administrator set it."""
     global _state, _loaded
     with _lock:
-        _state = PolicyState(policy=policy, error=error, source=policy.source if policy else "")
+        _state = PolicyState(policy=policy, error=error, source=policy.source if policy else "",
+                             from_machine=machine)
         _loaded = True

@@ -6,7 +6,8 @@
 ; installer at dist/installer/lumi-setup-{Version}.exe.
 ;
 ; Usage:
-;   1. Run PyInstaller first:   pyinstaller packaging/lumi.spec --clean --noconfirm
+;   1. Build the bundle and the license page: scripts/build_clean.ps1 (PyInstaller,
+;      then packaging/legal_texts.py rtf --out dist/legal for lumi/__init__.py's version)
 ;   2. Compile this script:     ISCC.exe packaging/installer.iss /DAppVersion=0.2.0
 ;
 ; The /DAppVersion= switch lets CI override the version per build. If omitted,
@@ -20,6 +21,17 @@
 ;                                         (Win11 search ignores per-user Start Menu
 ;                                         folders by default — bug #18).
 ;   - DisableWelcomePage=yes           — skip the "click next to begin" page.
+;   - LicenseFile=dist\legal\license.rtf — Lumi's terms on the license page:
+;                                         the End User License Agreement, and for
+;                                         a pre-release version the Alpha and Beta
+;                                         Test Terms after it (packaging/legal_texts.py).
+;                                         Setup goes on only once "I accept" is
+;                                         chosen, on every run, updates included
+;                                         (WinSparkle starts this installer as
+;                                         it is). /SILENT and /VERYSILENT skip
+;                                         the page; Lumi asks for the terms at
+;                                         first launch whatever installed it
+;                                         (lumi/terms.py).
 ;   - ChangesAssociations=no           — we don't claim file extensions.
 ;   - WizardStyle=modern               — built-in modern theme.
 ;   - SignTool=                        — empty (no code signing in v0.x; users
@@ -71,6 +83,8 @@ DefaultDirName={autopf}\Lumi
 DefaultGroupName=Lumi
 DisableProgramGroupPage=yes
 DisableWelcomePage=yes
+; Rendered for this version by scripts/build_clean.ps1; a build without it fails here.
+LicenseFile=..\dist\legal\license.rtf
 PrivilegesRequired=admin
 OutputDir=..\dist\installer
 OutputBaseFilename=lumi-setup-{#AppVersion}

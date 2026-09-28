@@ -39,8 +39,35 @@ msiexec /x lumi-X.Y.Z.msi /qn
   `lumi.exe`. Lumi then never checks for updates, whatever the settings or
   policy say. Settings > Updates and Help > Check for Updates say the copy came
   from the MSI.
-- **No wizard pages.** Opened by hand, it shows Windows Installer's progress
-  bar and a UAC prompt, and installs.
+- **A license page when opened by hand.** It shows Lumi's terms (the End User
+  License Agreement), and Install is available once the person accepts them.
+  Silent installs show no pages; see [Lumi's terms](#lumis-terms).
+
+## Lumi's terms
+
+Lumi asks each person to accept its
+[End User License Agreement](../lumi/legal/EULA.md) at first launch (and, on
+pre-release builds, the [Alpha and Beta Test Terms](../lumi/legal/ALPHA-TERMS.md)).
+Until they do, nothing is sent to a model.
+
+- **Installing by hand:** the EXE's and the MSI's license pages show the terms
+  (rendered for the version by `packaging/legal_texts.py`), and setup goes on
+  only once the person accepts them. The EXE shows the page on every run,
+  updates included.
+- **Silent and managed installs** (`msiexec /qn`, `lumi-setup-X.Y.Z.exe
+  /VERYSILENT`, Intune, Configuration Manager, Group Policy) show no license
+  page and need no property to accept it: deploying Lumi to your
+  organization's computers accepts the agreement for the organization, under
+  its agreement with Luminary Analytics, and the organization is responsible
+  for its people's use of Lumi under it.
+- **Sparing each person the prompt:** put
+  `"legal": {"accepted_by_organization": "Example Corp"}` in the machine policy
+  ([Lumi's terms for your organization](enterprise-policy.md#lumis-terms-for-your-organization)).
+  The MSI has no property of its own for this: point `POLICYFILE` at a policy
+  that says so, or set the policy with Group Policy or Intune. Without it,
+  each person accepts once in the app.
+- **Checking a computer:** `lumi terms` prints `"pending": false` and the
+  organization once the policy accepts (redirect its output as below).
 
 ## Intune
 
@@ -82,7 +109,8 @@ upgrade, add the newer MSI as an upgrade of the package already assigned.
 
 `lumi updates` prints the update settings in effect as JSON: the mode, channel,
 pin, feed, who manages them, and `"installed_by": "msi"` for an MSI copy. It
-reads settings and policy only and never checks for updates.
+reads settings and policy only and never checks for updates. `lumi terms`
+prints whether Lumi's terms are accepted, and by which organization.
 
 `lumi.exe` is a windowed program. To see its output from PowerShell, redirect
 it:

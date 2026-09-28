@@ -27,3 +27,9 @@ state folder (normally `~/.lumi`, or `LUMI_STATE_HOME`). Turning off
 
 Install it from Lumi's **Settings > Code editors**, or run
 `lumi editor vscode --install`. VS Code 1.75 or later.
+
+## License
+
+Part of Lumi, © Luminary Analytics, licensed under the Lumi End User License
+Agreement (`LICENSE.txt`). Versions up to 0.1.0 were published under the MIT
+License and remain under it.

@@ -14,5 +14,8 @@ Copy the `lumi_extension` folder into your pack, or install this folder with
 see [docs/extensions.md](../../docs/extensions.md) for the manifest and the
 protocol.
 
-The SDK is under the MIT License (`lumi_extension/LICENSE`, which a copy
-of the folder keeps), unlike Lumi itself, so a pack can include it.
+The SDK is under the Lumi Extension SDK License (`lumi_extension/LICENSE`,
+which a copy of the folder keeps). It lets you use, change and ship the SDK
+as part of extensions for Lumi; Lumi itself is under the Lumi End User
+License Agreement. Version 1.0.0 was published under the MIT License and
+remains under it.

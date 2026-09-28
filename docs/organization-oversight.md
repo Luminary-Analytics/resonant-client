@@ -12,6 +12,11 @@ repository.
 
 Status: first pass, source only, not released.
 
+Every turn path asks this page's gate (`oversight.admit`, `oversight.gate`),
+and the gate asks [Lumi's terms](../lumi/legal/EULA.md) first (`lumi/terms.py`):
+until a person has accepted them, nothing reaches a model whatever the policy,
+and the refusal says so (code `terms_not_accepted`, not `oversight_notice`).
+
 ## Off unless the organization turns it on
 
 Without an organization policy that asks for it, Lumi shares nothing of the

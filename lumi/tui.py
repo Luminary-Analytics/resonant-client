@@ -1105,6 +1105,35 @@ def print_banner(backend=None, health_info: dict = None, session: Session = None
     console.print()
 
 
+def confirm_terms() -> bool:
+    """Ask for a typed yes to Lumi's terms before anything reaches a model (lumi/terms.py).
+
+    True when nothing is waiting (accepted in the app, here before, with ``lumi terms accept``, by the
+    organization's machine policy or ``LUMI_ACCEPT_TERMS``) or the person typed yes; the acceptance is
+    recorded. Session.run refuses every turn until then anyway; this is where the person can say yes.
+    """
+    from . import oversight, terms
+
+    waiting = terms.pending()
+    if not waiting:
+        return True
+    console.print()
+    _print(f"  [{C_WARN}]Lumi's terms[/{C_WARN}]  [{C_TEXT}]Accept them before Lumi sends anything to a model:[/{C_TEXT}]")
+    for line in terms.terminal_summary(waiting):
+        _print(f"  [{C_DIM}]{_esc(line.strip())}[/{C_DIM}]")
+    try:
+        answer = pt_prompt(HTML(f'<style fg="#{C_WARN[1:]}">  Type yes to accept them: </style>'))
+    except (EOFError, KeyboardInterrupt):
+        answer = ""
+    if not oversight.is_yes(answer):
+        _print(f"  [{C_DIM}]Nothing was sent; Lumi's terms weren't accepted.[/{C_DIM}]")
+        return False
+    if not terms.accept({doc.id: doc.version for doc in waiting}, "terminal"):
+        _print_refusal("Lumi's terms changed while you read them; nothing was sent.")
+        return False
+    return True
+
+
 def confirm_oversight(settings) -> bool:
     """Ask for a typed yes to the organization's oversight notice before anything reaches a model.
 
@@ -1368,9 +1397,10 @@ def run_embedded(session: Session, user_msg: str, images: list = None):
         """Prompt user for choice selection."""
         return _render_choices(options)
 
-    # A notice confirmation forgotten meanwhile (the app signed out of Lumi
-    # Cloud) is asked for again before the turn, rather than only refused.
-    if not confirm_oversight(getattr(session, "_settings_ref", None)):
+    # Lumi's terms (a new version since the last turn) and a notice
+    # confirmation forgotten meanwhile (the app signed out of Lumi Cloud) are
+    # asked for again before the turn, rather than only refused.
+    if not confirm_terms() or not confirm_oversight(getattr(session, "_settings_ref", None)):
         return
 
     # Someone is at the terminal, so there is always a prompt. The tier
@@ -1758,8 +1788,9 @@ Examples:
         _print_refusal(f"The session couldn't be set up: {exc}")
         return
     print_banner(backend=backend, health_info=health_info, session=session, mode=mode, notice=mode_notice)
-    # The organization's oversight notice, confirmed before the first turn (lumi/oversight.py).
-    if not confirm_oversight(settings):
+    # Lumi's terms (lumi/terms.py), then the organization's oversight notice
+    # (lumi/oversight.py), before the first turn.
+    if not confirm_terms() or not confirm_oversight(settings):
         console.print(f"  [{C_DIM}]Goodbye[/{C_DIM}]")
         return
     from . import oversight

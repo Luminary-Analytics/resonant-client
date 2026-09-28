@@ -14,8 +14,11 @@ successful push alone is not deployment. See
    version. Add `docs/vX.Y.Z-release-notes.md`, update the docs index, and move
    shipped entries out of `docs/unreleased.md`. Do not relabel unshipped work as
    part of an existing release.
-3. Run the checks below. Investigate failures rather than weakening gates.
-4. Build and smoke-test the final source. Record what was actually exercised,
+3. Check Lumi's terms: `python packaging/legal_texts.py release-check --release
+   --version X.Y.Z` must pass (see [Lumi's terms](#lumis-terms)). The release
+   workflow runs it first and fails while any fact is still to be provided.
+4. Run the checks below. Investigate failures rather than weakening gates.
+5. Build and smoke-test the final source. Record what was actually exercised,
    especially whether provider generation was live or mocked.
 
 ```sh
@@ -54,6 +57,40 @@ Verify:
 - Changed commands/assets are present; drafts and navigation work.
 - Bundled skills install and startup logs have no unexplained errors.
 - Relevant desktop/compact layouts and keyboard controls remain usable.
+
+## Lumi's terms
+
+Lumi ships its [End User License Agreement](lumi/legal/EULA.md),
+[Alpha and Beta Test Terms](lumi/legal/ALPHA-TERMS.md) and
+[privacy notice](lumi/legal/PRIVACY.md), the
+[Extension SDK License](sdk/LICENSE) and the VS Code extension's license. They
+are rendered from `lumi/legal/templates/` with one file of facts,
+`lumi/legal/terms.json`: Luminary's legal entity (name, type, state of
+formation), the governing-law state, the venue, the notices email, and each
+document's version and effective date.
+
+- **Changing a fact or a text:** edit `terms.json` or the template, run
+  `python packaging/legal_texts.py render`, and commit the rendered files with
+  it. `tests/test_legal_texts.py` fails while a rendered text isn't what
+  `render` writes.
+- **Versions:** bump a document's `version` for any change to what it says.
+  Lumi then asks everyone to accept it again (the app at launch, `lumi run`
+  through a new `--accept-terms` value), and machine policies that accept for
+  an organization cover it. A new `effective` date alone asks no one. Announce
+  a new version in the release notes.
+- **Placeholders:** a fact still reading `[[TO BE PROVIDED: ...]]` is a warning
+  in pull request CI (`tests.yml`) and fails the release workflow (both the
+  Windows and macOS jobs run `release-check --release`). So does a release
+  version below 0.20.0: Lumi 0.19.x and earlier were published under the MIT
+  License.
+- **Installers:** `scripts/build_clean.ps1` renders `dist/legal/license.rtf`
+  for Inno Setup's license page, `packaging/build_msi.ps1` renders the MSI's,
+  and `packaging/build_macos.sh` the PKG's and the DMG's copies
+  (`python packaging/legal_texts.py rtf --out DIR --version X.Y.Z`). A
+  pre-release version gets the EULA followed by the Alpha and Beta Test
+  Terms; a stable one, the EULA.
+- **Before publishing:** counsel reviews the texts; the texts carry no drafts
+  or review notes, so what's in the repository is what ships.
 
 ## Commit, push, and publish
 

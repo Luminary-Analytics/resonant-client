@@ -54,6 +54,19 @@
   - Panels are listed under View, which is used with the pointer, and in the
     command palette for the keyboard. Contrast inside a panel is the pack's
     own, not measured here.
+- **Added September 27, later**: the dialog that asks for Lumi's terms at
+  first launch, the notice it leaves above the message box, and the same
+  dialog reading a text from About Lumi, with real key presses in headless
+  Edge (tests/terms_acceptance.browser.cjs), in both themes and at 375 px.
+  - It is named "Lumi’s terms" (or the text it shows). Focus starts in the
+    text, which the arrow keys scroll, and never on Accept by itself; Tab
+    goes through the privacy notice link, Decline, Accept and the close
+    button and stays inside the dialog.
+  - Escape declines, never accepts, and focus goes to the notice's Review
+    terms button, whose Enter opens the dialog again. From About Lumi,
+    Escape returns focus to the button that opened the text.
+  - Text contrast measured 6.2:1 or more (Accept in the light theme) in both
+    themes, and the dialog fits at 375 px without a horizontal scroll.
 
 ## Fixed during this review
 

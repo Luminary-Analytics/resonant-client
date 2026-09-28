@@ -918,16 +918,96 @@ async def _voice_status(ctx: CommandContext) -> None:
 
 
 async def _oversight_refusal(ctx: CommandContext, trigger: str = "app") -> str:
-    """Why nothing may reach a model now (the organization's notice isn't confirmed); '' when it may.
+    """Why nothing may reach a model now (Lumi's terms or the organization's notice); '' when it may.
 
-    Also sends the page the current oversight status, so it shows the notice.
+    Also sends the page what refused, so it shows the terms or the notice.
     """
+    return (await _gate_refusal(ctx, trigger))[0]
+
+
+def gate_status_event(code: str) -> dict:
+    """What the page needs after the gate refused (oversight.gate): the terms, or the oversight notice."""
+    from .. import oversight, terms
+
+    if code == terms.REFUSAL_CODE:
+        return {"event": "terms_status", "data": terms.status()}
+    return {"event": "oversight_status", "data": oversight.status()}
+
+
+async def _gate_refusal(ctx: CommandContext, trigger: str = "app") -> tuple[str, str]:
+    """(refusal, code) from the gate every turn path asks (oversight.gate): Lumi's terms
+    (lumi/terms.py), then the organization's oversight notice. Sends the page the matching status."""
     from .. import oversight
 
-    refusal = await asyncio.to_thread(oversight.refusal, trigger)
+    refusal, code = await asyncio.to_thread(oversight.gate, trigger)
     if refusal:
-        await ctx.send({"event": "oversight_status", "data": await asyncio.to_thread(oversight.status)})
-    return refusal
+        await ctx.send(await asyncio.to_thread(gate_status_event, code))
+    return refusal, code
+
+
+@command("terms_status")
+async def _terms_status(ctx: CommandContext) -> None:
+    """Lumi's terms in force and whether this person accepted them (lumi/terms.py)."""
+    from .. import terms
+
+    await ctx.send({"event": "terms_status", "data": await asyncio.to_thread(terms.status)})
+
+
+@command("terms_accept")
+async def _terms_accept(ctx: CommandContext) -> None:
+    """The person accepted the terms the dialog showed (``documents``: {id: version}); the app unlocks.
+
+    The page sends it only from the dialog's Accept button, on a click or key press the browser reports
+    as the person's. A version that isn't the one in force (the terms changed while the dialog was open)
+    accepts nothing: the page gets the current terms back and shows them. Dictation follows too.
+    """
+    from .. import terms, voice
+
+    shown = ctx.msg.get("documents")
+    versions = {str(key): str(value) for key, value in shown.items()} if isinstance(shown, dict) else {}
+    try:
+        accepted = await asyncio.to_thread(terms.accept, versions, "app")
+    except (OSError, ValueError) as exc:
+        logger.exception("Recording the acceptance of Lumi's terms failed")
+        await ctx.send({"event": "error", "code": terms.REFUSAL_CODE,
+                        "message": f"Lumi couldn't record that you accepted its terms ({exc}). Try again."})
+        accepted = False
+    if not accepted:
+        logger.info("An acceptance of terms that aren't in force was refused: %s", versions)
+    await ctx.send({"event": "terms_status", "data": await asyncio.to_thread(terms.status)})
+    settings = getattr(ctx.state, "settings", None)
+    if accepted and settings is not None:
+        await ctx.send({"event": "voice_status", "data": await asyncio.to_thread(voice.status, settings)})
+
+
+@command("legal_document")
+async def _legal_document(ctx: CommandContext) -> None:
+    """One of the texts Lumi ships, to read offline: ``eula``, ``alpha_terms``, ``privacy`` or ``notices``."""
+    from .. import terms
+
+    wanted = str(ctx.msg.get("id") or "")
+
+    def read() -> dict:
+        if wanted == "notices":
+            path = _third_party_notices_path()
+            if not path:
+                return {"id": wanted, "title": "Third-party notices", "format": "text", "text": "",
+                        "error": "Installed copies of Lumi include the third-party notices "
+                                 "(THIRD_PARTY_NOTICES.txt); a copy running from source doesn't."}
+            text = Path(path).read_text(encoding="utf-8", errors="replace")
+            return {"id": wanted, "title": "Third-party notices", "format": "text", "text": text, "path": path}
+        if wanted not in terms.READABLE_DOCUMENTS:
+            raise KeyError(wanted)
+        return {**terms.document(wanted).as_dict(), "format": "markdown", "text": terms.text(wanted)}
+
+    try:
+        data = await asyncio.to_thread(read)
+    except KeyError:
+        data = {"id": wanted, "error": "There's no such document."}
+    except (OSError, ValueError) as exc:
+        logger.exception("Reading a legal document failed")
+        data = {"id": wanted, "error": f"Lumi couldn't read it ({exc})."}
+    await ctx.send({"event": "legal_document", "data": data})
 
 
 def _code_editors_payload(settings: Any = None, **extra: Any) -> dict:
@@ -2248,11 +2328,12 @@ async def _cmd_message(ctx: CommandContext) -> None:
     text = ctx.msg.get("text", "").strip()
     if not text:
         return
-    # Organization oversight: nothing reaches a model before its notice is
-    # confirmed (lumi/oversight.py); the page's message box is locked too.
-    refusal = await _oversight_refusal(ctx)
+    # Lumi's terms, then organization oversight: nothing reaches a model before
+    # they're accepted and its notice is confirmed (lumi/terms.py,
+    # lumi/oversight.py); the page's message box is locked too.
+    refusal, code = await _gate_refusal(ctx)
     if refusal:
-        await ctx.send({"event": "error", "message": refusal, "code": "oversight_notice"})
+        await ctx.send({"event": "error", "message": refusal, "code": code})
         return
     if not ctx.state.session:
         await ctx.send({
@@ -3446,12 +3527,12 @@ async def _cmd_intent(ctx: CommandContext) -> None:
 
         if name == "intent_start":
             text = (ctx.msg.get("text") or "").strip()
-            refusal = await _oversight_refusal(ctx, "plan") if text else ""
+            refusal, code = await _gate_refusal(ctx, "plan") if text else ("", "")
             if not text:
                 await ctx.send({"event": "error",
                                     "message": "intent text is required"})
             elif refusal:
-                await ctx.send({"event": "error", "message": refusal, "code": "oversight_notice"})
+                await ctx.send({"event": "error", "message": refusal, "code": code})
             else:
                 try:
                     # The page follows it in the Plan tab; its events go there.
@@ -3840,6 +3921,8 @@ async def _cmd_about_info(ctx: CommandContext) -> None:
     from ..policy import current as current_policy
     from ..update_channels import installed_by
 
+    from .. import terms
+
     policy = current_policy()
     await ctx.send({"event": "about_info", "data": {
         "version": __version__,
@@ -3849,6 +3932,9 @@ async def _cmd_about_info(ctx: CommandContext) -> None:
         "notices": _third_party_notices_path(),
         "organization": policy.organization if policy else "",
         "installed_by": installed_by(),
+        # The terms in force, who accepted them (this person, or the
+        # organization's machine policy), and the texts About opens.
+        "terms": await asyncio.to_thread(terms.status),
     }})
 
 

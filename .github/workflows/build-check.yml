@@ -17,9 +17,11 @@ name: Build check
 #   - Writes the third-party notices (license gate included) and the CycloneDX
 #     SBOM, and uploads both, so they are exercised before any release
 #   - Runs `lumi.exe --version` to confirm the frozen exe boots
-#   - Builds the MSI (packaging/lumi.wxs), installs it silently on the runner,
-#     checks the installed app, the policy file property and that updates are
-#     left to device management, then uninstalls it
+#   - Builds the MSI (packaging/lumi.wxs) with its license page (Lumi's terms,
+#     rendered by packaging/legal_texts.py), installs it silently on the runner,
+#     checks the installed app, the policy file property, that updates are
+#     left to device management and that the machine policy's
+#     legal.accepted_by_organization accepts Lumi's terms, then uninstalls it
 #
 # What this does NOT do:
 #   - Sign the bundle (no Authenticode or EdDSA, no secrets needed)
@@ -216,6 +218,24 @@ jobs:
         shell: pwsh
         run: ./packaging/build_msi.ps1
 
+      # The license page an installation with the MSI's UI shows: WixUI_Minimal's
+      # scrolling text holds the RTF packaging/legal_texts.py rendered.
+      - name: Check the MSI's license page
+        shell: pwsh
+        run: |
+          $msi = (Get-ChildItem "dist/installer/*.msi" | Select-Object -First 1).FullName
+          $installer = New-Object -ComObject WindowsInstaller.Installer
+          $database = $installer.GetType().InvokeMember("OpenDatabase", "InvokeMethod", $null, $installer, @($msi, 0))
+          $query = "SELECT ``Text`` FROM ``Control`` WHERE ``Dialog_`` = 'WelcomeEulaDlg' AND ``Control`` = 'LicenseText'"
+          $view = $database.GetType().InvokeMember("OpenView", "InvokeMethod", $null, $database, @($query))
+          $view.GetType().InvokeMember("Execute", "InvokeMethod", $null, $view, $null) | Out-Null
+          $record = $view.GetType().InvokeMember("Fetch", "InvokeMethod", $null, $view, $null)
+          if (-not $record) { throw "The MSI has no license page (WelcomeEulaDlg's LicenseText)" }
+          $text = $record.GetType().InvokeMember("StringData", "GetProperty", $null, $record, @(1))
+          if ($text -notmatch "Lumi End User License Agreement") { throw "The MSI's license page doesn't show Lumi's terms" }
+          if (-not $text.StartsWith("{\rtf1")) { throw "The MSI's license page isn't RTF" }
+          Write-Host "✓ The MSI's license page shows Lumi's terms ($($text.Length) characters of RTF)"
+
       # The runner is an administrator without UAC prompts, like a device
       # management agent, so this is the silent per-machine install IT runs.
       - name: Install, check and remove the MSI
@@ -226,7 +246,7 @@ jobs:
           $policyDir = Join-Path $env:ProgramData "LumiMsiCheck"
           New-Item -ItemType Directory -Force -Path $policyDir | Out-Null
           $policy = Join-Path $policyDir "policy.json"
-          '{"schema": "lumi.policy/v1", "organization": "CI", "settings": {"updates.channel": "beta"}}' |
+          '{"schema": "lumi.policy/v1", "organization": "CI", "settings": {"updates.channel": "beta"}, "legal": {"accepted_by_organization": "CI"}}' |
               Set-Content -Encoding utf8 $policy
           $log = Join-Path $env:RUNNER_TEMP "msi-install.log"
           $install = Start-Process msiexec.exe -Wait -PassThru -ArgumentList @(
@@ -258,6 +278,17 @@ jobs:
           if ($status.mode -ne "off" -or $status.installed_by -ne "msi") { throw "An MSI install must leave updates to device management" }
           if ($status.channel -ne "beta" -or $status.managed_by -ne "CI") { throw "The policy file named by POLICYFILE wasn't applied" }
           Write-Host "✓ The installed app leaves updates to device management and applies the policy"
+
+          # A machine policy accepts Lumi's terms for everyone on the computer (lumi/terms.py).
+          $out = Join-Path $env:RUNNER_TEMP "lumi-terms.json"
+          $err = Join-Path $env:RUNNER_TEMP "lumi-terms.err"
+          $run = Start-Process -FilePath $exe -ArgumentList "terms" -Wait -PassThru `
+              -RedirectStandardOutput $out -RedirectStandardError $err
+          if ($run.ExitCode -ne 0) { throw "lumi terms exited $($run.ExitCode): $(Get-Content $err -Raw)" }
+          $terms = Get-Content $out -Raw | ConvertFrom-Json
+          Write-Host "lumi terms: pending=$($terms.pending) organization=$($terms.organization) value=$($terms.acceptance_value)"
+          if ($terms.pending -or $terms.organization -ne "CI") { throw "The machine policy's legal.accepted_by_organization didn't accept Lumi's terms" }
+          Write-Host "✓ The machine policy accepts Lumi's terms for the computer's people"
 
           $remove = Start-Process msiexec.exe -Wait -PassThru -ArgumentList @("/x", "`"$msi`"", "/qn", "/norestart")
           if ($remove.ExitCode -ne 0) { throw "msiexec /x exited $($remove.ExitCode)" }

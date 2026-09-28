@@ -17,8 +17,17 @@
     uninstall.
   - The EXE installer and this package would share Program Files\Lumi, so
     this package refuses to install over an EXE installation.
+  - Lumi's terms: an installation with its UI shows the license page
+    (WixUI_Minimal, from WiX's UI extension) with license.rtf, which
+    packaging/legal_texts.py renders for this version, and can't go on until
+    the person accepts. A silent installation (/qn: Intune, Configuration
+    Manager, Group Policy) shows no UI: the organization deploying Lumi accepts
+    the agreement for its people under its agreement with Luminary Analytics,
+    and its machine policy can say so on every computer
+    (legal.accepted_by_organization), which spares each person the prompt at
+    first launch (docs/deploy-windows.md).
 -->
-<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs" xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui">
   <Package Name="Lumi"
            Manufacturer="Luminary Analytics"
            Version="$(var.Version)"
@@ -34,6 +43,10 @@
     <Property Id="ARPPRODUCTICON" Value="LumiIcon" />
     <Property Id="ARPURLINFOABOUT" Value="https://luminary-analytics.github.io/resonant-client/" />
     <Property Id="ARPNOMODIFY" Value="1" />
+
+    <!-- The license page (see above): build_msi.ps1 passes the rendered license.rtf. -->
+    <ui:WixUI Id="WixUI_Minimal" />
+    <WixVariable Id="WixUILicenseRtf" Value="$(var.LicenseRtf)" />
 
     <!-- The EXE installer's uninstall entry (Inno Setup AppId in packaging/installer.iss). -->
     <Property Id="EXEINSTALL">

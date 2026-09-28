@@ -8,6 +8,194 @@ The heartbeat remains paused. Documentation maintenance does not resume work,
 spending or grants, and changes no native implementation or installed bundle.
 The dated September 15/18 records below are historical.
 
+## September 27 Lumi's terms: the EULA, the alpha terms, a privacy notice, and accepting them (source only, not released)
+
+The owner decided on September 27: no MIT License for this build. The
+Extension SDK and the VS Code extension become proprietary like the app, with
+a limited license that lets developers build extensions for Lumi, and the End
+User License Agreement and the alpha terms ship now and take effect for alpha
+testers; counsel reviews them later. The texts are complete and carry no
+draft marks.
+
+### The texts (`lumi/legal/`)
+
+- **[End User License Agreement](../lumi/legal/EULA.md)**, version 1.0: the
+  license and its restrictions, free individual use during the alpha, updates
+  (automatic checks, channels, pins, managed copies), third-party components
+  and the versions that stay MIT, what it means that Lumi is an AI agent acting
+  on your computer (permission modes are yours, review output, keep backups,
+  model providers under your own accounts and their terms), data (with the
+  privacy notice), feedback, termination, the warranty disclaimer and the
+  limitation of liability, export controls, governing law and venue, notices,
+  and how a new version is announced and accepted again.
+- **[Alpha and Beta Test Terms](../lumi/legal/ALPHA-TERMS.md)**, version 1.0,
+  for pre-release builds (a version with a pre-release label, which includes
+  development builds): as-is software that may change or end, not for
+  production-critical use, no confidentiality obligation in the open alpha,
+  feedback Luminary may use freely, diagnostics only when the tester sends
+  feedback with Include diagnostics on, a license that lasts until the program
+  ends or a stable release succeeds the build, and how to leave (uninstall,
+  delete `~/.lumi`, remove the credential-store entries).
+- **[Privacy notice](../lumi/legal/PRIVACY.md)**, version 1.0, written from
+  the code: update checks (the host, and the version and OS in the request),
+  model requests to the providers people configure, what the agent reaches for
+  them, Lumi Cloud only after signing in or enrolling, feedback only on Send
+  (as PR #101's branch implements it), organization oversight only under a
+  policy, offline mode, and where local data lives and how to delete it.
+- **[Lumi Extension SDK License](../sdk/LICENSE)**, version 1.0: use, change
+  and ship the SDK only as part of extensions for Lumi; developers own their
+  extensions and may license them as they like, including open source, with
+  the SDK's files keeping its license. `lumi-extension` is now 1.1.0; 1.0.0
+  stays MIT.
+- **The VS Code extension** is part of Lumi under the EULA (`LICENSE.txt`,
+  `"license": "SEE LICENSE IN LICENSE.txt"`), now version 0.2.0; 0.1.0 stays
+  MIT. `LICENSE`, the deb's copyright file, the README, AGENTS.md, Plans,
+  Extensions and the roadmap say the same. Third-party notices, including
+  pi-coding-agent's MIT text, are unchanged.
+
+### One file of facts
+
+`lumi/legal/terms.json` holds what the texts depend on: the legal entity's
+name, type and state of formation, the governing-law state, the venue, the
+notices email, and each document's version and effective date. Until the owner
+provides the entity details they read `[[TO BE PROVIDED: ...]]`.
+`packaging/legal_texts.py render` writes the texts from
+`lumi/legal/templates/`; `tests/test_legal_texts.py` fails while a committed
+text isn't what it writes. `release-check` warns in pull request CI
+(`tests.yml`) and, with `--release`, fails `release.yml` (Windows and macOS
+jobs) while a fact is still to be provided or the version is below 0.20.0.
+See [RELEASING.md](../RELEASING.md#lumis-terms).
+
+### Accepting them (`lumi/terms.py`)
+
+- **The terms in force:** the EULA, plus the Alpha and Beta Test Terms when
+  the build's version is a pre-release. A new version of either asks again; a
+  new effective date doesn't.
+- **The gate:** `oversight.admit` and `oversight.gate` (and so
+  `oversight.refusal`) ask the terms before anything else, so every path that
+  already waited for the oversight notice waits for them, with or without a
+  policy: `Session.run` before each turn and each model request, the app's
+  message box, `/plan`, missions and autonomous sessions, Team (its
+  `policy_refusal` now asks the terms whatever the policy, apart from reviews
+  and bookkeeping), model comparisons, evaluations, dictation, Run now,
+  requests outside a turn (titles, planning, structured repair, `[vision]`
+  checks) and tasks from chat. A refusal carries `terms_not_accepted`, and
+  the app shows the terms rather than the oversight notice. A terms file Lumi
+  can't read refuses too.
+- **Who accepts:** the person, in the app's dialog (Accept on a trusted click
+  or key press), by typing yes where `lumi run`, the terminal UI or
+  `lumi gateway` shows the terms at an interactive terminal, or with
+  `lumi terms accept <value>`; `lumi run --accept-terms <value>` and
+  `LUMI_ACCEPT_TERMS` (outside the app) for CI. Each acceptance is recorded in
+  `~/.lumi/legal/acceptance.json` per computer user, with the version, the
+  text's SHA-256, when and how, and in the audit log (`terms.accepted`).
+  Without an acceptance, `lumi run` stops with exit code 2 and names the value
+  to pass; a scheduled task never asks.
+- **Organizations:** a machine policy's
+  `"legal": {"accepted_by_organization": "Example Corp"}` accepts for
+  everyone on the computer, so nobody is asked; only a machine policy counts
+  (`policy.terms_accepted_by`), never `LUMI_POLICY_FILE` or a Lumi Cloud
+  policy. See [Lumi's terms for your organization](enterprise-policy.md#lumis-terms-for-your-organization).
+- **`lumi terms`** prints the state as JSON; `lumi terms show [eula|alpha-terms|privacy]`
+  prints a text.
+
+### In the app
+
+- A dialog shows the terms at first launch and when their version changes,
+  with the privacy notice one link away. Until Accept, the message box is
+  locked (the oversight notice's lock, shared) and its placeholder says so.
+  Decline, Escape or the close button leave a notice above the message box
+  whose **Review terms** opens the dialog again. Focus starts in the text,
+  never on Accept, and Tab stays in the dialog.
+- **Settings > About Lumi** has a **Terms and notices** row: who accepted
+  (this person, on which date, or the organization through its machine policy)
+  and buttons that open the License agreement, the Alpha and beta test terms,
+  the Privacy notice and the Third-party notices in the same dialog, from the
+  copies bundled with the app, so they read offline.
+
+### In the installers
+
+- **Inno Setup** shows the terms on a license page (`LicenseFile`,
+  `dist/legal/license.rtf`, which `scripts/build_clean.ps1` renders for the
+  version: the EULA, and for a pre-release the Alpha and Beta Test Terms after
+  it). WinSparkle starts the installer as it is, so an update shows the page
+  too; `/SILENT` and `/VERYSILENT` skip it.
+- **The MSI** has WixUI_Minimal's license dialog with the same RTF
+  (`packaging/build_msi.ps1` renders it and adds WiX's UI extension, pinned to
+  5.0.2). Silent installs (`/qn`) show none and need no property: the
+  organization deploying Lumi accepts for its people, and `POLICYFILE` can
+  point at a policy with `legal.accepted_by_organization`
+  ([Deploying on Windows](deploy-windows.md#lumis-terms)).
+- **macOS:** the PKG's Installer app shows the terms before it installs
+  (`macos_pkg.py distribution --license`, `productbuild --resources`), and the
+  DMG carries `License Agreement.rtf` (and `Alpha and Beta Test Terms.rtf`)
+  beside the app ([Lumi on macOS](macos.md#installing)).
+- The update feeds and the Pages publishing are unchanged.
+
+### CI
+
+- `tests.yml` runs `release-check`, which warns while facts are to be
+  provided.
+- `build-check.yml` reads the MSI's license dialog text from its Control
+  table, and `lumi terms` on the installed copy must report the CI policy's
+  `accepted_by_organization`.
+- `build-macos.yml` mounts the DMG and expands the PKG to find the terms, and
+  a configuration profile with `accepted_by_organization` must accept them.
+
+### Still open
+
+- The entity details: the owner is providing them. Until then no release can
+  be tagged.
+- Counsel's review of the four texts.
+- Whether the repository stays public: the texts point readers at Settings >
+  About Lumi and `lumi terms show`, which work from the bundled copies either
+  way.
+- The privacy notice and the alpha terms describe feedback as PR #101's branch
+  implements it; if that changes before it merges, update them (a new version
+  if what they say changes).
+
+### Validation (September 27)
+
+- `ruff check .` (0.16.9) is clean; `node --check` passes for `app.js`,
+  `settings_view.js` and `terms_view.js`; the six Node UI test files pass
+  (156 tests, four of them new for the terms view and the shared lock).
+- The full pytest suite, in a throwaway home with a clean virtual environment
+  (Python 3.13.5, six workers): 6,539 passed, 24 skipped, 6 failed. Three were
+  the Team worker `grep` tests, which need the gitignored
+  `packaging/ripgrep/rg.exe`; with it copied in they pass. A fourth,
+  `test_killed_host_leaves_durable_invocation…`, passed twice on its own (a
+  psutil race under load). The last two,
+  `test_a_child_left_suspended_outside_its_job…` and
+  `test_malformed_child_protocol…[early-eof]`, fail the same way on the base
+  commit on this computer.
+- New tests: `tests/test_terms.py` (44: the terms in force per version, what
+  counts as acceptance, a new version, other computer users, a broken terms
+  file, the machine policy and what can't accept, `LUMI_ACCEPT_TERMS` in and
+  outside the app, every turn path, `lumi run`, the terminal UI, the gateway,
+  `lumi terms`, and the socket) and `tests/test_legal_texts.py` (23: the
+  committed texts are what render writes, the facts, placeholders warning and
+  failing a release, the 0.20.0 floor, no drafting marks, the installers'
+  RTF, and how the texts ship).
+- In headless Edge with real key presses
+  (`tests/terms_acceptance.browser.cjs`, the source app with a scripted model
+  and a throwaway home): the dialog at first launch with both texts; the
+  locked message box; a script's click on Accept, the page's own send and a
+  raw socket message all refused, and no model request; Tab staying in the
+  dialog; Escape declining to the notice; Enter on Review terms and on Accept
+  (with a visible focus ring); the recorded acceptance; the unlocked box
+  reaching the model; About Lumi's status line and texts, with focus returned;
+  a machine policy accepting for the organization; and at 375 px in both
+  themes the dialog and the notice fit, with text contrast of 6.2:1 or more.
+- As real processes in a throwaway home: `lumi terms`, `lumi run` without an
+  acceptance (exit 2, naming `eula-1.0,alpha-terms-1.0`) and with a stale
+  value (exit 2), `lumi terms show`, and `lumi terms accept` (recorded as
+  `command`, with an audit record).
+- The installers' `license.rtf` loaded into a Windows RichEdit control, which
+  Inno Setup's and WiX's license pages use, with no stray RTF or Markdown.
+  Not run on this computer: Inno Setup, WiX and the macOS build (no ISCC, WiX
+  or Mac here); CI's build-check and macOS jobs build the MSI, DMG and PKG and
+  check their license pages and a machine policy accepting the terms.
+
 ## September 27 macOS alpha: Sparkle updates and release publishing (source only, not released)
 
 The macOS app now updates itself, and a release tag publishes it beside the
@@ -166,8 +354,11 @@ wording is a draft for counsel.
   notices as before; searching Settings for "EULA" finds it.
   `THIRD_PARTY_NOTICES.txt` says the same about Lumi itself, since the bundle
   doesn't ship `LICENSE`.
-- **Still under the MIT License**, so others can build and ship extensions
-  (the proposed default; the owner decides): the Extension SDK (`sdk/LICENSE`,
+- **Superseded the same day** (see Lumi's terms, above): the owner chose no
+  MIT License for this build, so the SDK is under the Lumi Extension SDK
+  License and the VS Code extension under the EULA. This entry's original
+  bullet: **still under the MIT License**, so others can build and ship
+  extensions (the proposed default; the owner decides): the Extension SDK (`sdk/LICENSE`,
   plus `sdk/python/lumi_extension/LICENSE`, which travels with the package,
   also into the packs `sdk/new_pack.py` makes) and the VS Code extension
   (`lumi/code_editors/vscode/LICENSE.txt`, unchanged).
@@ -187,9 +378,11 @@ wording is a draft for counsel.
   the upstream text, so `THIRD_PARTY_NOTICES.txt` and the SBOM include it.
 - **Unchanged:** the copyleft gate. No installer shows a license page (Inno
   Setup, the MSI and the macOS package have none), so none needed changing.
+  (Superseded: Lumi's terms, above, add license pages to all three.)
 - **Before the next release,** the End User License Agreement has to exist
   and ship with the installers: `LICENSE` names an agreement "provided with
-  the software".
+  the software". (Done in Lumi's terms, above; its entity facts are still to
+  be provided.)
 - **Still to decide:** whether the repository stays public. On the
   organization's free GitHub plan, a private repository turns GitHub Pages
   off, and Pages serves the installers and the update feed (`FEED_BASE` in

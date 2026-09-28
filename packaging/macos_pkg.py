@@ -15,11 +15,17 @@ Intune and other MDMs; docs/deploy-macos.md) after the DMG:
 3. ``pkgbuild`` builds the component package, and ``distribution`` writes
    the file ``productbuild`` needs for the product archive MDMs deploy: a
    system-wide install, no choices to customize, Apple silicon (or the
-   architecture it was built on) and the app's minimum macOS.
+   architecture it was built on) and the app's minimum macOS. With
+   ``--license``, the Installer app shows Lumi's terms (license.rtf, which
+   build_macos.sh renders with packaging/legal_texts.py and passes to
+   productbuild with ``--resources``) and goes on only once the person agrees.
+   ``installer -pkg`` from the command line, as device management runs it,
+   shows no license: the organization accepts the terms for its people, and
+   its machine policy can say so (docs/deploy-macos.md).
 
     python3 packaging/macos_pkg.py marker dist/pkgroot/Applications/Lumi.app
     python3 packaging/macos_pkg.py component component.plist
-    python3 packaging/macos_pkg.py distribution --version 0.20.0 --arch arm64 --out distribution.xml
+    python3 packaging/macos_pkg.py distribution --version 0.20.0 --arch arm64 --license license.rtf --out distribution.xml
 
 Standard library only: it runs with whatever python3 the Mac has.
 """
@@ -74,14 +80,20 @@ def pin_components(components: list[dict]) -> list[dict]:
 
 
 def distribution_xml(version: str, *, arch: str, minimum: str | None = None,
-                     identifier: str = IDENTIFIER, component: str = COMPONENT) -> str:
-    """productbuild's distribution file for one component package."""
+                     identifier: str = IDENTIFIER, component: str = COMPONENT, license: str = "") -> str:
+    """productbuild's distribution file for one component package; ``license`` names the terms' RTF in
+    productbuild's resources."""
     if not re.fullmatch(r"[0-9][0-9A-Za-z.+-]*", version):
         raise SystemExit(f"Not a version: {version!r}")
     if arch not in ("arm64", "x86_64"):
         raise SystemExit(f"Unsupported architecture {arch!r}; build on arm64 or x86_64")
+    if license and not re.fullmatch(r"[A-Za-z0-9._-]+\.rtf", license):
+        raise SystemExit(f"The license is an .rtf file in the package's resources, not {license!r}")
     root = ET.Element("installer-gui-script", minSpecVersion="2")
     ET.SubElement(root, "title").text = "Lumi"
+    if license:
+        # The Installer app's license page: it goes on only once the person agrees.
+        ET.SubElement(root, "license", file=license, **{"mime-type": "text/rtf"})
     ET.SubElement(root, "organization").text = "com.luminaryanalytics"
     # For every user of the computer; never a per-user or other-volume install.
     ET.SubElement(root, "domains", enable_anywhere="false", enable_currentUserHome="false",
@@ -109,6 +121,7 @@ def main(argv: list[str] | None = None) -> int:
     distribution = commands.add_parser("distribution", help="write productbuild's distribution file")
     distribution.add_argument("--version", required=True)
     distribution.add_argument("--arch", required=True)
+    distribution.add_argument("--license", default="", help="the terms' .rtf file in productbuild's --resources")
     distribution.add_argument("--out", type=Path, required=True)
     args = parser.parse_args(argv)
     if args.command == "marker":
@@ -118,7 +131,7 @@ def main(argv: list[str] | None = None) -> int:
         args.plist.write_bytes(plistlib.dumps(pin_components(components)))
         print(f"Pinned {len(components)} bundle(s) in {args.plist}")
     else:
-        args.out.write_text(distribution_xml(args.version, arch=args.arch), encoding="utf-8")
+        args.out.write_text(distribution_xml(args.version, arch=args.arch, license=args.license), encoding="utf-8")
         print(f"Wrote {args.out}")
     return 0
 

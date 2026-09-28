@@ -146,6 +146,20 @@ def test_grep_shows_project_relative_paths_as_spelled_and_skips_lumi_state(tmp_p
     assert lines == ["README.md:1:needle in the readme", os.path.join("src", "Greet.py") + ":1:# needle"], result.output
 
 
+def test_grep_without_ripgrep_keeps_every_match(tmp_path, monkeypatch):
+    # findstr (grep on POSIX) instead. findstr doesn't end a match that is a
+    # file's last line without a final newline, so the next match followed on
+    # the same line, and dropping .lumi's line dropped README.md's with it.
+    from lumi.engine import tools
+
+    monkeypatch.setattr(tools, "_ripgrep_executable", lambda trusted_only=False: None)
+    project = _project_with_lumi_state(tmp_path)
+    result = execute_tool("grep", {"pattern": "needle", "path": os.path.normcase(str(project))},
+                          project_path=str(project))
+    lines = sorted(result.output.splitlines())
+    assert lines == ["README.md:1:needle in the readme", os.path.join("src", "Greet.py") + ":1:# needle"], result.output
+
+
 def test_glob_shows_project_relative_paths_and_skips_lumi_state(tmp_path):
     project = _project_with_lumi_state(tmp_path)
     result = execute_tool("glob", {"pattern": "**/*", "path": os.path.normcase(str(project))},

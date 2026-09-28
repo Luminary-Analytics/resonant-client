@@ -66,7 +66,10 @@ first-run changes follow separately.
   instead of `<project>/.lumi/index.json`, where it showed up in searches and
   `git status`; an old copy there is no longer read and can be deleted.
   Indexing reports its line count, so Settings no longer says "2 files
-  indexed (0 lines)".
+  indexed (0 lines)". Without ripgrep (a source checkout that didn't fetch
+  it), Windows' `findstr` ran a file's last match and the next file's match
+  together on one line when the file had no final newline; they are split
+  again, so dropping `.lumi/`'s match no longer drops the one after it.
 - **The prompt's environment line** comes from what PATH has: without Python
   the model is told Python isn't installed (it was told to "Use 'python' not
   'python3'"), the `py` launcher and the Microsoft Store placeholder

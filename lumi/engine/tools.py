@@ -2434,6 +2434,17 @@ def _ripgrep_executable(*, trusted_only: bool = False) -> Optional[str]:
 
 _GREP_LINE_PATH = re.compile(r"^((?:[A-Za-z]:)?[^:]*):\d+:")
 
+
+def _split_findstr_lines(lines: list[str], root: str) -> list[str]:
+    """findstr's matches, one per line.
+
+    findstr doesn't end a match that is a file's last line when the file has
+    no final newline, so the next file's match follows on the same line. Each
+    match starts with the search root it was given, which is where to split.
+    """
+    prefix = re.compile("(?=" + re.escape(root.rstrip("\\/") + os.sep) + ")", re.IGNORECASE)
+    return [part for line in lines for part in prefix.split(line) if part]
+
 # Lumi's own folders inside a project: its state and settings, not code the
 # agent searches for. Only below the searched folder, so a project that itself
 # lives under ~/.lumi (the fallback workspace) is still searched.
@@ -2581,6 +2592,8 @@ def _exec_grep(
             output = str(stdout).strip()
 
     lines = [line.rstrip("\r") for line in output.split("\n")] if output else []
+    if cmd[0] == "findstr" and lines and os.path.isdir(path):
+        lines = _split_findstr_lines(lines, path)
     hidden = 0
     if exclusions and lines:
         # Every backend prints path:line:content; a Windows path starts

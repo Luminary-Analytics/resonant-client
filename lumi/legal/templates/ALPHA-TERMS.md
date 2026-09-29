@@ -1,22 +1,26 @@
 # {{doc.alpha_terms.title}}
 
-Version {{doc.alpha_terms.version}}, effective {{doc.alpha_terms.effective}}
+Version {{doc.alpha_terms.version}}, published {{doc.alpha_terms.published}}.
+This version applies to you from the day you accept it.
 
 These Alpha and Beta Test Terms (the "Alpha Terms") supplement the Lumi End
 User License Agreement (the "EULA") between you and {{entity.legal_name}}
 ("Luminary," "we" or "us"). They apply to every Pre-Release Build of Lumi: a
-build whose version carries a pre-release label, such as `0.20.0-alpha.1`,
-`0.21.0-beta.2`, `0.20.0rc1` or `0.20.0.dev3`, including every alpha, beta
-and release candidate build that Luminary distributes for testing, such as on
-its beta update channel. Words defined in
-the EULA mean the same here. For Pre-Release Builds, where these Alpha Terms
-and the EULA conflict, these Alpha Terms control.
+build whose version number carries a pre-release label, such as
+`0.21.0-alpha.1`, `0.21.0-beta.2`, `0.21.0-rc.1` or `0.20.0.dev0`, however
+you received it. The label alone decides: a generally available release is
+not a Pre-Release Build, even when it reaches you on the beta update channel.
+Words defined in the EULA mean the same here. For Pre-Release Builds, where
+these Alpha Terms and the EULA conflict, these Alpha Terms control.
 
 You accept these Alpha Terms, together with the EULA, when you accept them in
 Lumi or in its installer; when you type "yes" where Lumi's command-line tools
 show them to you; when you run `lumi terms accept`, or use Lumi's
 `--accept-terms` option or `LUMI_ACCEPT_TERMS` setting, naming this version;
-or when you install or use a Pre-Release Build.
+or when you install or use a Pre-Release Build. An organization can accept
+them for the people who use Lumi on its computers only through Lumi's machine
+policy, as section 2.4 of the EULA describes, and is then bound by them for
+those people.
 
 ## 1. Pre-release software, provided as is
 
@@ -75,26 +79,13 @@ Luminary may use, copy, modify, publish and otherwise exploit it for any
 purpose, including to improve Lumi and Luminary's other products and
 services, without restriction, payment or attribution.
 
-## 6. Diagnostics only when you send them
+## 6. Feedback and diagnostics only when you send them
 
-Pre-Release Builds send diagnostics to Luminary only when you send feedback
-from Lumi with its Include diagnostics option turned on. The option starts
-turned off, nothing is sent automatically or in the background, and the
-feedback dialog shows you the exact report before you send it.
-
-- Every feedback report you send carries what you wrote, the reply address you
-  give (if any), Lumi's version and update channel, your operating system and
-  processor architecture, and a random identifier for your installation.
-- Diagnostics add: the version of Python that Lumi runs on and a description
-  of your platform; whether Lumi runs from an installer or from source; the
-  kind of model provider and the model in use; whether offline mode is on; and
-  the last lines of Lumi's startup log, with saved keys, values that look like
-  secrets and your home folder's name removed. That log can contain parts of
-  your conversations, so review the report before you send it.
-
-Your organization's policy can turn feedback or its diagnostics off, or send
-reports to your organization instead. The Privacy Notice describes what else
-the Software sends, and when.
+Luminary receives feedback about Pre-Release Builds, and any diagnostics with
+it, only after you choose to send it. The Privacy Notice describes what a
+report contains, where it goes, and how your organization can limit it or
+turn it off, as well as what else Lumi sends, and when. Review a report
+before you send it: diagnostics can contain parts of your conversations.
 
 ## 7. How long the pre-release license lasts
 
@@ -121,9 +112,10 @@ You may stop testing at any time:
 2. To leave entirely, uninstall Lumi, then delete the folder where it keeps
    its settings, conversations and records: `.lumi` in your home folder
    (`~/.lumi`; on Windows, `%USERPROFILE%\.lumi`).
-3. If you saved API keys or signed in, also remove the entries named "Lumi"
-   from your operating system's credential store (Windows Credential Manager,
-   the macOS Keychain or your Linux desktop's secret service).
+3. If you saved API keys or signed in, also remove Lumi's entries from your
+   operating system's credential store (Windows Credential Manager, the macOS
+   Keychain or your Linux desktop's secret service): they are saved under the
+   name "Lumi" (on Windows, named Lumi or ending in @Lumi).
 
 The Privacy Notice lists the other places Lumi may have written, such as
 `.lumi` folders in projects you opened. Deleting Lumi's local data doesn't

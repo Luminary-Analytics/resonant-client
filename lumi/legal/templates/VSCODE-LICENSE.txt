@@ -7,6 +7,8 @@ the {{doc.eula.title}}, which comes with Lumi (Settings > About Lumi, or
 `lumi terms show eula`). You may install and use the extension only with Lumi
 and only as that agreement allows. No other rights are granted.
 
-Versions of this extension up to and including 0.1.0, published with Lumi
-0.19.x and earlier, were released under the MIT License and remain under it.
-This license applies from version 0.2.0.
+The extension was never part of a Lumi release. Before this license, its
+copies in Luminary's public source repository were published under the MIT
+License, from September 25, 2026 until this license replaced it there, at
+version 0.1.0. Those copies remain under the MIT License. This license applies
+to every later copy, starting with version 0.2.0.

@@ -4,30 +4,53 @@ The texts ship with Lumi in ``lumi/legal/`` (rendered from ``lumi/legal/template
 ``lumi/legal/terms.json`` by ``packaging/legal_texts.py``), so they can be read offline: Settings > About
 Lumi, ``lumi terms show`` and the installers' license pages.
 
-**Nothing sends a model request until the person using Lumi has accepted the terms in force**: the EULA's
-current version and, when this build is a pre-release (its version carries a pre-release label, such as
-``0.21.0-beta.1``, ``0.20.0a1`` or ``0.19.2.dev11``), the Alpha and Beta Test Terms' current version. The
-check rides on organization oversight's gate (lumi/oversight.py), which every turn path already asks:
-``oversight.admit`` before each turn and each model request (``Session.run``), and ``oversight.refusal`` or
-``oversight.gate`` at the entry points outside a turn (the app's message box, plans, missions, autonomous
-sessions, Team, model comparisons, evaluations, dictation, and requests outside a turn such as titles).
-Both ask here first, and a refusal carries ``REFUSAL_CODE`` so the app shows the terms, not the notice.
+**Nothing sends a model request until the terms in force are accepted**: the EULA's current version and,
+when this build is a pre-release (its version carries a pre-release label, such as ``0.21.0-beta.1`` or
+``0.20.0.dev0``), the Alpha and Beta Test Terms' current version. The privacy notice is read, not accepted.
+
+Where it's checked:
+
+* organization oversight's gate (lumi/oversight.py), which every turn path already asks:
+  ``oversight.admit`` before each turn and each model request (``Session.run``), and ``oversight.refusal``
+  or ``oversight.gate`` at the entry points outside a turn (the app's message box, plans, missions,
+  autonomous sessions, Team, model comparisons, evaluations, dictation, Engram, and requests outside a
+  turn such as titles). Both ask here first, and a refusal carries ``REFUSAL_CODE`` so the app shows the
+  terms, not the notice;
+* underneath every model request (lumi/dlp.py): ``dlp.check_request`` and ``dlp.guarded``, which wraps
+  every backend's request methods, refuse while the terms wait, even for a request under ``dlp.permit``
+  such as a warm-up; so do the requests Lumi makes over plain HTTP (Ollama's warm-up and tool probe) and
+  ``request_purpose.auxiliary_stream``. tests/test_dlp.py lists every use with its gate.
+
+Who is asked, and where (each computer user for themselves, unless the machine policy accepted):
+
+* the desktop app shows a dialog at first launch and when a version changes; its Accept counts only on a
+  trusted click or key press, and every open window unlocks;
+* the terminal UI asks for a typed yes before it does anything else with a model, warm-ups included;
+* ``lumi run`` at an interactive terminal asks for a typed yes; without one it needs ``--accept-terms
+  <value>`` or ``LUMI_ACCEPT_TERMS`` naming the versions in force, and otherwise exits 2 with the value;
+* ``lumi gateway`` asks before it starts (typed yes, the flag or the variable);
+* ``lumi terms accept <value>`` accepts from any command line;
+* nobody is asked by work that runs with no one there: scheduled tasks, tasks from Slack and Teams (not
+  even taken from Lumi Cloud until then), and the app's background requests wait.
 
 Acceptance counts when one of these holds:
 
-* this computer user accepted each document's current version: the app's dialog (Accept, on a trusted
-  click or key press), a typed yes at an interactive terminal (``lumi run``, the terminal UI, ``lumi
-  gateway``), ``lumi terms accept <value>`` or ``lumi run --accept-terms <value>``. Each acceptance is
-  recorded in ``~/.lumi/legal/acceptance.json`` per computer user: the document, its version, the SHA-256
-  of the text Lumi ships for it, when, how, and which Lumi. A new version needs accepting again; a new
-  effective date alone doesn't;
+* this computer user accepted each document's current version, and the text Lumi ships for it is the text
+  they accepted: each acceptance is recorded in ``~/.lumi/legal/acceptance.json`` per computer user (the
+  document, its version, the SHA-256 of the text, when, how, and which Lumi), and a record whose SHA-256 no
+  longer matches the shipped text counts as pending. A new version asks again; so does a changed text,
+  which tests/test_legal_texts.py makes come with a new version (each version's hash is pinned in
+  ``terms.json``). A new published date alone doesn't;
 * the machine policy accepts for the organization's people (``legal.accepted_by_organization``,
-  ``policy.terms_accepted_by``): only a policy an administrator set on the computer (Group Policy or the
-  registry, a configuration profile, the machine policy file), never ``LUMI_POLICY_FILE``, a Lumi Cloud
-  policy, Settings or a project;
+  ``policy.terms_accepted_by``): only from a source only an administrator can write (the HKLM Group Policy
+  key or the file its ``PolicyFile`` names, a configuration profile, the machine policy file where only
+  administrators can change it), never ``LUMI_POLICY_FILE``, a Lumi Cloud policy, Settings or a project;
 * outside the desktop app, ``LUMI_ACCEPT_TERMS`` names each document's current version (``eula-1.0``, or
   ``eula-1.0,alpha-terms-1.0`` for a pre-release), for CI and containers. ``lumi run`` records it. The app
   itself (``mark_app_process``) always asks its person, unless the machine policy accepted.
+
+Each version takes effect for a person on the day they accept it; ``published`` in ``terms.json`` is the
+day its text was written, which a release build refuses to have after its own date (packaging/legal_texts.py).
 
 Standard library only at import: ``lumi terms`` and the gate stay cheap.
 """
@@ -72,6 +95,8 @@ _GENERATED = re.compile(r"\A\s*<!--.*?-->\s*", re.DOTALL)
 _lock = threading.RLock()
 _facts: tuple[Any, dict] | None = None
 _record: tuple[Any, dict] | None = None
+# SHA-256 of each shipped text, by file and its (mtime, size): the gate compares records with it.
+_hashes: dict[str, tuple[Any, str]] = {}
 # Tests only: True treats the terms as accepted in this process (tests/conftest.py); None checks.
 _assumed: bool | None = None
 # The desktop app: LUMI_ACCEPT_TERMS doesn't apply there (mark_app_process).
@@ -104,7 +129,7 @@ def facts() -> dict:
 
 
 def long_date(iso: str) -> str:
-    """``2026-09-28`` as "September 28, 2026", whatever the computer's language."""
+    """``2026-09-29`` as "September 29, 2026", whatever the computer's language."""
     try:
         value = date.fromisoformat(str(iso))
     except ValueError:
@@ -114,13 +139,17 @@ def long_date(iso: str) -> str:
 
 @dataclass(frozen=True)
 class Document:
-    """One of Lumi's legal texts, as ``terms.json`` describes it."""
+    """One of Lumi's legal texts, as ``terms.json`` describes it.
+
+    ``published`` is the day this version's text was written. A version takes effect for a person on the
+    day they accept it, never before, so no text names an effective date after that day.
+    """
 
     id: str
     title: str
     file: str
     version: str
-    effective: str
+    published: str
 
     @property
     def token(self) -> str:
@@ -132,8 +161,9 @@ class Document:
         return f"the {self.title} (version {self.version})"
 
     def as_dict(self) -> dict:
-        return {"id": self.id, "title": self.title, "version": self.version, "effective": self.effective,
-                "effective_text": long_date(self.effective), "token": self.token, "name": NAMES.get(self.id, self.id)}
+        return {"id": self.id, "title": self.title, "version": self.version, "published": self.published,
+                "published_text": long_date(self.published), "token": self.token,
+                "name": NAMES.get(self.id, self.id)}
 
 
 def document(doc_id: str) -> Document:
@@ -141,7 +171,7 @@ def document(doc_id: str) -> Document:
     if not isinstance(entry, dict):
         raise KeyError(f"No legal document {doc_id!r}")
     return Document(doc_id, str(entry.get("title") or doc_id), str(entry.get("file") or ""),
-                    str(entry.get("version") or ""), str(entry.get("effective") or ""))
+                    str(entry.get("version") or ""), str(entry.get("published") or ""))
 
 
 def document_id(name: str) -> str:
@@ -263,6 +293,15 @@ def _environment_versions() -> dict[str, str]:
         return {}
 
 
+def is_current(entry: Any, doc: Document) -> bool:
+    """Whether an acceptance record's entry accepted ``doc`` as Lumi ships it now: its version, and the
+    SHA-256 of its text. An entry for another text of the same version (a text changed without a new
+    version, or a copy of Lumi whose texts were altered) counts as pending."""
+    if not isinstance(entry, dict) or str(entry.get("version") or "") != doc.version:
+        return False
+    return str(entry.get("sha256") or "") == text_sha256(doc.id)
+
+
 def pending(version: str | None = None, *, use_environment: bool = True) -> list[Document]:
     """The terms this person must still accept before anything reaches a model ([] once nothing is pending).
 
@@ -276,8 +315,7 @@ def pending(version: str | None = None, *, use_environment: bool = True) -> list
         return []
     mine = accepted()
     environment = _environment_versions() if use_environment else {}
-    return [doc for doc in documents
-            if str((mine.get(doc.id) or {}).get("version") or "") != doc.version and environment.get(doc.id) != doc.version]
+    return [doc for doc in documents if not is_current(mine.get(doc.id), doc) and environment.get(doc.id) != doc.version]
 
 
 def _names(documents: list[Document]) -> str:
@@ -290,7 +328,8 @@ def refusal(place: str = "app", version: str | None = None) -> str:
 
     ``place`` says how the person can accept, in the words of the surface that refused: ``app`` (the app's
     dialog), ``terminal`` (lumi run or the terminal UI with someone there), ``headless`` (a run nobody can
-    answer: CI, a schedule), ``gateway`` (a chat of the chat gateway) or ``chat_task`` (a task from chat).
+    answer: CI, a schedule), ``gateway`` (a chat of the chat gateway), ``chat_task`` (a task from chat) or
+    ``request`` (a model request refused underneath any surface: lumi/dlp.py).
     A check that fails refuses: the terms decide whether Lumi may be used at all.
     """
     try:
@@ -314,7 +353,18 @@ def refusal(place: str = "app", version: str | None = None) -> str:
                 f"them in the Lumi app, or with `lumi terms accept {value}` where the gateway runs.")
     if place == "chat_task":
         return f"Lumi on this computer won't run requests until its terms are accepted in the Lumi app: {names}."
+    if place == "request":
+        return (f"Lumi won't send anything to a model until its terms are accepted: {names}. Accept them in the "
+                f"Lumi app, or with `lumi terms accept {value}` after reading them (`lumi terms show`).")
     return f"Lumi won't send anything to a model until you accept its terms: {names}. Choose Review terms above the message box."
+
+
+def request_refusal() -> str:
+    """Why a model request can't be sent now because the terms wait, or ''; for the checks underneath every
+    request (lumi/dlp.py, the backends' own HTTP requests). Never raises; cheap once accepted."""
+    if _assumed is True:
+        return ""
+    return refusal("request")
 
 
 # ── Accepting ────────────────────────────────────────────────────────────────
@@ -332,16 +382,28 @@ def text(doc_id: str) -> str:
 
 
 def text_sha256(doc_id: str) -> str:
-    return hashlib.sha256(text(doc_id).encode("utf-8")).hexdigest()
+    """The SHA-256 of ``text(doc_id)``: what an acceptance records and the gate compares, and what
+    ``terms.json`` pins for each version (tests/test_legal_texts.py). Read again when the file changes."""
+    path = legal_dir() / document(doc_id).file
+    stat = path.stat()
+    key = (str(path), stat.st_mtime_ns, stat.st_size)
+    with _lock:
+        cached = _hashes.get(doc_id)
+        if cached is not None and cached[0] == key:
+            return cached[1]
+    digest = hashlib.sha256(text(doc_id).encode("utf-8")).hexdigest()
+    with _lock:
+        _hashes[doc_id] = (key, digest)
+    return digest
 
 
 def accept(versions: dict[str, str], surface: str, *, version: str | None = None) -> bool:
     """Record that this computer user accepted ``versions`` (``{document: version}``); True once nothing is pending.
 
     Only the terms in force can be accepted. A version that isn't a document's current one (a page or a
-    command still showing older terms), or leaving out a document this person hasn't accepted yet,
-    records nothing and returns False. A document this build doesn't need (the Alpha and Beta Test Terms
-    on a stable build) isn't recorded.
+    command still showing older terms), or leaving out a document this person hasn't accepted yet (or
+    accepted in another text), records nothing and returns False. A document this build doesn't need (the
+    Alpha and Beta Test Terms on a stable build) isn't recorded.
     """
     if surface not in SURFACES:
         raise ValueError(f"Unknown surface {surface!r}")
@@ -354,7 +416,7 @@ def accept(versions: dict[str, str], surface: str, *, version: str | None = None
     mine = accepted(user)
     if any(doc.id in named and named[doc.id] != doc.version for doc in documents):
         return False
-    missing = [doc for doc in documents if str((mine.get(doc.id) or {}).get("version") or "") != doc.version]
+    missing = [doc for doc in documents if not is_current(mine.get(doc.id), doc)]
     if any(doc.id not in named for doc in missing):
         return False
     chosen = [doc for doc in documents if named.get(doc.id) == doc.version]
@@ -415,9 +477,15 @@ def accept_value(value: str, surface: str, *, version: str | None = None) -> str
 
 
 def status(version: str | None = None) -> dict:
-    """The terms in force, whether this person accepted them, and whether an organization did. Never raises."""
+    """The terms in force, whether this person accepted them, and whether an organization did. Never raises.
+
+    ``readable`` lists the texts this build shows (About Lumi): the EULA, the Alpha and Beta Test Terms
+    only on a pre-release build, and the privacy notice. A required document's ``previous_version`` is
+    what this person accepted before, and ``changed`` says its text changed since they accepted it.
+    """
     try:
         documents = required(version)
+        prerelease = is_prerelease(version or this_version())
         mine = accepted()
         organization, source = organization_acceptance()
         waiting = pending(version)
@@ -425,18 +493,21 @@ def status(version: str | None = None) -> dict:
         listed = []
         for doc in documents:
             entry = mine.get(doc.id) or {}
-            current = str(entry.get("version") or "") == doc.version
+            current = is_current(entry, doc)
             listed.append({**doc.as_dict(), "accepted": current or environment.get(doc.id) == doc.version,
                            "accepted_at": str(entry.get("accepted_at") or "") if current else "",
                            "accepted_via": str(entry.get("surface") or "") if current else
                            ("environment" if environment.get(doc.id) == doc.version else ""),
-                           "previous_version": "" if current else str(entry.get("version") or "")})
+                           "previous_version": "" if current else str(entry.get("version") or ""),
+                           "changed": bool(entry) and not current})
+        readable = [doc_id for doc_id in READABLE_DOCUMENTS if doc_id != "alpha_terms" or prerelease]
         return {
             "pending": bool(waiting),
             "pending_documents": [doc.id for doc in waiting],
-            "prerelease": is_prerelease(version or this_version()),
+            "prerelease": prerelease,
             "lumi_version": version or this_version(),
             "required": listed,
+            "readable": readable,
             "documents": {doc_id: document(doc_id).as_dict() for doc_id in READABLE_DOCUMENTS},
             "organization": organization,
             "organization_source": source,
@@ -464,6 +535,7 @@ def set_for_tests(accepted_all: bool | None) -> None:
         _assumed = accepted_all
         _record = None
         _app_process = False
+        _hashes.clear()
 
 
 # ── lumi terms ──────────────────────────────────────────────────────────────
@@ -471,7 +543,8 @@ def set_for_tests(accepted_all: bool | None) -> None:
 
 def terminal_summary(documents: list[Document]) -> list[str]:
     """What a terminal shows before asking for a typed yes: each document, and where to read it."""
-    lines = [f"  {doc.title}, version {doc.version} (effective {long_date(doc.effective)})" for doc in documents]
+    lines = [f"  {doc.title}, version {doc.version} (published {long_date(doc.published)}; it applies from the "
+             "day you accept it)" for doc in documents]
     shown = " ".join(f"`lumi terms show {NAMES[doc.id]}`" for doc in documents)
     lines.append(f"  Read them with {shown}, in the Lumi app (Settings > About Lumi), or in {legal_dir()}.")
     return lines

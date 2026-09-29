@@ -17,7 +17,9 @@ packages = ["lumi_extension"]
 
 # The SDK is under the Lumi Extension SDK License (LICENSE, rendered by
 # packaging/legal_texts.py), which lets developers build and ship Lumi
-# extensions with it; 1.0.0 was published under the MIT License. The license
+# extensions with it. The copies published in Lumi's repository under the MIT
+# License before it replaced that license (1.0.0; never part of a release)
+# remain MIT. The license
 # file sits inside the package, so it travels with every copy: installed, or
 # copied into a pack by sdk/new_pack.py.
 [tool.setuptools.package-data]

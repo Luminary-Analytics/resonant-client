@@ -17,5 +17,6 @@ protocol.
 The SDK is under the Lumi Extension SDK License (`lumi_extension/LICENSE`,
 which a copy of the folder keeps). It lets you use, change and ship the SDK
 as part of extensions for Lumi; Lumi itself is under the Lumi End User
-License Agreement. Version 1.0.0 was published under the MIT License and
-remains under it.
+License Agreement. The SDK was never part of a Lumi release; the copies
+published in Lumi's repository under the MIT License before this license
+replaced it (version 1.0.0) remain under it.

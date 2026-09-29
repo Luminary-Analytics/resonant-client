@@ -1,4 +1,4 @@
-Copyright (c) 2026 Luminary Analytics. All rights reserved.
+Copyright (c) 2026 Luminary Analytics, LLC. All rights reserved.
 
 Lumi is proprietary software. You may use it only under a written license
 from Luminary Analytics or under the Lumi End User License Agreement provided
@@ -14,7 +14,19 @@ User License Agreement. Third-party components remain under their own
 licenses: see THIRD_PARTY_NOTICES.txt in installed copies, and
 packaging/third-party-components.json.
 
-Versions published before this change remain under the MIT License, under
-which they were released: Lumi 0.6.3 through 0.19.x, and the Extension SDK
-(up to lumi-extension 1.0.0) and the VS Code extension (up to 0.1.0) as
-published with them.
+Earlier copies remain under the MIT License, under which they were
+published:
+
+- the releases tagged v0.6.3a1 through v0.19.1 (May 15 to September 13,
+  2026), published as Resonant Client (0.6.3a1 through 0.6.10), Resonant
+  (0.6.11 through 0.18.2) and SONN Client (0.19.0 and 0.19.1);
+- this repository's source code from commit c00f29c (May 15, 2026), which
+  applied the MIT License, until commit beb2848 (September 27, 2026), which
+  replaced it, and builds made from that source code; and
+- the Extension SDK and the VS Code extension as published here from
+  September 25, 2026 until their current licenses replaced the MIT License.
+  Neither was part of a release.
+
+The releases tagged v0.2.0 through v0.6.2 were not published under the MIT
+License. Lumi's releases under the End User License Agreement start at
+0.20.0. Section 5.4 of the agreement says the same.

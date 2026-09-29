@@ -1,7 +1,7 @@
 """Lumi — durable agentic coding runtime and desktop client (formerly Resonant)."""
 import os
 
-__version__ = "0.19.2.dev11"
+__version__ = "0.20.0.dev0"
 
 
 def _mirror_legacy_environment() -> None:

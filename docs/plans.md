@@ -11,20 +11,24 @@ Everything in the Lumi app is free, and there is no account:
   ChatGPT sign-in for Codex, or models on your own computer (Ollama, EXO);
 - local settings, sessions, notes, audit log and usage records.
 
-What leaves the computer:
+What leaves the computer (the [privacy notice](../lumi/legal/PRIVACY.md) has
+it all):
 
-- Prompts, code and keys go only to the model providers you choose.
-- Luminary Analytics receives only the update check, a download of the
-  update feed. Settings > Updates can turn it off.
-- Nothing else is reported to Luminary Analytics. The app's own records stay
-  on the computer.
+- Prompts and code go to the model providers you choose.
+- The update check, a download of the update feed from Luminary Analytics'
+  update site. Settings > Updates can turn it off.
+- Lumi Cloud, Luminary Analytics' service, receives anything only once you
+  sign in or the computer is enrolled in an organization, and feedback only
+  when you send it. Without those, the app's own records stay on the
+  computer.
 
 Lumi is commercial software: © Luminary Analytics, all rights reserved,
 licensed under the [Lumi End User License Agreement](../lumi/legal/EULA.md)
 (and, for pre-release builds, the
 [Alpha and Beta Test Terms](../lumi/legal/ALPHA-TERMS.md)), which grants free
-individual use during the alpha. Versions 0.6.3 through 0.19.x were published
-under the MIT License and remain under it. The Extension SDK is under the
+individual use during the alpha. The earlier copies published under the MIT
+License (releases v0.6.3a1 through v0.19.1, and the source before commit
+beb2848; see [LICENSE](../LICENSE)) remain under it. The Extension SDK is under the
 [Lumi Extension SDK License](../sdk/LICENSE), so others can build and ship
 extensions; the VS Code extension is part of Lumi. The installer ships the
 licenses of its third-party components in `THIRD_PARTY_NOTICES.txt`.

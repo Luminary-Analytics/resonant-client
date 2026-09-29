@@ -1,6 +1,7 @@
 # {{doc.eula.title}}
 
-Version {{doc.eula.version}}, effective {{doc.eula.effective}}
+Version {{doc.eula.version}}, published {{doc.eula.published}}. This version
+applies to you from the day you accept it.
 
 This End User License Agreement (the "Agreement") is a contract between you
 and {{entity.legal_name}}, a {{entity.state_of_formation}} {{entity.type}}
@@ -20,7 +21,8 @@ install or use Lumi. If you don't agree, don't install or use Lumi.
 of a company or other organization, for example by deploying Lumi to its
 computers, you confirm that you have authority to bind it, and "you" means
 that organization. An organization can also accept this Agreement for the
-people who use Lumi on its computers, as section 2.4 describes.
+people who use Lumi on its computers, through Lumi's machine policy only, as
+section 2.4 describes.
 
 **At a glance.** This summary is for convenience only; the sections below are
 the agreement.
@@ -28,12 +30,14 @@ the agreement.
 - Lumi is free for individuals during its alpha. It is licensed to you, not
   sold, and it remains Luminary's property.
 - Lumi is an AI agent: within the permission mode you choose, it can change
-  files and run commands on your computer. Review what it does, keep backups
-  and choose its permission modes with care.
+  files, run commands and, with computer use, operate other applications on
+  your computer. Review what it does, keep backups and choose its permission
+  modes with care.
 - Your prompts and code go to the AI model providers you choose, under your
-  own accounts with them and their terms. Luminary doesn't receive them unless
-  you use a feature that sends something to Luminary. The Lumi Privacy Notice
-  lists what leaves your computer.
+  own accounts with them and their terms. Luminary receives them only through
+  a Luminary service that you or your organization choose to use, such as
+  Lumi Cloud or feedback you send. The Lumi Privacy Notice lists what leaves
+  your computer.
 - Lumi is provided as is, and Luminary's liability is limited.
 
 ## 1. Definitions
@@ -44,10 +48,11 @@ the agreement.
   for Visual Studio Code; the documentation Luminary provides with them; and
   the updates, upgrades and pre-release builds of them that Luminary makes
   available to you.
-- **"Pre-Release Build"** means a build of the Software whose version carries
-  a pre-release label (for example alpha, beta, release candidate or
-  development), including the builds Luminary distributes on its beta update
-  channel.
+- **"Pre-Release Build"** means a build of the Software whose version number
+  carries a pre-release label, such as alpha, beta, rc (release candidate) or
+  dev (development), however you received it. The label alone decides: a
+  generally available release is not a Pre-Release Build, even when it
+  reaches you on the beta update channel.
 - **"Alpha Terms"** means the Lumi Alpha and Beta Test Terms, which apply to
   Pre-Release Builds in addition to this Agreement.
 - **"Privacy Notice"** means the Lumi Privacy Notice, which describes what the
@@ -94,11 +99,18 @@ Pre-Release Build, the Alpha Terms control.
 Software for you, for example through device management or an organization
 policy, your use is also subject to that organization's agreement with
 Luminary, if it has one, and to the settings and policies it applies to the
-Software. An organization's administrator may accept this Agreement for the
-people who use the Software on the organization's computers by setting Lumi's
-machine policy for that purpose. The organization is then bound by this
-Agreement for them and is responsible for their use of the Software in
-accordance with it.
+Software. An organization's administrator may accept this Agreement, and the
+Alpha Terms for Pre-Release Builds, for the people who use the Software on
+the organization's computers, by setting Lumi's machine policy for that
+purpose on each computer: through Group Policy or the Windows registry key
+that only administrators can change (including a policy file it names), a
+configuration profile on macOS, or the machine policy file where only
+administrators can change it. No other policy can accept for anyone: not one
+a person can name or supply, such as with an environment variable, nor one
+delivered through Lumi Cloud. When an organization accepts this way, the
+Software doesn't ask those people to accept, and the organization is bound
+by this Agreement for them and is responsible for their use of the Software
+in accordance with it.
 
 **2.5 Source code.** Luminary may let you see some or all of the Software's
 source code, for example in a public repository. Unless a license that comes
@@ -193,12 +205,27 @@ says so in writing.
 Extension SDK License that comes with it, which lets you use the SDK to build
 Extensions for Lumi.
 
-**5.4 Earlier versions under the MIT License.** Lumi versions 0.6.3 through
-0.19.x were published under the MIT License, as were the copies of the Lumi
-Extension SDK (up to version 1.0.0 of its Python package) and of the Lumi
-extension for Visual Studio Code (up to version 0.1.0) that were published
-before this Agreement took effect. Those versions remain under the MIT
-License. This Agreement doesn't change that, and it applies to later versions.
+**5.4 Earlier copies under the MIT License.** Luminary published some earlier
+versions of the Software under the MIT License, and those copies remain under
+it:
+
+- the releases tagged v0.6.3a1 through v0.19.1, published from May 15 to
+  September 13, 2026 as Resonant Client (0.6.3a1 through 0.6.10), Resonant
+  (0.6.11 through 0.18.2) and SONN Client (0.19.0 and 0.19.1);
+- the Software's source code in Luminary's public source repository from
+  commit c00f29c of May 15, 2026, which applied the MIT License, until commit
+  beb2848 of September 27, 2026, which replaced it, and builds made from that
+  source code; and
+- the Lumi Extension SDK and the Lumi extension for Visual Studio Code in that
+  repository from September 25, 2026 until the Lumi Extension SDK License and
+  this Agreement replaced the MIT License for them there. Neither was part of
+  a release.
+
+The releases tagged v0.2.0 through v0.6.2 were not published under the MIT
+License. This Agreement doesn't change the MIT License for the copies above,
+and it applies to every other copy of the Software, including every release
+numbered 0.20.0 or later. A version number alone doesn't make a copy one of
+those above: a build must come from them.
 
 ## 6. Lumi is an AI agent: your responsibilities
 
@@ -208,8 +235,11 @@ on the permission mode, settings and tools you choose, it can read, create,
 change and delete files; run commands, scripts and programs; install
 software packages; use the network and the web; control a web browser; work
 with version control and online services using credentials you provide; and,
-if you turn on computer use, operate other applications on your computer. An
-organization's policy may limit what it can do.
+with computer use, take screenshots of your screen, send them to the Model
+Provider, and operate other applications on your computer with the mouse and
+keyboard, when the model you use can. Computer use is on unless you turn it
+off (Settings > Privacy & security) or your organization's policy does. An
+organization's policy may limit what the Software can do.
 
 **6.2 Permission modes are your choice.** Lumi's permission modes decide which
 actions it takes without asking you first. In modes that let it act without
@@ -263,21 +293,26 @@ you choose.
 ## 7. Data and privacy
 
 **7.1 What stays on your computer.** The Software runs on your computer and
-keeps its settings, conversations, records and logs there. Luminary doesn't
-receive Your Content or Output unless you use a feature that sends them to
-Luminary, or your organization turns on a feature that sends them to your
-organization, as the Privacy Notice describes.
+keeps its settings, conversations, records and logs there. Your Content and
+Output reach Luminary only through a Luminary service that you, or your
+organization, choose to use, as the Privacy Notice describes: Lumi Cloud (for
+example a conversation you share or hand off, tasks from chat, approvals, and
+your organization's oversight) and feedback you send.
 
 **7.2 What leaves your computer.** The Privacy Notice comes with the Software
 (Settings > About Lumi) and describes what the Software sends, where and
 when. In short: update checks go to Luminary's update site as your update
-settings allow; model requests go to the Model Providers you configure; Lumi
-Cloud is contacted only if you sign in or your computer is enrolled in an
-organization; feedback, and its diagnostics, are sent only when you choose to
-send them; and organization oversight applies only if your organization's
-policy turns it on, in which case the Software tells you before anything is
-recorded. Offline mode limits the Software to your computer and the hosts you
-allow.
+settings allow; model requests go to the Model Providers you configure, and
+to your organization's data loss prevention service first if its policy
+names one; Lumi Cloud is contacted only if you sign in or your computer is
+enrolled in an organization, and an enrolled computer reports its usage and
+crash counts there every hour; feedback, and its diagnostics, are sent only
+after you choose to send them; and organization oversight applies only if
+your organization's policy turns it on. The Software then shows you a notice
+before it records work you start, while work that runs with nobody there to
+see the notice, such as a scheduled task, is recorded or refused as the
+policy says. Offline mode limits the Software to your computer and the hosts
+you allow.
 
 **7.3 Your organization.** If your organization manages the Software, it may
 configure what the Software does and, through its policy, what the Software
@@ -336,7 +371,7 @@ must stop using the Software and delete all copies of it. Sections 3, 5, 6.3
 through 6.7, 7.3, 7.4, 8, 10, 11.4 and 12 through 18 survive, as does any
 other provision that by its nature should. Ending this Agreement doesn't
 affect your rights under the licenses of Third-Party Components, or under the
-MIT License for the versions described in section 5.4.
+MIT License for the copies described in section 5.4.
 
 ## 12. Disclaimer of warranties
 
@@ -399,8 +434,8 @@ development of weapons of mass destruction.
 
 **15.1 Governing law.** This Agreement, and any dispute arising out of or
 relating to it or the Software, is governed by the laws of the State of
-{{governing_law}} and the federal laws of the United States that apply there,
-without regard to conflict-of-laws rules. The United Nations Convention on
+{{governing_law}} and applicable United States federal law, without regard to
+conflict-of-laws rules. The United Nations Convention on
 Contracts for the International Sale of Goods and the Uniform Computer
 Information Transactions Act, in any form, don't apply.
 
@@ -419,30 +454,34 @@ local courts, nothing in this section takes those rights away.
 ## 16. Changes to this Agreement
 
 **16.1 New versions.** Luminary may change this Agreement or the Alpha Terms
-from time to time. Each version has a version number and an effective date
+from time to time. Each version has a version number and a publication date
 and comes with the Software, and Luminary announces a new version in the
 release notes of the release of the Software that brings it.
 
 **16.2 Accepting a new version.** When a release of the Software brings a new
-version of this Agreement or of the Alpha Terms, the Software shows it and
-asks you to accept it before it sends anything more to a Model Provider: in
-the app, at the terminal, or, for command-line and automated use, through
-`lumi terms accept`, the `--accept-terms` option or the `LUMI_ACCEPT_TERMS`
-setting naming the new version. On a computer where your organization's
-policy accepts Lumi's terms for its users, the organization's acceptance
-covers the new version. A new version applies from when it is accepted. If
-you don't accept it, you may not use the releases of the Software that
-require it; your use of earlier releases stays governed by the version of
-this Agreement you accepted for them.
+version of this Agreement, or, for a Pre-Release Build, of the Alpha Terms,
+the Software shows it and asks you to accept it before it sends anything more
+to a Model Provider: in the app, at the terminal, or, for command-line and
+automated use, through `lumi terms accept`, the `--accept-terms` option or the
+`LUMI_ACCEPT_TERMS` setting naming the new version. A new version of the
+Privacy Notice or of the Lumi Extension SDK License doesn't ask you to accept
+anything. On a computer where your organization accepted Lumi's terms through
+its machine policy, as section 2.4 describes, that acceptance covers the new
+version, and the Software doesn't ask you. A new version applies to you from
+the day it is accepted. If you don't accept it, you may not use the releases
+of the Software that require it; your use of earlier releases stays governed
+by the version of this Agreement you accepted for them.
 
-**16.3 Corrections.** Luminary may correct typographical errors or update
-contact details without a new version; such changes apply when published.
+**16.3 Every change is a new version.** Luminary doesn't change the text of a
+version once it is published. Any change, including a correction, comes as a
+new version under section 16.2, and the Software asks you to accept a version
+only as Luminary published it.
 
 ## 17. Notices
 
 **17.1 To Luminary.** Send legal notices to Luminary by email to
-{{notices_email}}. A notice to Luminary is effective when Luminary receives
-it.
+{{notices_email}}, which is also where to write for support. A notice to
+Luminary is effective when Luminary receives it.
 
 **17.2 To you.** Luminary may give you notices in the Software (for example
 when you start it, or in its settings), in the release notes of the Software,

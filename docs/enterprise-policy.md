@@ -189,11 +189,17 @@ its people in the machine policy:
 }
 ```
 
-- **Only a machine policy accepts:** the registry or Group Policy (`Policy` or
-  `PolicyFile`, which the MSI's `POLICYFILE` sets), a macOS configuration
-  profile, or the machine policy file. `LUMI_POLICY_FILE` and a Lumi Cloud
-  policy can't: a person can bring those themselves. A machine policy that
-  sets up Lumi Cloud keeps accepting while Lumi Cloud's policy is in force.
+- **Only a machine policy accepts, from a place only administrators can
+  write:** the Group Policy key in HKLM (its `Policy` value, or the
+  `PolicyFile` it names, which the MSI's `POLICYFILE` sets and which must pass
+  [the file rules](#only-files-only-administrators-can-change-count)), a macOS
+  configuration profile, or the machine policy file in a folder only
+  administrators can change. `LUMI_POLICY_FILE` (even naming the machine file)
+  and a Lumi Cloud policy can't: a person can bring those themselves. A
+  machine policy that sets up Lumi Cloud keeps accepting while Lumi Cloud's
+  policy is in force. A policy Lumi can't use accepts nothing: a `PolicyFile`
+  it can't read, for example, fails closed and stops model requests until
+  it's fixed.
 - **What it covers:** the terms in force, including new versions that updates
   bring, for everyone who uses Lumi on the computer, under your organization's
   agreement with Luminary Analytics. Set it only with the authority to accept
@@ -311,8 +317,11 @@ like a machine policy would.
 
 The MSI package can point Lumi at a policy file as it installs:
 `msiexec /i lumi-X.Y.Z.msi /qn POLICYFILE="\\server\share\lumi-policy.json"`
-sets the `PolicyFile` value below, and uninstalling removes it. It also
-creates `%ProgramData%\Lumi` locked down. See
+sets the `PolicyFile` value below, and uninstalling removes it. The package
+remembers it, so an upgrade that doesn't name `POLICYFILE` again keeps it.
+Like any `PolicyFile`, one Lumi can't read, or that others can change, fails
+closed: Lumi refuses model requests until it's fixed. It also creates
+`%ProgramData%\Lumi` locked down. See
 [Deploying on Windows](deploy-windows.md).
 
 `packaging/policy/lumi.admx` and `packaging/policy/en-US/lumi.adml` define

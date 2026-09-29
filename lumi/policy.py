@@ -108,9 +108,13 @@ the organization accepted the End User License Agreement, and the Alpha and
 Beta Test Terms for pre-release builds, for everyone who uses Lumi on the
 computer, under its agreement with Luminary Analytics, so Lumi doesn't ask
 each person (lumi/terms.py) and About says who accepted. Only a machine policy
-counts (``terms_accepted_by``): Group Policy or the registry, a configuration
-profile or the machine policy file, never ``LUMI_POLICY_FILE`` or a Lumi Cloud
-policy, which a person can bring themselves.
+counts (``terms_accepted_by``), from the sources above that only an
+administrator can write: the Group Policy key in HKLM (its ``Policy`` value,
+or the file its ``PolicyFile`` names, which must pass the same check), a
+configuration profile, or the machine policy file where only administrators
+can change it. Never ``LUMI_POLICY_FILE`` (even naming the machine file), a
+Lumi Cloud policy, Settings or a project, which a person can bring
+themselves, and nothing while the policy can't be used.
 
 Locked settings override the user's value and can't be changed in Settings,
 which shows who manages them. Lists match ``fnmatch`` patterns.
@@ -1042,21 +1046,42 @@ def _machine_file_policy() -> tuple[str, str] | None:
     return None
 
 
+class _Found(tuple):
+    """What ``_load_text`` found: ``(text, source)``, which unpacks like any pair.
+
+    ``machine`` says a machine source gave it: the Group Policy key in HKLM
+    (``Policy``, or the file its ``PolicyFile`` names), a configuration
+    profile, or the machine policy file, each only where an administrator can
+    have written it. ``LUMI_POLICY_FILE``, which a person can set, never is,
+    even when it names the same file. Only a machine policy may accept Lumi's
+    terms for an organization (``terms_accepted_by``).
+    """
+
+    machine: bool = False
+
+    def __new__(cls, text: str, source: str, *, machine: bool) -> "_Found":
+        found = super().__new__(cls, (text, source))
+        found.machine = machine
+        return found
+
+
 def _load_text() -> tuple[str, str] | None:
     """The policy text and where it came from. Machine sources always win.
 
     A machine source that can't be used as it is raises PolicyUnavailable
     (fail closed); one that only someone other than an administrator can have
-    written is skipped as if absent (``_usable``).
+    written is skipped as if absent (``_usable``). The result is a ``_Found``,
+    which says whether a machine source gave it.
     """
     for finder in (_registry_policy, _macos_managed_policy, _machine_file_policy):
         found = finder()
         if found:
-            return found
+            text, source = found
+            return _Found(text, source, machine=True)
     override = os.environ.get("LUMI_POLICY_FILE", "").strip()
     if override:
         path = Path(override)
-        return path.read_text(encoding=ADMIN_TEXT), str(path)
+        return _Found(path.read_text(encoding=ADMIN_TEXT), str(path), machine=False)
     return None
 
 
@@ -1072,12 +1097,6 @@ def _note_unread_files() -> None:
         keys_file = machine_policy_file().with_name("policy-keys.json")
         if keys_file.is_file():
             _ignore(IgnoredFile("policy_keys", str(keys_file), WINDOWS_KEYS_FILE_REASON, WINDOWS_KEYS_FILE_TITLE))
-
-
-def _from_machine(source: str) -> bool:
-    """Whether a policy _load_text found came from where only an administrator writes, not LUMI_POLICY_FILE."""
-    override = os.environ.get("LUMI_POLICY_FILE", "").strip()
-    return not (override and source == str(Path(override)))
 
 
 def machine_keys() -> dict[str, str]:
@@ -1143,8 +1162,9 @@ class PolicyState:
     # Why a downloaded Lumi Cloud policy isn't in force, if one exists.
     cloud_error: str = ""
     # The machine policy (``machine``, or ``policy`` when it isn't Lumi
-    # Cloud's) came from where only an administrator writes: the registry,
-    # a configuration profile or the machine policy file, not
+    # Cloud's) came from a machine source only an administrator can write
+    # (``_Found.machine``: the HKLM Group Policy key or the PolicyFile it
+    # names, a configuration profile, the machine policy file), not
     # LUMI_POLICY_FILE. Only then may it accept Lumi's terms (terms_accepted_by).
     from_machine: bool = False
     # Machine files found but not used (see IgnoredFile), for Settings to show.
@@ -1317,7 +1337,8 @@ def _state_from_sources() -> PolicyState:
         keys = joined.get("trusted_keys") if isinstance(joined.get("trusted_keys"), dict) else {}
         return _with_cloud_policy(PolicyState(), {str(k): str(v) for k, v in keys.items()})
     text, source = found
-    from_machine = _from_machine(source)
+    # Anything but a machine source (LUMI_POLICY_FILE, or a stand-in that says nothing) never accepts terms.
+    from_machine = getattr(found, "machine", False) is True
     try:
         data = json.loads(text)
         keys = machine_keys()
@@ -1377,10 +1398,12 @@ def enrolled_device() -> dict:
 def terms_accepted_by() -> tuple[str, str]:
     """(organization, source) when the machine policy accepts Lumi's terms for this computer's people.
 
-    Only a machine policy an administrator set counts (``PolicyState.from_machine``): its
+    Only a machine policy from a source only an administrator can write counts
+    (``PolicyState.from_machine``): the HKLM Group Policy key or the file its ``PolicyFile`` names, a
+    configuration profile, or the machine policy file (lumi/admin_files.py checks the files). Its
     ``legal.accepted_by_organization`` holds while a Lumi Cloud policy it set up is in force. A Lumi Cloud
     policy, ``LUMI_POLICY_FILE``, Settings and projects can't accept for anyone. ('', '') otherwise, and
-    while the policy can't be used.
+    while the policy can't be used (a PolicyFile that can't be read fails closed, so it accepts nothing).
     """
     state = load()
     machine = state.machine if state.cloud else state.policy

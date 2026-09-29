@@ -81,7 +81,9 @@ host enrollment and actual packaged/learned-benefit qualification remain open.
   `secrets_store.child_env()`; the CLI backends keep their environment.
   `secret_scan` removes saved key values from tool output before each request.
   Tests and fixtures use `LUMI_KEYCHAIN=off` or an in-memory keyring, never the
-  real credential store.
+  real credential store. They also never register real OS scheduled tasks:
+  `tests/conftest.py` sets `LUMI_OS_SCHEDULER=off`, which subprocesses inherit.
+  A fixture that builds a child environment from scratch must keep it.
 - File exclusions (`engine/exclusions.py`) are enforced at
   `Session._prepare_workspace_tool_args` and inside the listing tools. Any new
   path that reads project files for the model must check `session.exclusions`.

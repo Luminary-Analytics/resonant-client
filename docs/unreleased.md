@@ -84,6 +84,16 @@ couldn't read left it without the organization's policy. See
   `build-linux.yml` checks the installed .deb: root's
   `/etc/lumi/policy.json` made writable by everyone fails closed, and one
   the runner's account owns is ignored.
+## September 29 Tests no longer register real scheduled tasks (source only, not released)
+
+Tests that saved a schedule registered a real Task Scheduler entry
+(`Lumi\<id>`, `python -m lumi schedule run <id>`); only `tests/test_schedules.py`
+installed a fake. On a developer machine 183 such tasks ran nightly at 02:30
+and renamed the real `~/.resonant` folder to `~/.lumi`. `tests/conftest.py` now
+sets `LUMI_OS_SCHEDULER=off` for the whole run, and subprocesses inherit it.
+With it, `lumi.schedules.registrar()` returns `NullRegistrar`: schedules are
+saved but never registered with Task Scheduler, launchd or cron. A test
+checks that saving, pausing and removing a schedule never runs `schtasks`.
 
 ## September 27 macOS alpha: Sparkle updates and release publishing (source only, not released)
 

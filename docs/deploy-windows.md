@@ -140,8 +140,8 @@ Windows runner, then:
   by Administrators with exactly the locked permissions, and Lumi's own check
   trusts a file an administrator puts there;
 - runs the installed `lumi.exe policy` while the `POLICYFILE` folder still
-  lets every user add files (it fails closed and names that entry), then
-  applies the icacls recipe and runs it again (the policy applies);
+  lets every user add files (it fails closed and says why), then applies the
+  icacls recipe and runs it again (the policy applies);
 - runs the installed `lumi.exe updates`, which reports updates off, the MSI
   install and the policy the file set;
 - uninstalls it and checks nothing is left, `%ProgramData%\Lumi` included.

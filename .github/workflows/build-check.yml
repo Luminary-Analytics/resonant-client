@@ -273,6 +273,8 @@ jobs:
           # And Lumi's own check (lumi/admin_files.py) trusts a file an administrator puts there.
           $probe = Join-Path $machineDir "trust-probe.json"
           '{}' | Set-Content -Encoding utf8 $probe
+          icacls.exe $probe /setowner '*S-1-5-32-544' /Q
+          if ($LASTEXITCODE -ne 0) { throw "icacls couldn't set the probe's owner" }
           python -c "import sys; from lumi import admin_files; t = admin_files.check(sys.argv[1], sys.argv[2]); print(t); sys.exit(0 if t.trusted else 1)" $probe $env:ProgramData
           if ($LASTEXITCODE -ne 0) { throw "Lumi doesn't trust a file in the folder the package made" }
           Remove-Item -LiteralPath $probe
@@ -288,7 +290,7 @@ jobs:
           $status = Get-Content $out -Raw | ConvertFrom-Json
           Write-Host "lumi policy: exit=$($run.ExitCode) blocked=$($status.blocked)"
           if ($run.ExitCode -ne 1 -or $status.active) { throw "A policy file others can change must fail closed" }
-          if ($status.error -notlike "Policy file ignored: writable by non-administrators. $policyDir lets BUILTIN\Users change it*") {
+          if ($status.error -notlike "Policy file ignored: writable by non-administrators. *LumiMsiCheck*") {
               throw "Unexpected refusal: $($status.error)"
           }
           if ($status.ignored[0].kind -ne "policy_file") { throw "The ignored PolicyFile isn't listed" }

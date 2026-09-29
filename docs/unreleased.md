@@ -75,7 +75,9 @@ couldn't read left it without the organization's policy. See
   refused turn in the source app (run locally, not in CI). `build-check.yml`
   installs the MSI over a folder the Users group owns and checks it comes out
   locked, that a `PolicyFile` in a folder made the usual way fails closed,
-  and that the icacls recipe makes it apply.
+  and that the icacls recipe makes it apply. `build-linux.yml` checks the
+  installed .deb: root's `/etc/lumi/policy.json` made writable by everyone
+  fails closed, and one the runner's account owns is ignored.
 
 ## September 27 macOS alpha: Sparkle updates and release publishing (source only, not released)
 

@@ -65,13 +65,15 @@
 
     <!-- The machine policy folder (see above). MsiLockPermissionsEx applies the SDDL to the
          folder, also when a person created it first: O:BA makes Administrators its owner,
-         P keeps ProgramData's entries from being inherited. -->
+         P keeps ProgramData's entries from being inherited. RemoveFolder takes it away on
+         uninstall when it's empty, a folder that was there before the install included. -->
     <StandardDirectory Id="CommonAppDataFolder">
       <Directory Id="MACHINEPOLICYFOLDER" Name="Lumi">
         <Component Id="MachinePolicyFolder">
           <CreateFolder>
             <PermissionEx Sddl="O:BAD:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;0x1200a9;;;BU)" />
           </CreateFolder>
+          <RemoveFolder Id="RemoveMachinePolicyFolder" On="uninstall" />
           <RegistryValue Root="HKLM" Key="SOFTWARE\Luminary Analytics\Lumi\Msi"
                          Name="MachinePolicyFolder" Type="integer" Value="1" KeyPath="yes" />
         </Component>

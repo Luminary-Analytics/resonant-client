@@ -233,22 +233,36 @@ jobs:
           $policy = Join-Path $policyDir "policy.json"
           '{"schema": "lumi.policy/v1", "organization": "CI", "settings": {"updates.channel": "beta"}}' |
               Set-Content -Encoding utf8 $policy
-          # The machine policy folder as a person could have made it before the package came:
-          # owned by Users, who may change it. The package must take it over and lock it.
           $machineDir = Join-Path $env:ProgramData "Lumi"
           if (Test-Path $machineDir) { throw "$machineDir exists before the install" }
-          New-Item -ItemType Directory -Path $machineDir | Out-Null
-          icacls.exe $machineDir /grant '*S-1-5-32-545:(OI)(CI)F' /Q
-          if ($LASTEXITCODE -ne 0) { throw "icacls couldn't give Users $machineDir" }
-          icacls.exe $machineDir /setowner '*S-1-5-32-545' /Q
-          if ($LASTEXITCODE -ne 0) { throw "icacls couldn't make Users own $machineDir" }
           $log = Join-Path $env:RUNNER_TEMP "msi-install.log"
-          $install = Start-Process msiexec.exe -Wait -PassThru -ArgumentList @(
-              "/i", "`"$msi`"", "/qn", "/norestart", "/l*v", "`"$log`"", "POLICYFILE=`"$policy`"")
-          if ($install.ExitCode -ne 0) {
-              Get-Content $log -Tail 60
-              throw "msiexec /i exited $($install.ExitCode)"
+
+          function Install-Msi([string[]]$Extra) {
+              $arguments = @("/i", "`"$msi`"", "/qn", "/norestart", "/l*v", "`"$log`"")
+              if ($Extra) { $arguments += $Extra }
+              $install = Start-Process msiexec.exe -Wait -PassThru -ArgumentList $arguments
+              if ($install.ExitCode -ne 0) {
+                  Get-Content $log -Tail 60
+                  throw "msiexec /i exited $($install.ExitCode)"
+              }
           }
+          function Uninstall-Msi {
+              $remove = Start-Process msiexec.exe -Wait -PassThru -ArgumentList @("/x", "`"$msi`"", "/qn", "/norestart")
+              if ($remove.ExitCode -ne 0) { throw "msiexec /x exited $($remove.ExitCode)" }
+          }
+          # %ProgramData%\Lumi, locked: owned by Administrators, SYSTEM and Administrators full
+          # control, Users read and execute, nothing inherited (packaging/lumi.wxs).
+          function Assert-LockedMachineDir {
+              $acl = Get-Acl -LiteralPath $machineDir
+              Write-Host "$machineDir`: $($acl.Sddl)"
+              $owner = $acl.GetOwner([System.Security.Principal.SecurityIdentifier]).Value
+              if ($owner -ne "S-1-5-32-544") { throw "$machineDir is owned by $owner, not Administrators" }
+              if (-not $acl.AreAccessRulesProtected) { throw "$machineDir still inherits from ProgramData" }
+              $aces = ([regex]::Matches($acl.Sddl, '\([^)]*\)') | ForEach-Object { $_.Value }) -join ''
+              if ($aces -ne "(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;0x1200a9;;;BU)") { throw "$machineDir has $($acl.Sddl)" }
+          }
+
+          Install-Msi @("POLICYFILE=`"$policy`"")
           $folder = Join-Path $env:ProgramFiles "Lumi"
           $exe = Join-Path $folder "lumi.exe"
           if (-not (Test-Path $exe)) { throw "lumi.exe wasn't installed to $folder" }
@@ -261,15 +275,7 @@ jobs:
           if ($value -ne $policy) { throw "PolicyFile is '$value', expected '$policy'" }
           Write-Host "✓ Installed per machine with the marker, shortcut and PolicyFile"
 
-          # %ProgramData%\Lumi, locked: owned by Administrators, SYSTEM and Administrators full
-          # control, Users read and execute, nothing inherited (packaging/lumi.wxs).
-          $acl = Get-Acl -LiteralPath $machineDir
-          Write-Host "$machineDir`: $($acl.Sddl)"
-          $owner = $acl.GetOwner([System.Security.Principal.SecurityIdentifier]).Value
-          if ($owner -ne "S-1-5-32-544") { throw "$machineDir is owned by $owner, not Administrators" }
-          if (-not $acl.AreAccessRulesProtected) { throw "$machineDir still inherits from ProgramData" }
-          $aces = ([regex]::Matches($acl.Sddl, '\([^)]*\)') | ForEach-Object { $_.Value }) -join ''
-          if ($aces -ne "(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;0x1200a9;;;BU)") { throw "$machineDir has $($acl.Sddl)" }
+          Assert-LockedMachineDir
           # And Lumi's own check (lumi/admin_files.py) trusts a file an administrator puts there.
           $probe = Join-Path $machineDir "trust-probe.json"
           '{}' | Set-Content -Encoding utf8 $probe
@@ -278,7 +284,7 @@ jobs:
           python -c "import sys; from lumi import admin_files; t = admin_files.check(sys.argv[1], sys.argv[2]); print(t); sys.exit(0 if t.trusted else 1)" $probe $env:ProgramData
           if ($LASTEXITCODE -ne 0) { throw "Lumi doesn't trust a file in the folder the package made" }
           Remove-Item -LiteralPath $probe
-          Write-Host "✓ The package made $machineDir locked, taking over a folder a person had made"
+          Write-Host "✓ The package made $machineDir locked"
 
           # The PolicyFile's folder still lets any user add files, so the installed app refuses
           # model requests (lumi policy exits 1) and says why.
@@ -321,11 +327,24 @@ jobs:
           if ($status.channel -ne "beta" -or $status.managed_by -ne "CI") { throw "The policy file named by POLICYFILE wasn't applied" }
           Write-Host "✓ The installed app leaves updates to device management and applies the policy"
 
-          $remove = Start-Process msiexec.exe -Wait -PassThru -ArgumentList @("/x", "`"$msi`"", "/qn", "/norestart")
-          if ($remove.ExitCode -ne 0) { throw "msiexec /x exited $($remove.ExitCode)" }
+          Uninstall-Msi
           if (Test-Path $exe) { throw "lumi.exe is still there after uninstalling" }
           if ((Get-ItemProperty $policyKey -ErrorAction SilentlyContinue).PolicyFile) { throw "The PolicyFile value was left behind" }
           if (Test-Path $shortcut) { throw "The Start menu shortcut was left behind" }
           if (Test-Path $machineDir) { throw "The empty $machineDir was left behind" }
           Write-Host "✓ Uninstalled cleanly"
+
+          # The machine policy folder as a person could have made it before the package came:
+          # owned by Users, who may change it. The package takes it over and locks it.
+          New-Item -ItemType Directory -Path $machineDir | Out-Null
+          icacls.exe $machineDir /grant '*S-1-5-32-545:(OI)(CI)F' /Q
+          if ($LASTEXITCODE -ne 0) { throw "icacls couldn't give Users $machineDir" }
+          icacls.exe $machineDir /setowner '*S-1-5-32-545' /Q
+          if ($LASTEXITCODE -ne 0) { throw "icacls couldn't make Users own $machineDir" }
+          Install-Msi @()
+          Assert-LockedMachineDir
+          Write-Host "✓ The package took over and locked a $machineDir a person had made"
+          Uninstall-Msi
+          if (Test-Path $machineDir) { throw "The empty $machineDir was left behind after the second install" }
+          Write-Host "✓ Uninstalled cleanly again"
           Remove-Item -Recurse -Force $policyDir

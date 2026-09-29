@@ -135,16 +135,18 @@ Windows runner, then:
 
 - installs it silently with `POLICYFILE` and checks the files, the marker,
   the shortcut and the registry value;
-- checks `%ProgramData%\Lumi`: before the install the check makes it a
-  folder the Users group owns and may change, and after it the folder is owned
-  by Administrators with exactly the locked permissions, and Lumi's own check
-  trusts a file an administrator puts there;
+- checks that it made `%ProgramData%\Lumi` owned by Administrators with
+  exactly the locked permissions, and that Lumi's own check trusts a file an
+  administrator puts there;
 - runs the installed `lumi.exe policy` while the `POLICYFILE` folder still
   lets every user add files (it fails closed and says why), then applies the
   icacls recipe and runs it again (the policy applies);
 - runs the installed `lumi.exe updates`, which reports updates off, the MSI
   install and the policy the file set;
-- uninstalls it and checks nothing is left, `%ProgramData%\Lumi` included.
+- uninstalls it and checks nothing is left, `%ProgramData%\Lumi` included;
+- makes `%ProgramData%\Lumi` a folder the Users group owns and may change,
+  installs again, checks the package took it over with the same owner and
+  permissions, and uninstalls (the empty folder goes too).
 
 It hasn't yet been deployed through a real Intune tenant, Configuration Manager
 site or Group Policy.

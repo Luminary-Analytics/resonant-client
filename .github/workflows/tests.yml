@@ -119,3 +119,13 @@ jobs:
           if grep -q "SKIPPED" pytest-sparkle.log; then echo "Sparkle tests were skipped on macOS"; exit 1; fi
           python -m pytest -q -rs tests/test_updates.py tests/test_update_feeds.py tests/test_publish_pages.py \
             tests/test_macos_pkg.py
+
+      - name: Test where Lumi's own programs come from on macOS
+        # lumi/executables.py on POSIX: PATH's empty, "." and relative entries
+        # and the project never supply a program Lumi starts itself.
+        env:
+          LUMI_KEYCHAIN: 'off'
+        run: |
+          export HOME="$(mktemp -d)"
+          unset LUMI_STATE_HOME
+          python -m pytest -q -rs tests/test_executables.py tests/test_launch_scan.py tests/test_project_programs.py

@@ -10,7 +10,6 @@ import json
 import logging
 import queue
 import subprocess
-import sys
 import threading
 import time
 from dataclasses import dataclass, field
@@ -19,6 +18,7 @@ from typing import Any, Optional
 import httpx
 
 from lumi import __version__
+from lumi.executables import configured_program
 from lumi.processes import background_process_kwargs
 from lumi.secrets_store import child_env
 
@@ -143,8 +143,12 @@ class MCPConnection:
         config: MCPServerConfig,
         *,
         http_transport: httpx.BaseTransport | None = None,
+        cwd: str | None = None,
     ):
         self.config = config
+        # A stdio server's working folder: the open project (pack servers'
+        # commands name its files), or Lumi's own when there's none.
+        self.cwd = cwd or None
         self._process: Optional[subprocess.Popen] = None
         self._http_client: httpx.Client | None = None
         self._http_transport = http_transport
@@ -181,11 +185,19 @@ class MCPConnection:
             else:
                 if not self.config.command:
                     raise ValueError("stdio MCP server requires a command")
+                # The person's program by its full path: a bare name from PATH,
+                # never from the project or Lumi's working folder, and a
+                # relative path from the project. Batch files (npx.cmd) start
+                # without a shell; CreateProcess runs them through cmd.exe.
+                command = configured_program(self.config.command, folder=self.cwd, scripts=True)
+                if not command:
+                    raise FileNotFoundError(f"{self.config.command} isn't installed, or isn't on PATH")
                 # Lumi's provider keys are removed; the server's own env entries
                 # (including a key it is configured with) still apply.
                 env = {**child_env(), **self.config.env}
                 self._process = subprocess.Popen(
-                    [self.config.command, *self.config.args],
+                    [command, *self.config.args],
+                    cwd=self.cwd,
                     stdin=subprocess.PIPE,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
@@ -193,7 +205,6 @@ class MCPConnection:
                     encoding="utf-8",
                     errors="replace",
                     env=env,
-                    shell=(sys.platform == "win32" and self.config.command.lower().endswith((".cmd", ".bat"))),
                     **background_process_kwargs(),
                 )
                 self._stdout_queue = queue.Queue()
@@ -448,6 +459,8 @@ class MCPManager:
 
     def __init__(self, settings=None):
         self._settings = settings
+        # Where stdio servers run: the app sets the open project.
+        self.working_folder: str | None = None
         self._connections: dict[str, MCPConnection] = {}
         self._errors: dict[str, str] = {}
         self._lock = threading.Lock()
@@ -478,7 +491,7 @@ class MCPManager:
         if old:
             old.disconnect()
 
-        connection = MCPConnection(config)
+        connection = MCPConnection(config, cwd=self.working_folder)
         if not connection.connect():
             with self._lock:
                 self._errors[server_name] = connection.last_error or "Connection failed"

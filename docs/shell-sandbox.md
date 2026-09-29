@@ -35,6 +35,30 @@ The match is on the command's text: `rm -rf ./build` and `echo shutdown`
 run, and a command written to hide from the list can get past it. The list
 catches mistakes. The shell sandbox is what limits where commands can write.
 
+## Programs Lumi starts itself
+
+Lumi also starts programs for its own work: Git for the status bar,
+checkpoints and hand-offs, ripgrep for search, Explorer, the system's tools,
+editors' command lines, language and MCP servers, Codex and Claude Code. None
+of these ever comes from the project (`lumi/executables.py`):
+
+- Each is started by its full path: the system's own tools from the Windows
+  and system folders, everything else from PATH's full folders, skipping the
+  working folder, empty and relative entries (`.`, `bin`) and any folder
+  inside the open project.
+- On Windows every Lumi process sets `NoDefaultCurrentDirectoryInExePath`
+  when it starts, so Windows and cmd.exe don't look in the working folder
+  either, and the app never makes a project its working folder.
+- A program you name in Settings (a language or MCP server, a test command)
+  may be a full path or a path relative to the project; a bare name comes
+  from PATH as above.
+
+Commands the agent runs (`bash`, `check_run`, jobs, previews, the composer's
+`!` commands), your hooks and the Codex and Claude Code tool loops are
+different by design: they run in the project with your own environment, as
+in your terminal, and can run the project's scripts. The guardrails, the
+permission mode and the shell sandbox are what limit them.
+
 ## The shell sandbox
 
 **Settings > Privacy & security > Shell sandbox** chooses where the agent's

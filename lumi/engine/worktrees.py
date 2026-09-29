@@ -13,7 +13,9 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Iterable
 
+from lumi.executables import program
 from lumi.processes import background_process_kwargs
+from lumi.secrets_store import child_env
 
 from .artifacts import project_state_dir
 
@@ -125,10 +127,13 @@ class WorktreeManager:
                 lease.status = "conflict"
                 raise WorktreeError(result.stderr.strip() or "Worktree merge conflicted")
             for command in validation_commands:
+                # A check the caller names, in the project, as the person's
+                # own shell would run it (by design; lumi/executables.py).
                 completed = subprocess.run(
                     command,
                     cwd=self.project_path,
                     shell=True,
+                    env=child_env(),
                     text=True,
                     capture_output=True,
                     check=False,
@@ -190,7 +195,8 @@ class WorktreeManager:
         env: dict[str, str] | None = None,
     ):
         result = subprocess.run(
-            ["git", *args],
+            # The installed Git, never a `git` program from the checkout.
+            [program("git", exclude=[cwd]), *args],
             cwd=cwd,
             env=env,
             capture_output=True,

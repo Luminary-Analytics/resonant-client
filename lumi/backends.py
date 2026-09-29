@@ -13,7 +13,6 @@ import logging
 import os
 import queue
 import re
-import shutil
 import subprocess
 import threading
 import time
@@ -24,6 +23,7 @@ from typing import Iterator, Tuple
 import httpx
 
 from . import dlp, net
+from .executables import find_program, person_environment
 from .protocol import build_tool_system_prompt, parse_dsml_tool_calls, parse_tool_calls
 from .content import content_text, normalize_content, ollama_message_content, text_fallback
 from .capabilities import (
@@ -1785,15 +1785,13 @@ def _codex_configured_cli_path(config: dict | None = None) -> str:
         return ""
 
 
-def resolve_codex_cli_path() -> str:
-    """Resolve the best Codex CLI executable for subscription-backed runs."""
-    config = _load_codex_config()
-    candidates = [
-        os.environ.get("LUMI_CODEX_CLI", "").strip(),
-        os.environ.get("CODEX_CLI_PATH", "").strip(),
-        _codex_configured_cli_path(config),
-        shutil.which("codex") or "",
-    ]
+def _cli_path(candidates: list[str]) -> str:
+    """The first usable CLI among ``candidates``: a full path that exists, or a name on PATH.
+
+    Never a program in Lumi's working folder or a relative path, which would
+    be relative to it (lumi/executables.py). npm installs these CLIs as batch
+    files, which count.
+    """
     seen: set[str] = set()
     for raw in candidates:
         if not raw:
@@ -1803,11 +1801,21 @@ def resolve_codex_cli_path() -> str:
         if key in seen:
             continue
         seen.add(key)
-        if os.path.isfile(expanded):
-            return expanded
-        if shutil.which(expanded):
-            return expanded
+        found = find_program(expanded, scripts=True)
+        if found:
+            return found
     return ""
+
+
+def resolve_codex_cli_path() -> str:
+    """Resolve the best Codex CLI executable for subscription-backed runs."""
+    config = _load_codex_config()
+    return _cli_path([
+        os.environ.get("LUMI_CODEX_CLI", "").strip(),
+        os.environ.get("CODEX_CLI_PATH", "").strip(),
+        _codex_configured_cli_path(config),
+        "codex",
+    ])
 
 
 def _codex_context_blocks(instructions: str) -> str:
@@ -3568,6 +3576,9 @@ class CodexCliBackend:
             proc = subprocess.Popen(
                 self._command(),
                 cwd=self.cwd,
+                # The CLI runs its own shell in the project, as the person's
+                # terminal would (lumi/executables.py); it keeps its keys.
+                env=person_environment(),
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
@@ -3728,27 +3739,12 @@ def claude_code_model_labels() -> dict[str, str]:
 
 def resolve_claude_cli_path() -> str:
     """Resolve the Claude Code CLI executable for subscription-backed runs."""
-    candidates = [
+    return _cli_path([
         os.environ.get("LUMI_CLAUDE_CLI", "").strip(),
         os.environ.get("CLAUDE_CLI_PATH", "").strip(),
-        shutil.which("claude") or "",
+        "claude",
         str(Path.home() / ".claude" / "local" / "claude"),
-    ]
-    seen: set[str] = set()
-    for raw in candidates:
-        if not raw:
-            continue
-        expanded = os.path.expandvars(os.path.expanduser(raw))
-        key = os.path.normcase(os.path.normpath(expanded))
-        if key in seen:
-            continue
-        seen.add(key)
-        if os.path.isfile(expanded):
-            return expanded
-        resolved = shutil.which(expanded)
-        if resolved:
-            return resolved
-    return ""
+    ])
 
 
 def claude_code_credentials_present() -> bool:
@@ -3886,6 +3882,9 @@ class ClaudeCodeCliBackend:
             proc = subprocess.Popen(
                 self._command(),
                 cwd=self.cwd,
+                # The CLI runs its own shell in the project, as the person's
+                # terminal would (lumi/executables.py); it keeps its keys.
+                env=person_environment(),
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,

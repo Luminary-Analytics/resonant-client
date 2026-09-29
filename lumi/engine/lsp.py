@@ -27,7 +27,6 @@ import logging
 import os
 import re
 import shlex
-import shutil
 import subprocess
 import threading
 import time
@@ -37,6 +36,8 @@ from pathlib import Path
 from typing import Any, Iterable, Sequence
 from urllib.parse import urlsplit
 from urllib.request import url2pathname
+
+from ..executables import configured_program
 
 logger = logging.getLogger(__name__)
 
@@ -150,16 +151,29 @@ def configured(settings: Any) -> list[tuple[ServerSpec, bool]]:
     return result
 
 
-def choose(path: str, settings: Any) -> tuple[ServerSpec, list[str]]:
-    """The server for ``path`` and the program and arguments to start it."""
+def program_path(program: str, root: str | None = None) -> str | None:
+    """A server's program as an existing absolute path, or None.
+
+    A full path as configured, a relative one inside the project, a bare name
+    from PATH but never from the project or Lumi's working folder
+    (lumi/executables.py). npm installs servers as batch files, which count.
+    """
+    found = configured_program(program, folder=root, scripts=True)
+    return found if found and os.path.isfile(found) else None
+
+
+def choose(path: str, settings: Any, root: str | None = None) -> tuple[ServerSpec, list[str]]:
+    """The server for ``path`` in project ``root`` and the program and arguments to start it."""
     extension = Path(path).suffix.lower()
     for spec, enabled in configured(settings):
         if enabled and extension in spec.languages:
-            program = shutil.which(spec.command[0]) or spec.command[0]
+            program = program_path(spec.command[0], root)
+            if not program:
+                raise LspError(f"{spec.name}'s program {spec.command[0]} isn't installed, or isn't on PATH.")
             return spec, [program, *spec.command[1:]]
     for spec in KNOWN:
         if extension in spec.languages:
-            program = shutil.which(spec.command[0])
+            program = program_path(spec.command[0], root)
             if program:
                 return spec, [program, *spec.command[1:]]
     candidates = [spec.command[0] for spec in KNOWN if extension in spec.languages]
@@ -570,7 +584,7 @@ class LspManager:
     def server_for(self, root: str, path: str, settings: Any, *, sandbox_roots: Sequence[str] = ()) -> LanguageServer:
         from . import guardrails, os_sandbox
 
-        spec, argv = choose(path, settings)
+        spec, argv = choose(path, settings, root)
         reason = guardrails.blocked_argv(argv)
         if reason:
             raise LspError(guardrails.refusal(reason))

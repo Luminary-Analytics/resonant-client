@@ -17,6 +17,7 @@ import subprocess
 from pathlib import Path
 from typing import Optional
 
+from lumi.executables import configured_program
 from lumi.processes import background_process_kwargs
 from lumi.secrets_store import child_env
 
@@ -126,9 +127,21 @@ def run_tests_for_edit(
         target_arg = str(target)
 
     argv = base + [target_arg]
+    # The configured runner by its full path: a bare name from PATH, never a
+    # program in the project; a relative path is the project's, as configured
+    # (lumi/executables.py). Programs only: cmd.exe would parse the file name.
+    runner = configured_program(base[0].strip('"'), folder=project)
+    if not runner or not Path(runner).is_file():
+        return {
+            "ok": True,  # treat "no runner installed" as non-failure (don't block the agent)
+            "target": str(target),
+            "output": "",
+            "skipped_reason": f"{base[0]} not installed",
+            "command": argv,
+        }
     try:
         proc = subprocess.run(
-            argv,
+            [runner, *argv[1:]],
             cwd=str(project),
             env=child_env(),
             capture_output=True,

@@ -91,6 +91,18 @@ host enrollment and actual packaged/learned-benefit qualification remain open.
   `security.shell_sandbox` is `"project"`, run through `engine/os_sandbox.py`
   or not at all. A new tool that starts processes for the model must do both.
   See [shell sandbox](docs/shell-sandbox.md).
+- Lumi's own subprocesses never run programs by bare name from the project
+  folder; use the resolver (`lumi/executables.py`): `system_program` for the
+  system's tools, `program`/`find_program` for the rest, `configured_program`
+  for a program the person names in Settings. Never `shutil.which`,
+  `shell=True`, `os.startfile` or `webbrowser` for Lumi's own launches;
+  `tests/test_launch_scan.py` fails on a new one, and a by-design exception
+  needs a reviewed `BY_DESIGN` entry there. Importing `lumi` sets
+  `NoDefaultCurrentDirectoryInExePath` on Windows, and the app never makes a
+  project its working folder: give each command its `cwd`. Commands the
+  model or the person asked for (the agent's shell, checks, jobs, previews,
+  hooks, the CLI agents) run in the project by design, with the person's own
+  environment (`secrets_store.child_env`, `executables.person_environment`).
 - Repository-provided instructions, notes, index summaries, policy `allow`
   rules, automatic lint/test runs and language servers require project trust
   (`gui/workspace_trust.py`). Repository content must never grant itself trust.

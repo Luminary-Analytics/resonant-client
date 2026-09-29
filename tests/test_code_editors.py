@@ -65,7 +65,8 @@ def test_installing_in_vs_code_uses_its_command_line(monkeypatch):
         calls.append(args)
         return subprocess.CompletedProcess(args, 0, "Extension 'lumi-vscode' was successfully installed.\n", "")
 
-    monkeypatch.setattr(code_editors.shutil, "which", lambda name: f"/bin/{name}" if name != "codium" else None)
+    monkeypatch.setattr(code_editors, "find_program",
+                        lambda name, **kwargs: f"/bin/{name}" if name != "codium" else None)
     monkeypatch.setattr(code_editors.subprocess, "run", run)
     assert "successfully installed" in code_editors.install_vscode("cursor")
     assert calls[0][0] == "/bin/cursor" and calls[0][1] == "--install-extension" and calls[0][3] == "--force"

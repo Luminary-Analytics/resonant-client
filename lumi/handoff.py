@@ -46,13 +46,16 @@ class HandoffError(Exception):
 
 
 def _git(project_path: str, *args: str) -> str:
+    from .executables import program
     from .processes import background_process_kwargs
 
     try:
         # No input: an inherited stdin can be a private protocol pipe (a swarm
         # worker's host channel), and on Windows git blocks querying a pipe
-        # handle while the parent has a read pending on it.
-        result = subprocess.run(["git", *args], cwd=project_path, capture_output=True, text=True, encoding="utf-8",
+        # handle while the parent has a read pending on it. The installed Git,
+        # never a `git` program from the repository (lumi/executables.py).
+        result = subprocess.run([program("git", exclude=[project_path]), *args], cwd=project_path,
+                                capture_output=True, text=True, encoding="utf-8",
                                 errors="replace", timeout=10, check=False, stdin=subprocess.DEVNULL,
                                 **background_process_kwargs())
     except (OSError, subprocess.SubprocessError):
@@ -134,10 +137,12 @@ def same_repository(first: str, second: str) -> bool:
 
 
 def _has_commit(project_path: str, commit: str) -> bool:
+    from .executables import program
     from .processes import background_process_kwargs
 
     try:
-        return subprocess.run(["git", "cat-file", "-e", f"{commit}^{{commit}}"], cwd=project_path,
+        return subprocess.run([program("git", exclude=[project_path]), "cat-file", "-e", f"{commit}^{{commit}}"],
+                              cwd=project_path,
                               capture_output=True, timeout=10, check=False,
                               **background_process_kwargs()).returncode == 0
     except (OSError, subprocess.SubprocessError):

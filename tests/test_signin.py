@@ -106,7 +106,7 @@ class TestEntra:
     def test_without_a_client_id_the_azure_cli_signs_in(self, monkeypatch):
         monkeypatch.setitem(sys.modules, "azure.identity", None)  # azure-identity isn't installed
         az = r"C:\Program Files\Microsoft SDKs\Azure\CLI2\wbin\az.cmd"  # a batch file on Windows
-        monkeypatch.setattr(auth_tokens.shutil, "which", lambda name: az if name == "az" else None)
+        monkeypatch.setattr(auth_tokens, "find_program", lambda name, **kwargs: az if name == "az" else None)
         calls = []
 
         def fake_run(command, **kwargs):
@@ -130,7 +130,7 @@ class TestEntra:
         with pytest.raises(SignInError, match="az login"):
             entra_token("contoso")
         # Without the Azure CLI, the error says how to sign in.
-        monkeypatch.setattr(auth_tokens.shutil, "which", lambda name: None)
+        monkeypatch.setattr(auth_tokens, "find_program", lambda name, **kwargs: None)
         with pytest.raises(SignInError, match="client id and secret"):
             entra_token("contoso")
 
@@ -145,7 +145,7 @@ class TestEntra:
     ])
     def test_arguments_for_the_azure_cli_are_plain(self, monkeypatch, tenant, scope):
         monkeypatch.setitem(sys.modules, "azure.identity", None)
-        monkeypatch.setattr(auth_tokens.shutil, "which", lambda name: "az")
+        monkeypatch.setattr(auth_tokens, "find_program", lambda name, **kwargs: "az")
         monkeypatch.setattr(auth_tokens.subprocess, "run", lambda *a, **k: pytest.fail("ran the Azure CLI"))
         with pytest.raises(SignInError):
             entra_token(tenant, scope=scope)

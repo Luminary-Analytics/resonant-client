@@ -22,6 +22,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
+from lumi.executables import find_program
 from lumi.processes import background_process_kwargs
 
 from .tools import ToolResult
@@ -197,10 +198,14 @@ class Recorder:
         return _CVEncoder(self._output_path, self._fps)
 
     def _make_ffmpeg_encoder(self):
-        # Check ffmpeg present
+        # Check ffmpeg present: the installed one, never an `ffmpeg` in Lumi's
+        # working folder (lumi/executables.py).
+        ffmpeg = find_program("ffmpeg")
+        if not ffmpeg:
+            return None
         try:
             subprocess.run(
-                ["ffmpeg", "-version"],
+                [ffmpeg, "-version"],
                 capture_output=True,
                 timeout=3,
                 check=False,
@@ -221,7 +226,7 @@ class Recorder:
                     h, w = sct_img.height, sct_img.width
                     self._size = (w, h)
                     self.proc = subprocess.Popen([
-                        "ffmpeg", "-y",
+                        ffmpeg, "-y",
                         "-f", "rawvideo", "-vcodec", "rawvideo",
                         "-pix_fmt", "bgra",
                         "-s", f"{w}x{h}",

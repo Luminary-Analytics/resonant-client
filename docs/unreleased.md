@@ -8,6 +8,70 @@ The heartbeat remains paused. Documentation maintenance does not resume work,
 spending or grants, and changes no native implementation or installed bundle.
 The dated September 15/18 records below are historical.
 
+## September 29 security fix: Lumi's own programs never come from the project (source only, not released)
+
+Lumi starts programs for its own work (Git for the status bar, ripgrep for
+search, the system's tools, editors' command lines, language and MCP servers,
+the Codex and Claude Code CLIs). It named many of them by bare name while the
+app's working folder was the open project, and Windows looks for a program in
+the working folder before the system folders and PATH, so a program of the
+same name in a repository could run in their place. They are now resolved in
+one place, `lumi/executables.py` (see [shell sandbox](shell-sandbox.md#programs-lumi-starts-itself)):
+
+- **Every process hardens itself.** Importing the `lumi` package, which every
+  entry point does first (the app, the terminal UI, `lumi run`, scheduled
+  runs, the gateway, workers), sets `NoDefaultCurrentDirectoryInExePath` on
+  Windows: CreateProcess, cmd.exe and `shutil.which` (Python 3.12+) then leave
+  the working folder out.
+- **The app never works in a project.** It stays in the system folder (`/`
+  elsewhere) and gives each command its folder; opening a project no longer
+  changes the working folder, so ShellExecute and DLL lookups, which the
+  setting doesn't cover, never search a project either. Stdio MCP servers,
+  which pack commands expect to run in the project, now get it as their
+  working folder explicitly. A relative folder typed for a schedule or for
+  tasks from Slack and Teams is still taken relative to the open project;
+  opening, adding or starting a mission in a project takes its full path.
+- **Full paths for Lumi's own launches.** The system's tools (`cmd`,
+  `powershell`, `explorer`, `taskkill`, `schtasks`, `clip`, `findstr`) come
+  from the folders Windows reports (`GetSystemDirectoryW`,
+  `GetSystemWindowsDirectoryW`), never from environment variables; on macOS
+  from `/usr/bin` and the like. Everything else comes from PATH's full folders,
+  skipping empty, `.` and relative entries and any folder inside the open
+  project or the working folder (the home folder and the Windows folder
+  excepted, since per-user installs live there). No more `shell=True` for
+  Lumi's own calls: Git status (which ran through cmd.exe), MCP batch files
+  and opening an application no longer use a shell.
+- **What changes for you.** Tools in a virtual environment you activated
+  inside a project are no longer picked up by Lumi's own automatic runs
+  (language servers, auto-test, auto-lint); name them by full path, or by a
+  path relative to the project, in Settings. `LUMI_CODEX_CLI`,
+  `LUMI_CLAUDE_CLI`, `CODEX_CLI_PATH` and `LUMI_BROWSER_CHROME_PATH` take a
+  full path or a name on PATH; a relative path is ignored. A stdio MCP server
+  configured as `npx` now finds `npx.cmd` on Windows. Computer use's "open
+  application" on Windows opens a name found on PATH or registered under App
+  Paths, or an address with a scheme (`ms-settings:`), without cmd.exe.
+- **Unchanged by design.** The agent's shell and checks, jobs and previews,
+  the composer's `!` commands, your hooks and the Codex and Claude Code tool
+  loops still run in the project with your own environment
+  (`executables.person_environment`, which `secrets_store.child_env` applies),
+  so `gradlew build` in cmd.exe finds the project's script as in your
+  terminal. A job or preview naming a program relative to the project still
+  runs it from there. Sprint-mode validation commands and worktree
+  validation commands now get that same environment (without Lumi's model
+  keys), like other checks.
+- **Tests.** `tests/test_project_programs.py` plants harmless `git.exe`,
+  `git.bat`, `explorer.exe`, `rg.exe` and similar programs in a project and
+  runs Lumi's Git status, Git tools, indexing, context, search (bundled
+  ripgrep and PATH), language-server and editor lookups and "Show in folder"
+  with that project as the working folder and PATH pointing into it, without
+  the process setting, plus a fresh process that imports `lumi` and launches
+  by bare name, `shell=True` included. `tests/test_launch_scan.py` fails on
+  any new launch by bare name, shell, `shutil.which`, `os.startfile` or
+  `webbrowser` outside a reviewed list; `tests/test_executables.py` covers
+  the resolver. The macOS CI job runs all three.
+- `executables.show_in_folder` is there for the first-run polish work's
+  "Show in folder".
+
 ## September 27 macOS alpha: Sparkle updates and release publishing (source only, not released)
 
 The macOS app now updates itself, and a release tag publishes it beside the

@@ -9,7 +9,6 @@ import json
 import logging
 import os
 import re
-import shutil
 import signal
 import subprocess
 import sys
@@ -20,6 +19,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Optional, Sequence
 
+from lumi.executables import find_program, system_program
 from lumi.processes import background_process_kwargs
 
 from .truncation import (
@@ -1691,6 +1691,7 @@ def execute_tool(
             return _exec_glob(arguments, start, exclusions=exclusions)
         elif name == "grep":
             return _exec_grep(arguments, start, cancel_event=cancel_event, exclusions=exclusions,
+                              project_path=project_path,
                               owned_process_group=owned_process_group)
         elif name == "skill_view":
             if str(arguments.get('skill_id', '')).startswith('team:'):
@@ -1989,7 +1990,7 @@ def _run_subprocess_with_cancel(
         try:
             if sys.platform == "win32":
                 subprocess.run(
-                    ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+                    [system_program("taskkill"), "/PID", str(proc.pid), "/T", "/F"],
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                     timeout=5,
@@ -2384,9 +2385,8 @@ def _exec_glob(args: dict, start: float, *, exclusions=None) -> ToolResult:
 _VENDORED_RIPGREP_DIR = Path(__file__).resolve().parent.parent.parent / "packaging" / "ripgrep"
 
 
-@lru_cache(maxsize=2)
-def _ripgrep_executable(*, trusted_only: bool = False) -> Optional[str]:
-    """Locate ripgrep once per process. None when it isn't available.
+def _ripgrep_executable(*, trusted_only: bool = False, project: Optional[str] = None) -> Optional[str]:
+    """ripgrep's full path. None when it isn't available.
 
     The bundled copy wins over PATH. A packaged install ships a pinned,
     checksum-verified rg (see packaging/fetch_ripgrep.ps1), and preferring it
@@ -2395,8 +2395,18 @@ def _ripgrep_executable(*, trusted_only: bool = False) -> Optional[str]:
     who previously fell back to `findstr` and its far weaker regex dialect.
 
     `sys._MEIPASS` is set only in a PyInstaller bundle; from a source checkout
-    this falls straight through to PATH.
+    this falls through to PATH, never to an `rg` in the project searched or
+    Lumi's working folder (lumi/executables.py).
     """
+    bundled = _bundled_ripgrep(trusted_only=trusted_only)
+    if bundled or trusted_only:
+        return bundled
+    return find_program("rg", exclude=[project])
+
+
+@lru_cache(maxsize=2)
+def _bundled_ripgrep(*, trusted_only: bool = False) -> Optional[str]:
+    """The ripgrep Lumi ships (or a source checkout fetched), looked for once per process."""
     binary = "rg.exe" if sys.platform == "win32" else "rg"
     bundle_dir = getattr(sys, "_MEIPASS", "")
     if bundle_dir:
@@ -2416,15 +2426,14 @@ def _ripgrep_executable(*, trusted_only: bool = False) -> Optional[str]:
             if trusted_only and (not candidate.is_file() or candidate.resolve() != candidate.absolute()):
                 continue
             return str(candidate)
-    if trusted_only:
-        return None
-    return shutil.which("rg")
+    return None
 
 
 _GREP_LINE_PATH = re.compile(r"^((?:[A-Za-z]:)?[^:]*):\d+:")
 
 
-def _build_grep_command(pattern: str, path: str, file_glob: str, *, trusted_only: bool = False) -> list[str]:
+def _build_grep_command(pattern: str, path: str, file_glob: str, *, trusted_only: bool = False,
+                        project: Optional[str] = None) -> list[str]:
     """Argv for a recursive content search, best available tool first.
 
     ripgrep is strongly preferred. The fallbacks are correct but weak: Windows
@@ -2438,7 +2447,8 @@ def _build_grep_command(pattern: str, path: str, file_glob: str, *, trusted_only
     security boundary, and a pattern containing a quote would turn this
     read-only tool into arbitrary shell execution.
     """
-    ripgrep = _ripgrep_executable(trusted_only=True) if trusted_only else _ripgrep_executable()
+    ripgrep = (_ripgrep_executable(trusted_only=True) if trusted_only
+               else _ripgrep_executable(project=project or path))
     if trusted_only and not ripgrep:
         raise FileNotFoundError("Managed search requires the bundled ripgrep binary; PATH executables are not permitted")
     if ripgrep:
@@ -2462,13 +2472,14 @@ def _build_grep_command(pattern: str, path: str, file_glob: str, *, trusted_only
         cmd.extend(["-e", pattern, "--", path])
         return cmd
 
+    # The fallbacks are the system's own, never a `findstr` or `grep` in the project.
     if sys.platform == "win32":
         target = os.path.join(path, file_glob or "*") if os.path.isdir(path) else path
-        return ["findstr", "/s", "/n", "/r", f"/c:{pattern}", target]
+        return [system_program("findstr"), "/s", "/n", "/r", f"/c:{pattern}", target]
 
     # Extended syntax, so the alternation, `+` and groups models write mean
     # what they do in ripgrep (basic grep treats them as literal characters).
-    cmd = ["grep", "-rnE"]
+    cmd = [system_program("grep"), "-rnE"]
     if file_glob:
         cmd.extend([f"--include={file_glob}"])
     cmd.extend(["--", pattern, path])
@@ -2482,6 +2493,7 @@ def _exec_grep(
     *,
     exclusions=None,
     owned_process_group: bool = False,
+    project_path: str = "",
 ) -> ToolResult:
     pattern = args.get("pattern", "")
     path = args.get("path", ".")
@@ -2490,7 +2502,7 @@ def _exec_grep(
     limit = min(200, max(1, int(args.get("limit", 50) or 50)))
 
     cmd = (_build_grep_command(pattern, path, file_glob, trusted_only=True) if owned_process_group
-           else _build_grep_command(pattern, path, file_glob))
+           else _build_grep_command(pattern, path, file_glob, project=project_path or None))
 
     returncode, stdout, _stderr, timed_out = _run_subprocess_with_cancel(
         cmd,

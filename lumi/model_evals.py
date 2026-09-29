@@ -121,10 +121,12 @@ def load_all() -> list[Comparison]:
 
 
 def _git(project: str, *args: str, timeout: float = 60) -> subprocess.CompletedProcess:
+    from .executables import program
     from .processes import background_process_kwargs
 
-    return subprocess.run(["git", "-C", project, *args], capture_output=True, text=True, timeout=timeout,
-                          encoding="utf-8", errors="replace", **background_process_kwargs())
+    # The installed Git, never a `git` program from the repository (lumi/executables.py).
+    return subprocess.run([program("git", exclude=[project]), "-C", project, *args], capture_output=True, text=True,
+                          timeout=timeout, encoding="utf-8", errors="replace", **background_process_kwargs())
 
 
 def clean(raw: dict[str, Any]) -> Comparison:
@@ -414,7 +416,10 @@ def _end(process: subprocess.Popen) -> None:
     """End a run and whatever it started."""
     try:
         if os.name == "nt":
-            subprocess.run(["taskkill", "/T", "/F", "/PID", str(process.pid)], capture_output=True, timeout=30)
+            from .executables import system_program
+
+            subprocess.run([system_program("taskkill"), "/T", "/F", "/PID", str(process.pid)], capture_output=True,
+                           timeout=30)
         else:
             import signal
 

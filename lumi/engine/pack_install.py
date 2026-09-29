@@ -32,6 +32,7 @@ import urllib.parse
 from dataclasses import dataclass
 from pathlib import Path
 
+from ..executables import find_program
 from ..paths import state_home
 
 _COMMIT = re.compile(r"[0-9a-f]{40}")
@@ -92,7 +93,8 @@ def _git(args: list[str], *, cwd: Path | None = None, local: bool = False, remot
         reason = offline.refusal(remote, feature)
         if reason:
             raise PackInstallError(reason)
-    git = shutil.which("git")
+    # The installed Git, never a `git` program from the folder it works in (lumi/executables.py).
+    git = find_program("git", exclude=[cwd])
     if not git:
         raise PackInstallError("Installing from a repository needs Git. Install it and try again.")
     config = ["-c", "credential.helper=", "-c", "core.askPass=", "-c", "submodule.recurse=false",

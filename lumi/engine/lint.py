@@ -17,6 +17,7 @@ import subprocess
 from pathlib import Path
 from typing import Optional
 
+from lumi.executables import find_program
 from lumi.processes import background_process_kwargs
 from lumi.secrets_store import child_env
 
@@ -124,7 +125,12 @@ def lint_file(
     if not _file_matches_linter(name, f):
         return {"linter": name, "ok": True, "errors": "", "skipped_reason": f"{name} doesn't apply to {f.suffix}"}
 
-    cmd = list(base_args) + [str(f)]
+    # The linter installed on PATH, never a program from the project it lints.
+    # Programs only, not batch files: cmd.exe would parse the file's name.
+    linter = find_program(base_args[0], exclude=[p])
+    if not linter:
+        return {"linter": name, "ok": True, "errors": "", "skipped_reason": f"{name} not installed"}
+    cmd = [linter, *base_args[1:], str(f)]
     try:
         proc = subprocess.run(
             cmd,

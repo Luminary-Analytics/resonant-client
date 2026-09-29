@@ -19,6 +19,7 @@ import os
 from pathlib import Path
 from typing import Optional
 
+from lumi.executables import program
 from lumi.processes import background_process_kwargs
 
 from .tools import ToolResult
@@ -27,12 +28,16 @@ from .tools import ToolResult
 # ── Internal helpers ─────────────────────────────────────────────────────
 
 
+def _git_executable(cwd: Path | str) -> str:
+    """The installed Git, never a `git` program from the repository (lumi/executables.py)."""
+    return program("git", exclude=[cwd])
+
+
 def _run_git(args: list[str], cwd: Path | str, *, timeout: float = 30.0) -> tuple[int, str, str]:
     """Run `git <args>` in `cwd` without a shell. Returns (returncode, stdout, stderr)."""
-    cmd = ["git"] + args
     try:
         proc = subprocess.run(
-            cmd,
+            [_git_executable(cwd), *args],
             cwd=str(cwd),
             capture_output=True,
             text=True,
@@ -263,10 +268,9 @@ def git_commit(
         return {"error": "nothing staged to commit (run with paths= to stage files first)"}
 
     # Use stdin to pass message — no shell quoting issues, supports multi-line.
-    cmd = ["git", "commit", "--file=-"]
     try:
         proc = subprocess.run(
-            cmd,
+            [_git_executable(cwd), "commit", "--file=-"],
             cwd=str(cwd),
             input=msg,
             capture_output=True,

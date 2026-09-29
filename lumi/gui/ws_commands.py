@@ -38,9 +38,7 @@ import asyncio
 import json
 import logging
 import os
-import shutil
 import subprocess
-import sys
 import threading
 import time
 import uuid
@@ -49,6 +47,7 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable, Optional
 
 from ..engine.session import inspect_system_instructions
+from ..executables import open_path, program
 from ..processes import background_process_kwargs
 from .autonomous_session import (
     build_roadmap_inspector_payload as _build_roadmap_inspector_payload,
@@ -171,6 +170,22 @@ def command(name: str) -> Callable[[Handler], Handler]:
 
 async def _in_executor(func, *args):
     return await asyncio.get_event_loop().run_in_executor(None, func, *args)
+
+
+def _typed_folder(ctx: CommandContext, text: Any) -> str:
+    """A folder typed in Settings as a full path, "" for none.
+
+    A relative one is relative to the open project, as it was when the project
+    was the app's working folder. The app never is one now
+    (lumi/executables.py), and its own folder is no place for a project.
+    """
+    folder = os.path.expanduser(str(text or "").strip().strip('"'))
+    if not folder:
+        return ""
+    current = str(getattr(getattr(ctx.state, "project", None), "project_path", "") or "")
+    if not os.path.isabs(folder) and current:
+        folder = os.path.join(current, folder)
+    return os.path.abspath(folder)
 
 
 async def _block_active_navigation(ctx: CommandContext) -> bool:
@@ -1011,6 +1026,8 @@ async def _schedule_save(ctx: CommandContext) -> None:
     if not isinstance(raw, dict):
         await ctx.send_error("Send the schedule's fields.")
         return
+    if str(raw.get("project") or "").strip():
+        raw = {**raw, "project": _typed_folder(ctx, raw.get("project"))}
     settings = getattr(ctx.state, "settings", None)
     try:
         saved = await _in_executor(lambda: schedules.save(raw, str(ctx.msg.get("id") or ""), settings=settings))
@@ -1906,13 +1923,10 @@ async def _open_workspace_path(ctx: CommandContext) -> None:
         return
 
     try:
-        if sys.platform == "win32":
-            os.startfile(str(target))  # type: ignore[attr-defined]
-        elif sys.platform == "darwin":
-            subprocess.Popen(["open", str(target)], **background_process_kwargs())
-        else:
-            subprocess.Popen(["xdg-open", str(target)], **background_process_kwargs())
-    except OSError as exc:
+        # The file's own program, as double-clicking it would choose; the
+        # opener itself is the system's, never one from the project.
+        open_path(target)
+    except (OSError, ValueError) as exc:
         await ctx.send({"event": "status_msg", "message": f"Could not open file: {exc}"})
         return
     await ctx.send({"event": "status_msg", "message": f"Opened {target.name}"})
@@ -3814,8 +3828,7 @@ async def _cmd_cloud_remote_tasks(ctx: CommandContext) -> None:
     from ..remote_tasks import MODES
 
     enabled = ctx.msg.get("enabled") is True
-    project = os.path.abspath(os.path.expanduser(str(ctx.msg.get("project") or "").strip())) \
-        if str(ctx.msg.get("project") or "").strip() else ""
+    project = _typed_folder(ctx, ctx.msg.get("project"))
     mode = str(ctx.msg.get("mode") or "ask")
 
     def save(client) -> None:
@@ -4784,18 +4797,23 @@ async def _cmd_skill_archive(ctx: CommandContext) -> None:
 def _git_run(*args: str, cwd: str | None = None) -> tuple[int, str]:
     """Run a git command and return (returncode, stdout).
 
-    `cwd` is required in practice. It used to fall back to the module-level
-    AppState singleton in app.py, which made these helpers untestable and
-    silently tied "which repository" to global state — the caller always knew
-    the project path and now has to say so.
+    `cwd` is required. It used to fall back to the module-level AppState
+    singleton in app.py, which made these helpers untestable and silently
+    tied "which repository" to global state — the caller always knew the
+    project path and now has to say so.
+
+    Git is the installed one, by its full path and without a shell: the page
+    asks for the status as soon as a project opens, and a repository's own
+    `git.bat` or `git.exe` must never run instead (lumi/executables.py).
     """
-    import subprocess
+    if not cwd:
+        return 1, "No project folder."
     try:
         result = subprocess.run(
-            ["git"] + list(args),
+            [program("git", exclude=[cwd]), *args],
             capture_output=True, text=True, timeout=15,
-            cwd=cwd or os.getcwd(),
-            shell=(sys.platform == "win32"),
+            cwd=cwd,
+            stdin=subprocess.DEVNULL,
             **background_process_kwargs(),
         )
         return result.returncode, (result.stdout + result.stderr).strip()
@@ -4947,7 +4965,7 @@ def _lsp_list_payload(*, project_path: str = "", settings: SettingsManager | Non
     for spec, enabled in lsp.configured(settings):
         program = spec.command[0]
         configured_programs.add(lsp._program_name(program))
-        available = bool(shutil.which(program) or os.path.isfile(program))
+        available = bool(lsp.program_path(program, project_path))
         languages = sorted(set(spec.languages.values()))
         status, error = status_of(spec.id, "available" if available else "missing")
         if not enabled:
@@ -4970,7 +4988,7 @@ def _lsp_list_payload(*, project_path: str = "", settings: SettingsManager | Non
         if lsp._program_name(spec.command[0]) in configured_programs:
             continue
         languages = sorted(set(spec.languages.values()))
-        executable = shutil.which(spec.command[0])
+        executable = lsp.program_path(spec.command[0], project_path)
         if not executable and not workspace_langs.intersection(languages):
             continue
         status, error = status_of(spec.id, "available" if executable else "missing")

@@ -30,6 +30,8 @@ import time
 from dataclasses import dataclass
 from typing import Any, Callable
 
+from ..executables import program
+
 _token_source: Callable[[], str] = lambda: ""  # noqa: E731
 _hosts_source: Callable[[str], Any] = lambda key: []  # noqa: E731
 _transport: Any = None  # httpx.MockTransport in tests
@@ -212,7 +214,9 @@ def _git(cwd: str, *args: str) -> str:
         remote = next((arg for arg in args[1:] if not arg.startswith("-")), "origin")
         _check_push(cwd, remote)
     try:
-        completed = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True, timeout=30)
+        # The installed Git, never a `git` program from the repository.
+        completed = subprocess.run([program("git", exclude=[cwd]), *args], cwd=cwd, capture_output=True,
+                                   text=True, timeout=30)
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise GitHubError(f"git {' '.join(args)} failed: {exc}") from exc
     if completed.returncode != 0:

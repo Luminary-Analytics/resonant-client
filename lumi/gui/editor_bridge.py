@@ -36,6 +36,7 @@ import zipfile
 from pathlib import Path
 from typing import Any, Mapping
 
+from ..executables import program
 from ..paths import state_home
 from ..processes import background_process_kwargs
 
@@ -281,8 +282,9 @@ def latest_changing_turn(events: list[dict]) -> dict | None:
 
 
 def _git(root: Path, *args: str) -> subprocess.CompletedProcess:
-    return subprocess.run(["git", *args], cwd=root, capture_output=True, check=False, timeout=60,
-                          **background_process_kwargs())
+    # The installed Git, never a `git` program from the project (lumi/executables.py).
+    return subprocess.run([program("git", exclude=[root]), *args], cwd=root, capture_output=True, check=False,
+                          timeout=60, **background_process_kwargs())
 
 
 def _checkpoint_record(root: Path, checkpoint_id: str) -> dict | None:

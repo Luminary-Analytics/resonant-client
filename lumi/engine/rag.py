@@ -17,7 +17,6 @@ import json
 import logging
 import os
 import re
-import shutil
 import stat
 import subprocess
 import threading
@@ -26,6 +25,7 @@ from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
+from ..executables import find_program
 from ..paths import project_dir
 
 logger = logging.getLogger(__name__)
@@ -301,11 +301,13 @@ class CodebaseIndex:
         The project can be a folder inside a repository (one part of a
         monorepo); ``git ls-files`` then lists that folder, relative to it.
         """
-        if _repository_root(self.project_path) is None or not shutil.which("git"):
+        # The installed Git, never a `git` program from the repository being indexed.
+        git = find_program("git", exclude=[self.project_path])
+        if _repository_root(self.project_path) is None or not git:
             return None
         try:
             result = subprocess.run(
-                ["git", "-c", "core.quotepath=off", "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
+                [git, "-c", "core.quotepath=off", "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
                 cwd=self.project_path, capture_output=True, timeout=120,
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             )

@@ -33,7 +33,9 @@ from typing import TYPE_CHECKING, Any, Optional
 
 from ..engine import AGENT_TOOLS
 from ..events import EngineEvent
+from ..executables import find_program
 from ..processes import background_process_kwargs
+from ..secrets_store import child_env
 from .service import HarnessService
 from .state import EvaluatorReport, HarnessWorkspace
 
@@ -1787,7 +1789,8 @@ class HarnessPrompts:
                     return str(candidate)
             except OSError:
                 continue
-        return "python3"
+        # Never a `python3` program in the project or Lumi's working folder.
+        return find_program("python3", exclude=[target_path]) or "python3"
 
     def _sanitize_harness_validation_command(
         self,
@@ -2147,10 +2150,13 @@ class HarnessPrompts:
                 )
                 continue
             try:
+                # A validation command the model wrote: by design it runs in the
+                # project as the person's own shell would (lumi/executables.py).
                 completed = subprocess.run(
                     command,
                     shell=True,
                     cwd=target_path,
+                    env=child_env(),
                     text=True,
                     capture_output=True,
                     timeout=25,

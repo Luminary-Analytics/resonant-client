@@ -25,6 +25,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Optional
 
+from ..executables import program
 from .specs import SmokeSpec, get_spec
 
 logger = logging.getLogger(__name__)
@@ -237,10 +238,11 @@ def make_fresh_project(
         "GIT_COMMITTER_NAME": "smoke",
         "GIT_COMMITTER_EMAIL": "smoke@example.com",
     }
-    subprocess.run(["git", "init", "-q"], cwd=project, check=True,
+    git = program("git", exclude=[project])
+    subprocess.run([git, "init", "-q"], cwd=project, check=True,
                    capture_output=True, env=env)
     subprocess.run(
-        ["git", "commit", "--allow-empty", "-q", "-m", "initial"],
+        [git, "commit", "--allow-empty", "-q", "-m", "initial"],
         cwd=project, check=True, capture_output=True, env=env,
     )
     if seed_files:
@@ -257,10 +259,10 @@ def make_fresh_project(
         # Commit the seed so the autonomous loop's first commit is
         # `seed: ...` -> seed-baseline; subsequent iterations are
         # the loop's own work.
-        subprocess.run(["git", "add", "-A"], cwd=project, check=True,
+        subprocess.run([git, "add", "-A"], cwd=project, check=True,
                        capture_output=True, env=env)
         subprocess.run(
-            ["git", "commit", "-q", "-m", "smoke seed (pre-existing project state)"],
+            [git, "commit", "-q", "-m", "smoke seed (pre-existing project state)"],
             cwd=project, check=True, capture_output=True, env=env,
         )
     return project

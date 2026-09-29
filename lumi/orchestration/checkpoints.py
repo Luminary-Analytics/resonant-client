@@ -10,6 +10,7 @@ import tempfile
 import time
 from pathlib import Path
 
+from lumi.executables import program
 from lumi.processes import background_process_kwargs
 
 
@@ -94,7 +95,7 @@ class IterationCheckpointStore:
         remove_after = []
         for rel in (value for value in changed if value):
             probe = subprocess.run(
-                ["git", "cat-file", "-e", f"{checkpoint}:{rel}"],
+                [self._git_executable(), "cat-file", "-e", f"{checkpoint}:{rel}"],
                 cwd=self.project_path,
                 capture_output=True,
                 text=True,
@@ -171,9 +172,13 @@ class IterationCheckpointStore:
         safe = re.sub(r"[^A-Za-z0-9._-]+", "-", value).strip(".-")
         return safe[:80] or "mission"
 
+    def _git_executable(self) -> str:
+        """The installed Git, never a `git` program from the repository (lumi/executables.py)."""
+        return program("git", exclude=[self.project_path])
+
     def _git(self, *args: str, env: dict | None = None, check: bool = True):
         result = subprocess.run(
-            ["git", *args],
+            [self._git_executable(), *args],
             cwd=self.project_path,
             env=env,
             capture_output=True,

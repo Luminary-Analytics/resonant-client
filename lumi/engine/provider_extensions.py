@@ -113,22 +113,15 @@ def find_program(name: str, path: str | None = None) -> str:
     """The full path of program ``name`` on PATH.
 
     Starting a bare name would let Windows look in Lumi's current folder
-    first, which may be a repository, so only absolute PATH entries count.
+    first, which may be a repository, so only absolute PATH entries outside
+    it count (lumi/executables.py).
     """
-    folders = (os.environ.get("PATH", "") if path is None else path).split(os.pathsep)
-    suffixes = [""]
-    if os.name == "nt":
-        pathext = [ext for ext in (os.environ.get("PATHEXT") or ".COM;.EXE;.BAT;.CMD").split(";") if ext]
-        if not any(name.lower().endswith(ext.lower()) for ext in pathext):
-            suffixes = pathext
-    for folder in folders:
-        if not folder or not os.path.isabs(folder):
-            continue  # a relative entry would resolve against the current folder
-        for suffix in suffixes:
-            candidate = os.path.join(folder, name + suffix)
-            if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
-                return candidate
-    raise ProviderExtensionError(f"{name} isn't installed on this computer (it isn't on PATH).")
+    from .. import executables
+
+    found = executables.find_program(name, scripts=True, path=path)
+    if not found:
+        raise ProviderExtensionError(f"{name} isn't installed on this computer (it isn't on PATH).")
+    return found
 
 
 def command_for(pack: Any, provider: dict) -> list[str]:

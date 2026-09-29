@@ -10,6 +10,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
+from lumi.executables import find_program
 from lumi.processes import background_process_kwargs
 from ..paths import project_dirs
 
@@ -191,7 +192,11 @@ class ContextBroker:
         return results
 
     def _diff(self, selector: str) -> ContextItem | None:
-        args = ["git", "diff"]
+        # The installed Git, never a `git` program from the repository.
+        git = find_program("git", exclude=[self.project_path])
+        if not git:
+            return None
+        args = [git, "diff"]
         if selector not in {"working", "workspace", "current", "."}:
             # A selector is a revision; one starting with '-' would be read as
             # an option (for example --output=<file>, which writes a file).

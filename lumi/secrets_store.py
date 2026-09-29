@@ -41,10 +41,15 @@ PROVIDER_KEY_ENV = (
 def child_env(base: dict[str, str] | None = None) -> dict[str, str]:
     """A copy of the environment without Lumi's model-provider keys.
 
+    Program lookups are as in the person's own terminal
+    (``executables.person_environment``): Lumi hardens only its own process,
+    so the code these children run finds programs as it would outside Lumi.
     Callers add what a child is configured with afterwards, such as an MCP
     server entry's own ``env``.
     """
-    env = dict(os.environ if base is None else base)
+    from .executables import person_environment
+
+    env = person_environment(os.environ if base is None else base)
     # Windows variable names are case-insensitive: openai_api_key counts too.
     for name in [key for key in env if key.upper() in PROVIDER_KEY_ENV]:
         del env[name]

@@ -39,13 +39,13 @@ from __future__ import annotations
 import json
 import logging
 import re
-import shutil
 import subprocess
 import threading
 import time
 from pathlib import Path
 from typing import Any, Callable, Optional
 
+from lumi.executables import find_program
 from lumi.processes import background_process_kwargs
 
 from ..engine.tools import AGENT_TOOLS
@@ -203,9 +203,10 @@ class DispatchTracker:
 def make_git_get_commit_sha(project_path: str) -> Callable[[], Optional[str]]:
     """Returns a callable that reads HEAD's commit SHA via
     `git log -1 --format=%H`. None on any failure (no git binary,
-    no commits yet, repo missing).
+    no commits yet, repo missing). The installed Git, never a `git` program
+    from the repository (lumi/executables.py).
     """
-    git = shutil.which("git")
+    git = find_program("git", exclude=[project_path])
 
     def _get() -> Optional[str]:
         if not git:
@@ -241,7 +242,7 @@ def make_git_validate_sha(project_path: str) -> Callable[[str], bool]:
     `git rev-parse --verify <sha>^{commit}`. True iff the SHA is a
     real commit object in the repo.
     """
-    git = shutil.which("git")
+    git = find_program("git", exclude=[project_path])
 
     def _validate(sha: str) -> bool:
         if not git or not sha:

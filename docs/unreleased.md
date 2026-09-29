@@ -8,6 +8,17 @@ The heartbeat remains paused. Documentation maintenance does not resume work,
 spending or grants, and changes no native implementation or installed bundle.
 The dated September 15/18 records below are historical.
 
+## September 29 Tests no longer register real scheduled tasks (source only, not released)
+
+Tests that saved a schedule registered a real Task Scheduler entry
+(`Lumi\<id>`, `python -m lumi schedule run <id>`); only `tests/test_schedules.py`
+installed a fake. On a developer machine 183 such tasks ran nightly at 02:30
+and renamed the real `~/.resonant` folder to `~/.lumi`. `tests/conftest.py` now
+sets `LUMI_OS_SCHEDULER=off` for the whole run, and subprocesses inherit it.
+With it, `lumi.schedules.registrar()` returns `NullRegistrar`: schedules are
+saved but never registered with Task Scheduler, launchd or cron. A test
+checks that saving, pausing and removing a schedule never runs `schtasks`.
+
 ## September 27 macOS alpha: Sparkle updates and release publishing (source only, not released)
 
 The macOS app now updates itself, and a release tag publishes it beside the

@@ -810,14 +810,22 @@ def _policy_file(value: str) -> tuple[str, str]:
     Group Policy says this computer has a policy, so every way the file can't
     be used fails closed rather than falling back to a source further down,
     which a person could supply: a path that isn't a full one (a variable
-    other than a machine folder stays as written), a file that can't be read
-    (a share out of reach, a missing file), and a file that people who aren't
-    administrators can change, or that sits where they can (lumi/admin_files.py).
+    other than a machine folder stays as written), an alternate data stream
+    (``policy.json:other``), a file that can't be read (a share out of reach,
+    a missing file), and a file that people who aren't administrators can
+    change, or that sits where they can (lumi/admin_files.py).
+
+    The check and the read open the path separately; the check proved the
+    file and the folders above it can be changed only by administrators, so
+    replacing either in between takes administrator rights.
     """
     text = expand_machine_variables(value)
     source = f"{text} (set by Group Policy)"
     if not os.path.isabs(text):
         raise PolicyUnavailable(f"The policy file Group Policy names, {text}, isn't a full path.", source)
+    if admin_files.names_stream(text):
+        raise PolicyUnavailable(f"The policy file Group Policy names, {text}, is an alternate data stream, "
+                                "not a file.", source)
     path = Path(text)
     try:
         path.stat()
@@ -989,7 +997,8 @@ def _usable(path: Path, root: Path, kind: str, *, fail_closed: bool = False, tit
     (``Trust.admin_owned``) raises PolicyUnavailable: an administrator meant
     it to apply, so Lumi refuses model requests until it's moved or its
     folder is locked down. Any other reads as absent, as a file a person
-    planted must.
+    planted must. Callers then read the file by its path: replacing it, or a
+    folder above it, after this check takes administrator rights.
     """
     trust = admin_files.check(path, root)
     if trust.trusted:

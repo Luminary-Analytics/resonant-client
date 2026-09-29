@@ -46,6 +46,13 @@ msiexec /x lumi-X.Y.Z.msi /qn
   made there before the install is taken over and locked the same way.
   Uninstalling removes it only when it's empty. Without the MSI, create it
   with the [icacls recipe](enterprise-policy.md#locking-down-a-policy-folder-on-windows).
+  - Each install **replaces** the folder's owner and permissions: entries
+    your organization added to `%ProgramData%\Lumi` are removed, so add
+    them back after installing or upgrading if you need them.
+  - Files already inside keep their own owners. Files whose owner isn't
+    Administrators, SYSTEM or TrustedInstaller, such as ones copied by an
+    administrator account that owns what it creates, don't count until you
+    run `icacls "%ProgramData%\Lumi" /setowner *S-1-5-32-544 /T`.
 - **Leaves updates to you.** The MSI puts `lumi-install.json` beside
   `lumi.exe`. Lumi then never checks for updates, whatever the settings or
   policy say. Settings > Updates and Help > Check for Updates say the copy came
@@ -94,15 +101,17 @@ Assign `lumi-X.Y.Z.msi` to computers from a network share. Set the
 organization policy with the ADMX template in the same or another GPO. To
 upgrade, add the newer MSI as an upgrade of the package already assigned.
 
-A `PolicyFile` on a share must be one only administrators can change, with
-the folders above it in the share; a startup script that copies a policy to
-`%ProgramData%\Lumi` must create that folder with the
+A `PolicyFile` on a share must be named by its UNC path and be one only
+administrators can change, with the folders above it in the share; a startup
+script that copies a policy to `%ProgramData%\Lumi` must create that folder
+with the
 [icacls recipe](enterprise-policy.md#locking-down-a-policy-folder-on-windows).
 Group Policy Preferences' Files item alone makes the folder the usual way, and
 Lumi then won't use the file and stops model requests until the folder is
 locked down (Settings says why). For laptops that leave the network, prefer a
 local copy or the `Policy` value: a `PolicyFile` Lumi can't read stops model
-requests.
+requests. Lumi can't keep a last good copy itself: it runs as the person, who
+can't write the folders only administrators can.
 
 ## Checking a computer
 

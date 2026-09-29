@@ -19,6 +19,7 @@ import ctypes
 import json
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -38,6 +39,8 @@ posix = pytest.mark.skipif(os.name == "nt", reason="POSIX owners and modes")
 SY, BA, BU, AU, EVERYONE = "S-1-5-18", "S-1-5-32-544", "S-1-5-32-545", "S-1-5-11", "S-1-1-0"
 INTERACTIVE, CREATOR_OWNER, OWNER_RIGHTS = "S-1-5-4", "S-1-3-0", "S-1-3-4"
 PERSON = "S-1-5-21-1111111111-2222222222-3333333333-1001"
+# This computer's domain, and another one (Domain Admins are <domain>-512).
+DOMAIN, FOREIGN_DOMAIN = "S-1-5-21-4444444444-5555555555-6666666666", "S-1-5-21-7777777777-8888888888-9999999999"
 FULL, READ_EXECUTE, MODIFY = 0x1F01FF, 0x1200A9, 0x1301BF
 OI, CI, IO, INHERITED = 0x1, 0x2, 0x8, 0x10
 ALLOW, DENY = 0x0, 0x1
@@ -53,6 +56,24 @@ def _elevated() -> bool:
 def _icacls(*args) -> None:
     tool = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "icacls.exe"
     result = subprocess.run([str(tool), *map(str, args)], capture_output=True, text=True, timeout=60)
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+SUDO = "/usr/bin/sudo"
+
+
+def _passwordless_sudo() -> bool:
+    """Whether root is at hand without a password (CI's macOS runner), never prompting."""
+    if os.name == "nt" or not os.path.exists(SUDO):
+        return False
+    try:
+        return subprocess.run([SUDO, "-n", "true"], capture_output=True, timeout=20).returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def _sudo(*args) -> None:
+    result = subprocess.run([SUDO, "-n", *map(str, args)], capture_output=True, text=True, timeout=60)
     assert result.returncode == 0, result.stdout + result.stderr
 
 
@@ -115,11 +136,27 @@ class TestDescriptors:
         problem = descriptor_problem(_locked(Ace(ALLOW, OI | CI, 0x2, sid)), "file", _names)
         assert problem == f"lets {name} change it (write)"
 
-    @pytest.mark.parametrize("sid", [SY, BA, admin_files.TRUSTED_INSTALLER, "S-1-5-21-1-2-3-512",
-                                     "S-1-5-21-1-2-3-519"], ids=["SYSTEM", "Administrators", "TrustedInstaller",
-                                                                 "Domain Admins", "Enterprise Admins"])
+    @pytest.mark.parametrize("sid", [SY, BA, admin_files.TRUSTED_INSTALLER],
+                             ids=["SYSTEM", "Administrators", "TrustedInstaller"])
     def test_administrators_may_write_and_own_it(self, sid):
         assert descriptor_problem(_locked(Ace(ALLOW, 0, FULL, sid), owner=sid), "folder", _names) == ""
+        assert descriptor_problem(_locked(Ace(ALLOW, 0, FULL, sid), owner=sid), "folder", _names, DOMAIN) == ""
+
+    @pytest.mark.parametrize("rid", ["512", "519"], ids=["Domain Admins", "Enterprise Admins"])
+    def test_domain_admins_count_only_on_a_share_and_only_for_this_computers_domain(self, rid):
+        ours, foreign = f"{DOMAIN}-{rid}", f"{FOREIGN_DOMAIN}-{rid}"
+        # On a network share, this computer's domain's admins may own and change the file.
+        assert descriptor_problem(_locked(Ace(ALLOW, 0, FULL, ours), owner=ours), "file", _names, DOMAIN) == ""
+        # Another domain's never count.
+        assert descriptor_problem(_locked(owner=foreign), "file", _names, DOMAIN) == (
+            f"is owned by {foreign}, not by Administrators, SYSTEM or TrustedInstaller, "
+            "or this computer's domain's Domain Admins or Enterprise Admins")
+        assert descriptor_problem(_locked(Ace(ALLOW, 0, 0x2, foreign)), "file", _names, DOMAIN) == (
+            f"lets {foreign} change it (write)")
+        # Nor, on a local path, do this computer's domain's.
+        assert descriptor_problem(_locked(owner=ours), "file", _names) == (
+            f"is owned by {ours}, not by Administrators, SYSTEM or TrustedInstaller")
+        assert descriptor_problem(_locked(Ace(ALLOW, 0, 0x2, ours)), "file", _names) == f"lets {ours} change it (write)"
 
     def test_entries_that_grant_nothing_here_dont_count(self):
         harmless = _locked(
@@ -182,6 +219,19 @@ class TestDescriptors:
         # Without a root, or one the file isn't under, the walk goes to the drive's root.
         whole = admin_files.chain(item, tmp_path / "elsewhere")
         assert whole[-1] == (Path(item.anchor), "anchor") and len(whole) == len(item.parents) + 1
+
+    @pytest.mark.parametrize("text, stream", [
+        (r"C:\ProgramData\Lumi\policy.json:other", True),
+        (r"C:\ProgramData\Lumi:other\policy.json", True),
+        (r"\\server\it\lumi-policy.json:other", True),
+        (r"\\?\C:\ProgramData\Lumi\policy.json:other", True),
+        (r"\\?\UNC\server\it\policy.json:$DATA", True),
+        (r"C:\ProgramData\Lumi\policy.json", False),
+        (r"\\server\it\lumi-policy.json", False),
+        (r"\\?\C:\ProgramData\Lumi\policy.json", False),
+    ])
+    def test_a_path_to_an_alternate_data_stream_is_never_a_policy_file(self, text, stream):
+        assert admin_files.names_stream(text) is stream
 
 
 @windows
@@ -269,6 +319,52 @@ class TestPosixModes:
         else:
             assert not trust.trusted and "not by root" in trust.reason and not trust.admin_owned
 
+    @posix
+    def test_the_real_protected_roots_have_the_shape_the_check_expects(self):
+        # macOS: /Library/Application Support is root:admin 775, /Library root:wheel 755; Linux: /etc.
+        roots = ["/Library/Application Support", "/Library"] if sys.platform == "darwin" else ["/etc"]
+        for root in roots:
+            assert admin_files.posix_problem(os.stat(root), "root") == "", root
+
+    @posix
+    def test_real_files_only_root_can_change_are_trusted_until_they_arent(self, tmp_path, monkeypatch):
+        if not _passwordless_sudo():
+            pytest.skip("needs root through passwordless sudo, as on CI's macOS runner")
+        base = tmp_path / "Application Support"  # stands in for /Library/Application Support or /etc
+        folder = base / "Lumi"
+        policy_file = folder / "policy.json"
+        source = tmp_path / "source.json"
+        source.write_text(json.dumps({**BASE, "permissions": {"allowed_modes": ["ask"]}}), encoding="utf-8")
+        monkeypatch.setattr(lumi_policy, "machine_policy_file", lambda: policy_file)
+        monkeypatch.setattr(lumi_policy, "_registry_values", lambda: {})
+        monkeypatch.setattr(lumi_policy, "MAC_MANAGED_PREFERENCES", tmp_path / "no-managed-preferences")
+        monkeypatch.delenv("LUMI_POLICY_FILE", raising=False)
+        admin_files.set_for_tests(None)
+        try:
+            # As an administrator installs it: root's file, mode 644, in root's folders, mode 755.
+            _sudo("mkdir", "-m", "755", base)
+            _sudo("mkdir", "-m", "755", folder)
+            _sudo("install", "-m", "644", source, policy_file)
+            trust = admin_files.real_check(policy_file, base)
+            assert trust.trusted and trust.admin_owned, trust.reason
+            state = lumi_policy.load(force=True)
+            assert state.error == "" and not state.policy.mode_allowed("bypass") and not state.ignored
+            # Root's policy in a folder its group may change: fails closed.
+            _sudo("chmod", "775", folder)
+            trust = admin_files.real_check(policy_file, base)
+            assert not trust.trusted and trust.admin_owned and trust.reason == f"{folder} lets its group change it (mode 775)"
+            state = lumi_policy.load(force=True)
+            assert state.policy is None and state.error.startswith(lumi_policy.UNSAFE_TITLE)
+            _sudo("chmod", "755", folder)
+            # A person's file there: ignored, as if it weren't there.
+            _sudo("chown", str(os.getuid() or 65534), policy_file)
+            trust = admin_files.real_check(policy_file, base)
+            assert not trust.trusted and not trust.admin_owned and "not by root" in trust.reason
+            state = lumi_policy.load(force=True)
+            assert state.policy is None and state.error == "" and [item.kind for item in state.ignored] == ["policy"]
+        finally:
+            subprocess.run([SUDO, "-n", "rm", "-rf", str(base)], capture_output=True, timeout=60)
+
 
 # ── Real folders on Windows ─────────────────────────────────────────────────
 
@@ -310,10 +406,46 @@ class TestWindowsFolders:
         _winapi.CreateJunction(str(elsewhere), str(root / "Lumi"))  # any user may make one here
         trust = admin_files.real_check(root / "Lumi" / "policy.json", root)
         assert not trust.trusted and "is a link" in trust.reason and not trust.admin_owned
+        # The protected root itself counts too.
+        (elsewhere / "Lumi").mkdir()
+        (elsewhere / "Lumi" / "policy.json").write_text("{}", encoding="utf-8")
+        linked_root = tmp_path / "LinkedProgramData"
+        _winapi.CreateJunction(str(elsewhere), str(linked_root))
+        trust = admin_files.real_check(linked_root / "Lumi" / "policy.json", linked_root)
+        assert not trust.trusted and trust.reason == f"{linked_root} is a link (a symbolic link or junction) to another place"
 
     def test_a_missing_file_or_share_is_refused(self, tmp_path):
         assert "couldn't read" in admin_files.real_check(tmp_path / "missing.json").reason
         assert "device path" in admin_files.real_check("\\\\.\\pipe\\lumi-policy").reason
+
+    def test_an_alternate_data_stream_is_refused(self, tmp_path):
+        (tmp_path / "policy.json").write_text("{}", encoding="utf-8")
+        stream = f"{tmp_path / 'policy.json'}:other"
+        trust = admin_files.real_check(stream, tmp_path)
+        assert not trust.trusted and trust.reason == f"{stream} names an alternate data stream, not a file"
+
+    def test_domain_admins_count_only_for_a_share_of_this_computers_domain(self, tmp_path, monkeypatch):
+        # Descriptors stand in for a file server's; this computer is in DOMAIN.
+        monkeypatch.setattr(admin_files, "machine_domain_sid", lambda: DOMAIN)
+        owner = {"owner": f"{DOMAIN}-512"}
+        monkeypatch.setattr(admin_files, "read_descriptor", lambda path: _locked(owner=owner["owner"]))
+        share = "\\\\lumi-policy-test.invalid\\it\\lumi-policy.json"
+        assert admin_files.real_check(share).trusted
+        owner["owner"] = f"{FOREIGN_DOMAIN}-512"
+        trust = admin_files.real_check(share)
+        assert not trust.trusted and f"is owned by {FOREIGN_DOMAIN}-512" in trust.reason
+        # On a local path this computer's domain's Domain Admins don't count either.
+        (tmp_path / "policy.json").write_text("{}", encoding="utf-8")
+        owner["owner"] = f"{DOMAIN}-512"
+        trust = admin_files.real_check(tmp_path / "policy.json", tmp_path)
+        assert not trust.trusted and f"is owned by {DOMAIN}-512" in trust.reason and not trust.admin_owned
+        # A computer in a workgroup has no domain whose admins count.
+        monkeypatch.setattr(admin_files, "machine_domain_sid", lambda: None)
+        assert not admin_files.real_check(share).trusted
+
+    def test_this_computers_domain_is_read_from_windows(self):
+        domain = admin_files.machine_domain_sid()
+        assert domain is None or (domain.startswith("S-1-5-21-") and domain.count("-") == 6)
 
     def test_an_administrators_file_counts_as_placed_by_one_only_in_an_administrators_folder(self, tmp_path,
                                                                                              monkeypatch):
@@ -566,6 +698,13 @@ class TestPolicyFile:
     def test_a_path_that_isnt_a_full_one_fails_closed(self, fallbacks, answers, monkeypatch, value):
         self._named(monkeypatch, value)
         self._refused("isn't a full path")
+
+    def test_an_alternate_data_stream_fails_closed(self, fallbacks, answers, tmp_path, monkeypatch):
+        named = tmp_path / "share" / "lumi-policy.json"
+        named.parent.mkdir()
+        named.write_text(json.dumps({**BASE, "organization": "Named"}), encoding="utf-8")
+        self._named(monkeypatch, f"{named}:other")
+        self._refused(f"The policy file Group Policy names, {named}:other, is an alternate data stream, not a file.")
 
     def test_a_file_others_can_change_fails_closed_and_shows(self, fallbacks, answers, audit_log, tmp_path,
                                                             monkeypatch):

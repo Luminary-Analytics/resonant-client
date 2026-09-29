@@ -11,8 +11,7 @@ whether that holds, and why not.
 with the Win32 security API through ctypes:
 
 * The file and each folder above it must be owned by SYSTEM, Administrators or
-  TrustedInstaller (on a file server also the domain's Domain Admins or
-  Enterprise Admins), and no entry may allow anyone else a right that changes
+  TrustedInstaller, and no entry may allow anyone else a right that changes
   it: write or append (in a folder, add files or folders), change attributes,
   delete, delete what's in it, change permissions, take ownership, or the
   generic write and full-control rights. That includes the entry every folder
@@ -22,14 +21,28 @@ with the Win32 security API through ctypes:
   entries, which only take rights away. CREATOR OWNER and CREATOR GROUP grant
   nothing on an object that exists; OWNER RIGHTS is the owner, checked first.
   An allow entry Lumi can't read counts against the file.
+* On a network share (a UNC path, ``\\\\server\\share``) the Domain Admins and
+  Enterprise Admins of the domain this computer belongs to count as
+  administrators too: they own and run file servers, and they administer
+  every computer in the domain. Never another domain's, and never on a local
+  path, where only this computer's administrators count.
 * The root is ProgramData for a file under it, otherwise the drive's root or
   the network share's root. People may create folders there (Windows lets any
   user add folders to ``C:\\``), so only what would let them replace a folder
   that exists counts: an owner who isn't an administrator, or anyone else's
   right to delete what's in it, change its permissions or take ownership, and
   for ProgramData to delete (rename) the folder itself.
-* A link on the way (a symbolic link or junction) points somewhere this check
-  didn't look, so it counts against the file.
+* A link anywhere on the way (a symbolic link or junction), the root included,
+  points somewhere this check didn't look, so it counts against the file.
+* A path that names an alternate data stream (``policy.json:other``) is never
+  a policy file.
+
+The check and the later read open the path separately. That is safe because
+the check proved the file and every folder above it can be changed only by
+administrators: replacing either between the two takes administrator rights.
+(A person can always change what their own copy of Lumi sees, by running a
+changed copy; this protects the organization's files, not a process from the
+person running it.)
 
 **macOS and Linux.** ``stat``: the file and each folder above it up to the
 root (``/etc``, ``/Library/Application Support``, ``/Library``) must be owned
@@ -67,9 +80,11 @@ SYSTEM = "S-1-5-18"
 ADMINISTRATORS = "S-1-5-32-544"
 TRUSTED_INSTALLER = "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464"
 ADMIN_SIDS = frozenset({SYSTEM, ADMINISTRATORS, TRUSTED_INSTALLER})
-# Domain Admins and Enterprise Admins: every domain computer's administrators,
-# and the usual owners of files on a file server (S-1-5-21-<domain>-<rid>).
-DOMAIN_ADMIN_RIDS = frozenset({"512", "519"})
+# Domain Admins and Enterprise Admins (S-1-5-21-<domain>-<rid>): administrators
+# of every computer in the domain and the usual owners of files on a file
+# server. They count only on a network share, and only for this computer's
+# own domain (machine_domain_sid).
+DOMAIN_ADMIN_RIDS = ("512", "519")
 # Placeholders that grant nothing on an object that already exists (CREATOR
 # OWNER, CREATOR GROUP), and OWNER RIGHTS, which is the owner checked first.
 NO_GRANT_SIDS = frozenset({"S-1-3-0", "S-1-3-1", "S-1-3-4"})
@@ -248,28 +263,34 @@ def describe_rights(mask: int, *, folder: bool) -> str:
     return _join(names) if names else f"rights 0x{mask:x}"
 
 
-def is_admin_sid(sid: str | None) -> bool:
-    """SYSTEM, Administrators, TrustedInstaller, or a domain's Domain Admins or Enterprise Admins."""
+def is_admin_sid(sid: str | None, domain: str | None = None) -> bool:
+    """SYSTEM, Administrators or TrustedInstaller; with ``domain`` (the computer's
+    domain SID, for a network share) also that domain's Domain Admins and Enterprise Admins."""
     if not sid:
         return False
     if sid in ADMIN_SIDS:
         return True
-    parts = sid.split("-")
-    return sid.startswith("S-1-5-21-") and len(parts) == 8 and parts[-1] in DOMAIN_ADMIN_RIDS
+    return bool(domain) and sid in {f"{domain}-{rid}" for rid in DOMAIN_ADMIN_RIDS}
 
 
-def descriptor_problem(descriptor: Descriptor, level: str, name: Callable[[str], str] | None = None) -> str:
+def descriptor_problem(descriptor: Descriptor, level: str, name: Callable[[str], str] | None = None,
+                       domain: str | None = None) -> str:
     """Why people who aren't administrators can change an object with ``descriptor``, or ''.
 
     Words that follow the object's path: "is owned by DESKTOP\\ana, not by
     Administrators, SYSTEM or TrustedInstaller", "lets BUILTIN\\Users change it
-    (add files and add folders)". ``level`` is one of ``chain``'s.
+    (add files and add folders)". ``level`` is one of ``chain``'s; ``domain``
+    is the computer's domain SID for an object on a network share
+    (``is_admin_sid``), None on a local path.
     """
     name = name or account_name
     if not descriptor.owner:
         return "has no owner"
-    if not is_admin_sid(descriptor.owner):
-        return f"is owned by {name(descriptor.owner)}, not by Administrators, SYSTEM or TrustedInstaller"
+    if not is_admin_sid(descriptor.owner, domain):
+        admins = "Administrators, SYSTEM or TrustedInstaller"
+        if domain:
+            admins += ", or this computer's domain's Domain Admins or Enterprise Admins"
+        return f"is owned by {name(descriptor.owner)}, not by {admins}"
     if descriptor.dacl is None:
         return "has no access control list, so everyone can change it"
     watched = {"root": REPLACES | DELETE, "anchor": REPLACES}.get(level, CHANGES)
@@ -284,7 +305,7 @@ def descriptor_problem(descriptor: Descriptor, level: str, name: Callable[[str],
         words = describe_rights(ace.mask if whole else rights, folder=level != "file")
         if ace.sid is None:
             return f"has a permission entry Lumi can't read that allows changes ({words})"
-        if ace.sid in NO_GRANT_SIDS or is_admin_sid(ace.sid):
+        if ace.sid in NO_GRANT_SIDS or is_admin_sid(ace.sid, domain):
             continue
         return f"lets {name(ace.sid)} change it ({words})"
     return ""
@@ -302,6 +323,20 @@ def _plain_windows_path(text: str) -> str | None:
     if text.startswith("\\\\.\\"):
         return None
     return text
+
+
+def names_stream(text: str) -> bool:
+    r"""Whether a Windows path names an alternate data stream (``C:\x\policy.json:other``), not a file.
+
+    A colon is valid only right after a drive letter; one anywhere else opens
+    a stream of the file or folder before it. The same on every platform, so
+    tests of Windows paths agree.
+    """
+    import ntpath
+
+    plain = _plain_windows_path(text) or text
+    drive, rest = ntpath.splitdrive(plain)
+    return ":" in rest or (drive.startswith("\\\\") and ":" in drive)
 
 
 def _is_link(path: Path) -> bool:
@@ -327,18 +362,24 @@ def _check_windows(path: Path, root: Path | None) -> Trust:
     plain = _plain_windows_path(str(path))
     if plain is None:
         return Trust(False, f"{path} is a device path, not a file")
+    if names_stream(plain):
+        return Trust(False, f"{path} names an alternate data stream, not a file")
     target = Path(os.path.abspath(plain))
     top = None
     if root is not None:
         top_plain = _plain_windows_path(str(root))
         top = Path(os.path.abspath(top_plain)) if top_plain else None
     items = chain(target, top)
-    # Links first: any user may make a folder under ProgramData a junction to
-    # an administrator's folder elsewhere, so behind a link even a file an
-    # administrator owns says nothing about who put it on this path.
-    for item, level in items:
-        if level in ("file", "folder") and _is_link(item):
+    # Links first, at every level down from the root: any user may make a
+    # folder under ProgramData a junction to an administrator's folder
+    # elsewhere, so behind a link even a file an administrator owns says
+    # nothing about who put it on this path.
+    for item, _ in items:
+        if _is_link(item):
             return Trust(False, f"{item} is a link (a symbolic link or junction) to another place")
+    # A network share's files may belong to this computer's domain's Domain
+    # Admins or Enterprise Admins; a local path's only to this computer's administrators.
+    domain = machine_domain_sid() if str(target).startswith("\\\\") else None
     descriptors = []
     for item, _ in items:
         try:
@@ -349,13 +390,71 @@ def _check_windows(path: Path, root: Path | None) -> Trust:
     # administrator's: a person can move a file an administrator owns (one an
     # elevated installer left in their profile) into a folder they made, but
     # can't make that folder an administrator's.
-    admin_owned = (is_admin_sid(descriptors[0].owner) and _single_name(target)
-                   and len(descriptors) > 1 and is_admin_sid(descriptors[1].owner))
+    admin_owned = (is_admin_sid(descriptors[0].owner, domain) and _single_name(target)
+                   and len(descriptors) > 1 and is_admin_sid(descriptors[1].owner, domain))
     for (item, level), descriptor in zip(items, descriptors):
-        problem = descriptor_problem(descriptor, level)
+        problem = descriptor_problem(descriptor, level, domain=domain)
         if problem:
             return Trust(False, f"{item} {problem}", admin_owned)
     return Trust(True, admin_owned=admin_owned)
+
+
+@functools.lru_cache(maxsize=1)
+def machine_domain_sid() -> str | None:
+    """The SID of the domain this computer belongs to (LSA's primary domain), or None.
+
+    None on a computer in a workgroup, off Windows, or when Windows won't say:
+    then no domain group counts as an administrator. Read locally from the
+    computer's own settings, never from the environment or the network.
+    """
+    if os.name != "nt":
+        return None
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        advapi = ctypes.WinDLL("advapi32", use_last_error=True)
+
+        class _LsaUnicodeString(ctypes.Structure):
+            _fields_ = [("Length", wintypes.USHORT), ("MaximumLength", wintypes.USHORT),
+                        ("Buffer", ctypes.c_void_p)]
+
+        class _LsaObjectAttributes(ctypes.Structure):
+            _fields_ = [("Length", wintypes.ULONG), ("RootDirectory", wintypes.HANDLE),
+                        ("ObjectName", ctypes.c_void_p), ("Attributes", wintypes.ULONG),
+                        ("SecurityDescriptor", ctypes.c_void_p), ("SecurityQualityOfService", ctypes.c_void_p)]
+
+        class _PrimaryDomainInfo(ctypes.Structure):
+            _fields_ = [("Name", _LsaUnicodeString), ("Sid", ctypes.c_void_p)]
+
+        advapi.LsaOpenPolicy.argtypes = [ctypes.c_void_p, ctypes.POINTER(_LsaObjectAttributes), wintypes.DWORD,
+                                         ctypes.POINTER(ctypes.c_void_p)]
+        advapi.LsaOpenPolicy.restype = wintypes.ULONG
+        advapi.LsaQueryInformationPolicy.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.POINTER(ctypes.c_void_p)]
+        advapi.LsaQueryInformationPolicy.restype = wintypes.ULONG
+        advapi.LsaFreeMemory.argtypes = [ctypes.c_void_p]
+        advapi.LsaFreeMemory.restype = wintypes.ULONG
+        advapi.LsaClose.argtypes = [ctypes.c_void_p]
+        advapi.LsaClose.restype = wintypes.ULONG
+        attributes, handle = _LsaObjectAttributes(), ctypes.c_void_p()
+        # POLICY_VIEW_LOCAL_INFORMATION, which every user has.
+        if advapi.LsaOpenPolicy(None, ctypes.byref(attributes), 0x1, ctypes.byref(handle)):
+            return None
+        try:
+            buffer = ctypes.c_void_p()
+            if advapi.LsaQueryInformationPolicy(handle, 3, ctypes.byref(buffer)):  # PolicyPrimaryDomainInformation
+                return None
+            try:
+                info = ctypes.cast(buffer, ctypes.POINTER(_PrimaryDomainInfo)).contents
+                sid = _sid_text(info.Sid) if info.Sid else ""
+                return sid if sid.startswith("S-1-5-21-") else None
+            finally:
+                advapi.LsaFreeMemory(buffer)
+        finally:
+            advapi.LsaClose(handle)
+    except Exception:  # an unknown domain grants nobody anything
+        logger.debug("This computer's domain couldn't be read", exc_info=True)
+        return None
 
 
 @functools.lru_cache(maxsize=1)

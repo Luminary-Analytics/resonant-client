@@ -40,8 +40,10 @@ folder the operating system protects, can't be changed by anyone else:
 
 - **Windows** (the file, and each folder up to ProgramData for a file under
   it, otherwise up to the drive's or the network share's root):
-  - the owner is SYSTEM, Administrators or TrustedInstaller (for a file on a
-    domain file server also Domain Admins or Enterprise Admins);
+  - the owner is SYSTEM, Administrators or TrustedInstaller. On a network
+    share named by its UNC path (`\\server\share\...`, not a mapped drive
+    letter), the Domain Admins and Enterprise Admins of the domain this
+    computer belongs to count too, never another domain's;
   - no permission entry lets anyone else write, append (in a folder: add files
     or folders), change attributes, delete, delete what's inside, change
     permissions or take ownership. That includes the entry every folder made
@@ -50,7 +52,9 @@ folder the operating system protects, can't be changed by anyone else:
     is created later (inherit-only) and deny entries don't count;
   - ProgramData itself, or the drive's or share's root, may let people add
     folders, but not delete what's in it or change its permissions or owner;
-  - no symbolic link or junction on the way.
+  - no symbolic link or junction on the way, the root included;
+  - the path names a file, not an alternate data stream
+    (`policy.json:other`).
 - **macOS and Linux:** the file and each folder up to `/Library/Application
   Support`, `/Library` (for the configuration profile) or `/etc` are owned by
   root and not writable by their group or others.
@@ -108,11 +112,11 @@ The well-known SIDs (SYSTEM, Administrators, Users) work in every language.
 Setting the owner last covers files copied by an administrator account that
 owns what it creates (the "Object creator" default-owner setting): a file
 owned by a person's account, even an administrator's, doesn't count.
-For a `PolicyFile` on a file server, give its folder, and every folder above
-it in the share, the same shape: administrators (Domain Admins may stay) with
-full control, everyone else read at most; the share's root may let people add
-files, but not delete them or change permissions. Then check with
-`lumi policy`.
+For a `PolicyFile` on a file server, name it by its UNC path and give its
+folder, and every folder above it in the share, the same shape:
+administrators (this domain's Domain Admins may stay) with full control,
+everyone else read at most; the share's root may let people add files, but
+not delete them or change permissions. Then check with `lumi policy`.
 
 ## The document
 
@@ -241,7 +245,9 @@ read (a share out of reach, a missing file, a path that isn't a full one) or
 people other than administrators can change it: Lumi never runs with no
 policy, or with `C:\ProgramData\Lumi\policy.json` or `LUMI_POLICY_FILE`,
 instead. For laptops that leave the network, copy the policy to a local
-folder you lock down, or put it in the `Policy` value itself.
+folder you lock down, or put it in the `Policy` value itself. Lumi can't keep
+a last good copy for you: it runs as the person, who can't write the folders
+only administrators can.
 
 Invalid includes a section that isn't an object, such as
 `"permissions": "ask only"`, and a true-or-false value written as text, such

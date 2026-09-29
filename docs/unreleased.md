@@ -20,16 +20,19 @@ couldn't read left it without the organization's policy. See
 
 - **The check** (`lumi/admin_files.py`, ctypes, no pywin32). Windows: the
   file and each folder up to ProgramData (or the drive's or share's root)
-  must be owned by SYSTEM, Administrators or TrustedInstaller (Domain Admins
-  and Enterprise Admins for files on a file server), and no permission entry
-  may let anyone else write, append, add files or folders, change attributes,
-  delete, change permissions or take ownership, including the
-  `BUILTIN\Users:(CI)(WD,AD,WEA,WA)` entry every folder made under ProgramData
-  inherits. Inherit-only and deny entries don't count; a junction or symbolic
-  link on the way does. The root itself may let people add folders but not
-  replace them. macOS and Linux: root must own the file and each folder up to
-  `/etc`, `/Library/Application Support` or `/Library`, and none may be
-  writable by its group or others.
+  must be owned by SYSTEM, Administrators or TrustedInstaller, and no
+  permission entry may let anyone else write, append, add files or folders,
+  change attributes, delete, change permissions or take ownership, including
+  the `BUILTIN\Users:(CI)(WD,AD,WEA,WA)` entry every folder made under
+  ProgramData inherits. On a UNC path the Domain Admins and Enterprise Admins
+  of this computer's own domain (read from LSA's primary domain) count too;
+  never another domain's, and never on a local path. Inherit-only and deny
+  entries don't count; a junction or symbolic link anywhere on the way, the
+  root included, does, and a path naming an alternate data stream is refused.
+  The root itself may let people add folders but not replace them. macOS and
+  Linux: root must own the file and each folder up to `/etc`,
+  `/Library/Application Support` or `/Library`, and none may be writable by
+  its group or others.
 - **A file that fails is ignored, never silently:** Settings > Privacy &
   security > Organization policy shows "Policy file ignored: writable by
   non-administrators" with the file and the reason, `lumi policy` lists it,
@@ -58,7 +61,9 @@ couldn't read left it without the organization's policy. See
 - **The MSI creates `%ProgramData%\Lumi` locked** (`packaging/lumi.wxs`,
   `MsiLockPermissionsEx`: owned by Administrators, full control for SYSTEM and
   Administrators, read and execute for Users, nothing inherited), taking over
-  a folder someone made first; uninstalling removes it when empty.
+  a folder someone made first; uninstalling removes it when empty. Each
+  install replaces the folder's owner and permissions, and files inside keep
+  their own owners.
   [Organization policy](enterprise-policy.md#locking-down-a-policy-folder-on-windows)
   gives the icacls recipe for Group Policy and Intune scripts.
 - **`lumi policy`** prints the policy in force as JSON (source, error,

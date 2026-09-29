@@ -78,6 +78,7 @@ from .ws_commands import (  # noqa: F401  (re-exported public surface)
     _save_resonant_md,
     _skill_list_payload,
     _skill_view_payload,
+    refused_turn,
 )
 from .sessions import ProjectManager
 from .settings import SettingsManager
@@ -2796,7 +2797,7 @@ async def _process_chat_message(ws: WebSocket, msg: dict[str, Any]) -> None:
         refusal, code = await asyncio.to_thread(oversight.gate, "app")
         if refusal:
             await ws.send_json(await asyncio.to_thread(ws_commands.gate_status_event, code))
-            await ws.send_json({"event": "error", "message": refusal, "code": code})
+            await ws.send_json(refused_turn(msg, refusal, code=code))
             return
     if msg.get('command') == 'employee_task':
         from .employee_tasks import command as task_command
@@ -2806,10 +2807,15 @@ async def _process_chat_message(ws: WebSocket, msg: dict[str, Any]) -> None:
     if not text:
         return
     if not state.session:
-        await ws.send_json({
-            "event": "error",
-            "message": state.runtime_unavailable_reason(),
-        })
+        await ws.send_json(refused_turn(msg, state.runtime_unavailable_reason()))
+        return
+    # The organization's policy refuses every turn while it can't be used, or
+    # for a model it doesn't allow (Session.run refuses too). Said before the
+    # message is saved or titled, so it goes back to the message box.
+    policy_refusal = getattr(state.session, "policy_refusal", None)
+    refusal = await asyncio.to_thread(policy_refusal) if callable(policy_refusal) else ""
+    if isinstance(refusal, str) and refusal:
+        await ws.send_json(refused_turn(msg, refusal, code="policy_blocked"))
         return
 
     images = None

@@ -314,6 +314,9 @@ _REASONING_FIELDS = ("reasoning_content", "thinking", "reasoning")
 _PART_KEYS = ("text", "description", "caption", "alt_text", "transcript", "extracted_text")
 _DETAIL_KEYS = ("thinking", "text", "summary")
 _PROMPT_PURPOSES = frozenset({"primary", "title", "planning"})
+# Checks of text that isn't a model request (a feedback report the person sends): Lumi's terms don't
+# hold them back in check_request. Every other purpose is a model request (or Engram's memory server).
+NOT_MODEL_REQUESTS = frozenset({"feedback"})
 WITHHELD = "dlp_withheld"
 
 
@@ -681,12 +684,16 @@ def check_request(request: dict, *, purpose: str, provider: str = "", model: str
     ``request`` holds the backend's keyword arguments (``user_msg``,
     ``conversation_history``, ``instructions``, …); the result's ``request``
     has the same keys, with redactions applied to copies. Raises Blocked when
-    the request must not be sent: a block rule matched, the service refused or
-    couldn't answer (``on_error: block``), or the organization's policy (its
-    ``dlp`` section included) can't be used. Send the result with ``send``.
+    the request must not be sent: Lumi's terms aren't accepted yet
+    (``terms.REFUSAL_CODE``; before anything reaches a DLP service), a block
+    rule matched, the service refused or couldn't answer (``on_error:
+    block``), or the organization's policy (its ``dlp`` section included)
+    can't be used. Send the result with ``send``.
     """
     from .policy import blocked_reason, current
 
+    if purpose not in NOT_MODEL_REQUESTS:
+        refuse_until_terms_accepted()
     refusal = blocked_reason()
     if refusal:
         raise Blocked(refusal, code="policy_blocked")
@@ -1002,11 +1009,36 @@ def _enforced() -> bool:
     return (policy is not None and policy.dlp is not None) or bool(blocked_reason())
 
 
+def terms_refusal() -> str:
+    """Why no model request may be sent yet because Lumi's terms wait (lumi/terms.py), or ''.
+
+    For requests Lumi makes over plain HTTP rather than a guarded method (Ollama's warm-up and tool
+    probe): they ask this first and send nothing while it answers.
+    """
+    from . import terms
+
+    return terms.request_refusal()
+
+
+def refuse_until_terms_accepted() -> None:
+    """Raise Blocked (``terms.REFUSAL_CODE``) while Lumi's terms wait to be accepted."""
+    refusal = terms_refusal()
+    if refusal:
+        from .terms import REFUSAL_CODE
+
+        raise Blocked(refusal, code=REFUSAL_CODE)
+
+
 def guarded(method: Any) -> Any:
-    """Mark a method that sends to a model. While ``_enforced``, a call that didn't come
-    through ``send`` or ``permit`` raises Blocked instead of sending."""
+    """Mark a method that sends to a model.
+
+    Until Lumi's terms are accepted (lumi/terms.py), every call raises Blocked with
+    ``terms.REFUSAL_CODE``, under ``send`` or ``permit`` too: fixed text such as a warm-up
+    is still a model request. While ``_enforced``, a call that didn't come through ``send``
+    or ``permit`` raises Blocked instead of sending."""
     @functools.wraps(method)
     def call(*args: Any, **kwargs: Any) -> Any:
+        refuse_until_terms_accepted()
         if not _permit.get() and _enforced():
             where = str(getattr(method, "__qualname__", "") or method)
             logger.error("Refused a model request that skipped the DLP check: %s", where)

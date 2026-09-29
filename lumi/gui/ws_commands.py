@@ -75,6 +75,20 @@ STATUS_UPDATE_STEER = (
 PERMISSION_MODES = frozenset({"ask", "auto-edit", "plan", "bypass"})
 
 
+def refused_turn(msg: dict[str, Any], message: str, **fields: Any) -> dict[str, Any]:
+    """The error for a chat message the server didn't start a turn for.
+
+    The page shows a turn as running from the moment it sends the message;
+    ``refused`` tells it none started, so it ends that state and gives the
+    text back. ``message_id`` names a queued follow-up that won't run.
+    """
+    event: dict[str, Any] = {"event": "error", "message": message, "refused": True, **fields}
+    message_id = msg.get("message_id") if isinstance(msg, dict) else None
+    if message_id:
+        event["message_id"] = str(message_id)
+    return event
+
+
 def _is_connection_closed(exc: BaseException) -> bool:
     """Whether this exception means "the client is gone", not "we have a bug".
 
@@ -141,6 +155,10 @@ class CommandContext:
 
     async def send_error(self, message: str) -> None:
         await self.send({"event": "error", "message": message})
+
+    async def send_refusal(self, message: str, **fields: Any) -> None:
+        """Refuse a chat message before any turn starts (see ``refused_turn``)."""
+        await self.send(refused_turn(self.msg, message, **fields))
 
     @property
     def project_path(self) -> str:
@@ -974,10 +992,23 @@ async def _terms_accept(ctx: CommandContext) -> None:
         accepted = False
     if not accepted:
         logger.info("An acceptance of terms that aren't in force was refused: %s", versions)
-    await ctx.send({"event": "terms_status", "data": await asyncio.to_thread(terms.status)})
+    status = await asyncio.to_thread(terms.status)
+    await ctx.send({"event": "terms_status", "data": status})
     settings = getattr(ctx.state, "settings", None)
-    if accepted and settings is not None:
-        await ctx.send({"event": "voice_status", "data": await asyncio.to_thread(voice.status, settings)})
+    voice_status = await asyncio.to_thread(voice.status, settings) if accepted and settings is not None else None
+    if voice_status is not None:
+        await ctx.send({"event": "voice_status", "data": voice_status})
+    if accepted:
+        # Every other window of this app unlocks too: the acceptance is this computer user's.
+        for viewer in tuple(getattr(ctx.state, "_navigation_viewers", ())):
+            if viewer is ctx.ws:
+                continue
+            try:
+                await viewer.send_json({"event": "terms_status", "data": status})
+                if voice_status is not None:
+                    await viewer.send_json({"event": "voice_status", "data": voice_status})
+            except Exception:
+                logger.debug("A window closed before it heard the terms were accepted", exc_info=True)
 
 
 @command("legal_document")
@@ -1561,11 +1592,22 @@ async def _engram_status(ctx: CommandContext) -> None:
     })
 
 
+async def _engram_refused(ctx: CommandContext) -> bool:
+    """Engram's memory server receives what's recalled or remembered, like a model request: nothing goes
+    while the gate refuses (Lumi's terms, then the organization's notice; oversight.gate). Says why."""
+    refusal, code = await _gate_refusal(ctx)
+    if refusal:
+        await ctx.send({"event": "error", "source": "engram", "message": refusal, "code": code})
+    return bool(refusal)
+
+
 @command("engram_recall")
 async def _engram_recall(ctx: CommandContext) -> None:
     query = ctx.msg.get("query", "")
     engram = ctx.state.engram
     if query and engram.enabled:
+        if await _engram_refused(ctx):
+            return
         memories = await _in_executor(engram.recall, query)
         await ctx.send({"event": "engram_recall", "memories": memories})
     else:
@@ -1577,6 +1619,8 @@ async def _engram_remember(ctx: CommandContext) -> None:
     text = ctx.msg.get("text", "")
     engram = ctx.state.engram
     if text and engram.enabled:
+        if await _engram_refused(ctx):
+            return
         await _in_executor(engram.remember, text)
         await ctx.send({"event": "engram_remembered", "ok": True})
 
@@ -2278,8 +2322,18 @@ async def _cmd_select_backend(ctx: CommandContext) -> None:
 
         # Pre-warm the model so the user's first message doesn't sit
         # at "thinking" for 60-90s while Ollama cold-loads. Fire and
-        # forget — we don't want to block the connect response.
+        # forget — we don't want to block the connect response. A warm-up
+        # is a model request ("hi", or a tool call), so none is sent while
+        # the gate refuses: Lumi's terms or the organization's notice wait
+        # (oversight.gate); the backends refuse it themselves too (lumi/dlp.py).
         backend_for_warm = ctx.state.backend
+        if backend_for_warm and hasattr(backend_for_warm, "warm_up"):
+            from .. import oversight
+
+            refusal, _code = await asyncio.to_thread(oversight.gate, "app")
+            if refusal:
+                logger.info("Skipped the model warm-up: %s", refusal)
+                backend_for_warm = None
         if backend_for_warm and hasattr(backend_for_warm, "warm_up"):
             async def _emit_warm_event(payload: dict):
                 try:
@@ -2331,15 +2385,14 @@ async def _cmd_message(ctx: CommandContext) -> None:
     # Lumi's terms, then organization oversight: nothing reaches a model before
     # they're accepted and its notice is confirmed (lumi/terms.py,
     # lumi/oversight.py); the page's message box is locked too.
+    # A refusal is ``refused`` (refused_turn): the page ends the running state it
+    # showed and gives the text back to the message box.
     refusal, code = await _gate_refusal(ctx)
     if refusal:
-        await ctx.send({"event": "error", "message": refusal, "code": code})
+        await ctx.send_refusal(refusal, code=code)
         return
     if not ctx.state.session:
-        await ctx.send({
-            "event": "error",
-            "message": ctx.state.runtime_unavailable_reason(),
-        })
+        await ctx.send_refusal(ctx.state.runtime_unavailable_reason())
         return
     await ctx.runs.enqueue(ctx.msg)
     return

@@ -9,13 +9,16 @@
  * the button by itself), the message box stays locked
  * (settings_view.js _applyComposerLock) and the server refuses every turn path
  * (oversight.gate). Decline, Escape or the dialog's close button leave a notice
- * above the message box whose Review terms opens the dialog again. When the
- * machine policy accepted Lumi's terms for the organization's people, there is
- * nothing to accept, and About Lumi says who accepted.
+ * above the message box whose Review terms opens the dialog again. Accepting in
+ * one window unlocks every open window of the app (the server tells each one).
+ * A message sent while the terms wait is refused before any turn starts, and
+ * comes back to the message box (app.js _endRefusedTurn). When the machine
+ * policy accepted Lumi's terms for the organization's people, there is nothing
+ * to accept, and About Lumi says who accepted.
  *
- * About Lumi opens the same dialog to read any of the texts Lumi ships,
- * offline: the agreement, the test terms, the privacy notice and the
- * third-party notices.
+ * About Lumi opens the same dialog to read any of the texts this build ships,
+ * offline: the agreement, the test terms on a pre-release build, the privacy
+ * notice and the third-party notices.
  */
 class LumiTermsView {
     _initTermsView() {
@@ -51,6 +54,9 @@ class LumiTermsView {
         if (notice) notice.hidden = !pending;
         const accepting = this._termsDialog?.mode === 'accept';
         if (!pending && accepting) this._termsFocusAfterAccept = true;
+        // Once accepted, terms that wait again (an acceptance that no longer counts) ask again,
+        // even if this page declined the same versions before.
+        if (!pending) this._termsDeclinedFor = null;
         this._termsLocked = pending;
         this._applyComposerLock?.();
         if (!pending && accepting) this.closeTermsDialog({accepted: true});
@@ -62,7 +68,7 @@ class LumiTermsView {
     }
 
     _termsNoticeText(status) {
-        const changed = (status.required || []).some(doc => doc.previous_version && !doc.accepted);
+        const changed = (status.required || []).some(doc => (doc.changed || doc.previous_version) && !doc.accepted);
         return changed
             ? 'Lumi’s terms have changed. Lumi won’t send anything to a model until you accept the new version.'
             : 'Lumi won’t send anything to a model until you accept its terms.';
@@ -187,7 +193,8 @@ class LumiTermsView {
         const body = document.getElementById('terms-dialog-body');
         const error = document.getElementById('terms-dialog-error');
         const consent = document.getElementById('terms-dialog-consent');
-        const named = doc => `the ${esc(doc.title)} (version ${esc(doc.version)}, effective ${esc(doc.effective_text || doc.effective)})`;
+        // A version applies from the day it's accepted; its date is when its text was published (lumi/terms.py).
+        const named = doc => `the ${esc(doc.title)} (version ${esc(doc.version)}, published ${esc(doc.published_text || doc.published)})`;
         if (title) {
             title.textContent = accepting ? 'Lumi’s terms'
                 : state.doc === 'notices' ? 'Third-party notices' : (about(state.doc).title || 'Lumi’s terms');
@@ -196,7 +203,7 @@ class LumiTermsView {
             let words;
             if (accepting && status.error) words = '';
             else if (accepting) {
-                const changed = required.some(doc => doc.previous_version && !doc.accepted);
+                const changed = required.some(doc => (doc.changed || doc.previous_version) && !doc.accepted);
                 words = (changed ? 'Lumi’s terms have changed. Read the new version and accept it to keep using Lumi.'
                     : 'Please read and accept Lumi’s terms to use Lumi. Lumi won’t send anything to a model until you do.')
                     + (status.prerelease ? ' This is a pre-release build, so the Alpha and Beta Test Terms apply along with the End User License Agreement.' : '');
@@ -205,7 +212,11 @@ class LumiTermsView {
                 words = 'The licenses of the third-party components in this copy of Lumi.';
             } else {
                 const doc = about(state.doc);
-                words = doc.version ? `Version ${doc.version}, effective ${doc.effective_text || doc.effective}.` : '';
+                const published = doc.published_text || doc.published;
+                // The privacy notice is read, not accepted; the agreement and test terms apply once accepted.
+                words = !doc.version ? ''
+                    : state.doc === 'privacy' ? `Version ${doc.version}, published ${published}.`
+                    : `Version ${doc.version}, published ${published}. It applies to you from the day you accept it.`;
             }
             intro.textContent = words;
             intro.hidden = !words;

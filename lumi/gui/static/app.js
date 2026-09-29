@@ -214,6 +214,11 @@ const PLAN_STATE_LABELS = {
 const PLAN_FINAL_STATES = new Set(['stopped', 'complete', 'failed', 'ended']);
 
 
+// Error codes that end a turn when the engine refuses it (Session.run): Lumi's
+// terms, the organization's notice or policy, offline mode and budgets.
+const TURN_ENDING_CODES = new Set(['terms_not_accepted', 'oversight_notice', 'policy_blocked', 'offline',
+    'budget_exceeded']);
+
 class LumiApp {
     constructor() {
         this.ws = null;
@@ -1676,6 +1681,7 @@ class LumiApp {
     // ── Send Message ────────────────────────────────────────────
 
     _prepareTurnUI(text, images = []) {
+        this._agentRunRefused = false;
         if (this._renderTimer) {
             clearTimeout(this._renderTimer);
             this._renderTimer = null;
@@ -1882,6 +1888,7 @@ class LumiApp {
         this._queuedMessages.delete(event.message_id);
         this._syncComposerQueue();
         this._prepareTurnUI(text, images);
+        this._pendingTurnText = text;
         this.setRunning(true);
     }
 
@@ -2015,6 +2022,8 @@ class LumiApp {
         }
 
         this._prepareTurnUI(text, this.attachedImages);
+        // Given back if the server refuses the message (_endRefusedTurn).
+        this._pendingTurnText = text;
 
         // Send to server (include images if attached)
         const msg = { command: 'message', text };
@@ -3643,6 +3652,10 @@ class LumiApp {
                 if (event.request_id && event.request_id === this._newSessionRequestId) this._releaseNewSessionGuard();
                 // A refused mission dispatch un-marks its Build button or card (autonomous_view.js).
                 if (event.source === 'mission_dispatch') this._missionDispatchRefused();
+                // The server started no turn for a message (`refused`: Lumi's terms,
+                // the organization's notice or policy, no model): the running state
+                // ends and the text goes back into the message box (_endRefusedTurn).
+                if (event.refused && this._endRefusedTurn(event)) break;
                 // Lumi's terms or organization oversight refused work before any
                 // turn started: the notice above the message box says why
                 // (terms_view.js, settings_view.js), so this is no failed turn
@@ -9764,6 +9777,43 @@ class LumiApp {
 
     // ── Error ───────────────────────────────────────────────────
 
+    /**
+     * The server refused a chat message before any turn started. A refused
+     * follow-up leaves the queue, and the turn it followed keeps running;
+     * otherwise the running state sendMessage set ends. The text goes back
+     * into an empty message box either way. Returns true when nothing more is
+     * shown: a follow-up's refusal is a toast, not a failed turn.
+     */
+    _endRefusedTurn(event) {
+        const queued = event.message_id ? this._queuedMessages?.get(event.message_id) : null;
+        if (queued) {
+            queued.el?.remove();
+            this._queuedMessages.delete(event.message_id);
+            this._syncComposerQueue();
+            this._restoreRefusedText(queued.text);
+            this.showToastMessage(event.message || 'That follow-up wasn’t sent.');
+            return true;
+        }
+        const text = this._pendingTurnText;
+        this._pendingTurnText = '';
+        // Its card shows the reason without Retry or Continue (run_cards.js).
+        this._agentRunRefused = true;
+        this.clearTerminals();
+        this.setRunning(false);
+        this._restoreRefusedText(text);
+        return false;
+    }
+
+    _restoreRefusedText(text) {
+        if (!text || this.userInput.value.trim()) return;
+        this.userInput.value = text;
+        this._markDraftEdited();
+        this._saveDraft();
+        this.userInput.style.height = 'auto';
+        this.userInput.style.height = Math.min(this.userInput.scrollHeight, 200) + 'px';
+        this._syncComposerGutter?.();
+    }
+
     handleError(event) {
         this.removeThinking();
         this._finalizeLiveCollapsedGroup();
@@ -9827,8 +9877,11 @@ class LumiApp {
             total_steps: (this._currentTurn && this._currentTurn.stepCount) || 0,
         });
 
-        // If it was a fatal-ish error, stop running and clean up terminals
-        if (event.message && (
+        // If it was a fatal-ish error, stop running and clean up terminals.
+        // A refusal of Lumi's terms, the organization's notice or policy, offline
+        // mode or a budget ends the turn, and the engine may send no session.end
+        // after it (Session.run returns at once when it refuses a turn).
+        if (TURN_ENDING_CODES.has(event.code) || event.message && (
             event.message.includes('step limit') ||
             event.message.includes('No backend') ||
             event.message.includes('Cancelled')

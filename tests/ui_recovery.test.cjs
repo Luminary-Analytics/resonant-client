@@ -2914,8 +2914,8 @@ function termsView() {
 
 const TERMS = {pending: true, prerelease: true, organization: '', acceptance_value: 'eula-1.0,alpha-terms-1.0',
     required: [
-        {id: 'eula', title: 'Lumi End User License Agreement', version: '1.0', effective: '2026-09-28', effective_text: 'September 28, 2026', accepted: false, previous_version: ''},
-        {id: 'alpha_terms', title: 'Lumi Alpha and Beta Test Terms', version: '1.0', effective: '2026-09-28', effective_text: 'September 28, 2026', accepted: false, previous_version: ''}],
+        {id: 'eula', title: 'Lumi End User License Agreement', version: '1.0', published: '2026-09-29', published_text: 'September 29, 2026', accepted: false, previous_version: ''},
+        {id: 'alpha_terms', title: 'Lumi Alpha and Beta Test Terms', version: '1.0', published: '2026-09-29', published_text: 'September 29, 2026', accepted: false, previous_version: ''}],
     documents: {}};
 
 test('Lumi’s terms open at first launch and lock the message box until Accept', () => {
@@ -2933,7 +2933,7 @@ test('Lumi’s terms open at first launch and lock the message box until Accept'
     app._receiveLegalDocument({id: 'eula', format: 'text', text: 'The agreement'});
     app._receiveLegalDocument({id: 'alpha_terms', format: 'text', text: 'The test terms'});
     assert.match(elements['terms-dialog-body'].innerHTML, /The agreement[\s\S]*The test terms/);
-    assert.match(elements['terms-dialog-consent'].innerHTML, /version 1\.0, effective September 28, 2026\) and the Lumi Alpha/);
+    assert.match(elements['terms-dialog-consent'].innerHTML, /version 1\.0, published September 29, 2026\) and the Lumi Alpha/);
     assert.equal(elements['terms-dialog-accept'].hidden, false);
     // Nothing is sent: not the page's own send, not a script's click on Accept.
     app.sent.length = 0;
@@ -2998,4 +2998,113 @@ test('About Lumi says who accepted the terms and opens every text', () => {
     assert.doesNotMatch(accepted, /data-legal-doc="terms"/);
     const organization = about({...TERMS, pending: false, organization: 'Acme <Corp>'});
     assert.match(organization, /Accepted for everyone who uses Lumi on this computer by Acme &lt;Corp&gt;, through its machine policy\./);
+});
+
+// A message the server refused before any turn started (`refused`: Lumi's terms,
+// the organization's notice or policy) ends the running state sendMessage set,
+// gives the text back to the message box and marks its card "Not sent", with no
+// Retry (the PR #104 review; PR #105's contract). The real turn handlers and
+// run_cards.js, as turnSummaryApp mixes them in.
+function refusedTurnApp() {
+    const app = turnSummaryApp();
+    const calls = [];
+    Object.assign(app, {
+        userInput: {value: '', style: {}, scrollHeight: 40},
+        isRunning: false, _queuedMessages: new Map(), toasts: [],
+        _removeLiveAgentTodoStrip() {}, _syncComposerQueue() {},
+        setRunning(running) { calls.push(`running:${running}`); app.isRunning = running; },
+        clearTerminals() { calls.push('clearTerminals'); },
+        _markDraftEdited() { calls.push('draftEdited'); },
+        _saveDraft() { calls.push(`draftSaved:${app.userInput.value}`); },
+        showToastMessage(message) { app.toasts.push(message); },
+    });
+    app.calls = calls;
+    // What sendMessage does before the message leaves: the optimistic turn, running.
+    app.sendTurn = text => {
+        app._prepareTurnUI(text, []);
+        app._pendingTurnText = text;
+        app.setRunning(true);
+        app.userInput.value = '';
+    };
+    app.card = () => {
+        const card = app.chatMessages.children.filter(node => node.classList.contains('task-card')).at(-1);
+        const footer = card.children[3];
+        const summary = footer.children.find(child => child.classList.contains('task-run-summary'));
+        return {
+            state: card.dataset.outcome, label: /task-run-label">([^<]*)/.exec(summary?.innerHTML)?.[1] || '',
+            actions: summary.children.filter(child => child.className === 'task-recovery-actions').length,
+            classes: card.className,
+        };
+    };
+    return app;
+}
+
+const TERMS_REFUSAL = 'Lumi won’t send anything to a model until you accept its terms: the Lumi End User License Agreement (version 1.0). Choose Review terms above the message box.';
+
+test('a refused message ends the running state, comes back to the message box and reads Not sent', () => {
+    for (const code of ['terms_not_accepted', 'oversight_notice', 'policy_blocked']) {
+        const app = refusedTurnApp();
+        app.sendTurn('fix the login bug');
+        assert.equal(app.isRunning, true);
+        app.handleEvent({event: 'error', refused: true, code, message: TERMS_REFUSAL});
+        assert.equal(app.isRunning, false, code);
+        assert.equal(app.userInput.value, 'fix the login bug', code);
+        assert.ok(app.calls.includes('clearTerminals') && app.calls.includes('draftSaved:fix the login bug'), code);
+        assert.equal(app._pendingTurnText, '', code);
+        const card = app.card();
+        assert.equal(card.label, 'Not sent', code);
+        assert.equal(card.actions, 0, code);  // nothing to retry: the text is in the message box
+        assert.match(card.classes, /task-card-warning/, code);
+    }
+});
+
+test('a refusal never overwrites what the person typed meanwhile, and a refused follow-up leaves the queue', () => {
+    const app = refusedTurnApp();
+    app.sendTurn('first message');
+    app.userInput.value = 'typed since';
+    app.handleEvent({event: 'error', refused: true, code: 'terms_not_accepted', message: TERMS_REFUSAL});
+    assert.equal(app.userInput.value, 'typed since');
+    // A follow-up queued behind a running turn: that turn keeps running, the follow-up comes back.
+    const queued = refusedTurnApp();
+    queued.sendTurn('running turn');
+    const removed = [];
+    queued._queuedMessages.set('m2', {text: 'the follow-up', el: {remove: () => removed.push('m2')}});
+    queued.handleEvent({event: 'error', refused: true, code: 'terms_not_accepted', message: TERMS_REFUSAL,
+        message_id: 'm2'});
+    assert.equal(queued.isRunning, true);
+    assert.deepEqual(removed, ['m2']);
+    assert.equal(queued._queuedMessages.size, 0);
+    assert.equal(queued.userInput.value, 'the follow-up');
+    assert.deepEqual(queued.toasts, [TERMS_REFUSAL]);
+});
+
+test('a refusal the engine gives after a turn started ends the running state too', () => {
+    // Session.run returns at once when the gate or the policy refuses, with no session.end.
+    for (const code of ['terms_not_accepted', 'oversight_notice', 'policy_blocked', 'offline', 'budget_exceeded']) {
+        const app = refusedTurnApp();
+        app.sendTurn('hello');
+        app.handleEvent({event: 'error', code, message: 'Refused.'});
+        assert.equal(app.isRunning, false, code);
+        assert.equal(app.userInput.value, '', code);  // the message was saved with the turn
+        assert.equal(app.card().label, 'Failed', code);
+    }
+    const other = refusedTurnApp();
+    other.sendTurn('hello');
+    other.handleEvent({event: 'error', code: 'model_error', message: 'The model stopped responding.'});
+    assert.equal(other.isRunning, true);  // an error mid-turn waits for its session.end, as before
+});
+
+test('About Lumi on a stable build offers no test terms, and says what leaves the computer', () => {
+    const {app} = termsView();
+    const about = terms => { app.aboutInfo = {version: '0.20.0', license: 'Lumi End User License Agreement', terms}; return app._renderAbout(); };
+    const stable = about({...TERMS, prerelease: false, pending: false, readable: ['eula', 'privacy'],
+        required: [{...TERMS.required[0], accepted: true, accepted_at: '2026-09-29T12:00:00Z'}]});
+    assert.doesNotMatch(stable, /data-legal-doc="alpha_terms"/);
+    for (const id of ['eula', 'privacy', 'notices']) assert.match(stable, new RegExp(`data-legal-doc="${id}"`));
+    const beta = about({...TERMS, readable: ['eula', 'alpha_terms', 'privacy']});
+    assert.match(beta, /data-legal-doc="alpha_terms"/);
+    // The review: About said Luminary receives only the update check.
+    assert.doesNotMatch(stable, /receives only the update check/);
+    assert.match(stable, /Lumi Cloud receives more only when you sign in or this computer is enrolled/);
+    assert.match(stable, /usage and crash counts/);
 });

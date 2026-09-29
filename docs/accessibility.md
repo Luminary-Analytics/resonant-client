@@ -67,6 +67,14 @@
     Escape returns focus to the button that opened the text.
   - Text contrast measured 6.2:1 or more (Accept in the light theme) in both
     themes, and the dialog fits at 375 px without a horizontal scroll.
+- **Added September 29**: a message refused because the terms wait again
+  (their acceptance no longer counts) leaves the running state: Stop goes,
+  the text comes back to the message box and its card reads "Not sent",
+  with no Retry; the terms dialog opens again, and accepting from the
+  keyboard returns focus to the message box with the text in it. At 375 px
+  the card fits in both themes, its label at 15.8:1 (dark) and 16:1 (light)
+  and its reason at 7.8:1 and 6.4:1. Accepting in one window unlocks a second
+  open window without a reload (tests/terms_acceptance.browser.cjs).
 
 ## Fixed during this review
 

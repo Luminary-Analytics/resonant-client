@@ -326,18 +326,24 @@ class LumiSettingsView {
             ? `Installed from ${installer[0]}; ${installer[1]} updates it.`
             : info.organization ? `Managed by ${esc(info.organization)}.` : '';
         const row = (label, body) => `<div class="settings-row"><div class="settings-row-copy"><span class="settings-row-label">${label}</span><div class="settings-row-hint">${body}</div></div></div>`;
-        // An organization's oversight sends its Lumi Cloud more (lumi/oversight.py); say so here too.
+        // What leaves this computer, in short (lumi/legal/PRIVACY.md says it all):
+        // model requests, update checks, and Lumi Cloud only when signed in or
+        // enrolled. An organization's oversight sends its Lumi Cloud more
+        // (lumi/oversight.py); say so here too.
+        const leaves = 'Your prompts and code go to the model providers you choose, under your own accounts. Update checks go to Luminary Analytics’ update site unless you turn them off in Updates. Lumi Cloud receives more only when you sign in or this computer is enrolled in an organization (what you share or hand off, tasks from chat and approvals, and an enrolled computer’s usage and crash counts), and feedback only when you send it.';
         const oversight = this.oversightStatus?.configured
-            ? `Your prompts, code and keys go to the model providers you choose. ${esc(this.oversightStatus.notice)} Privacy & security lists exactly what. Luminary Analytics also receives the update check, which you can turn off in Updates.`
-            : 'Your prompts, code and keys go only to the model providers you choose. Luminary Analytics receives only the update check, which you can turn off in Updates.';
-        // Lumi's terms (lumi/terms.py): who accepted them, and every text Lumi ships,
-        // readable offline in the terms dialog (terms_view.js).
+            ? `${leaves} ${esc(this.oversightStatus.notice)} Privacy & security lists exactly what your organization receives.`
+            : leaves;
+        // Lumi's terms (lumi/terms.py): who accepted them, and every text this build
+        // ships, readable offline in the terms dialog (terms_view.js). The test terms
+        // apply only to a pre-release build, so only one offers them.
         const terms = info.terms || this.termsStatus || {};
+        const readable = Array.isArray(terms.readable) ? terms.readable : (terms.prerelease ? ['alpha_terms'] : []);
         const legal = (id, label) => `<button type="button" class="btn-sm" id="about-legal-${id}" data-legal-doc="${id}">${label}</button>`;
         const documents = [
             terms.pending ? legal('terms', 'Review terms') : '',
             legal('eula', 'License agreement'),
-            legal('alpha_terms', 'Alpha and beta test terms'),
+            readable.includes('alpha_terms') ? legal('alpha_terms', 'Alpha and beta test terms') : '',
             legal('privacy', 'Privacy notice'),
             legal('notices', 'Third-party notices'),
         ].filter(Boolean).join(' ');

@@ -2,8 +2,11 @@
  * at first launch, the locked message box, a script's click and a raw socket message that get
  * nothing through, the keyboard path (focus starts in the text, Tab stays in the dialog, Escape
  * declines, Review terms reopens, Enter on Accept accepts), the recorded acceptance, the unlocked
- * box reaching the model, About Lumi's texts read offline, an organization's machine policy, and
- * the dialog at 375 px in both themes. Inference is scripted; nothing leaves the loopback
+ * box reaching the model, a second window unlocking with the first, a message refused after the
+ * acceptance vanished (the running state ends, the text comes back, its card reads Not sent), About
+ * Lumi's texts read offline, an organization's machine policy, the dialog at 375 px in both themes,
+ * and a model chosen while the terms wait getting no warm-up (a recording Ollama: nothing reaches it
+ * until the terms are accepted). Inference is scripted; nothing leaves the loopback
  * (tests/fixtures/terms_ui_server.py).
  * node tests/terms_acceptance.browser.cjs [absolute-path-to-playwright-module]
  * Optional TERMS_PYTHON selects the Python that runs the fixture.
@@ -46,6 +49,30 @@ function contrastOf(selector) {
 
 const active = page => page.evaluate(() => document.activeElement?.id || document.activeElement?.tagName);
 
+// Accept from the keyboard: Tab from the text to Accept, then Enter (a trusted key press).
+async function acceptWithKeyboard(page) {
+    await page.locator('#terms-dialog').waitFor();
+    await page.locator('#terms-dialog-body').focus();
+    for (let i = 0; i < 8 && (await active(page)) !== 'terms-dialog-accept'; i++) await page.keyboard.press('Tab');
+    assert.equal(await active(page), 'terms-dialog-accept');
+    await page.keyboard.press('Enter');
+    await page.waitForFunction(() => window.app?.termsStatus?.pending === false);
+    await page.locator('#terms-dialog').waitFor({state: 'hidden'});
+}
+
+// The running state and the last card, as the person sees them.
+function turnState() {
+    const cards = [...document.querySelectorAll('.task-card')];
+    const card = cards[cards.length - 1];
+    const stop = document.getElementById('stop-btn');
+    return {
+        running: Boolean(app.isRunning), stopShown: Boolean(stop && getComputedStyle(stop).display !== 'none'),
+        composer: document.getElementById('user-input').value,
+        label: card?.querySelector('.task-run-label')?.textContent || '',
+        retry: Boolean(card?.querySelector('[data-recovery]')),
+    };
+}
+
 test('Lumi’s terms lock the app until the dialog’s own Accept, from the keyboard too', {timeout: 150000}, async () => {
     const output = fs.mkdtempSync(path.join(os.tmpdir(), 'lumi-terms-browser-'));
     const server = spawn(process.env.TERMS_PYTHON || 'python', [path.join(__dirname, 'fixtures/terms_ui_server.py'), output],
@@ -84,7 +111,7 @@ test('Lumi’s terms lock the app until the dialog’s own Accept, from the keyb
         await body.getByRole('heading', {name: 'Lumi End User License Agreement'}).waitFor();
         await body.getByRole('heading', {name: 'Lumi Alpha and Beta Test Terms'}).waitFor();
         record.consent = await page.locator('#terms-dialog-consent').innerText();
-        assert.match(record.consent, /^By choosing Accept, you agree to the Lumi End User License Agreement \(version 1\.0, effective .+\) and the Lumi Alpha and Beta Test Terms \(version 1\.0/);
+        assert.match(record.consent, /^By choosing Accept, you agree to the Lumi End User License Agreement \(version 1\.0, published .+\) and the Lumi Alpha and Beta Test Terms \(version 1\.0/);
         assert.equal(await active(page), 'terms-dialog-body', 'reading starts in the text, never on Accept');
         assert.equal(await page.locator('#user-input').isDisabled(), true);
         assert.equal(await page.locator('#user-input').getAttribute('placeholder'), 'Accept Lumi’s terms to start');
@@ -103,6 +130,14 @@ test('Lumi’s terms lock the app until the dialog’s own Accept, from the keyb
         assert.deepEqual((await evidence(info)).requests, [], 'nothing reached the model');
         assert.equal((await evidence(info)).record, null);
         await page.evaluate(() => { app.userInput.value = ''; });
+
+        // A second window of the app, open while the terms wait: it unlocks when the first accepts.
+        const second = await browser.newPage({viewport: {width: 900, height: 700}});
+        second.on('pageerror', error => errors.push('second window: ' + error.message));
+        await second.route('**/*', route => new URL(route.request().url()).hostname === '127.0.0.1' ? route.continue() : route.abort());
+        await second.goto((await (await fetch(info.url + '/__fixture__/launch')).json()).url);
+        await second.waitForFunction(() => window.app?.termsStatus?.pending === true);
+        assert.equal(await second.locator('#user-input').isDisabled(), true);
 
         // Tab stays in the dialog and reaches Accept; Escape declines and focus goes to Review terms.
         const visited = new Set();
@@ -153,12 +188,50 @@ test('Lumi’s terms lock the app until the dialog’s own Accept, from the keyb
         assert.equal(people[0].eula.surface, 'app');
         assert.match(people[0].eula.sha256, /^[0-9a-f]{64}$/);
         record.acceptance = people[0];
+        // The other window unlocked too, without a reload, and its dialog closed.
+        await second.waitForFunction(() => window.app?.termsStatus?.pending === false);
+        await second.waitForFunction(() => !document.getElementById('user-input').disabled);
+        assert.equal(await second.locator('#terms-dialog').isVisible(), false);
+        assert.equal(await second.locator('#terms-notice').isVisible(), false);
+        await second.close();
+        // A run's events go to the newest window (gui/chat_loop.py attach): make this one it again.
+        await page.goto((await (await fetch(info.url + '/__fixture__/launch')).json()).url);
+        await page.waitForFunction(() => window.app?.termsStatus?.pending === false);
+        assert.equal(await page.locator('#terms-dialog').isVisible(), false);
 
         // Now a message reaches the model.
         await page.locator('#user-input').fill('hello after accepting');
         await page.keyboard.press('Enter');
         await page.getByText('Scripted reply after the terms.').first().waitFor();
         assert.ok((await evidence(info)).requests.includes('hello after accepting'));
+        await page.waitForFunction(() => !app.isRunning);
+
+        // The acceptance vanishes on the server (as a new version would) while the page still shows it:
+        // the message is refused before any turn starts. The review saw Stop stay, the turn say Failed
+        // and the draft lost; now the running state ends, the text comes back and the card reads Not sent.
+        await fetch(info.url + '/__fixture__/forget', {method: 'POST'});
+        received.length = 0;
+        await page.locator('#user-input').fill('a message after the acceptance vanished');
+        await page.keyboard.press('Enter');
+        for (let i = 0; i < 50 && !received.some(event => event.refused); i++) await page.waitForTimeout(100);
+        const refused = received.find(event => event.refused);
+        assert.equal(refused?.code, 'terms_not_accepted');
+        await page.waitForFunction(() => !app.isRunning);
+        record.refusedTurn = await page.evaluate(turnState);
+        assert.deepEqual(record.refusedTurn, {running: false, stopShown: false,
+            composer: 'a message after the acceptance vanished', label: 'Not sent', retry: false});
+        // The terms come back, and accepting them again sends the text that waited in the box.
+        await page.locator('#terms-dialog').waitFor();
+        assert.ok(!(await evidence(info)).requests.includes('a message after the acceptance vanished'));
+        await acceptWithKeyboard(page);
+        assert.equal(await active(page), 'user-input');
+        assert.equal(await page.locator('#user-input').inputValue(), 'a message after the acceptance vanished');
+        await page.keyboard.press('Enter');
+        for (let i = 0; i < 80 && !(await evidence(info)).requests.includes('a message after the acceptance vanished'); i++) {
+            await page.waitForTimeout(100);
+        }
+        assert.ok((await evidence(info)).requests.includes('a message after the acceptance vanished'));
+        await page.waitForFunction(() => !app.isRunning);
 
         // About Lumi: who accepted, and every text, read from the copies in the app.
         await page.keyboard.press('Control+Comma');
@@ -239,6 +312,58 @@ test('Lumi’s terms lock the app until the dialog’s own Accept, from the keyb
             };
             for (const [part, ratio] of Object.entries(record.compact[`notice-${theme}`])) assert.ok(ratio >= 4.5, `notice ${part} contrast ${ratio} in ${theme}`);
             await page.screenshot({path: path.join(output, `notice-375-${theme}.png`)});
+        }
+
+        // Choosing a model while the terms wait, as the setup screen's row does: no warm-up reaches it (the
+        // review saw Ollama's "hi" leave). Once they're accepted, choosing it warms it up.
+        await fetch(info.url + '/__fixture__/clear', {method: 'POST'});
+        received.length = 0;
+        await page.evaluate(model => app.selectBackend('ollama', model), info.ollama_model);
+        for (let i = 0; i < 50 && !received.some(event => event.event === 'status_msg'); i++) await page.waitForTimeout(100);
+        await page.waitForTimeout(1500);
+        const chosen = await evidence(info);
+        record.pendingModelChoice = {backend: chosen.backend, ollama: chosen.ollama_requests,
+            warmups: received.filter(event => String(event.event || '').startsWith('model_warmup')).map(event => event.event)};
+        assert.equal(chosen.backend, `ollama:${info.ollama_model}`);
+        assert.deepEqual(chosen.ollama_model_requests, [], 'nothing reached the model before the terms');
+        assert.deepEqual(record.pendingModelChoice.warmups, []);
+        await page.keyboard.press('Escape');  // the dialog came back when the page reconnected
+        await page.locator('#terms-notice-review').click();
+        await acceptWithKeyboard(page);
+        await page.evaluate(model => app.selectBackend('ollama', model), info.ollama_model);
+        for (let i = 0; i < 80 && !(await evidence(info)).ollama_model_requests.length; i++) await page.waitForTimeout(100);
+        const warmed = await evidence(info);
+        record.acceptedModelChoice = warmed.ollama_model_requests.map(body => body.messages);
+        assert.deepEqual(record.acceptedModelChoice, [[{role: 'user', content: 'hi'}]], 'the warm-up, once accepted');
+        await fetch(info.url + '/__fixture__/scripted', {method: 'POST'});
+
+        // At 375 px in both themes, a refused message's card fits and reads.
+        await fetch(info.url + '/__fixture__/forget', {method: 'POST'});
+        received.length = 0;
+        await page.locator('#user-input').fill('refused at 375 px');
+        await page.keyboard.press('Enter');
+        for (let i = 0; i < 50 && !received.some(event => event.refused); i++) await page.waitForTimeout(100);
+        await page.waitForFunction(() => !app.isRunning);
+        assert.equal((await page.evaluate(turnState)).label, 'Not sent');
+        await page.keyboard.press('Escape');
+        for (const theme of ['dark', 'light']) {
+            await page.evaluate(value => window.LumiAppearance.setTheme(value), theme);
+            const card = await page.evaluate(() => {
+                const cards = [...document.querySelectorAll('.task-card')];
+                const box = cards[cards.length - 1].getBoundingClientRect();
+                return {left: box.left, right: box.right, width: window.innerWidth,
+                    scroll: document.documentElement.scrollWidth - document.documentElement.clientWidth};
+            });
+            assert.ok(card.left >= 0 && card.right <= card.width && card.scroll <= 0, `the card fits in ${theme}`);
+            await page.evaluate(() => {
+                const cards = [...document.querySelectorAll('.task-card')];
+                cards[cards.length - 1].querySelector('.task-run-label').id = 'refused-label';
+                cards[cards.length - 1].querySelector('.task-run-detail').id = 'refused-detail';
+            });
+            record.compact[`refused-${theme}`] = {label: await page.evaluate(contrastOf, '#refused-label'),
+                detail: await page.evaluate(contrastOf, '#refused-detail')};
+            for (const [part, ratio] of Object.entries(record.compact[`refused-${theme}`])) assert.ok(ratio >= 4.5, `refused ${part} contrast ${ratio} in ${theme}`);
+            await page.screenshot({path: path.join(output, `refused-375-${theme}.png`)});
         }
         assert.deepEqual(errors, []);
         record.ok = true;

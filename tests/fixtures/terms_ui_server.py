@@ -5,7 +5,10 @@ launch (this source tree's version is a development build, so the Alpha and
 Beta Test Terms come with the End User License Agreement), and inference is
 scripted. The shipped template, app, WebSocket handlers, terms module,
 oversight gate and Session run as they do in the app, which asks its person
-(``terms.mark_app_process``: LUMI_ACCEPT_TERMS doesn't apply). Nothing leaves
+(``terms.mark_app_process``: LUMI_ACCEPT_TERMS doesn't apply). Choosing a model
+in the app builds a real OllamaBackend against a loopback Ollama that records
+every request (tests/fixtures/ollama_recorder.py), so the check can tell
+whether a warm-up reached it before the terms were accepted. Nothing leaves
 the loopback. Never a live-model or packaged-desktop qualification.
 """
 from __future__ import annotations
@@ -45,6 +48,11 @@ def main() -> None:
 
     socket.socket.connect = local_connect
 
+    from tests.fixtures import ollama_recorder
+
+    recorder = ollama_recorder.Recorder()
+    ollama_server, ollama_url = ollama_recorder.start(recorder)
+
     from lumi.paths import state_home
 
     # The state folder must be the fixture's, before anything imports the app.
@@ -53,7 +61,7 @@ def main() -> None:
     (state_home() / "settings.json").write_text(json.dumps({
         "general": {"default_backend": "ollama", "default_model": "fixture-native"},
         "security": {"cli_adapters": False},
-        "network": {"ollama_url": "http://127.0.0.1:9", "exo_url": "http://127.0.0.1:9"},
+        "network": {"ollama_url": ollama_url, "exo_url": "http://127.0.0.1:9"},
     }), encoding="utf-8")
 
     import uvicorn
@@ -82,7 +90,7 @@ def main() -> None:
     state.backend = backend
     state.session = Session(backend=backend, project_instructions="Isolated terms fixture.")
     state.session.project_path = str(workspace)
-    state.available_backends = {"ollama": {"models": [spec.model]}}
+    state.available_backends = {"ollama": {"url": ollama_url, "models": [spec.model, ollama_recorder.MODEL]}}
     state.detect_backends = lambda *args, **kwargs: None
 
     async def evidence(request):
@@ -90,6 +98,10 @@ def main() -> None:
         return JSONResponse({
             "kind": "source-app-scripted-terms-browser", "live_providers_called": False,
             "requests": [call["user_msg"] for call in backend.stream_calls],
+            # What reached the recording Ollama, a model chosen in the app (warm-ups included).
+            "ollama_requests": [{"method": item["method"], "path": item["path"]} for item in recorder.requests],
+            "ollama_model_requests": [item["body"] for item in recorder.chats()],
+            "backend": f"{getattr(state.backend, 'name', '')}:{getattr(state.backend, 'model', '')}",
             "record": json.loads(path.read_text(encoding="utf-8")) if path.exists() else None,
             "status": terms.status(),
         })
@@ -112,6 +124,19 @@ def main() -> None:
         policy.set_for_tests(None)
         return JSONResponse({"organization": ""})
 
+    async def scripted(request):
+        # Back to the scripted model, after a check chose the recording Ollama.
+        state.backend_spec = spec
+        state.backend = backend
+        state.session = Session(backend=backend, project_instructions="Isolated terms fixture.")
+        state.session.project_path = str(workspace)
+        state.apply_permission_mode(state.permission_mode, session=state.session)
+        return JSONResponse({"backend": "scripted"})
+
+    async def clear(request):
+        recorder.clear()
+        return JSONResponse({"cleared": True})
+
     async def shutdown(request):
         server.should_exit = True
         return JSONResponse({"stopping": True})
@@ -124,13 +149,17 @@ def main() -> None:
                            Route("/__fixture__/forget", forget, methods=["POST"]),
                            Route("/__fixture__/organization", organization, methods=["POST"]),
                            Route("/__fixture__/personal", personal, methods=["POST"]),
+                           Route("/__fixture__/scripted", scripted, methods=["POST"]),
+                           Route("/__fixture__/clear", clear, methods=["POST"]),
                            Route("/__fixture__/shutdown", shutdown, methods=["POST"])])
     listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     listener.bind(("127.0.0.1", 0))
     server = uvicorn.Server(uvicorn.Config(gui.app, host="127.0.0.1", log_level="warning"))
     print(json.dumps({"url": f"http://127.0.0.1:{listener.getsockname()[1]}", "session_id": current.id,
-                      "home": str(home), "python": sys.executable}), flush=True)
+                      "home": str(home), "python": sys.executable, "ollama": ollama_url,
+                      "ollama_model": ollama_recorder.MODEL}), flush=True)
     server.run(sockets=[listener])
+    ollama_server.shutdown()
 
 
 if __name__ == "__main__":

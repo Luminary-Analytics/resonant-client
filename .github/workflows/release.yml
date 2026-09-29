@@ -82,8 +82,19 @@ jobs:
         run: |
           # GITHUB_REF is refs/tags/v0.2.0 — strip the prefix.
           VERSION="${GITHUB_REF#refs/tags/v}"
+          # A release is X.Y.Z, or X.Y.Z-alpha.N, -beta.N or -rc.N; its hyphen marks a
+          # pre-release here, on GitHub, in the update feeds and in the installers.
+          # A PEP 440 spelling such as 0.20.0rc1 has none and would publish as the
+          # latest stable release, so it stops here (packaging/legal_texts.py
+          # release-check refuses it too).
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-(alpha|beta|rc)\.[0-9]+)?$ ]]; then
+            echo "::error::$VERSION isn't a release version: tag vX.Y.Z, or vX.Y.Z-alpha.N, vX.Y.Z-beta.N or vX.Y.Z-rc.N"
+            exit 1
+          fi
+          if [[ "$VERSION" == *-* ]]; then PRERELEASE=true; else PRERELEASE=false; fi
+          echo "prerelease=$PRERELEASE" >> "$GITHUB_OUTPUT"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "Building release $VERSION"
+          echo "Building release $VERSION (pre-release: $PRERELEASE)"
 
       - name: Sanity check — tag matches __version__
         shell: bash
@@ -192,14 +203,14 @@ jobs:
       # An MSI for Intune, Configuration Manager and Group Policy. MSI versions
       # are three numbers, so betas get none.
       - name: Build the MSI
-        if: ${{ !contains(steps.version.outputs.version, '-') }}
+        if: ${{ steps.version.outputs.prerelease == 'false' }}
         shell: pwsh
         run: |
           dotnet tool install --global wix --version 5.0.2
           ./packaging/build_msi.ps1 -Version "${{ steps.version.outputs.version }}"
 
       - name: Authenticode-sign the MSI
-        if: ${{ !contains(steps.version.outputs.version, '-') }}
+        if: ${{ steps.version.outputs.prerelease == 'false' }}
         shell: pwsh
         env:
           WINDOWS_SIGN_PFX_BASE64: ${{ secrets.WINDOWS_SIGN_PFX_BASE64 }}
@@ -254,7 +265,7 @@ jobs:
           tag_name: ${{ github.ref_name }}
           name: Lumi ${{ steps.version.outputs.version }}
           draft: false
-          prerelease: ${{ contains(steps.version.outputs.version, '-') }}
+          prerelease: ${{ steps.version.outputs.prerelease == 'true' }}
           generate_release_notes: true
           files: |
             dist/installer/lumi-setup-${{ steps.version.outputs.version }}.exe
@@ -348,8 +359,19 @@ jobs:
         shell: bash
         run: |
           VERSION="${GITHUB_REF#refs/tags/v}"
+          # A release is X.Y.Z, or X.Y.Z-alpha.N, -beta.N or -rc.N; its hyphen marks a
+          # pre-release here, on GitHub, in the update feeds and in the installers.
+          # A PEP 440 spelling such as 0.20.0rc1 has none and would publish as the
+          # latest stable release, so it stops here (packaging/legal_texts.py
+          # release-check refuses it too).
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-(alpha|beta|rc)\.[0-9]+)?$ ]]; then
+            echo "::error::$VERSION isn't a release version: tag vX.Y.Z, or vX.Y.Z-alpha.N, vX.Y.Z-beta.N or vX.Y.Z-rc.N"
+            exit 1
+          fi
+          if [[ "$VERSION" == *-* ]]; then PRERELEASE=true; else PRERELEASE=false; fi
+          echo "prerelease=$PRERELEASE" >> "$GITHUB_OUTPUT"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "Building the macOS release $VERSION"
+          echo "Building the macOS release $VERSION (pre-release: $PRERELEASE)"
 
       - name: Sanity check — tag matches __version__
         shell: bash

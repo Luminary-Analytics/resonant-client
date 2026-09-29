@@ -8,12 +8,16 @@ not permanent thresholds or guarantees.
 
 `.github/workflows/tests.yml` checks pushed/PR source; `build-check.yml` checks
 Windows packaging. A `v*.*.*` tag starts `release.yml` on a Windows runner.
-The release workflow checks the tag against `__version__`, fails while Lumi's
-terms still have facts to be provided (`packaging/legal_texts.py
-release-check --release`; [RELEASING.md](../RELEASING.md#lumis-terms)),
-installs test dependencies, runs Ruff and pytest, then invokes
-`scripts/build_clean.ps1`, which also renders the installers' license page
-(`dist/legal/license.rtf`).
+The release workflow refuses a tag that isn't `vX.Y.Z` or `vX.Y.Z-alpha.N`,
+`-beta.N` or `-rc.N` (the hyphen is how GitHub's pre-release flag, the feeds
+and the installers tell a pre-release), checks the tag against `__version__`,
+fails while Lumi's terms still have facts to be provided or a text doesn't
+match its pinned version (`packaging/legal_texts.py release-check --release`;
+[RELEASING.md](../RELEASING.md#lumis-terms)), installs test dependencies, runs
+Ruff and pytest, then invokes `scripts/build_clean.ps1`, which also renders
+the installers' license page (`dist/legal/license.rtf`, and the versions it
+holds in `license-versions.iss`, which the EXE installer records so it shows
+the page once for each version of the terms).
 
 The clean build creates a temporary virtual environment, installs
 `packaging/requirements-release.txt` with `--require-hashes` and then the local

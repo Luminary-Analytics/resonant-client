@@ -7,7 +7,8 @@
 ;
 ; Usage:
 ;   1. Build the bundle and the license page: scripts/build_clean.ps1 (PyInstaller,
-;      then packaging/legal_texts.py rtf --out dist/legal for lumi/__init__.py's version)
+;      then packaging/legal_texts.py rtf --out dist/legal for lumi/__init__.py's version,
+;      which also writes dist/legal/license-versions.iss, included below)
 ;   2. Compile this script:     ISCC.exe packaging/installer.iss /DAppVersion=0.2.0
 ;
 ; The /DAppVersion= switch lets CI override the version per build. If omitted,
@@ -26,12 +27,20 @@
 ;                                         a pre-release version the Alpha and Beta
 ;                                         Test Terms after it (packaging/legal_texts.py).
 ;                                         Setup goes on only once "I accept" is
-;                                         chosen, on every run, updates included
-;                                         (WinSparkle starts this installer as
-;                                         it is). /SILENT and /VERYSILENT skip
-;                                         the page; Lumi asks for the terms at
+;                                         chosen. An installation records the
+;                                         versions its page showed (HKLM64
+;                                         SOFTWARE\Luminary Analytics\Lumi\Setup),
+;                                         and an update whose terms are those
+;                                         versions skips the page (ShouldSkipPage),
+;                                         so WinSparkle's updates, which start this
+;                                         installer as it is, don't stop on it; a
+;                                         new EULA, or a beta's test terms after a
+;                                         stable install, shows it again. The record
+;                                         is the installer's own, never a person's
+;                                         acceptance: Lumi asks for the terms at
 ;                                         first launch whatever installed it
-;                                         (lumi/terms.py).
+;                                         (lumi/terms.py). /SILENT and /VERYSILENT
+;                                         skip the page and record nothing.
 ;   - ChangesAssociations=no           — we don't claim file extensions.
 ;   - WizardStyle=modern               — built-in modern theme.
 ;   - SignTool=                        — empty (no code signing in v0.x; users
@@ -58,6 +67,10 @@
 #ifndef AppVersion
   #define AppVersion "0.2.0"
 #endif
+
+; LicenseEulaVersion and LicenseAlphaTermsVersion: the versions of Lumi's terms in
+; license.rtf (empty test terms for a stable version), rendered with it.
+#include "..\dist\legal\license-versions.iss"
 
 #define AppName        "Lumi"
 #define AppPublisher   "Luminary Analytics"
@@ -123,6 +136,13 @@ Type: files; Name: "{commondesktop}\SONN Client.lnk"
 Type: files; Name: "{userdesktop}\SONN Client.lnk"
 Type: files; Name: "{userdesktop}\Resonant.lnk"
 
+[Registry]
+; The versions of Lumi's terms this installation's license page showed, so the next
+; installation skips the page while they're the same (ShouldSkipPage below). The
+; installer's own convenience, never a person's acceptance: Lumi never reads it.
+Root: HKLM64; Subkey: "SOFTWARE\Luminary Analytics\Lumi\Setup"; ValueType: string; ValueName: "LicenseEulaVersion"; ValueData: "{#LicenseEulaVersion}"; Flags: uninsdeletekey; Check: not WizardSilent
+Root: HKLM64; Subkey: "SOFTWARE\Luminary Analytics\Lumi\Setup"; ValueType: string; ValueName: "LicenseAlphaTermsVersion"; ValueData: "{#LicenseAlphaTermsVersion}"; Flags: uninsdeletekey; Check: not WizardSilent
+
 [Icons]
 Name: "{group}\{#AppName}"; Filename: "{app}\{#AppExeName}"; Parameters: "gui"
 Name: "{group}\{cm:UninstallProgram,{#AppName}}"; Filename: "{uninstallexe}"
@@ -183,6 +203,47 @@ begin
                        mbError, MB_OK, IDOK);
     Result := False;
   end;
+end;
+
+{ -----------------------------------------------------------------------------
+  Show Lumi's terms once for each version.
+
+  [Registry] records the versions this installation's license page showed.
+  An update whose license.rtf holds the same versions skips the page, so
+  WinSparkle's updates don't stop on it every time. A new version of the
+  EULA shows it again, and so does a pre-release build over a stable
+  installation, whose record has no Alpha and Beta Test Terms. The record is
+  the installer's own: Lumi asks each person to accept its terms itself
+  (lumi/terms.py) and never reads it.
+  ----------------------------------------------------------------------------- }
+const
+  LicenseKey = 'SOFTWARE\Luminary Analytics\Lumi\Setup';
+
+function LicenseAlreadyShown(): Boolean;
+var
+  eula: String;
+  alphaTerms: String;
+begin
+  Result := False;
+  if not RegQueryStringValue(HKLM64, LicenseKey, 'LicenseEulaVersion', eula) then
+    exit;
+  if eula <> '{#LicenseEulaVersion}' then
+    exit;
+  if '{#LicenseAlphaTermsVersion}' <> '' then
+  begin
+    if not RegQueryStringValue(HKLM64, LicenseKey, 'LicenseAlphaTermsVersion', alphaTerms) then
+      exit;
+    if alphaTerms <> '{#LicenseAlphaTermsVersion}' then
+      exit;
+  end;
+  Result := True;
+end;
+
+function ShouldSkipPage(PageID: Integer): Boolean;
+begin
+  Result := False;
+  if PageID = wpLicense then
+    Result := LicenseAlreadyShown();
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);

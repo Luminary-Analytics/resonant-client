@@ -14,7 +14,11 @@
     (lumi/update_channels.py).
   - POLICYFILE="\\server\share\lumi-policy.json" writes the machine policy's
     PolicyFile registry value (docs/enterprise-policy.md), removed again on
-    uninstall.
+    uninstall. The package remembers it (WiX's remember-property pattern: a
+    copy under its own key, read back by AppSearch), so an upgrade that
+    doesn't name POLICYFILE again keeps the value instead of removing it with
+    the version it replaces; one that names it changes it. A PolicyFile Lumi
+    can't read, or that others can change, fails closed (lumi/policy.py).
   - %ProgramData%\Lumi, the machine policy folder, is created locked:
     owned by Administrators, full control for SYSTEM and Administrators, read
     and execute for Users, nothing inherited. Lumi uses a policy or license
@@ -65,6 +69,18 @@
     <Launch Condition="Installed OR NOT EXEINSTALL"
             Message="Lumi is already installed from its EXE installer. Uninstall that copy first (Apps &amp; features, or unins000.exe /VERYSILENT in its folder), then install this package." />
 
+    <!-- POLICYFILE, remembered (see above). Secure, so a value given with the license dialog's
+         UI reaches the elevated install. AppSearch reads the copy the installed version wrote,
+         before an upgrade removes that version; SetPOLICYFILE uses it only when this install
+         names no POLICYFILE, in whichever sequence runs (the UI's, then the install's). -->
+    <Property Id="POLICYFILE" Secure="yes" />
+    <Property Id="REMEMBERED_POLICYFILE" Secure="yes">
+      <RegistrySearch Id="RememberedPolicyFile" Root="HKLM" Bitness="always64" Type="raw"
+                      Key="SOFTWARE\Luminary Analytics\Lumi\Msi" Name="PolicyFile" />
+    </Property>
+    <SetProperty Id="POLICYFILE" Value="[REMEMBERED_POLICYFILE]" After="AppSearch" Sequence="both"
+                 Condition="NOT POLICYFILE AND REMEMBERED_POLICYFILE" />
+
     <StandardDirectory Id="ProgramFiles64Folder">
       <Directory Id="INSTALLFOLDER" Name="Lumi">
         <Component Id="InstallMarker">
@@ -73,6 +89,9 @@
         <Component Id="PolicyFileValue" Condition="POLICYFILE">
           <RegistryValue Root="HKLM" Key="SOFTWARE\Policies\Luminary Analytics\Lumi"
                          Name="PolicyFile" Type="string" Value="[POLICYFILE]" KeyPath="yes" />
+          <!-- The remembered copy RememberedPolicyFile reads at the next upgrade. -->
+          <RegistryValue Root="HKLM" Key="SOFTWARE\Luminary Analytics\Lumi\Msi"
+                         Name="PolicyFile" Type="string" Value="[POLICYFILE]" />
         </Component>
       </Directory>
     </StandardDirectory>

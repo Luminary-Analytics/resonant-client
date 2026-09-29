@@ -33,11 +33,17 @@ msiexec /x lumi-X.Y.Z.msi /qn
   older one; a rebuild of the same version replaces it too.
 - **`POLICYFILE`** (optional) sets the organization policy's `PolicyFile`
   registry value (`HKLM\SOFTWARE\Policies\Luminary Analytics\Lumi`) to a policy
-  file path. Uninstalling removes the value. Group Policy or Intune can set the
-  policy instead; see [Organization policy](enterprise-policy.md). Lumi uses
-  the file only when it and the folders above it can't be changed by anyone
-  but administrators; if it can't read the file (a share out of reach) or
-  others can change it, Lumi refuses model requests until that's fixed
+  file path. The package remembers it (under
+  `HKLM\SOFTWARE\Luminary Analytics\Lumi\Msi`), so an upgrade that doesn't
+  name `POLICYFILE` again keeps the value; one that names it changes it.
+  Uninstalling removes both. Group Policy or Intune can set the policy
+  instead; see [Organization policy](enterprise-policy.md).
+- **A `PolicyFile` fails closed.** Lumi uses the file only when it and the
+  folders above it can't be changed by anyone but administrators. If it can't
+  read the file (a share out of reach, a missing file, a path that isn't a
+  full one) or others can change it, Lumi refuses model requests until that's
+  fixed, and never falls back to a policy further down, such as one a person
+  names with `LUMI_POLICY_FILE`. Settings and `lumi policy` say why
   ([the file rules](enterprise-policy.md#only-files-only-administrators-can-change-count)).
 - **Creates `%ProgramData%\Lumi` locked down**, the folder for a machine
   `policy.json` and `license.json`: owned by Administrators, full control for
@@ -52,7 +58,9 @@ msiexec /x lumi-X.Y.Z.msi /qn
   from the MSI.
 - **A license page when opened by hand.** It shows Lumi's terms (the End User
   License Agreement), and Install is available once the person accepts them.
-  Silent installs show no pages; see [Lumi's terms](#lumis-terms).
+  Silent installs show no pages; see [Lumi's terms](#lumis-terms). Square
+  brackets in the text are RTF escapes, so Windows Installer never reads them
+  as properties.
 
 ## Lumi's terms
 
@@ -63,8 +71,12 @@ Until they do, nothing is sent to a model.
 
 - **Installing by hand:** the EXE's and the MSI's license pages show the terms
   (rendered for the version by `packaging/legal_texts.py`), and setup goes on
-  only once the person accepts them. The EXE shows the page on every run,
-  updates included.
+  only once the person accepts them. The EXE shows its page once for each
+  version of the terms: it records the versions it showed
+  (`HKLM\SOFTWARE\Luminary Analytics\Lumi\Setup`), and an update with the same
+  versions skips the page, while a new EULA, or a beta's test terms after a
+  stable install, shows it again. That record is the installer's own, never
+  a person's acceptance: the app still asks each person.
 - **Silent and managed installs** (`msiexec /qn`, `lumi-setup-X.Y.Z.exe
   /VERYSILENT`, Intune, Configuration Manager, Group Policy) show no license
   page and need no property to accept it: deploying Lumi to your
@@ -74,9 +86,13 @@ Until they do, nothing is sent to a model.
 - **Sparing each person the prompt:** put
   `"legal": {"accepted_by_organization": "Example Corp"}` in the machine policy
   ([Lumi's terms for your organization](enterprise-policy.md#lumis-terms-for-your-organization)).
-  The MSI has no property of its own for this: point `POLICYFILE` at a policy
-  that says so, or set the policy with Group Policy or Intune. Without it,
-  each person accepts once in the app.
+  Only a machine policy from a place only administrators can write counts:
+  the Group Policy key (its `Policy` value, or the `PolicyFile` it names,
+  under the file rules above) or `%ProgramData%\Lumi\policy.json` in a
+  locked folder; never `LUMI_POLICY_FILE` or a Lumi Cloud policy. The MSI has
+  no property of its own for this: point `POLICYFILE` at a policy that says
+  so, or set the policy with Group Policy or Intune. Without it, each person
+  accepts once in the app.
 - **Checking a computer:** `lumi terms` prints `"pending": false` and the
   organization once the policy accepts (redirect its output as below).
 
@@ -170,7 +186,11 @@ Windows runner, then:
   lets every user add files (it fails closed and says why), then applies the
   icacls recipe and runs it again (the policy applies);
 - runs the installed `lumi.exe updates`, which reports updates off, the MSI
-  install and the policy the file set;
+  install and the policy the file set, and `lumi.exe terms`, which reports
+  the terms accepted by the policy's organization;
+- upgrades it with a second build of the same version that doesn't name
+  `POLICYFILE`, and checks the `PolicyFile` value and the policy's
+  acceptance stay;
 - uninstalls it and checks nothing is left, `%ProgramData%\Lumi` included;
 - makes `%ProgramData%\Lumi` a folder the Users group owns and may change,
   installs again, checks the package took it over with the same owner and

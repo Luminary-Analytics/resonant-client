@@ -1,17 +1,21 @@
-"""Git-backed working-tree checkpoints for autonomous iterations."""
+"""Git-backed working-tree checkpoints for autonomous iterations.
+
+Git runs through lumi/safe_git.py: the installed Git without the programs a
+repository's settings name. In an untrusted project whose settings name some,
+no Git runs and ``CheckpointError`` says to trust the project (session
+checkpoints then keep an archive instead: engine/checkpoint_timeline.py).
+"""
 
 from __future__ import annotations
 
 import os
 import re
 import shutil
-import subprocess
 import tempfile
 import time
 from pathlib import Path
 
-from lumi.executables import program
-from lumi.processes import background_process_kwargs
+from lumi.safe_git import GitRefused, run as safe_git
 
 
 class CheckpointError(RuntimeError):
@@ -94,14 +98,7 @@ class IterationCheckpointStore:
         ).stdout.split("\0")
         remove_after = []
         for rel in (value for value in changed if value):
-            probe = subprocess.run(
-                [self._git_executable(), "cat-file", "-e", f"{checkpoint}:{rel}"],
-                cwd=self.project_path,
-                capture_output=True,
-                text=True,
-                check=False,
-                **background_process_kwargs(),
-            )
+            probe = self._git("cat-file", "-e", f"{checkpoint}:{rel}", check=False)
             if probe.returncode != 0:
                 remove_after.append(rel)
 
@@ -172,22 +169,13 @@ class IterationCheckpointStore:
         safe = re.sub(r"[^A-Za-z0-9._-]+", "-", value).strip(".-")
         return safe[:80] or "mission"
 
-    def _git_executable(self) -> str:
-        """The installed Git, never a `git` program from the repository (lumi/executables.py)."""
-        return program("git", exclude=[self.project_path])
-
     def _git(self, *args: str, env: dict | None = None, check: bool = True):
-        result = subprocess.run(
-            [self._git_executable(), *args],
-            cwd=self.project_path,
-            env=env,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            check=False,
-            **background_process_kwargs(),
-        )
+        try:
+            result = safe_git(self.project_path, *args, env=env, timeout=None)
+        except GitRefused as exc:
+            raise CheckpointError(str(exc)) from None
+        except FileNotFoundError as exc:
+            raise CheckpointError(str(exc)) from None
         if check and result.returncode != 0:
             raise CheckpointError(result.stderr.strip() or f"git {' '.join(args)} failed")
         return result

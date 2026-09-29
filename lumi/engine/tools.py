@@ -19,7 +19,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Optional, Sequence
 
-from lumi.executables import find_program, system_program
+from lumi.executables import current_project, find_program, system_program
 from lumi.processes import background_process_kwargs
 
 from .truncation import (
@@ -897,13 +897,13 @@ AGENT_TOOLS = [
         "type": "function",
         "function": {
             "name": "open_application",
-            "description": "Open a desktop application by name. Cross-platform: uses 'start' on Windows, 'open -a' on macOS, direct exec on Linux.",
+            "description": "Open an installed desktop application by name (the program on PATH or registered with the system, never one in the project). On Windows it also opens a web page (https:), mail (mailto:), a Settings page (ms-settings:) or an app by its id (shell:AppsFolder\\<id>), and a document or folder by its full path; it never opens a file that would run (a program, script, shortcut or installer).",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "name": {
                         "type": "string",
-                        "description": "Application name or path (e.g. 'chrome', 'notepad', 'Firefox', 'code')"
+                        "description": "Application name (e.g. 'chrome', 'notepad', 'Firefox', 'code'), or on Windows one of the addresses or a document path described above"
                     }
                 },
                 "required": ["name"]
@@ -1639,7 +1639,7 @@ def execute_tool(
     try:
         if name in {"job_start", "job_status", "job_cancel"}:
             from .jobs import jobs
-            root = project_path or os.getcwd()
+            root = current_project(project_path)
             if name == "job_start":
                 data = jobs.start(root, arguments.get("command"), timeout=arguments.get("timeout", 1200),
                                   cancel_event=cancel_event, sandbox_roots=sandbox_roots)
@@ -1650,11 +1650,11 @@ def execute_tool(
             return ToolResult(json.dumps(data), elapsed=time.time()-start, metadata={"job": data})
         if name == "memory_save":
             from .project_memory import ProjectMemory
-            data = ProjectMemory(project_path or os.getcwd()).save(arguments.get('text', ''), source=arguments.get('source', ''), kind=arguments.get('kind', 'decision'), sources=arguments.get('sources', []), memory_id=arguments.get('id', ''))
+            data = ProjectMemory(current_project(project_path)).save(arguments.get('text', ''), source=arguments.get('source', ''), kind=arguments.get('kind', 'decision'), sources=arguments.get('sources', []), memory_id=arguments.get('id', ''))
             return ToolResult(json.dumps(data), metadata={"memory": data})
         if name.startswith("preview_"):
             from .previews import previews
-            root = project_path or os.getcwd()
+            root = current_project(project_path)
             if name == "preview_start":
                 data = previews.start(root, arguments.get("command"), arguments.get("url", ""),
                                       timeout=arguments.get("timeout", 15), cancel_event=cancel_event,
@@ -1668,7 +1668,7 @@ def execute_tool(
             requirement = str(arguments.get("requirement", "")).strip()
             if not requirement or not str(arguments.get("command", "")).strip():
                 return ToolResult("A check needs a command and requirement.", is_error=True)
-            result = _exec_bash({**arguments, "cwd": project_path or os.getcwd()}, start, cancel_event=cancel_event,
+            result = _exec_bash({**arguments, "cwd": current_project(project_path)}, start, cancel_event=cancel_event,
                                 sandbox_roots=sandbox_roots)
             result.metadata["check"] = {"command": arguments["command"], "requirement": requirement,
                 "status": "failed" if result.is_error else "passed", "exit_code": result.metadata.get("exit_code"),
@@ -1700,7 +1700,7 @@ def execute_tool(
                 return ToolResult(body, metadata={'skill_id': arguments['skill_id'], 'scope': 'team'})
             if str(arguments.get('skill_id', '')).startswith('pack:'):
                 from .capability_packs import CapabilityPackManager
-                manager = CapabilityPackManager(project_path or os.getcwd(), configured=(settings.get('plugins') or {}) if settings else {})
+                manager = CapabilityPackManager(current_project(project_path), configured=(settings.get('plugins') or {}) if settings else {})
                 body = manager.read_skill(arguments['skill_id'])
                 return ToolResult(body, metadata={'skill_id': arguments['skill_id'], 'scope': 'pack'})
             return _exec_skill_view(arguments, start, project_path=project_path)
@@ -1797,19 +1797,19 @@ def execute_tool(
         # Git tools
         elif name == "git_status":
             from .git_tools import exec_git_status
-            return exec_git_status(arguments, start, exclusions=exclusions)
+            return exec_git_status(arguments, start, exclusions=exclusions, trusted=project_trusted)
         elif name == "git_diff":
             from .git_tools import exec_git_diff
-            return exec_git_diff(arguments, start, exclusions=exclusions)
+            return exec_git_diff(arguments, start, exclusions=exclusions, trusted=project_trusted)
         elif name == "git_commit":
             from .git_tools import exec_git_commit
-            return exec_git_commit(arguments, start)
+            return exec_git_commit(arguments, start, trusted=project_trusted)
         elif name == "git_branch_create":
             from .git_tools import exec_git_branch_create
-            return exec_git_branch_create(arguments, start)
+            return exec_git_branch_create(arguments, start, trusted=project_trusted)
         elif name == "git_log":
             from .git_tools import exec_git_log
-            return exec_git_log(arguments, start)
+            return exec_git_log(arguments, start, trusted=project_trusted)
         elif name in ("issue_view", "issue_comment"):
             from . import issue_trackers
 
@@ -1821,7 +1821,11 @@ def execute_tool(
             handler = getattr(github_tools, f"exec_{name}", None)
             if handler is None:
                 return ToolResult(f"Unknown tool: {name}", is_error=True)
-            return handler(arguments, start)
+            trust = github_tools.project_trusted.set(project_trusted)
+            try:
+                return handler(arguments, start)
+            finally:
+                github_tools.project_trusted.reset(trust)
         # REPL tools
         elif name == "repl_python_start":
             from .repl import exec_repl_python_start
@@ -2061,7 +2065,7 @@ def _exec_bash(args: dict, start: float, cancel_event: Optional[threading.Event]
     cmd = args.get("command", "")
     managed_cmd = _normalize_managed_bash_command(cmd)
     timeout = args.get("timeout", 30)
-    cwd = args.get("cwd", os.getcwd())
+    cwd = args.get("cwd") or current_project(None)
 
     # The shell sandbox (engine/os_sandbox.py), when it's on: the command runs
     # inside it, or not at all.

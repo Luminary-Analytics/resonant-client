@@ -27,7 +27,7 @@ process writes one JSON object per line to stdout and exits:
 Messages are ``{"role": "system" | "user" | "assistant" | "tool", "content": text}``;
 an assistant message may carry ``tool_calls`` and a tool message a
 ``tool_call_id``. Images reach the provider as honest text notices. The
-process gets the environment Lumi gives children (``secrets_store.child_env``)
+process gets the environment of the servers Lumi starts (``secrets_store.server_env``)
 plus the connection's key as ``LUMI_PROVIDER_API_KEY``, when one is saved,
 and ``LUMI_EXTENSION_DATA``, a folder of its own for files it keeps.
 
@@ -55,6 +55,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from .. import dlp
+from ..executables import is_absolute
 from ..backends import EVENT_DONE, EVENT_ERROR, EVENT_TEXT_DELTA, EVENT_TOOL_CALL, _described, _new_call_id
 from ..capabilities import ModelCapabilities
 from ..content import content_text, text_fallback
@@ -133,9 +134,9 @@ def command_for(pack: Any, provider: dict) -> list[str]:
     if not isinstance(command, list) or not command:
         raise ProviderExtensionError(f"{label} doesn't run on this system.")
     program = str(command[0])
-    if os.path.isabs(program):
+    if is_absolute(program):  # with its drive: a rooted path without one is the working folder's drive
         return [program, *command[1:]]
-    if os.path.dirname(program):
+    if os.path.dirname(program) or (sys.platform == "win32" and ":" in program):
         root = Path(pack.path).resolve()
         resolved = (root / program).resolve()
         if root not in resolved.parents:
@@ -169,7 +170,7 @@ def run(pack: Any, command: list[str], request: dict, *, api_key: str = "",
     from ..paths import state_home
     from ..processes import background_process_kwargs
 
-    env = secrets_store.child_env()
+    env = secrets_store.server_env()
     env["LUMI_EXTENSION_PROTOCOL"] = str(PROTOCOL)
     env["LUMI_EXTENSION_DATA"] = str(data_dir(pack.id))
     # Bytecode caches go outside the pack, so running it doesn't change what was approved.

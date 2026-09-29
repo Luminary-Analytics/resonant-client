@@ -101,10 +101,20 @@ host enrollment and actual packaged/learned-benefit qualification remain open.
   `NoDefaultCurrentDirectoryInExePath` on Windows, and the app never makes a
   project its working folder: give each command its `cwd`. Commands the
   model or the person asked for (the agent's shell, checks, jobs, previews,
-  hooks, the CLI agents) run in the project by design, with the person's own
-  environment (`secrets_store.child_env`, `executables.person_environment`).
+  hooks) run in the project by design, with the person's own environment
+  (`secrets_store.child_env`, `executables.person_environment`); servers Lumi
+  starts for itself (MCP, language servers, provider extensions, automatic
+  lint and tests, the CLI agents) get `secrets_store.server_env`, which keeps
+  the hardening. Lumi's own Git goes through `lumi/safe_git.py` (`run`/`argv`),
+  never `program("git")` elsewhere: it switches off repository-configured
+  programs and runs no Git in an untrusted project whose settings name some.
+  A project's own tools (`.venv`, `node_modules/.bin`) only through
+  `executables.project_tool` and only when trusted. Open files with
+  `executables.open_path`, which refuses files that would run
+  (`opens_as_program`); show those with `show_in_folder`.
 - Repository-provided instructions, notes, index summaries, policy `allow`
-  rules, automatic lint/test runs and language servers require project trust
+  rules, automatic lint/test runs, language servers, a project's own tools and
+  Lumi's Git in a repository whose settings name programs require project trust
   (`gui/workspace_trust.py`). Repository content must never grant itself trust.
   Only the app, which knows Recent projects, records trust's first run; other
   surfaces read decisions without creating `trusted_projects.json`.

@@ -3078,7 +3078,10 @@ async def websocket_endpoint(ws: WebSocket):
                 if requested_path:
                     try:
                         norm_requested = os.path.normpath(requested_path)
-                        if not os.path.isabs(norm_requested):
+                        # With its drive: a rooted path without one is on the working folder's drive.
+                        from ..executables import is_absolute
+
+                        if not is_absolute(norm_requested):
                             # The app's working folder is never a project (lumi/executables.py).
                             await ws.send_json({"event": "error",
                                                 "message": "Enter the project folder's full path."})
@@ -3477,11 +3480,14 @@ async def websocket_endpoint(ws: WebSocket):
                     })
                     continue
 
-                project_path = (
-                    state.project.project_path
-                    if state.project and state.project.project_path
-                    else os.getcwd()
-                )
+                from ..executables import NoProject, current_project
+
+                try:
+                    project_path = current_project(
+                        state.project.project_path if state.project and state.project.project_path else None)
+                except NoProject as exc:
+                    await ws.send_json({"event": "error", "message": str(exc)})
+                    continue
 
                 # Reuse the bash tool's executor so timeout, cancellation, and
                 # truncation are consistent with what the model's bash tool sees.

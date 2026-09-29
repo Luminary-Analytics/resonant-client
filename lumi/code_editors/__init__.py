@@ -153,10 +153,14 @@ _JETBRAINS_DIR = re.compile(r"^[A-Za-z]+\d{4}\.\d+$")
 
 
 def lumi_command() -> tuple[str, str]:
-    """(program, arguments before ``editor``) that start this installation's Lumi."""
+    """(program, arguments before ``editor``) that start this installation's Lumi.
+
+    An editor runs it in the project's folder: ``-P`` keeps Python from
+    importing a ``lumi`` (or any module) from there.
+    """
     if getattr(sys, "frozen", False):
         return sys.executable, ""
-    return sys.executable, "-m lumi"
+    return sys.executable, "-P -m lumi"
 
 
 def jetbrains_tools_xml() -> str:

@@ -122,10 +122,12 @@ jobs:
 
       - name: Test where Lumi's own programs come from on macOS
         # lumi/executables.py on POSIX: PATH's empty, "." and relative entries
-        # and the project never supply a program Lumi starts itself.
+        # and the project never supply a program Lumi starts itself; Lumi's own
+        # Git (lumi/safe_git.py), opening files and a project's own tools.
         env:
           LUMI_KEYCHAIN: 'off'
         run: |
           export HOME="$(mktemp -d)"
           unset LUMI_STATE_HOME
-          python -m pytest -q -rs tests/test_executables.py tests/test_launch_scan.py tests/test_project_programs.py
+          python -m pytest -q -rs tests/test_executables.py tests/test_launch_scan.py tests/test_project_programs.py \
+            tests/test_safe_git.py tests/test_open_files.py tests/test_project_tools.py

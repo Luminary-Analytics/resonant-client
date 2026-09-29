@@ -33,7 +33,7 @@ from typing import TYPE_CHECKING, Any, Optional
 
 from ..engine import AGENT_TOOLS
 from ..events import EngineEvent
-from ..executables import find_program
+from ..executables import find_program, project_tool
 from ..processes import background_process_kwargs
 from ..secrets_store import child_env
 from .service import HarnessService
@@ -1778,17 +1778,20 @@ class HarnessPrompts:
 
     def _preferred_harness_python(self, project_path: Optional[str] = None) -> str:
         target_path = os.path.normpath(project_path or self._app.project.project_path or os.getcwd())
-        candidates = [
-            Path(target_path) / ".venv" / "bin" / "python",
-            Path(target_path) / ".venv" / "Scripts" / "python.exe",
-            Path(sys.executable).resolve(),
-        ]
-        for candidate in candidates:
-            try:
-                if candidate.exists():
-                    return str(candidate)
-            except OSError:
-                continue
+        # A trusted project's own environment (.venv, venv) first, as for
+        # automatic lint and tests (lumi/executables.py project_tool).
+        try:
+            trusted = bool(self._app.project_trust(target_path).trusted)
+        except Exception:  # no decision can be read: not trusted
+            trusted = False
+        found, source, _notice = project_tool("python", target_path, trusted=trusted)
+        if found and source.startswith("from the project"):
+            return found
+        try:
+            if Path(sys.executable).resolve().exists():
+                return str(Path(sys.executable).resolve())
+        except OSError:
+            pass
         # Never a `python3` program in the project or Lumi's working folder.
         return find_program("python3", exclude=[target_path]) or "python3"
 

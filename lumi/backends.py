@@ -23,7 +23,8 @@ from typing import Iterator, Tuple
 import httpx
 
 from . import dlp, net
-from .executables import find_program, person_environment
+from .secrets_store import server_env
+from .executables import batch_argument_problem, current_project, find_program
 from .protocol import build_tool_system_prompt, parse_dsml_tool_calls, parse_tool_calls
 from .content import content_text, normalize_content, ollama_message_content, text_fallback
 from .capabilities import (
@@ -3468,7 +3469,8 @@ class CodexCliBackend:
         self.model = model
         self.name = "codex"
         self.handles_tools = True
-        self.cwd = os.path.abspath(cwd or os.getcwd())
+        # The project; in the app never its working folder (the system folder).
+        self.cwd = os.path.abspath(current_project(cwd))
         self.cli_path = cli_path or resolve_codex_cli_path()
         if not self.cli_path:
             raise ValueError(
@@ -3548,9 +3550,10 @@ class CodexCliBackend:
             "--skip-git-repo-check",
             "--model",
             self.model,
-            "-C",
-            self.cwd,
         ]
+        # The project is the process's working folder (cwd=): Codex works
+        # there without -C, and its path never passes through cmd.exe when
+        # codex is an npm batch file.
         from .engine.editor_integrations import cli_arguments
         if self.permission_mode == "bypass":
             cmd.extend(cli_arguments(getattr(self, "_editor_settings", None), "codex"))
@@ -3572,13 +3575,19 @@ class CodexCliBackend:
             instructions=instructions,
             cwd=self.cwd,
         )
+        command = self._command()
+        problem = batch_argument_problem(command[0], command[1:])
+        if problem:
+            yield (EVENT_ERROR, {"message": f"Failed to start Codex CLI: {problem}"})
+            return
         try:
             proc = subprocess.Popen(
-                self._command(),
+                command,
                 cwd=self.cwd,
-                # The CLI runs its own shell in the project, as the person's
-                # terminal would (lumi/executables.py); it keeps its keys.
-                env=person_environment(),
+                # Lumi starts the CLI: its keys stay, and a launcher script
+                # (npm's codex.cmd runs `node`) finds programs on PATH, never
+                # in the project (secrets_store.server_env).
+                env=server_env(keep_provider_keys=True),
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
@@ -3777,7 +3786,8 @@ class ClaudeCodeCliBackend:
         self.model = model
         self.name = "claude-code"
         self.handles_tools = True
-        self.cwd = os.path.abspath(cwd or os.getcwd())
+        # The project; in the app never its working folder (the system folder).
+        self.cwd = os.path.abspath(current_project(cwd))
         self.cli_path = cli_path or resolve_claude_cli_path()
         if not self.cli_path:
             raise ValueError(
@@ -3878,13 +3888,19 @@ class ClaudeCodeCliBackend:
             instructions=instructions,
             cwd=self.cwd,
         )
+        command = self._command()
+        problem = batch_argument_problem(command[0], command[1:])
+        if problem:
+            yield (EVENT_ERROR, {"message": f"Failed to start Claude Code CLI: {problem}"})
+            return
         try:
             proc = subprocess.Popen(
-                self._command(),
+                command,
                 cwd=self.cwd,
-                # The CLI runs its own shell in the project, as the person's
-                # terminal would (lumi/executables.py); it keeps its keys.
-                env=person_environment(),
+                # Lumi starts the CLI: its keys stay, and a launcher script
+                # (npm's claude.cmd runs `node`) finds programs on PATH, never
+                # in the project (secrets_store.server_env).
+                env=server_env(keep_provider_keys=True),
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,

@@ -20,7 +20,7 @@ import httpx
 from lumi import __version__
 from lumi.executables import configured_program
 from lumi.processes import background_process_kwargs
-from lumi.secrets_store import child_env
+from lumi.secrets_store import server_env
 
 logger = logging.getLogger(__name__)
 
@@ -192,9 +192,11 @@ class MCPConnection:
                 command = configured_program(self.config.command, folder=self.cwd, scripts=True)
                 if not command:
                     raise FileNotFoundError(f"{self.config.command} isn't installed, or isn't on PATH")
-                # Lumi's provider keys are removed; the server's own env entries
-                # (including a key it is configured with) still apply.
-                env = {**child_env(), **self.config.env}
+                # Lumi's provider keys are removed and its program lookups stay
+                # hardened (a launcher script such as npx.cmd runs `node` by
+                # bare name in the project folder); the server's own env
+                # entries (including a key it is configured with) still apply.
+                env = {**server_env(), **self.config.env}
                 self._process = subprocess.Popen(
                     [command, *self.config.args],
                     cwd=self.cwd,

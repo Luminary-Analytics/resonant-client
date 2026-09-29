@@ -286,3 +286,135 @@ def test_every_entry_point_imports_the_package_first():
     imports = [line for line in main.splitlines() if line.startswith(("import ", "from "))]
     # Only the standard library's os and sys come before the package (the frozen app's script).
     assert imports[:3] == ["import os", "import sys", "from lumi import __version__"]
+
+
+# npm's command shim for a global package whose node.exe isn't beside it: it
+# runs `node` by bare name, and cmd.exe looks for that in its working folder.
+NPM_SHIM = (
+    "@ECHO off\r\n"
+    "SETLOCAL\r\n"
+    'IF EXIST "%~dp0\\node.exe" (\r\n'
+    '  SET "_prog=%~dp0\\node.exe"\r\n'
+    ") ELSE (\r\n"
+    '  SET "_prog=node"\r\n'
+    "  SET PATHEXT=%PATHEXT:;.JS;=;%\r\n"
+    ")\r\n"
+    '"%_prog%" "%~dp0\\node_modules\\{package}\\cli.js" %*\r\n'
+)
+
+
+@pytest.fixture
+def npm_shims(planted, tmp_path, monkeypatch):
+    """Servers and CLI agents installed with npm, outside the project, and a node.bat in the project.
+
+    Neither this process nor the person's own terminal sets
+    NoDefaultCurrentDirectoryInExePath (``planted`` removed it), so only
+    what Lumi gives the server keeps cmd.exe out of the project.
+    """
+    npm = tmp_path / "npm-global"
+    npm.mkdir()
+    for package in ("probe-server", "codex", "claude"):
+        (npm / f"{package}.cmd").write_text(NPM_SHIM.format(package=package), encoding="ascii")
+    plant(planted.project, "node.bat", planted.record)
+    monkeypatch.setenv("PATH", os.pathsep.join([str(npm), planted.path_before]))
+    monkeypatch.setenv(executables.PERSON_SETTING, "unset")
+    return npm
+
+
+@pytest.mark.skipif(not WINDOWS, reason="cmd.exe looks in the working folder for a batch file's commands")
+def test_an_mcp_servers_launcher_finds_node_on_path_not_in_the_project(planted, npm_shims):
+    from lumi.engine.mcp import MCPConnection, MCPServerConfig
+
+    connection = MCPConnection(MCPServerConfig(name="probe", command="probe-server"), cwd=str(planted.project))
+    try:
+        connection.connect()
+    except Exception:
+        pass  # nothing answers: node has no cli.js to run
+    finally:
+        try:
+            connection.disconnect()
+        except Exception:
+            pass
+    assert planted.ran() == ""
+
+
+@pytest.mark.skipif(not WINDOWS, reason="cmd.exe looks in the working folder for a batch file's commands")
+def test_the_cli_agents_launchers_find_node_on_path_not_in_the_project(planted, npm_shims):
+    from lumi.backends import ClaudeCodeCliBackend, CodexCliBackend
+
+    codex = CodexCliBackend("gpt-probe", cwd=str(planted.project), cli_path=str(npm_shims / "codex.cmd"))
+    claude = ClaudeCodeCliBackend("claude-probe", cwd=str(planted.project), cli_path=str(npm_shims / "claude.cmd"))
+    assert "-C" not in codex._command() and str(planted.project) not in codex._command()
+    for backend in (codex, claude):
+        list(backend.stream("hello", [], "", []))
+    assert planted.ran() == ""
+
+
+@pytest.mark.skipif(not WINDOWS, reason="cmd.exe parses a batch file's arguments")
+def test_a_cli_agent_installed_as_a_batch_file_gets_no_argument_cmd_would_run(planted, npm_shims):
+    from lumi.backends import CodexCliBackend
+
+    backend = CodexCliBackend("gpt&lumi-probe", cwd=str(planted.project), cli_path=str(npm_shims / "codex.cmd"))
+    events = list(backend.stream("hello", [], "", []))
+    assert "batch file" in events[-1][1]["message"]
+    assert planted.ran() == ""
+
+
+@pytest.mark.skipif(not WINDOWS, reason="Windows' DLL search")
+def test_lumi_leaves_the_working_folder_out_of_its_dll_search(tmp_path):
+    """A DLL in the working folder loads before ``import lumi`` and not after; extension modules still load."""
+    source = Path(sys.base_prefix) / "python3.dll"
+    if not source.is_file():
+        source = Path(sys.base_prefix) / "DLLs" / "sqlite3.dll"
+    for name in ("before_lumi.dll", "after_lumi.dll"):
+        shutil.copyfile(source, tmp_path / name)
+    code = (
+        "import ctypes\n"
+        "k = ctypes.WinDLL('kernel32', use_last_error=True)\n"
+        "k.LoadLibraryW.restype = ctypes.c_void_p\n"
+        "k.LoadLibraryW.argtypes = [ctypes.c_wchar_p]\n"
+        "print(bool(k.LoadLibraryW('before_lumi.dll')))\n"
+        "import lumi\n"
+        "print(bool(k.LoadLibraryW('after_lumi.dll')))\n"
+        "import sqlite3, ssl, select, hashlib, pyexpat, decimal, unicodedata, socket, lzma, bz2, uuid, winreg\n"
+        "import xml.etree.ElementTree, asyncio, zoneinfo\n"
+        "print('imports')\n"
+    )
+    home = tmp_path / "home"
+    home.mkdir()
+    environment = {**os.environ, "PYTHONPATH": str(ROOT), "PYTHONDONTWRITEBYTECODE": "1", "USERPROFILE": str(home),
+                   "HOME": str(home), "APPDATA": str(home), "LOCALAPPDATA": str(home), "LUMI_KEYCHAIN": "off"}
+    completed = subprocess.run([sys.executable, "-c", code], cwd=tmp_path, env=environment, capture_output=True,
+                               text=True, timeout=120)
+    assert completed.stdout.split() == ["True", "False", "imports"], completed.stderr
+
+
+def test_an_editor_starts_lumi_without_the_projects_modules(tmp_path):
+    """JetBrains runs ``python -P -m lumi editor ...`` in the project: a ``lumi`` there isn't imported."""
+    from lumi.code_editors import lumi_command
+
+    program, prefix = lumi_command()
+    project = tmp_path / "project"
+    (project / "lumi").mkdir(parents=True)
+    marker = tmp_path / "ran.txt"
+    (project / "lumi" / "__init__.py").write_text(f"open({str(marker)!r}, 'a').write('project lumi')\n",
+                                                   encoding="utf-8")
+    (project / "lumi" / "__main__.py").write_text("", encoding="utf-8")
+    home = tmp_path / "home"
+    home.mkdir()
+    environment = {**os.environ, "PYTHONPATH": str(ROOT), "PYTHONDONTWRITEBYTECODE": "1", "USERPROFILE": str(home),
+                   "HOME": str(home), "APPDATA": str(home), "LOCALAPPDATA": str(home), "LUMI_KEYCHAIN": "off",
+                   "LUMI_STATE_HOME": str(home / ".lumi")}
+    completed = subprocess.run([program, *prefix.split(), "--version"], cwd=project, env=environment,
+                               capture_output=True, text=True, timeout=120)
+    assert completed.stdout.startswith("lumi "), completed.stderr
+    assert not marker.exists()
+
+
+def test_the_app_leaves_its_working_folder_before_anything_else_starts():
+    """``lumi gui`` leaves the folder it was started in before the managed setup and the updater run."""
+    main = (ROOT / "lumi" / "__main__.py").read_text(encoding="utf-8")
+    body = main[main.index("def main():"):]
+    leave = body.index("leave_working_folder()")
+    assert leave < body.index("configure_managed_startup(") and leave < body.index("init_updater()")
+    assert leave < body.index("from lumi.gui.server import main as gui_main")

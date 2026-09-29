@@ -228,3 +228,143 @@ def test_show_in_folder_needs_a_full_path(tmp_path):
         pytest.skip("no file manager opener here")
     argv = executables.show_in_folder_command(tmp_path / "notes.txt")
     assert os.path.isabs(argv[0]) and argv[-1] in (str(tmp_path / "notes.txt"), str(tmp_path))
+
+
+# ── Files that run when opened ──────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("name", ["setup.cmd", "readme-notes.bat", "tool.exe", "Run.PS1", "notes.lnk", "site.url",
+                                  "script.js", "macro.vbs", "page.hta", "tool.py", "install.msi", "keys.reg"]
+                         if WINDOWS else ["Setup.command", "Installer.pkg", "Shell.terminal", "app.jar"]
+                         if sys.platform == "darwin" else ["build.sh", "Tool.desktop", "installer.run", "app.jar"])
+def test_files_that_run_when_opened_are_named_with_their_type(tmp_path, name):
+    target = tmp_path / name
+    target.write_text("x", encoding="utf-8")
+    kind = executables.opens_as_program(target)
+    assert kind and kind.startswith(("a ", "an ")), kind
+    with pytest.raises(executables.OpensAsProgram) as refused:
+        executables.open_path(target)  # refused before anything is opened
+    assert refused.value.kind == kind and name in str(refused.value)
+
+
+def test_documents_and_folders_open(tmp_path):
+    for name in ("notes.txt", "report.pdf", "data.csv", "README.md", "page.html", "photo.png", "no-extension"):
+        (tmp_path / name).write_text("x", encoding="utf-8")
+        assert executables.opens_as_program(tmp_path / name) == "", name
+    assert executables.opens_as_program(tmp_path) == ""
+    folder = tmp_path / "setup.exe"  # a folder named like a program opens as a folder
+    folder.mkdir()
+    assert executables.opens_as_program(folder) == ""
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="an application is a folder on macOS")
+def test_an_application_bundle_runs_when_opened(tmp_path):
+    bundle = tmp_path / "Tool.app"
+    bundle.mkdir()
+    assert executables.opens_as_program(bundle) == "an application"
+
+
+@pytest.mark.skipif(WINDOWS, reason="the Finder and file managers run an executable file")
+def test_an_executable_file_runs_when_opened_on_posix(tmp_path):
+    target = tmp_path / "tool"
+    target.write_text("#!/bin/sh\n", encoding="utf-8")
+    assert executables.opens_as_program(target) == ""
+    target.chmod(0o755)
+    assert executables.opens_as_program(target) == "an executable file"
+
+
+@pytest.mark.skipif(not WINDOWS, reason="Windows file associations")
+def test_a_type_whose_registered_command_runs_it_counts(tmp_path):
+    assert executables._association_runs(".bat")      # "%1" %*
+    assert executables._association_runs(".cmd")
+    assert executables._association_runs(".exe")
+    assert not executables._association_runs(".txt")  # Notepad shows it
+    assert not executables._association_runs(".no-such-extension")
+
+
+# ── Arguments for batch files ───────────────────────────────────────────────
+
+
+def test_batch_files_get_no_arguments_cmd_would_read_as_commands():
+    assert executables.batch_argument_problem("C:/tools/codex.exe", ["a&b"]) == ""
+    problem = executables.batch_argument_problem("C:/npm/codex.cmd", ["exec", "--model", "gpt&calc"])
+    assert problem == "" if not WINDOWS else "codex.cmd is a batch file" in problem and "'&'" in problem
+    for value in ("%PATH%", "a|b", "x^y", "a>b", "a<b", "!x!", "line\nbreak"):
+        assert bool(executables.batch_argument_problem("C:/npm/tool.BAT", [value])) == WINDOWS, value
+    assert executables.batch_argument_problem("C:/npm/tool.cmd", ['approval_policy="never"', "C:/a b/c"]) == ""
+
+
+# ── A project's own tools ───────────────────────────────────────────────────
+
+
+def test_a_trusted_projects_own_tools_come_first(tmp_path, monkeypatch, elsewhere):
+    project = tmp_path / "project"
+    local = _program(project / ".venv" / ("Scripts" if WINDOWS else "bin"), "ruff" + EXE)
+    node_tool = _program(project / "node_modules" / ".bin", "eslint" + (".cmd" if WINDOWS else ""))
+    installed = _program(tmp_path / "installed", "ruff" + EXE)
+    monkeypatch.setenv("PATH", str(installed.parent))
+    assert executables.project_tool("ruff", project, trusted=True) == (str(local), "from the project's .venv", "")
+    found, source, notice = executables.project_tool("ruff", project, trusted=False)
+    assert (found, source) == (str(installed), "from PATH")
+    assert notice == "The project's .venv has its own ruff; trust the project to use it."
+    assert executables.project_tool("eslint", project, trusted=True, scripts=True)[:2] == (
+        str(node_tool), "from the project's node_modules")
+    assert executables.project_tool("eslint", project, trusted=False, scripts=True)[0] is None
+    # Never a path, and never for a project that isn't named.
+    assert executables.project_tool("../ruff", project, trusted=True)[0] is None
+    assert executables.project_tool("ruff", None, trusted=True)[:2] == (str(installed), "from PATH")
+
+
+# ── The project a command works in ──────────────────────────────────────────
+
+
+def test_no_project_means_the_working_folder_only_outside_the_app(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(executables, "_launch_directory", None)
+    assert executables.current_project(None) == str(tmp_path)  # lumi run, the terminal UI
+    assert executables.current_project(tmp_path / "p") == str(tmp_path / "p")
+    monkeypatch.setattr(executables, "_launch_directory", str(tmp_path))  # the app left it
+    with pytest.raises(executables.NoProject):
+        executables.current_project("")
+    assert executables.current_project("C:/work" if WINDOWS else "/work") == ("C:/work" if WINDOWS else "/work")
+
+
+# ── Environments ────────────────────────────────────────────────────────────
+
+
+def test_servers_keep_lumis_hardening_and_lose_its_keys(monkeypatch):
+    from lumi.secrets_store import child_env, server_env
+
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.setenv("LUMI_TEST_VALUE", "kept")
+    monkeypatch.setenv(executables.PERSON_SETTING, "unset")  # the person's own terminal doesn't set it
+    monkeypatch.delenv(executables.NO_CURRENT_FOLDER, raising=False)  # nor does this process, here
+    server = server_env()
+    assert "OPENAI_API_KEY" not in server and server["LUMI_TEST_VALUE"] == "kept"
+    assert server.get(executables.NO_CURRENT_FOLDER) == ("1" if WINDOWS else None)
+    assert server_env(keep_provider_keys=True)["OPENAI_API_KEY"] == "sk-test"  # the CLI agents sign in with it
+    # The agent's shell, hooks and jobs get the person's own setting instead.
+    assert executables.NO_CURRENT_FOLDER not in child_env() and "OPENAI_API_KEY" not in child_env()
+
+
+def test_in_the_app_a_missing_project_is_an_error_not_the_system_folder(tmp_path, monkeypatch):
+    from lumi.backends import CodexCliBackend
+    from lumi.engine import tools
+
+    monkeypatch.setattr(executables, "_launch_directory", str(tmp_path))  # the app left its working folder
+    for name, args in (("job_status", {}), ("preview_status", {}), ("memory_save", {"text": "x"}),
+                       ("check_run", {"command": "echo hi", "requirement": "prints hi"})):
+        result = tools.execute_tool(name, args, project_path="")
+        assert result.is_error and "Open a project folder first." in result.output, name
+    with pytest.raises(executables.NoProject):
+        CodexCliBackend("gpt-probe", cli_path=str(tmp_path / "codex.exe"))
+
+
+def test_a_relative_pack_folder_is_the_projects(tmp_path):
+    from lumi.engine.capability_packs import CapabilityPackManager
+
+    elsewhere = tmp_path / "elsewhere" / "pack"
+    manager = CapabilityPackManager(tmp_path / "project", configured={"mine": {"path": "tools/pack"},
+                                                                      "other": {"directory": str(elsewhere)}})
+    roots = [Path(root) for root in manager.roots]
+    assert (tmp_path / "project").resolve() / "tools" / "pack" in roots and elsewhere in roots

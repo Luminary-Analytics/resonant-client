@@ -35,10 +35,14 @@ Lumi uses the first of these it finds on your PATH for a file's type:
 | Java | `jdtls` |
 | Lua | `lua-language-server` |
 
-A name is looked up only in PATH's full folders, never in the project, in a
-folder inside it (a virtual environment you activated there, `node_modules`)
-or in a relative PATH entry: a repository can't supply the server by
-shipping a program of that name. To use another server, or one that isn't on
+In a project you trust, a server installed in the project's own `.venv`,
+`venv` or `node_modules/.bin` comes first. Otherwise a name is looked up only
+in PATH's full folders, never in the project, in a folder inside it (a
+virtual environment you activated there, `node_modules`) or in a relative
+PATH entry: a repository you haven't trusted can't supply the server by
+shipping a program of that name. The LSP tab says where each program comes
+from ("from the project's .venv", "from PATH"), and when an untrusted project
+has its own. To use another server, or one that isn't on
 your PATH, add it to `lsp_servers` in `~/.lumi/settings.json`, by its full
 path or a path relative to the project. Servers named there come first:
 

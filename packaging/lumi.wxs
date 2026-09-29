@@ -15,6 +15,13 @@
   - POLICYFILE="\\server\share\lumi-policy.json" writes the machine policy's
     PolicyFile registry value (docs/enterprise-policy.md), removed again on
     uninstall.
+  - %ProgramData%\Lumi, the machine policy folder, is created locked:
+    owned by Administrators, full control for SYSTEM and Administrators, read
+    and execute for Users, nothing inherited. Lumi uses a policy or license
+    file only where nobody but administrators can change it, and any user may
+    create folders under ProgramData, where a folder also inherits every
+    user's right to add files. Uninstalling removes the folder only when it's
+    empty, so files an administrator put there stay.
   - The EXE installer and this package would share Program Files\Lumi, so
     this package refuses to install over an EXE installation.
 -->
@@ -56,6 +63,21 @@
       </Directory>
     </StandardDirectory>
 
+    <!-- The machine policy folder (see above). MsiLockPermissionsEx applies the SDDL to the
+         folder, also when a person created it first: O:BA makes Administrators its owner,
+         P keeps ProgramData's entries from being inherited. -->
+    <StandardDirectory Id="CommonAppDataFolder">
+      <Directory Id="MACHINEPOLICYFOLDER" Name="Lumi">
+        <Component Id="MachinePolicyFolder">
+          <CreateFolder>
+            <PermissionEx Sddl="O:BAD:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;0x1200a9;;;BU)" />
+          </CreateFolder>
+          <RegistryValue Root="HKLM" Key="SOFTWARE\Luminary Analytics\Lumi\Msi"
+                         Name="MachinePolicyFolder" Type="integer" Value="1" KeyPath="yes" />
+        </Component>
+      </Directory>
+    </StandardDirectory>
+
     <StandardDirectory Id="ProgramMenuFolder">
       <Component Id="StartMenuShortcut">
         <Shortcut Id="LumiShortcut" Name="Lumi" Target="[INSTALLFOLDER]lumi.exe" Arguments="gui"
@@ -69,6 +91,7 @@
       <Files Directory="INSTALLFOLDER" Include="!(bindpath.bundle)\**" />
       <ComponentRef Id="InstallMarker" />
       <ComponentRef Id="PolicyFileValue" />
+      <ComponentRef Id="MachinePolicyFolder" />
       <ComponentRef Id="StartMenuShortcut" />
     </Feature>
   </Package>

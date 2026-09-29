@@ -86,6 +86,14 @@ plist that can't be read, or a `Policy` that is empty, isn't text or a
 dictionary, isn't valid JSON or isn't a valid policy. Preferences without a
 `Policy` key set no policy. Lumi reads the policy when it starts.
 
+macOS writes managed preferences as root. Lumi uses the plist only while root
+owns it and `/Library/Managed Preferences`, and neither is writable by its
+group or others; the same goes for `policy.json`, `policy-keys.json`,
+`license.json` and `license-keys.json` in `/Library/Application Support/Lumi`
+(install them with `sudo`, mode 644 in a 755 folder). A file others could
+have written is ignored and shown in Settings, as described in
+[the file rules](enterprise-policy.md#only-files-only-administrators-can-change-count).
+
 `packaging/policy/lumi-policy.mobileconfig` is a hand-written example of the
 same profile.
 

@@ -280,8 +280,12 @@ class TestWindowsFolders:
         folder = root / "Lumi"
         folder.mkdir(parents=True)
         (folder / "policy.json").write_text("{}", encoding="utf-8")
+        if _elevated():
+            # What an elevated process makes is an administrator's (CI's runner): stand in for a
+            # person's folder by giving it to the Users group, as a person's own would be theirs.
+            _icacls(folder, "/setowner", "*S-1-5-32-545")
         trust = admin_files.real_check(folder / "policy.json", root)
-        assert not trust.trusted and trust.reason
+        assert not trust.trusted and "is owned by" in trust.reason and not trust.admin_owned, trust
 
     def test_the_programdata_entry_on_a_real_folder(self, tmp_path):
         folder = tmp_path / "Lumi"

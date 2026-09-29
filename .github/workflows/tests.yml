@@ -125,4 +125,4 @@ jobs:
           # None of these may be skipped here: they are the evidence for PyObjC and Sparkle.
           if grep -q "SKIPPED" pytest-sparkle.log; then echo "Sparkle tests were skipped on macOS"; exit 1; fi
           python -m pytest -q -rs tests/test_updates.py tests/test_update_feeds.py tests/test_publish_pages.py \
-            tests/test_macos_pkg.py
+            tests/test_macos_pkg.py tests/test_machine_policy_trust.py

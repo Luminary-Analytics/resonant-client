@@ -16,8 +16,8 @@ Lumi uses the first of these that exists:
 
 | Platform | Location |
 | --- | --- |
-| Windows | Registry `HKLM\SOFTWARE\Policies\Luminary Analytics\Lumi`: value `Policy` (the JSON document) or `PolicyFile` (a path). In the path, `%ProgramData%`, `%ALLUSERSPROFILE%`, `%ProgramFiles%`, `%SystemRoot%`, `%windir%` and `%SystemDrive%` expand to the folders Windows reports; other variables, which each person can set, stay as written, so such a path isn't found and the policy fails closed. Set them with the ADMX template below, Intune or any registry tool. |
-| Windows | `C:\ProgramData\Lumi\policy.json`: the ProgramData folder Windows reports, never the `ProgramData` environment variable, which a person could point at a folder of their own. Create `C:\ProgramData\Lumi` as an administrator: under ProgramData, a folder a person creates is theirs to write. |
+| Windows | Registry `HKLM\SOFTWARE\Policies\Luminary Analytics\Lumi`: value `Policy` (the JSON document) or `PolicyFile` (a path). In the path, `%ProgramData%`, `%ALLUSERSPROFILE%`, `%ProgramFiles%`, `%SystemRoot%`, `%windir%` and `%SystemDrive%` expand to the folders Windows reports; other variables, which each person can set, stay as written, so such a path isn't a full path and the policy fails closed. Set them with the ADMX template below, Intune or any registry tool. The file `PolicyFile` names must pass the [file rules](#only-files-only-administrators-can-change-count); if it can't be read, or doesn't pass, Lumi refuses model requests. |
+| Windows | `C:\ProgramData\Lumi\policy.json`: the ProgramData folder Windows reports, never the `ProgramData` environment variable, which a person could point at a folder of their own. The folder must be locked down: the MSI creates it that way, and the [icacls recipe](#locking-down-a-policy-folder-on-windows) does it for Group Policy and Intune. |
 | macOS | The `Policy` key of the `com.luminaryanalytics.lumi` managed preferences, from a device-scope configuration profile (`packaging/policy/make_mobileconfig.py` makes one; see [Deploying on macOS](deploy-macos.md)) |
 | macOS | `/Library/Application Support/Lumi/policy.json` |
 | Linux | `/etc/lumi/policy.json` |
@@ -27,6 +27,92 @@ when none of the locations above has a policy**, so people can't replace their
 organization's policy with their own.
 
 Lumi reads the policy when it starts. Restart it after changing the policy.
+`lumi policy` prints the policy in force as JSON: where it came from, why it
+can't be used, and every file Lumi ignored (see
+[Checking a computer](deploy-windows.md#checking-a-computer)).
+
+## Only files only administrators can change count
+
+Machine policy comes only from places only administrators can write. The
+registry values and a configuration profile's keys are an administrator's by
+construction. A file counts only when it, and every folder above it up to a
+folder the operating system protects, can't be changed by anyone else:
+
+- **Windows** (the file, and each folder up to ProgramData for a file under
+  it, otherwise up to the drive's or the network share's root):
+  - the owner is SYSTEM, Administrators or TrustedInstaller (for a file on a
+    domain file server also Domain Admins or Enterprise Admins);
+  - no permission entry lets anyone else write, append (in a folder: add files
+    or folders), change attributes, delete, delete what's inside, change
+    permissions or take ownership. That includes the entry every folder made
+    under ProgramData inherits, `BUILTIN\Users:(CI)(WD,AD,WEA,WA)`, which lets
+    any user add files to a folder an administrator created. Entries for what
+    is created later (inherit-only) and deny entries don't count;
+  - ProgramData itself, or the drive's or share's root, may let people add
+    folders, but not delete what's in it or change its permissions or owner;
+  - no symbolic link or junction on the way.
+- **macOS and Linux:** the file and each folder up to `/Library/Application
+  Support`, `/Library` (for the configuration profile) or `/etc` are owned by
+  root and not writable by their group or others.
+
+Any user may create `C:\ProgramData\Lumi` where no administrator did, and a
+folder an administrator creates there inherits that `(CI)(WD,AD)` entry, so
+neither is enough. A file that fails is **ignored, never silently**:
+Settings > Privacy & security > Organization policy says "Policy file ignored:
+writable by non-administrators" with the file and the reason, `lumi policy`
+lists it, and the [audit log](audit-log.md) records `policy.file_ignored`.
+What happens next depends on whose it is:
+
+- **A file someone other than an administrator owns**, or one in a folder
+  someone else owns (as one a person planted would be), reads as if it
+  weren't there: the sources below it apply.
+- **A file an administrator put there** (it and its folder are an
+  administrator's) **in a place others can change**, and **the file
+  `PolicyFile` names**, fail closed: an administrator meant a policy to
+  apply, so Lumi refuses model requests until the folder is locked down.
+
+The same rules apply to `license.json` beside the machine policy file (an
+[offline license](offline.md#the-offline-license)) and, on macOS and Linux, to
+`policy-keys.json` and `license-keys.json`.
+
+### Locking down a policy folder on Windows
+
+The MSI creates `%ProgramData%\Lumi` locked: owned by Administrators, full
+control for SYSTEM and Administrators, read and execute for Users, nothing
+inherited ([Deploying on Windows](deploy-windows.md#the-msi)). With Group
+Policy (a computer startup script) or Intune (a platform script), which run as
+SYSTEM, create it the same way before copying the policy in:
+
+```powershell
+$dir = Join-Path $env:ProgramData 'Lumi'
+# Anything already there may be someone else's: start over, then copy all your files in.
+if (Test-Path -LiteralPath $dir) {
+    icacls.exe $dir /setowner '*S-1-5-32-544' /T /C /Q | Out-Null
+    icacls.exe $dir /reset /T /C /Q | Out-Null
+    Remove-Item -LiteralPath $dir -Recurse -Force
+}
+New-Item -ItemType Directory -Path $dir | Out-Null
+icacls.exe $dir /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' '*S-1-5-32-545:(OI)(CI)RX'
+Copy-Item -LiteralPath .\policy.json -Destination $dir
+icacls.exe $dir /setowner '*S-1-5-32-544' /T
+```
+
+From `cmd.exe`, the two `icacls` lines are:
+
+```
+icacls "%ProgramData%\Lumi" /inheritance:r /grant:r *S-1-5-18:(OI)(CI)F *S-1-5-32-544:(OI)(CI)F *S-1-5-32-545:(OI)(CI)RX
+icacls "%ProgramData%\Lumi" /setowner *S-1-5-32-544 /T
+```
+
+The well-known SIDs (SYSTEM, Administrators, Users) work in every language.
+Setting the owner last covers files copied by an administrator account that
+owns what it creates (the "Object creator" default-owner setting): a file
+owned by a person's account, even an administrator's, doesn't count.
+For a `PolicyFile` on a file server, give its folder, and every folder above
+it in the share, the same shape: administrators (Domain Admins may stay) with
+full control, everyone else read at most; the share's root may let people add
+files, but not delete them or change permissions. Then check with
+`lumi policy`.
 
 ## The document
 
@@ -153,9 +239,10 @@ policy you publish there, signed with your organization's key:
 ```
 
 The cloud policy replaces the machine policy's own rules once it arrives and
-verifies against `trusted_keys` (or `PolicyKeys` / `policy-keys.json`). Until
-then, the machine policy's rules apply. Lumi Cloud's Devices page prints this
-file when you create an enrollment token. See [Lumi Cloud](lumi-cloud.md).
+verifies against `trusted_keys` (or `PolicyKeys`, or on macOS and Linux
+`policy-keys.json`). Until then, and whenever it doesn't verify, the machine
+policy's rules apply. Lumi Cloud's Devices page prints this file when you
+create an enrollment token. See [Lumi Cloud](lumi-cloud.md).
 
 ## Signed policies and offline use
 
@@ -172,9 +259,15 @@ The signature covers the `policy` object serialized with sorted keys and no
 whitespace (`lumi.policy.canonical`). Lumi accepts it only if `key_id` names a
 key the machine trusts. Only an administrator can set these keys:
 
-- the registry value `PolicyKeys`;
-- `policy-keys.json` beside the machine policy file;
-- the `trusted_keys` of an unsigned machine policy.
+- Windows: the registry value `PolicyKeys` (Group Policy, Intune). A
+  `policy-keys.json` file isn't read on Windows; Settings says so if one is
+  there. These keys decide which downloaded policy may replace the machine's,
+  and a registry policy value can only be an administrator's, while a file
+  under ProgramData is theirs only as long as its folder stays locked down;
+- macOS: the configuration profile's `PolicyKeys`;
+- macOS and Linux: `policy-keys.json` beside the machine policy file, when it
+  passes the [file rules](#only-files-only-administrators-can-change-count);
+- everywhere: the `trusted_keys` of an unsigned machine policy.
 
 Each maps key ids to base64 Ed25519 public keys.
 
@@ -188,7 +281,12 @@ a fresh policy is installed.
 If a policy exists but is invalid, or a signature doesn't verify, Lumi does not
 fall back to "no policy". It refuses model requests, and Settings shows the
 error, until the policy is fixed. The same happens after an expired policy's
-grace period.
+grace period, and when the file Group Policy's `PolicyFile` names can't be
+read (a share out of reach, a missing file, a path that isn't a full one) or
+people other than administrators can change it: Lumi never runs with no
+policy, or with `C:\ProgramData\Lumi\policy.json` or `LUMI_POLICY_FILE`,
+instead. For laptops that leave the network, copy the policy to a local
+folder you lock down, or put it in the `Policy` value itself.
 
 Invalid includes a section that isn't an object, such as
 `"permissions": "ask only"`, and a true-or-false value written as text, such
@@ -213,15 +311,18 @@ like a machine policy would.
 
 The MSI package can point Lumi at a policy file as it installs:
 `msiexec /i lumi-X.Y.Z.msi /qn POLICYFILE="\\server\share\lumi-policy.json"`
-sets the `PolicyFile` value below, and uninstalling removes it. See
+sets the `PolicyFile` value below, and uninstalling removes it. It also
+creates `%ProgramData%\Lumi` locked down. See
 [Deploying on Windows](deploy-windows.md).
 
 `packaging/policy/lumi.admx` and `packaging/policy/en-US/lumi.adml` define
 four machine policies under **Lumi** in the Group Policy editor:
 
 - **Organization policy:** the JSON document, stored in the `Policy` value (REG_MULTI_SZ lines are joined).
-- **Organization policy file:** a path, stored in `PolicyFile`.
-- **Trusted policy signing keys:** stored in `PolicyKeys`.
+- **Organization policy file:** a path, stored in `PolicyFile`. The file must
+  pass the [file rules](#only-files-only-administrators-can-change-count).
+- **Trusted policy signing keys:** stored in `PolicyKeys`, the only place for
+  them on Windows besides the machine policy's `trusted_keys`.
 - **Trusted license signing keys:** stored in `LicenseKeys`, the keys an
   [offline license](offline.md#the-offline-license) may be signed with, besides
   those built into Lumi. On Windows this is the only place for them (a
@@ -245,4 +346,5 @@ your policy file and checks it first. See [Deploying on macOS](deploy-macos.md).
 - Shell commands can still read files that `files.exclude` names. Add shell
   rules for sensitive paths.
 - Policy isn't yet fetched from Lumi Cloud, and policy loads aren't in the
-  [audit log](audit-log.md) yet. Both are planned with the admin portal.
+  [audit log](audit-log.md) yet, apart from files Lumi ignored
+  (`policy.file_ignored`). Both are planned with the admin portal.

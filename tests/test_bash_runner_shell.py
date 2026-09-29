@@ -17,6 +17,8 @@ These tests pin:
 """
 from __future__ import annotations
 
+import os
+import sys
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -97,7 +99,8 @@ class TestBashRunnerShell:
         def fake_run(*args, **kwargs):
             captured["args"] = args
             captured["shell"] = kwargs.get("shell", False)
-            return MagicMock(returncode=0, stdout="ok", stderr="")
+            captured["env"] = kwargs.get("env") or {}
+            return MagicMock(returncode=0, stdout=b"ok", stderr=b"")
 
         # Stub bash detection to return None
         runner = BashRunner()
@@ -110,9 +113,17 @@ class TestBashRunnerShell:
         ):
             runner.run("echo hello")
 
-        # Falls back to shell=True with raw command
-        assert captured["args"][0] == "echo hello"
-        assert captured["shell"] is True
+        # Falls back to the platform shell with the raw command. On Windows
+        # that is cmd.exe writing UTF-8 (processes.utf8_shell): the command
+        # travels in a variable, never parsed by the outer cmd.exe.
+        if sys.platform == "win32":
+            assert captured["shell"] is False and "chcp 65001" in captured["args"][0]
+            assert captured["env"]["LUMI_SHELL_COMMAND"] == "echo hello"
+        else:
+            assert captured["args"][0] == "echo hello"
+            assert captured["shell"] is True
+        # A child Python writes UTF-8, unless the person chose otherwise.
+        assert captured["env"]["PYTHONUTF8"] == os.environ.get("PYTHONUTF8", "1")
 
     def test_explicit_bash_path_overrides_detection(self):
         """If a test (or runtime config) sets `_bash_path` explicitly,

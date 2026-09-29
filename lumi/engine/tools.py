@@ -20,7 +20,14 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Optional, Sequence
 
-from lumi.processes import background_process_kwargs, decode_output, utf8_env, utf8_shell
+from lumi.processes import (
+    CMD_COMMAND_LIMIT,
+    CMD_TOO_LONG,
+    background_process_kwargs,
+    cmd_too_long,
+    decode_output,
+    utf8_env,
+)
 
 from .truncation import (
     GREP_MAX_LINE_LENGTH,
@@ -2099,23 +2106,28 @@ def _exec_bash(args: dict, start: float, cancel_event: Optional[threading.Event]
             metadata={"command": cmd, "not_executed": True, "reason": "windows_multiline_command"},
         )
 
-    # Children write UTF-8 where they can: Python in UTF-8 mode, and on
-    # Windows cmd.exe and its built-ins through utf8_shell; decode_output
-    # reads whatever still isn't (lumi/processes.py).
-    if sandboxed is None:
-        launch, use_shell, environment = utf8_shell(managed_cmd, child_env())
-    else:
-        launch, use_shell, environment = sandboxed, False, utf8_env(child_env())
+    if sandboxed is None and cmd_too_long(managed_cmd):
+        # cmd.exe would refuse it too, in these words; say so without starting it.
+        return ToolResult(
+            f"{CMD_TOO_LONG}\n(exit code: 1)\nNo command was executed: cmd.exe takes commands of up to "
+            f"{CMD_COMMAND_LIMIT:,} characters. Write a longer one to a script file in the project, then run that.",
+            is_error=True,
+            elapsed=time.time() - start,
+            metadata={"command": cmd, "exit_code": 1, "not_executed": True, "reason": "windows_command_too_long"},
+        )
+
     try:
         returncode, stdout, stderr, timed_out = _run_subprocess_with_cancel(
-            launch,
-            shell=use_shell,
+            sandboxed or managed_cmd,
+            shell=sandboxed is None,
             text=True,
             timeout=timeout,
             cwd=cwd,
             stdin=subprocess.DEVNULL,
             cancel_event=cancel_event,
-            env=environment,
+            # Python children write UTF-8 (utf8_env); decode_output reads
+            # what the rest writes, cmd.exe's OEM code page included.
+            env=utf8_env(child_env()),
         )
         elapsed = time.time() - start
         if cancel_event is not None and cancel_event.is_set():
@@ -2477,7 +2489,7 @@ def _findstr_lines(data: bytes, root: str) -> list[str]:
         for index, found in enumerate(starts):
             end = starts[index + 1].start() if index + 1 < len(starts) else len(data)
             path = (prefix + found.group(1)).decode(page, errors="replace")
-            text = decode_output(data[found.end():end]).rstrip("\n")
+            text = decode_output(data[found.end():end], prefer="ansi").rstrip("\n")
             matches.append(f"{path}:{found.group(2).decode('ascii')}:{text}")
         return matches
     # The root isn't spelled in any of those code pages (a character the
@@ -2643,7 +2655,7 @@ def _exec_grep(
     if cmd[0] == "findstr" and os.path.isdir(path):
         lines = _findstr_lines(raw, path)
     else:
-        decoded = decode_output(raw).strip()
+        decoded = decode_output(raw, prefer="ansi").strip()  # files' own text
         lines = decoded.split("\n") if decoded else []
     hidden = 0
     if exclusions and lines:

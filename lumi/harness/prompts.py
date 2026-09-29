@@ -33,7 +33,7 @@ from typing import TYPE_CHECKING, Any, Optional
 
 from ..engine import AGENT_TOOLS
 from ..events import EngineEvent
-from ..processes import background_process_kwargs, decode_output, utf8_env, utf8_shell
+from ..processes import background_process_kwargs, decode_output, run_command, utf8_env
 from .service import HarnessService
 from .state import EvaluatorReport, HarnessWorkspace
 
@@ -45,6 +45,10 @@ if TYPE_CHECKING:
     from ..gui.runtime import BackendSpec
 
 logger = logging.getLogger(__name__)
+
+# How long one automatic validation command may run before it, and
+# everything it started, is ended (run_harness_generator_validation_probes).
+VALIDATION_PROBE_SECONDS = 25
 
 
 class HarnessPrompts:
@@ -2147,17 +2151,14 @@ class HarnessPrompts:
                 )
                 continue
             try:
-                # cmd.exe writes UTF-8 through utf8_shell (lumi/processes.py).
-                launch, shell, environment = utf8_shell(command)
-                completed = subprocess.run(
-                    launch,
-                    shell=shell,
-                    cwd=target_path,
-                    env=environment,
-                    capture_output=True,
-                    timeout=25,
-                    **background_process_kwargs(),
-                )
+                # A timeout ends every process the command started, not only
+                # the shell; output is decoded per line (lumi/processes.py).
+                completed = run_command(command, shell=True, cwd=target_path, env=utf8_env(),
+                                        timeout=VALIDATION_PROBE_SECONDS)
+            except subprocess.TimeoutExpired:
+                validation_artifacts.append(self._truncate_text(
+                    f"Auto validation timed out after {VALIDATION_PROBE_SECONDS}s: {command}", max_chars=220))
+                continue
             except Exception as exc:
                 validation_artifacts.append(self._truncate_text(f"Auto validation failed to start: {exc}", max_chars=220))
                 continue

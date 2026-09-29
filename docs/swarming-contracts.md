@@ -135,10 +135,14 @@ before the ownership observer's next refresh, and any active run whose owner
 isn't known yet holds every conversation. Finishing Stop releases ownership
 without viewer polling. When a run ends, the worktrees and team branches of
 writers whose change was applied, or who made none, are removed from the
-repository; unapplied writer results and candidates stay until the owner's
-Discard (`discard_kept_work`), applied candidates stay, and a branch is deleted
-only at its recorded tip and when no worktree uses it (`cleanup.py`, recorded
-as run events). The run's records stay.
+repository; unapplied writer results and candidates, and applied candidates'
+worktrees (for Inspect candidate), stay until the owner's Discard
+(`discard_kept_work`, or `discard_all_kept_work` for every ended run of the
+conversation). A branch is deleted only at its recorded tip, right after its
+own worktree, once a fresh read shows no worktree, rebase or bisect uses it; a
+branch someone committed to is never deleted, and the folder left with it goes
+only by the owner's `remove_left_worktree` (`cleanup.py`, recorded as run
+events). The run's records stay.
 
 ## Local persistence decision
 

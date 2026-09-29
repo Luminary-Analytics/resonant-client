@@ -455,21 +455,18 @@ def _end(process: subprocess.Popen) -> None:
 def _check(command: str, worktree: str) -> tuple[bool, str]:
     """Run the task's check in the worktree: (passed, the end of its output)."""
     from .engine import os_sandbox
-    from .processes import background_process_kwargs
+    from .processes import decode_output, run_command, utf8_env
     from .secrets_store import child_env
-
-    from .processes import decode_output, utf8_env, utf8_shell
 
     try:
         wrapped = os_sandbox.prepare_shell(command, roots=[worktree], cwd=worktree)
     except ValueError as exc:  # the sandbox is on and can't run here
         return False, str(exc)
-    # Output in UTF-8 where the child can, decoded whatever it is (lumi/processes.py).
-    launch, shell, environment = ((wrapped, False, utf8_env(child_env())) if wrapped is not None
-                                  else utf8_shell(command, child_env()))
     try:
-        done = subprocess.run(launch, shell=shell, cwd=worktree, capture_output=True, timeout=CHECK_SECONDS,
-                              env=environment, **background_process_kwargs())
+        # Output decoded per line, and a timeout ends everything the check
+        # started, not only its shell (lumi/processes.py).
+        done = run_command(wrapped or command, shell=wrapped is None, cwd=worktree, timeout=CHECK_SECONDS,
+                           env=utf8_env(child_env()))
     except subprocess.TimeoutExpired:
         return False, f"The check didn't finish within {CHECK_SECONDS // 60} minutes."
     except OSError as exc:

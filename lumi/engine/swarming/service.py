@@ -51,6 +51,7 @@ _FIELDS |= {"before_run_id", "limit", "artifact_id", "offset"}
 _FIELDS |= {"read_roots", "autonomy", "worker_model"}
 _FIELDS |= {"execution_mode"}
 _FIELDS |= {"managed_epoch", "kind", "process_id", "local_id"}
+_FIELDS |= {"writer_id"}
 _FIELDS |= collaboration_desktop.FIELDS
 _FIELDS |= managed_collaboration_desktop.FIELDS
 _MANAGED_RECOVERY_ACTIONS = {"managed_recovery_inspect", "managed_reconcile_request", "managed_reconcile_action",
@@ -60,13 +61,14 @@ _MANAGED_RECOVERY_ACTIONS = {"managed_recovery_inspect", "managed_reconcile_requ
 # Team actions available while an organization policy applies: reading,
 # stopping, revoking and recovery bookkeeping, including taking over an
 # expired team (``recover`` fences its old owner and starts nothing; continuing
-# it is governed), and discarding what an ended team kept in the repository.
+# it is governed), and removing what ended teams kept in the repository.
 # Every other action can start model requests, processes, file changes or
 # sharing (policy_refusal).
 _POLICY_SAFE_ACTIONS = frozenset({
     "view", "events", "inspect", "inspect_candidate", "inspect_process", "history",
     "read_artifact", "export_report", "collaboration_inspect", "managed_sharing_inspect",
-    "managed_recovery_inspect", "stop", "discard_kept_work", "pause", "pause_worker", "cancel_worker", "revoke",
+    "managed_recovery_inspect", "stop", "discard_kept_work", "discard_all_kept_work", "remove_left_worktree",
+    "pause", "pause_worker", "cancel_worker", "revoke",
     "collaboration_revoke", "managed_sharing_revoke", "reject_result", "reconcile_action",
     "reconcile_application", "reconcile_effect", "reconcile_operation", "reconcile_process",
     "reconcile_request", "managed_reconcile_request", "managed_reconcile_action",
@@ -144,13 +146,14 @@ _LEFT_REASONS = {
 }
 
 
-def _discard_message(report: dict[str, Any]) -> str:
-    """What Discard kept work did, in one notice."""
+def _discard_message(report: dict[str, Any], teams: int = 1) -> str:
+    """What Discard kept work (of ``teams`` teams) did, in one notice."""
     if report.get("skipped"):
         return f"Nothing was discarded: {report['skipped']}"
     worktrees, branches = report.get("worktrees", 0), report.get("branches", 0)
     message = (f"Discarded {worktrees} worktree{'s' if worktrees != 1 else ''} and "
-               f"{branches} branch{'es' if branches != 1 else ''}.")
+               f"{branches} branch{'es' if branches != 1 else ''}"
+               + (f" of {teams} teams." if teams != 1 else "."))
     for item in report.get("left") or []:
         message += f" Kept {item['branch']}: {_LEFT_REASONS.get(item['reason'], 'Lumi left it')}."
     failed = report.get("failed") or []
@@ -223,6 +226,9 @@ class SwarmRuntime:
         self._pending_cleanups: dict[tuple[str, tuple[str, ...] | None], SwarmStore] = {}
         # Why a run's leftovers couldn't all be removed, for the Team panel.
         self._cleanup_problems: dict[str, str] = {}
+        # How much disk kept worktrees take, measured off the panel's thread.
+        from .cleanup import FolderSizes
+        self._kept_sizes = FolderSizes()
         self._collaboration_runs: set[str] = set()
         self._collaboration_idle: set[str] = set()
         self._watched: dict[tuple[str, str, str, str], SwarmStore] = {}
@@ -697,6 +703,61 @@ class SwarmRuntime:
             result["message"] = _discard_message(report)
             return result
 
+    def _discard_all_kept_work(self, capture: CapturedSession, message: dict[str, Any]) -> dict[str, Any]:
+        """Discard kept work of every ended team in this conversation (cleanup.kept_across)."""
+        from .cleanup import kept_across
+
+        with self._lock:
+            if set(message) - _FIELDS:
+                raise ValueError("Unsupported team command fields")
+            require_id(message.get("request_id"))
+            if self._closed:
+                raise Conflict("This desktop runtime has closed; reopen the retained team")
+            if message.get("run_id"):
+                require_id(message["run_id"])
+            store = self._store(capture)
+            run_ids = tuple(kept_across(store, capture.scope)["run_ids"])
+        if not run_ids:
+            with self._lock:
+                result = self._view(capture, store, message.get("run_id"))
+                result["message"] = "No ended team in this conversation keeps anything to discard."
+                return result
+        report = self._clean(store, capture.workspace, run_ids, discard=True, lock_seconds=30)
+        for run_id in run_ids:
+            self._audit_decision(capture, run_id, "discard_kept_work")
+        with self._lock:
+            result = self._view(capture, store, message.get("run_id"))
+            result["message"] = _discard_message(report, teams=len(run_ids))
+            return result
+
+    def _remove_left_worktree(self, capture: CapturedSession, message: dict[str, Any]) -> dict[str, Any]:
+        """The person's Remove: the folder left with a branch Lumi won't delete (cleanup.remove_left_worktree)."""
+        from .cleanup import remove_left_worktree
+
+        with self._lock:
+            if set(message) - _FIELDS:
+                raise ValueError("Unsupported team command fields")
+            require_id(message.get("request_id"))
+            if self._closed:
+                raise Conflict("This desktop runtime has closed; reopen the retained team")
+            run_id, writer_id = message.get("run_id"), message.get("writer_id")
+            require_id(run_id)
+            require_id(writer_id)
+            store = self._store(capture)
+            snapshot = store.snapshot(capture.scope, run_id)
+            if snapshot["run"]["state"] not in _TERMINAL:
+                raise Conflict("Stop the team and wait until it has stopped before removing its folders")
+            if message.get("expected_revision") != snapshot["run"]["revision"]:
+                raise RevisionConflict("Refresh the team before removing its folders")
+            root = Path(self._state_root(capture.workspace)) / "swarm" / "worktrees"
+        removed = remove_left_worktree(store, capture.workspace, run_id, writer_id, root=root, lock_seconds=30)
+        self._audit_decision(capture, run_id, "remove_left_worktree")
+        with self._lock:
+            result = self._view(capture, store, run_id)
+            result["message"] = (f"Removed {removed['worktree']}. The branch {removed['branch']} and its commits "
+                                 "stay in your repository.")
+            return result
+
     def chat_context(self, workspace: str, scope: Scope, run_id: str) -> dict[str, str]:
         """One of a conversation's retained teams, as that conversation's context (``@team:``).
 
@@ -828,7 +889,7 @@ class SwarmRuntime:
                                          "checks": setup["checks"]} if setup.get("write_roots") else None)
             # What the team keeps in the repository until the person discards it (cleanup.py).
             from .cleanup import kept_work
-            snapshot["kept_work"] = kept_work(store, snapshot)
+            snapshot["kept_work"] = kept_work(store, snapshot, sizes=self._kept_sizes.get)
             if snapshot["kept_work"] is not None:
                 snapshot["kept_work"]["problem"] = self._cleanup_problems.get(run_id, "")
             chosen = setup.get("worker_model")
@@ -845,9 +906,12 @@ class SwarmRuntime:
                                                           for row in snapshot["integration_operations"]]
             snapshot["candidate_details"] = [value for (owner, _), value in self._candidate_details.items() if owner == run_id]
         unavailable = self._team_unavailable(capture.backend_spec)
+        from .cleanup import kept_across
         return {"available": not unavailable,
                 "enabled": self.settings.get("swarming", "enabled", False) is True,
                 "storage_attention": bool(self._storage_uncertain or self._discovery_errors),
+                # What every ended team of this conversation keeps, for Discard all kept work.
+                "kept_everywhere": kept_across(store, capture.scope, sizes=self._kept_sizes.get),
                 "model": {"provider": capture.backend_spec.backend_type, "model": capture.backend_spec.model,
                           "label": self._provider_label(capture.backend_spec.backend_type)},
                 "execution_mode": self._execution_mode(capture), "managed": self._managed_view(capture, run_id),
@@ -1295,6 +1359,10 @@ class SwarmRuntime:
             return self._managed_recovery_operation(capture, message)
         if message.get("action") == "discard_kept_work":
             return self._discard_kept_work(capture, message)
+        if message.get("action") == "discard_all_kept_work":
+            return self._discard_all_kept_work(capture, message)
+        if message.get("action") == "remove_left_worktree":
+            return self._remove_left_worktree(capture, message)
         prepared_integration = self._prepare_recovery_integration(capture, message)
         with self._lock:
             if set(message) - _FIELDS:
@@ -1676,10 +1744,17 @@ class SwarmRuntime:
         """Inspect large Git diffs asynchronously so Stop never waits on rendering."""
         require_id(candidate_id)
         snapshot = store.snapshot(capture.scope, run_id)
-        if not any(row["id"] == candidate_id for row in snapshot["integration_candidates"]):
+        row = next((row for row in snapshot["integration_candidates"] if row["id"] == candidate_id), None)
+        if row is None:
             raise ScopeDenied("Candidate is unavailable in this team")
         key = (run_id, candidate_id)
         if self._closed or self._candidate_details.get(key, {}).get("state") == "loading":
+            return
+        if not os.path.lexists(row.get("path") or ""):
+            # Removed once nothing needed it, or by Discard kept work (cleanup.py).
+            self._candidate_details[key] = {"candidate_id": candidate_id, "state": "failed",
+                                            "error": "This candidate's worktree has been removed, so it can't be "
+                                                     "inspected any more."}
             return
         self._candidate_details[key] = {"candidate_id": candidate_id, "state": "loading"}
         def inspect():

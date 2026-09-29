@@ -17,7 +17,10 @@ Ollama-compatible model. These are the engine and runtime fixes; the page's
 first-run changes follow separately. An independent review on September 27
 found data loss in the first version (team cleanup deleted files outside the
 repository through a junction and could delete someone's commits); the
-September 29 revision below fixes that and the review's other findings.
+September 29 revision below fixes that and the review's other findings. A
+second review of that revision found that switching cmd.exe to UTF-8 changed
+what commands do; commands now run exactly as before and their output is
+decoded instead, and kept team work no longer piles up.
 
 - **A missing Git no longer ends every session.** Every session builds an
   agent-worktree manager, which ran `git rev-parse` without catching a
@@ -54,23 +57,37 @@ September 29 revision below fixes that and the review's other findings.
   reader and the tool answered "Error: 'NoneType' object has no attribute
   'strip'", and "Jöhn" came back as "J”hn". Reading it as the OEM code page
   instead garbled a Python child's output ("Jürgen Jöhn" became "Jⁿrgen
-  J÷hn"), since Python writes the ANSI one. Now children are asked for UTF-8:
-  `PYTHONUTF8=1` unless the person set it (`processes.utf8_env`), and shell
-  commands run through `processes.utf8_shell`, where cmd.exe switches its
-  console to UTF-8 (`chcp 65001`) and runs the command in a second cmd.exe,
-  since the first keeps writing the old code page for the rest of its line;
-  the command reaches it through a variable expanded after parsing, so its
-  quotes, `&`, `%` and `!` mean what they did. Output is decoded line by line
-  (`processes.decode_output`): UTF-8, else whichever of the ANSI and OEM code
-  pages reads as more letters, so one command can mix cmd's `echo`, a Python
-  in UTF-8 mode and one that isn't. Jobs and previews read their output in
-  1 KiB pieces and decoded each on its own, splitting characters; they decode
+  J÷hn"), since Python writes the ANSI one. Commands still run in one
+  `cmd.exe /c`, exactly as in the person's own terminal, and their output is
+  decoded line by line (`processes.decode_output`): UTF-8 when a line is,
+  else whichever of the OEM and ANSI code pages it reads better in (letters,
+  box drawing drawn as tree draws it, no capitals inside words), the OEM one
+  on a tie for what commands print and the ANSI one for files' own text in
+  search results; a line seen before is decided once, about 0.3 s for 2 MB of
+  non-UTF-8 lines. So cmd's `echo` and `dir`, `more`, `sort`, `tree`, a Python
+  child and Git can share one command's output. Python children get
+  `PYTHONIOENCODING=utf-8` (`processes.utf8_env`), which changes only their
+  pipes, unless the person set it or `PYTHONUTF8`. The first revision set
+  `PYTHONUTF8=1`, which also changed what the person's scripts read and wrote
+  (a cp1252 CSV failed to open), and ran commands in a second cmd.exe after
+  `chcp 65001`: batch files saved in the console's code page broke on
+  non-ASCII paths, `C:\Program Files\...\tool.exe` unquoted no longer ran,
+  commands of about 8,190 characters or more exited 0 without running, and
+  `%CMDCMDLINE%` showed the wrapper. All of that behaves as it did before
+  again, and a command longer than cmd.exe takes (8,150 characters here) is
+  refused with cmd.exe's own "The command line is too long." and exit status
+  1 before anything starts. Jobs and previews read their output in 1 KiB
+  pieces and decoded each on its own, splitting characters; they decode
   whole lines now (`processes.OutputDecoder`). The acceptance checks of
-  missions, the harness's validation runs, worktree validation and model
-  comparison checks use the same path, and the task scheduler, OCR,
-  clipboard, pack installs, mission checkpoints, the mission factory's Git
-  probes and the Azure and Google CLI sign-ins no longer decode text-mode
-  pipes strictly with the locale's code page.
+  missions, the harness's validation runs, worktree validation (which had no
+  timeout; now 10 minutes) and model comparison checks run through
+  `processes.run_command`: a timeout ends every process the command started
+  (a kill-on-close job on Windows), where `subprocess.run` killed only the
+  shell and then waited for what it had started, a `ping` in the shell's
+  place for its whole run. The task scheduler, OCR, clipboard, pack
+  installs, mission checkpoints, the mission factory's Git probes and the
+  Azure and Google CLI sign-ins no longer decode text-mode pipes strictly
+  with the locale's code page.
 - **A team only holds its own conversation.** After a restart, an unfinished
   team refused chat in every project ("Finish or stop the active team before
   starting an ordinary chat turn"). Now only the conversation that owns it
@@ -95,12 +112,24 @@ September 29 revision below fixes that and the review's other findings.
   until the person chooses **Discard kept work** in Review file changes: an
   unapplied writer change, a writer worktree that may hold uncommitted
   edits, and any other unapplied combined candidate; the panel's Needs
-  attention list mentions it. Stop says what it keeps. Applied combined candidates
-  are never removed, so Inspect candidate keeps working. A branch is deleted
-  only while it still points at the commit the team recorded (the writer's
-  result, else its base), with `git update-ref -d` against that commit; one
-  someone committed to is left for good with its worktree and reported, and
-  one checked out, rebased or bisected in another worktree waits. Worktrees
+  attention list mentions it. Stop says what it keeps. An applied combined
+  candidate stays so Inspect candidate keeps working, until Discard, which
+  now removes it too (each is a full checkout; they piled up). The panel
+  shows how much disk the kept folders take, measured in the background
+  (`cleanup.FolderSizes`), and **Saved teams in this conversation** offers
+  **Discard all kept work** for every ended team of the conversation. A
+  branch is deleted only while it still points at the commit the team
+  recorded (the writer's result, else its base), with `git update-ref -d`
+  against that commit, right after its own worktree and after reading again
+  whether it is checked out, rebased or bisected: the first revision read
+  that once and deleted all branches after all worktrees, so a branch
+  checked out meanwhile was deleted under its checkout ("No commits yet"). One
+  someone committed to is left for good and reported, and the worktree left
+  with it has a **Remove folder** button, confirmed in a dialog, which
+  removes it the safe way below and keeps the branch; the panel no longer
+  tells the person to delete it themselves, since deleting it by hand can
+  follow a junction. One checked out, rebased or bisected in another
+  worktree waits. Worktrees
   are removed by `lumi/worktree_removal.py`, never `git worktree remove
   --force`, which on Windows followed a junction inside the worktree (npm
   links a `file:` dependency that way) and deleted the files it pointed to,
@@ -111,7 +140,8 @@ September 29 revision below fixes that and the review's other findings.
   comparisons. Agent worktrees and model comparisons use the same removal.
   Cleanup takes the repository lock team steps take, runs Git with hooks
   disabled, and records what it removed and left as run events
-  (`leftovers_removed`, `kept_work_discarded`). A cleanup that can't start
+  (`leftovers_removed`, `kept_work_discarded`, `left_worktree_removed`). A
+  cleanup that can't start
   its thread is tried again instead of ending the ownership observer. A
   failed Git step reports Git's `fatal:`/`error:` line, not its first
   progress line ("Preparing worktree ...").
@@ -177,6 +207,14 @@ September 29 revision below fixes that and the review's other findings.
   index; findstr in a "Jöhn Smith" project with an excluded file, with and
   without final newlines; the portable folder through a junction; help text,
   the updater message, a double-click and a command line, the tagged log),
+  `tests/test_cmd_shell.py` (commands match a plain `cmd.exe /c`, output,
+  exit status and `%CMDCMDLINE%` included; an unquoted program path with
+  spaces; commands from 8,150 to 20,000 characters, refused and never half
+  run; a batch file saved in the console's code page; `more`, `sort` and
+  `tree` output; OEM and ANSI lines, ties, box drawing and Cyrillic; decoding
+  time; timeouts that end a cmd.exe loop and a `ping` for `run_command`,
+  acceptance checks, model comparison checks, the harness's validation and
+  worktree validation, and what a finished command left running),
   `tests/test_worktree_removal.py` (real worktrees with a junction to a folder
   outside, read-only files, a symbolic link, the worktree folder itself as a
   link, the person's worktree whose folder is away, a record left behind, a
@@ -186,14 +224,22 @@ September 29 revision below fixes that and the review's other findings.
   team's first moment and for an unknown owner, a chat message right after
   a start, continuing during a chat turn, the named new-team refusal, an
   observer whose cleanup can't start; cleanup with real Git of both branch
-  prefixes, unapplied work until Discard, a moved and a checked-out branch,
-  the person's worktree, hooks and the repository lock, no Git; and through
-  `SwarmRuntime` with real writers: Stop's message, Discard through a
-  junction a declared check left in a candidate, a moved branch, an applied
-  candidate that stays inspectable, and the startup sweep), and
-  `tests/swarm_kept_work.browser.cjs` (headless Edge on the real panel:
-  Stop's message, the kept list, Discard by keyboard behind its checkbox at
-  390 px wide).
+  prefixes and in packed refs, unapplied work until Discard, a moved and a
+  checked-out branch, a branch checked out or committed to while its
+  worktree goes, applied candidates until Discard, Remove folder through a
+  junction and outside Lumi's folder, sizes measured without following
+  links, Discard all within one conversation, the person's worktree, hooks
+  and the repository lock, no Git; and through `SwarmRuntime` with real
+  writers: Stop's message, Discard through a junction a declared check left
+  in a candidate, sizes, a moved branch and Remove folder, an applied
+  candidate that stays inspectable until Discard, Discard all across two
+  teams, and the startup sweep), `tests/test_clean_machine.py` also checks
+  that a script's own files keep the ANSI code page, and
+  `tests/swarm_kept_work.browser.cjs` (headless Edge on the real panel: Stop's
+  message, the kept list with sizes, Discard by keyboard behind its checkbox
+  at 390 px wide, Remove folder's dialog cancelled and accepted, a second
+  team and Discard all kept work from Saved teams, and never "delete it
+  yourself").
 - **Deferred:** the page's first-run changes are a separate pull request.
   Programs launched by bare name from the project folder are handled by the
   shared resolver in its own pull request; this one adds no such launch.

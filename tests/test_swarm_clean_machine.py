@@ -18,7 +18,9 @@ import pytest
 
 from lumi.engine.swarming import git_boundary
 from lumi.engine.swarming import service as service_module
-from lumi.engine.swarming.cleanup import DISCARDED_EVENT, REMOVED_EVENT, clean_finished_teams
+from lumi.engine.swarming import cleanup
+from lumi.engine.swarming.cleanup import (DISCARDED_EVENT, REMOVED_EVENT, clean_finished_teams, kept_across,
+                                          remove_left_worktree)
 from lumi.engine.swarming.git_boundary import (REPOSITORY_LOCK_NAME, git_error_line, open_repository_lock,
                                                release_repository_lock, trusted_git_executable, try_repository_lock)
 from lumi.engine.swarming.models import Conflict
@@ -550,6 +552,179 @@ def test_cleanup_without_git_leaves_everything_for_the_next_start(writer_repo, m
     assert clean_finished_teams(store, project, root=integration.root)["branches"] == 1
 
 
+def test_team_branches_in_packed_refs_go_and_nothing_else(writer_repo):
+    from tests.test_swarm_integration import writers
+
+    store, _supervisor, authority, integration, project, base = writer_repo
+    (_context, lease), = writers(writer_repo, names=("a",))
+    _ready(store, lease["id"], base)
+    legacy = "codex/swarm-writer-0123456789abcdef"
+    git(project, "branch", legacy, base)
+    _legacy_writer(store, legacy)
+    git(project, "branch", "keep-me", base)
+    git(project, "pack-refs", "--all")
+    assert legacy in (project / ".git" / "packed-refs").read_text()
+    _end(store, authority.run_id)
+    assert clean_finished_teams(store, project, root=integration.root)["branches"] == 2 and branches(project) == []
+    assert git(project, "rev-parse", "keep-me") == base and git(project, "rev-parse", "main") == base
+    assert legacy not in (project / ".git" / "packed-refs").read_text()
+    git(project, "fsck", "--no-progress")
+
+
+def _after_each_removal(monkeypatch, happen):
+    """Something happens in the repository right after a team worktree goes, before its branch does."""
+    real = cleanup.remove_worktree
+
+    def remove(path, *, common_dir):
+        result = real(path, common_dir=common_dir)
+        happen()
+        return result
+
+    monkeypatch.setattr(cleanup, "remove_worktree", remove)
+
+
+def test_a_branch_checked_out_while_its_worktree_goes_stays(writer_repo, monkeypatch):
+    """update-ref -d deletes a checked-out branch; what is checked out is read again right before it."""
+    from tests.test_swarm_integration import writers
+
+    store, _supervisor, authority, integration, project, base = writer_repo
+    (_context, lease), = writers(writer_repo, names=("a",))
+    _ready(store, lease["id"], base)
+    branch = json.loads(lease["manifest_json"])["branch"]
+    _after_each_removal(monkeypatch, lambda: git(project, "checkout", branch))  # the person looks at it meanwhile
+    _end(store, authority.run_id)
+    report = clean_finished_teams(store, project, root=integration.root)
+    assert [(item["branch"], item["reason"]) for item in report["left"]] == [(branch, "in_use")], report
+    assert git(project, "symbolic-ref", "HEAD") == f"refs/heads/{branch}" and git(project, "rev-parse", "HEAD") == base
+    assert "No commits yet" not in git(project, "status", "--short", "--branch")
+    monkeypatch.undo()
+    git(project, "checkout", "main")
+    assert clean_finished_teams(store, project, root=integration.root)["branches"] == 1 and branches(project) == []
+
+
+def test_a_commit_landing_while_its_worktree_goes_keeps_the_branch(writer_repo, monkeypatch):
+    from tests.test_swarm_integration import writers
+
+    store, _supervisor, authority, integration, project, base = writer_repo
+    (_context, lease), = writers(writer_repo, names=("a",))
+    _ready(store, lease["id"], base)
+    branch = json.loads(lease["manifest_json"])["branch"]
+    landed = {}
+
+    def commit():
+        tree = git(project, "rev-parse", f"{base}^{{tree}}")
+        landed["commit"] = git(project, "commit-tree", tree, "-p", base, "-m", "Landed meanwhile")
+        git(project, "update-ref", f"refs/heads/{branch}", landed["commit"])
+
+    _after_each_removal(monkeypatch, commit)
+    _end(store, authority.run_id)
+    report = clean_finished_teams(store, project, root=integration.root)
+    assert git(project, "rev-parse", branch) == landed["commit"], "the commit that landed meanwhile was lost"
+    assert [(item["branch"], item["reason"]) for item in report["left"]] == [(branch, "moved")] and not report["failed"]
+    assert [item["branch"] for item in _events(store, authority.run_id, REMOVED_EVENT)[0]["left"]] == [branch]
+
+
+def test_discard_removes_applied_candidates_worktrees_too(writer_repo):
+    """Kept so Inspect candidate works, one checkout each, until Discard frees them."""
+    from tests.test_swarm_integration import finish, writers
+
+    store, _supervisor, authority, integration, project, base = writer_repo
+    (context, lease), = writers(writer_repo, names=("a",))
+    (Path(lease["path"]) / "a.txt").write_text("the writer's change\n")
+    finish(writer_repo, context, lease)
+    candidate = integration.root / "candidate-0123456789abcdef"
+    git(project, "worktree", "add", "--detach", str(candidate), base)
+    with sqlite3.connect(store.path) as connection:
+        repo_key = connection.execute("SELECT repo_key FROM writer_worktrees").fetchone()[0]
+        connection.execute("INSERT INTO integration_candidates(id,run_id,epoch,repo_key,path,base_revision,state,"
+                           "manifest_json,process_protocol) VALUES('applied-candidate',?,1,?,?,?,'applied',?,1)",
+                           (authority.run_id, repo_key, str(candidate), base,
+                            json.dumps({"writers": [{"id": lease["id"]}]})))
+    _end(store, authority.run_id, "completed")
+    clean_finished_teams(store, project, root=integration.root)
+    assert candidate.exists() and not Path(lease["path"]).exists()  # the applied writer went, the candidate stays
+    report = clean_finished_teams(store, project, run_ids=(authority.run_id,), root=integration.root, discard=True)
+    assert report["worktrees"] == 1 and not candidate.exists() and len(worktrees(project)) == 1
+    assert _events(store, authority.run_id, DISCARDED_EVENT)[0]["candidates"] == ["applied-candidate"]
+
+
+def test_the_person_can_remove_a_folder_left_with_a_moved_branch(writer_repo, tmp_path):
+    """Remove: the folder goes like a team worktree (links unlinked, never followed); the branch stays."""
+    from tests.test_swarm_integration import writers
+
+    store, _supervisor, authority, integration, project, base = writer_repo
+    (_context, lease), = writers(writer_repo, names=("a",))
+    _ready(store, lease["id"], base)
+    branch = json.loads(lease["manifest_json"])["branch"]
+    git(lease["path"], "commit", "--allow-empty", "-m", "The person's own work on the team's branch")
+    mine = git(project, "rev-parse", branch)
+    library = own_library(tmp_path)
+    link_folder(Path(lease["path"]) / "node_modules", library)
+    _end(store, authority.run_id)
+    report = clean_finished_teams(store, project, root=integration.root)
+    assert [(item["branch"], item["reason"], item["worktree"]) for item in report["left"]] == [
+        (branch, "moved", lease["path"])]
+    removed = remove_left_worktree(store, project, authority.run_id, lease["id"], root=integration.root)
+    assert removed == {"writer_id": lease["id"], "branch": branch, "worktree": lease["path"]}
+    assert not os.path.lexists(lease["path"]) and git(project, "rev-parse", branch) == mine
+    assert sorted(path.name for path in library.iterdir()) == ["index.js"], "a junction's target lost its files"
+    assert len(worktrees(project)) == 1  # its own Git record went with it
+    with store._connection() as connection:
+        left, = cleanup._recorded(connection, authority.run_id)["left"].values()
+    assert "worktree" not in left and left["folder_removed"] is True
+    with pytest.raises(Conflict, match="no folder"):
+        remove_left_worktree(store, project, authority.run_id, lease["id"], root=integration.root)
+    # Only a folder under Lumi's own: a record naming another is refused, and it stays.
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "keep.txt").write_text("the person's\n")
+    with store._connection(write=True) as connection:
+        store._event(connection, authority.run_id, REMOVED_EVENT, {
+            "writers": ["elsewhere"], "candidates": [], "branches": [], "failed": [],
+            "left": [{"run_id": authority.run_id, "writer_id": "elsewhere", "branch": "lumi/team-elsewhere",
+                      "reason": "moved", "worktree": str(outside)}]})
+    with pytest.raises(Conflict, match="isn't in Lumi's folder"):
+        remove_left_worktree(store, project, authority.run_id, "elsewhere", root=integration.root)
+    assert (outside / "keep.txt").exists()
+
+
+def test_kept_folders_are_measured_in_the_background_without_following_links(tmp_path):
+    from lumi.engine.swarming.cleanup import FolderSizes
+    from lumi.worktree_removal import folder_size
+
+    folder = tmp_path / "kept"
+    (folder / "sub").mkdir(parents=True)
+    (folder / "a.bin").write_bytes(b"x" * 1000)
+    (folder / "sub" / "b.bin").write_bytes(b"y" * 500)
+    library = own_library(tmp_path)
+    (library / "big.bin").write_bytes(b"z" * 100_000)
+    link_folder(folder / "node_modules", library)
+    release = threading.Event()
+
+    def measure(path):
+        release.wait(10)
+        return folder_size(path)
+
+    sizes = FolderSizes(measure)
+    assert sizes.get(str(folder)) is None  # the panel never waits for a walk
+    release.set()
+    until(lambda: sizes.get(str(folder)) == 1500, timeout=10)
+
+
+def test_discard_all_counts_only_this_conversations_ended_teams(writer_repo):
+    from tests.test_swarm_integration import finish, writers
+
+    store, _supervisor, authority, integration, project, base = writer_repo
+    (context, lease), = writers(writer_repo, names=("a",))
+    (Path(lease["path"]) / "a.txt").write_text("the writer's change\n")
+    finish(writer_repo, context, lease)
+    assert kept_across(store, authority.scope)["teams"] == 0  # still running: nothing to discard yet
+    _end(store, authority.run_id)
+    across = kept_across(store, authority.scope)
+    assert (across["teams"], across["run_ids"], across["items"], across["applied"]) == (1, [authority.run_id], 1, 0)
+    assert kept_across(store, replace(authority.scope, session_id="another-conversation"))["teams"] == 0
+
+
 # ── Through the Team panel's runtime (SwarmRuntime), with real writers ──────
 
 
@@ -625,8 +800,14 @@ def test_discard_waits_for_the_team_to_end_and_keeps_a_moved_branch(desktop):
         act(desktop, run_id, "discard_kept_work", "too-early")
     writer = view(desktop, run_id)["writer_worktrees"][0]
     branch = json.loads(writer["manifest_json"])["branch"]
+    with pytest.raises(Conflict, match="Stop the team"):
+        act(desktop, run_id, "remove_left_worktree", "too-early-remove", writer_id=writer["id"])
     act(desktop, run_id, "stop", "stop")
     ended(desktop, run_id)
+    # The panel says how much disk the kept folders take, measured in the background.
+    until(lambda: not view(desktop, run_id)["kept_work"]["size_pending"], timeout=30)
+    kept = view(desktop, run_id)["kept_work"]
+    assert kept["size"] > 0 and kept["size"] == sum(item["size"] for item in kept["items"])
     # Someone commits on the team's branch after it stopped.
     git(writer["path"], "commit", "--allow-empty", "-m", "Salvaged by the person")
     salvaged = git(project, "rev-parse", branch)
@@ -634,11 +815,20 @@ def test_discard_waits_for_the_team_to_end_and_keeps_a_moved_branch(desktop):
     assert f"Kept {branch}: it has commits the team didn't make." in discarded["message"], discarded["message"]
     assert git(project, "rev-parse", branch) == salvaged
     left = discarded["run"]["kept_work"]["left"]
-    assert [(item["branch"], item["reason"]) for item in left] == [(branch, "moved")]
+    assert [(item["branch"], item["reason"], item["worktree"]) for item in left] == [(branch, "moved", writer["path"])]
+    # Remove: that folder goes (never by hand, which could follow a junction); the branch stays.
+    removed = act(desktop, run_id, "remove_left_worktree", "remove", writer_id=writer["id"])
+    assert removed["message"] == (f"Removed {writer['path']}. The branch {branch} and its commits stay in "
+                                  "your repository."), removed["message"]
+    assert not os.path.lexists(writer["path"]) and git(project, "rev-parse", branch) == salvaged
+    left, = removed["run"]["kept_work"]["left"]
+    assert left["folder_removed"] is True and "worktree" not in left
+    with pytest.raises(Conflict, match="no folder"):
+        act(desktop, run_id, "remove_left_worktree", "remove-again", writer_id=writer["id"])
 
 
-def test_an_applied_change_is_cleaned_up_and_stays_inspectable(desktop):
-    """The applied writer's worktree and branch go; the applied candidate stays for Inspect candidate."""
+def test_an_applied_change_is_cleaned_up_and_stays_inspectable_until_discarded(desktop):
+    """The applied writer's worktree and branch go; the applied candidate stays for Inspect candidate until Discard."""
     service, capture, project, _ = desktop
     run_id = service.operate(capture, request())["run"]["run"]["id"]
     submitted(desktop, run_id)
@@ -661,9 +851,42 @@ def test_an_applied_change_is_cleaned_up_and_stays_inspectable(desktop):
     assert Path(candidate["path"]).exists()
     kept = view(desktop, run_id)["kept_work"]
     assert kept["items"] == [] and kept["applied_candidates"] == 1
+    assert [item["id"] for item in kept["applied"]] == [candidate["id"]]
     act(desktop, run_id, "inspect_candidate", "inspect", candidate_id=candidate["id"])
     until(lambda: any(item.get("state") == "ready" for item in view(desktop, run_id)["candidate_details"]), timeout=60)
     assert (project / "src" / "value.txt").read_text() == "verified change\n"
+    # One full checkout per applied candidate would pile up: Discard frees it.
+    discarded = act(desktop, run_id, "discard_kept_work", "discard")
+    assert discarded["message"] == "Discarded 1 worktree and 0 branches.", discarded["message"]
+    assert not Path(candidate["path"]).exists() and discarded["run"]["kept_work"]["applied"] == []
+    assert (project / "src" / "value.txt").read_text() == "verified change\n"
+    service._candidate_details.clear()
+    act(desktop, run_id, "inspect_candidate", "inspect-again", candidate_id=candidate["id"])
+    details, = view(desktop, run_id)["candidate_details"]
+    assert details["state"] == "failed" and "has been removed" in details["error"]
+
+
+def test_discard_all_kept_work_takes_every_ended_team_of_the_conversation(desktop):
+    service, capture, project, _ = desktop
+    kept_branches = []
+    for number in range(2):
+        run_id = service.operate(capture, request(request_id=f"start-{number}"))["run"]["run"]["id"]
+        submitted(desktop, run_id)
+        writer = view(desktop, run_id)["writer_worktrees"][0]
+        kept_branches.append(json.loads(writer["manifest_json"])["branch"])
+        act(desktop, run_id, "stop", f"stop-{number}")
+        ended(desktop, run_id)
+    assert sorted(branches(project)) == sorted(kept_branches)
+    across = service.operate(capture, {"request_id": "view", "run_id": run_id})["kept_everywhere"]
+    assert (across["teams"], across["items"]) == (2, 2), across
+    until(lambda: not service.operate(capture, {"request_id": "view"})["kept_everywhere"]["size_pending"], timeout=30)
+    assert service.operate(capture, {"request_id": "view"})["kept_everywhere"]["size"] > 0
+    discarded = service.operate(capture, {"action": "discard_all_kept_work", "request_id": "discard-all"})
+    assert discarded["message"] == "Discarded 2 worktrees and 2 branches of 2 teams.", discarded["message"]
+    assert branches(project) == [] and len(worktrees(project)) == 1
+    assert discarded["kept_everywhere"]["teams"] == 0
+    again = service.operate(capture, {"action": "discard_all_kept_work", "request_id": "discard-all-again"})
+    assert again["message"] == "No ended team in this conversation keeps anything to discard."
 
 
 def test_teams_that_ended_earlier_are_cleaned_at_the_next_start(desktop):

@@ -224,6 +224,47 @@ def remove_worktree(path: str | os.PathLike, *, common_dir: str | os.PathLike) -
     return result
 
 
+def worktree_common_dir(path: str | os.PathLike) -> Path | None:
+    """The ``$GIT_COMMON_DIR`` a linked worktree's own ``.git`` file names; None when it names none.
+
+    Only that file and the ``commondir`` it leads to, never a folder further
+    up (unlike repository_common_dir): a worktree whose pointer is gone is
+    no repository's any more.
+    """
+    git_dir = _gitdir_pointer(Path(os.path.abspath(os.fspath(path))) / ".git")
+    if git_dir is None:
+        return None
+    try:
+        common = (git_dir / "commondir").read_text(encoding="utf-8", errors="replace").strip()
+        return (git_dir / common).resolve() if common else None
+    except OSError:
+        return None
+
+
+def folder_size(path: str | os.PathLike) -> int:
+    """The bytes of the files in a folder, links not followed: what removing it frees."""
+    total = 0
+    pending = [_extended(os.fspath(path))]
+    while pending:
+        current = pending.pop()
+        try:
+            entries = list(os.scandir(current))
+        except OSError:
+            continue
+        for entry in entries:
+            try:
+                info = entry.stat(follow_symlinks=False)
+            except OSError:
+                continue
+            if _is_link(info):
+                continue
+            if stat.S_ISDIR(info.st_mode):
+                pending.append(entry.path)
+            else:
+                total += info.st_size
+    return total
+
+
 def repository_common_dir(path: str | os.PathLike) -> Path | None:
     """The ``$GIT_COMMON_DIR`` of the repository containing ``path``, found without running Git.
 

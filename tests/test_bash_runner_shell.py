@@ -17,8 +17,6 @@ These tests pin:
 """
 from __future__ import annotations
 
-import os
-import sys
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -84,7 +82,7 @@ class TestBashRunnerShell:
 
         runner = BashRunner(_bash_path="/usr/bin/bash")
         with patch(
-            "lumi.orchestration.acceptance_check.subprocess.run",
+            "lumi.orchestration.acceptance_check.run_command",
             side_effect=fake_run,
         ):
             runner.run("echo hello")
@@ -93,7 +91,9 @@ class TestBashRunnerShell:
         assert captured["args"] == ["/usr/bin/bash", "-c", "echo hello"]
         assert captured["shell"] is False
 
-    def test_falls_back_to_shell_true_when_bash_unavailable(self):
+    def test_falls_back_to_shell_true_when_bash_unavailable(self, monkeypatch):
+        monkeypatch.delenv("PYTHONIOENCODING", raising=False)
+        monkeypatch.delenv("PYTHONUTF8", raising=False)
         captured = {}
 
         def fake_run(*args, **kwargs):
@@ -108,22 +108,19 @@ class TestBashRunnerShell:
             "lumi.orchestration.acceptance_check._detect_bash",
             return_value=None,
         ), patch(
-            "lumi.orchestration.acceptance_check.subprocess.run",
+            "lumi.orchestration.acceptance_check.run_command",
             side_effect=fake_run,
         ):
             runner.run("echo hello")
 
-        # Falls back to the platform shell with the raw command. On Windows
-        # that is cmd.exe writing UTF-8 (processes.utf8_shell): the command
-        # travels in a variable, never parsed by the outer cmd.exe.
-        if sys.platform == "win32":
-            assert captured["shell"] is False and "chcp 65001" in captured["args"][0]
-            assert captured["env"]["LUMI_SHELL_COMMAND"] == "echo hello"
-        else:
-            assert captured["args"][0] == "echo hello"
-            assert captured["shell"] is True
-        # A child Python writes UTF-8, unless the person chose otherwise.
-        assert captured["env"]["PYTHONUTF8"] == os.environ.get("PYTHONUTF8", "1")
+        # Falls back to the platform shell with the raw command: one
+        # `cmd.exe /c` on Windows, as before (output is decoded instead).
+        assert captured["args"][0] == "echo hello"
+        assert captured["shell"] is True
+        # A child Python writes UTF-8 to the pipe, and nothing else changes:
+        # not PYTHONUTF8, which would change what open() reads and writes.
+        assert captured["env"]["PYTHONIOENCODING"] == "utf-8"
+        assert "PYTHONUTF8" not in captured["env"]
 
     def test_explicit_bash_path_overrides_detection(self):
         """If a test (or runtime config) sets `_bash_path` explicitly,
@@ -136,7 +133,7 @@ class TestBashRunnerShell:
 
         runner = BashRunner(_bash_path="/custom/path/to/bash")
         with patch(
-            "lumi.orchestration.acceptance_check.subprocess.run",
+            "lumi.orchestration.acceptance_check.run_command",
             side_effect=fake_run,
         ), patch(
             "lumi.orchestration.acceptance_check._detect_bash"
@@ -177,7 +174,7 @@ class TestBashRunnerShell:
             timeout_seconds=15.0,
         )
         with patch(
-            "lumi.orchestration.acceptance_check.subprocess.run",
+            "lumi.orchestration.acceptance_check.run_command",
             side_effect=fake_run,
         ):
             runner.run("ls")
@@ -190,7 +187,7 @@ class TestBashRunnerShell:
 
         runner = BashRunner(_bash_path="/bin/bash", timeout_seconds=0.1)
         with patch(
-            "lumi.orchestration.acceptance_check.subprocess.run",
+            "lumi.orchestration.acceptance_check.run_command",
             side_effect=sp.TimeoutExpired(cmd="x", timeout=0.1),
         ):
             rc, out, err = runner.run("anything")
@@ -201,7 +198,7 @@ class TestBashRunnerShell:
     def test_subprocess_error_returns_127(self):
         runner = BashRunner(_bash_path="/bin/bash")
         with patch(
-            "lumi.orchestration.acceptance_check.subprocess.run",
+            "lumi.orchestration.acceptance_check.run_command",
             side_effect=OSError("no such bash"),
         ):
             rc, out, err = runner.run("anything")

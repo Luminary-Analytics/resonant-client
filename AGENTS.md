@@ -385,8 +385,11 @@ host enrollment and actual packaged/learned-benefit qualification remain open.
   `git worktree remove --force` or `git worktree prune`: Git for Windows follows a
   junction inside a worktree and deletes its target's files, and prune forgets
   the person's own worktrees whose folders are away. Delete a team branch only at
-  the commit the team recorded, and keep an ended team's unapplied work until
-  the person discards it (`engine/swarming/cleanup.py`).
+  the commit the team recorded, right after its own worktree and after reading
+  again whether it is checked out, rebased or bisected; keep an ended team's
+  unapplied work until the person discards it, and a folder left with a branch
+  someone committed to until they remove it in the panel; never tell the person
+  to delete one by hand (`engine/swarming/cleanup.py`).
 - Long foreground workers use `job_start`, `job_status`, and `job_cancel`.
   Ordinary shell children are cleaned up at tool completion. Managed jobs are
   project-owned, limited to20minutes, and stopped on client exit; explicit
@@ -539,10 +542,15 @@ for publishing and update-feed verification.
 Git, Python and Node.js are optional on a user's computer. Code that runs
 `git` treats a program that can't start like a failed command and never lets
 it end a session, and says Git isn't installed only when `git_available()`
-says so (`lumi/git_support.py`). Children whose output is read as text are
-asked for UTF-8 (`processes.utf8_env`, and `utf8_shell` for shell commands),
-and their output is decoded with `processes.decode_output` (per line: UTF-8,
-else the Windows ANSI or OEM code page) or `OutputDecoder` when read in pieces.
+says so (`lumi/git_support.py`). Shell commands run in one `cmd.exe /c`
+(`shell=True`) exactly as in the person's own terminal: never switch its code
+page or wrap it in another cmd.exe, which changes what batch files, long
+commands and quoted paths do. Python children get `PYTHONIOENCODING=utf-8`
+(`processes.utf8_env`), never `PYTHONUTF8`, which changes what `open()` reads
+and writes. Output read as text is decoded with `processes.decode_output` (per
+line: UTF-8, else the OEM or ANSI code page; OEM wins a tie for commands) or
+`OutputDecoder` when read in pieces. A command with a timeout runs through
+`processes.run_command`, whose timeout ends every process it started.
 
 ## Documentation and releases
 

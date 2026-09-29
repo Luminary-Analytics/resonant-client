@@ -25,7 +25,7 @@ from lumi.engine.checkpoint_timeline import SessionCheckpointStore
 from lumi.engine.tools import execute_tool
 from lumi.engine.worktrees import WorktreeError, WorktreeManager
 from lumi.orchestration.checkpoints import CheckpointError, IterationCheckpointStore
-from lumi.processes import SHELL_COMMAND_VARIABLE, OutputDecoder, decode_output, utf8_env, utf8_shell
+from lumi.processes import OutputDecoder, decode_output, utf8_env
 from lumi.startup_log import TaggedLog, process_role
 
 
@@ -237,21 +237,33 @@ def test_a_jobs_log_keeps_every_character(monkeypatch, tmp_path):
     assert status["logs"] == expected and "�" not in status["logs"]
 
 
-def test_children_are_asked_for_utf8(monkeypatch):
+def test_python_children_write_utf8_and_nothing_else_changes():
+    """PYTHONIOENCODING, not PYTHONUTF8: only the pipes, never what open() reads and writes."""
+    environment = utf8_env({"PATH": "x"})
+    assert environment["PYTHONIOENCODING"] == "utf-8" and "PYTHONUTF8" not in environment
+    # The person's own choice of either stands (decode_output reads what comes).
+    assert utf8_env({"PYTHONUTF8": "0"}) == {"PYTHONUTF8": "0"}
+    assert utf8_env({"PYTHONUTF8": "1"}) == {"PYTHONUTF8": "1"}
+    assert utf8_env({"PYTHONIOENCODING": "cp1252"}) == {"PYTHONIOENCODING": "cp1252"}
+
+
+def test_a_scripts_own_files_keep_their_encoding(monkeypatch, tmp_path):
+    """A cp1252 CSV read with open()'s default still reads; a file written by default is still cp1252."""
+    import subprocess
+
     monkeypatch.delenv("PYTHONUTF8", raising=False)
-    assert utf8_env({"PATH": "x"})["PYTHONUTF8"] == "1"
-    # The person's own choice stands (decode_output reads that too).
-    assert utf8_env({"PYTHONUTF8": "0"})["PYTHONUTF8"] == "0"
-    args, shell, env = utf8_shell("echo hi", {"PATH": "x"})
-    assert env["PYTHONUTF8"] == "1"
-    if sys.platform == "win32":
-        # Windows' own cmd.exe by full path: chcp 65001, then a second cmd.exe
-        # that reads the command from a variable the first expands after parsing.
-        assert shell is False and env[SHELL_COMMAND_VARIABLE] == "echo hi"
-        assert args.startswith('"' + os.path.join(os.environ["SystemRoot"], "System32", "cmd.exe") + '" /d /v:on')
-        assert "chcp 65001" in args and "echo hi" not in args
-    else:
-        assert (args, shell) == ("echo hi", True)
+    monkeypatch.delenv("PYTHONIOENCODING", raising=False)
+    # What open() uses by default in a child Python here (cp1252 on a Western Windows).
+    page = subprocess.run([sys.executable, "-c", "import locale; print(locale.getpreferredencoding(False))"],
+                          capture_output=True, text=True, check=True).stdout.strip()
+    (tmp_path / "legacy.csv").write_bytes("name;city\r\nJosé;Zürich\r\n".encode(page))
+    (tmp_path / "read_it.py").write_text("print(open('legacy.csv').read().splitlines()[1])\n", encoding="utf-8")
+    (tmp_path / "write_it.py").write_text("open('out.txt', 'w').write('Zürich')\n", encoding="utf-8")
+    result = _shell(f'"{sys.executable}" read_it.py', tmp_path)
+    assert not result.is_error and result.output == "José;Zürich", result.output
+    result = _shell(f'"{sys.executable}" write_it.py', tmp_path)
+    assert not result.is_error, result.output
+    assert (tmp_path / "out.txt").read_bytes() == "Zürich".encode(page)
 
 
 def _shell(command: str, cwd: Path):

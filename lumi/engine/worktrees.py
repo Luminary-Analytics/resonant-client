@@ -13,10 +13,14 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from lumi import git_support
-from lumi.processes import background_process_kwargs, decode_output, utf8_shell
+from lumi.processes import background_process_kwargs, decode_output, run_command, utf8_env
 from lumi.worktree_removal import remove_tree, remove_worktree
 
 from .artifacts import project_state_dir
+
+# How long one post-merge validation command may run before it, and
+# everything it started, is ended and the merge counts as unvalidated.
+VALIDATION_SECONDS = 600
 
 
 class WorktreeError(RuntimeError):
@@ -128,17 +132,17 @@ class WorktreeManager:
                 lease.status = "conflict"
                 raise WorktreeError(result.stderr.strip() or "Worktree merge conflicted")
             for command in validation_commands:
-                # cmd.exe writes UTF-8 through utf8_shell (lumi/processes.py).
-                launch, shell, environment = utf8_shell(command)
-                completed = subprocess.run(
-                    launch,
-                    cwd=self.project_path,
-                    shell=shell,
-                    env=environment,
-                    capture_output=True,
-                    check=False,
-                    **background_process_kwargs(),
-                )
+                # Output decoded per line, and a timeout ends everything the
+                # command started, not only its shell (lumi/processes.py).
+                try:
+                    completed = run_command(command, shell=True, cwd=self.project_path, env=utf8_env(),
+                                            timeout=VALIDATION_SECONDS)
+                except subprocess.TimeoutExpired as exc:
+                    lease.status = "validation_failed"
+                    raise WorktreeError(
+                        f"Post-merge validation didn't finish within {VALIDATION_SECONDS // 60} minutes: {command}\n"
+                        f"{decode_output(exc.stdout)}\n{decode_output(exc.stderr)}".strip()
+                    ) from None
                 if completed.returncode != 0:
                     lease.status = "validation_failed"
                     raise WorktreeError(

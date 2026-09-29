@@ -441,16 +441,26 @@ applied through another one; at startup it does the same for teams that
 ended earlier, including the old branch names (`engine/swarming/cleanup.py`).
 Everything that may still be someone's work stays: a writer's change nobody
 applied, a writer's worktree that may hold edits nobody committed, and any
-other combined candidate nobody applied. **Stop team** says what it keeps, and once the team
-has ended, **Review file changes** lists it under **Kept in your repository**
-with **Discard kept work** (confirm with its checkbox). Lumi never removes:
+other combined candidate nobody applied. An applied combined candidate stays
+too, so **Inspect candidate** keeps working. **Stop team** says what it keeps,
+and once the team has ended, **Review file changes** lists it under **Kept in
+your repository**, with how much disk its folders take, and **Discard kept
+work** (confirm with its checkbox) removes all of it, applied candidates
+included. **Saved teams in this conversation** shows what every ended team of
+the conversation keeps, and **Discard all kept work** (confirmed in a dialog)
+does the same for all of them. Lumi never removes:
 
-- an applied combined candidate, so **Inspect candidate** keeps working;
 - a branch someone committed to after the team recorded it (salvaging its
-  work, say), or its worktree: they are listed as kept for you, with where the
-  worktree is, to delete yourself when you no longer need them;
+  work, say): it is listed as kept for you, with the worktree left with it and
+  a **Remove folder** button. Remove folder (confirmed in a dialog) deletes
+  that folder the way Lumi removes its own worktrees, below; the branch and its
+  commits stay, and what wasn't committed in the folder goes with it. Don't
+  delete such a folder by hand: File Explorer or `rmdir /s` can follow a
+  junction inside it and delete the files it points to;
 - a branch checked out, or being rebased or bisected, in another worktree,
-  until it no longer is.
+  until it no longer is. Whether it is is read again just before each branch
+  is deleted, right after its worktree, so a checkout that happens meanwhile
+  keeps it.
 
 Lumi removes a worktree itself, never with `git worktree remove` or `git
 worktree prune`: it unlinks junctions and symbolic links inside without

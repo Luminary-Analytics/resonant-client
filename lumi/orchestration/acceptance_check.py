@@ -57,7 +57,7 @@ import subprocess
 from dataclasses import dataclass
 from typing import Callable, Optional
 
-from lumi.processes import background_process_kwargs, decode_output, utf8_env, utf8_shell
+from lumi.processes import decode_output, run_command, utf8_env
 
 from ..gui.roadmap import AcceptanceCriterion
 from ..secrets_store import child_env
@@ -158,32 +158,17 @@ class BashRunner:
                 # string flows through bash's own parser, which
                 # handles redirects (`<`), pipes, and quoting the
                 # same way on Windows-with-Git-Bash and Linux/macOS.
-                proc = subprocess.run(
-                    [bash_path, "-c", command],
-                    cwd=self.cwd,
-                    env=utf8_env(child_env()),
-                    capture_output=True,
-                    # Bytes, decoded below: cmd.exe writes the OEM code page.
-                    timeout=self.timeout_seconds,
-                    check=False,
-                    **background_process_kwargs(),
-                )
+                args, shell = [bash_path, "-c", command], False
             else:
                 # Platform default shell. On Linux/macOS this is bash
                 # / zsh anyway; on Windows it's cmd.exe with the
                 # known POSIX-tool gap.
-                # cmd.exe writes UTF-8 through utf8_shell (lumi/processes.py).
-                launch, shell, environment = utf8_shell(command, child_env())
-                proc = subprocess.run(
-                    launch,
-                    shell=shell,
-                    cwd=self.cwd,
-                    env=environment,
-                    capture_output=True,
-                    timeout=self.timeout_seconds,
-                    check=False,
-                    **background_process_kwargs(),
-                )
+                args, shell = command, True
+            # Bytes, decoded per line (cmd.exe writes the OEM code page,
+            # Python children UTF-8); a timeout ends every process the
+            # check started, not only the shell (lumi/processes.py).
+            proc = run_command(args, shell=shell, cwd=self.cwd, env=utf8_env(child_env()),
+                               timeout=self.timeout_seconds)
             return proc.returncode, decode_output(proc.stdout), decode_output(proc.stderr)
         except subprocess.TimeoutExpired as exc:
             return 124, decode_output(exc.stdout), f"timeout after {self.timeout_seconds}s"

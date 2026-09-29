@@ -284,12 +284,13 @@ def _git(root: Path, *args: str) -> subprocess.CompletedProcess:
     try:
         return subprocess.run(["git", *args], cwd=root, capture_output=True, check=False, timeout=60,
                               **background_process_kwargs())
-    except OSError:
-        # No Git on this computer: a failed command with the reason, as bytes like the others.
-        from ..git_support import MISSING_EXIT_CODE, missing_message
+    except OSError as exc:
+        # No Git on this computer, or a folder that is gone: a failed command
+        # with the reason, as bytes like the others.
+        from ..git_support import MISSING_EXIT_CODE, start_failure_message
 
-        return subprocess.CompletedProcess(["git", *args], MISSING_EXIT_CODE, b"",
-                                           missing_message("Comparing with a checkpoint needs").encode("utf-8"))
+        message = start_failure_message(exc, "Comparing with a checkpoint needs", cwd=root)
+        return subprocess.CompletedProcess(["git", *args], MISSING_EXIT_CODE, b"", message.encode("utf-8"))
 
 
 def _checkpoint_record(root: Path, checkpoint_id: str) -> dict | None:

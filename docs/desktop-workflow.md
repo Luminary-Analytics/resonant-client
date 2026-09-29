@@ -323,8 +323,11 @@ search over files, symbols and imports. On a large monorepo:
 - **Where it lives.** The index is Lumi's runtime state for the project,
   `~/.lumi/projects/<id>/index.json`, never a file in the project (it used to
   be `<project>/.lumi/index.json`; an old copy there is ignored and can be
-  deleted). The agent's `grep` and `glob` skip Lumi's `.lumi/` and
-  `.resonant/` folders and show paths relative to the project.
+  deleted). The agent's `grep` and `glob` skip only that old copy (and
+  `.resonant/index.json` from before the rebrand), unless a search names
+  `.lumi` itself; the project's own `.lumi` files, such as `.lumi/LUMI.md`,
+  capability packs and mission roadmaps, are searched like any other. They
+  show paths relative to the project.
 - **What it costs.** Measured with `scripts/benchmark_index.py` on Windows,
   on September 25, 2026:
 

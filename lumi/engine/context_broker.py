@@ -213,8 +213,13 @@ class ContextBroker:
                 check=False,
                 **background_process_kwargs(),
             )
-        except OSError:
-            return None  # Git isn't installed: there is no diff to attach.
+        except OSError as exc:
+            # Git isn't installed (or can't start here): say so instead of
+            # dropping the mention silently, as for an excluded file.
+            from ..git_support import start_failure_message
+
+            return self._item("diff", selector, start_failure_message(exc, "Attaching @diff needs",
+                                                                      cwd=self.project_path), "git")
         if result.returncode != 0:
             return None
         return self._item("diff", selector, result.stdout or "(no changes)", "git")

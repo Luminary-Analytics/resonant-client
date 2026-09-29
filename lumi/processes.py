@@ -10,6 +10,7 @@ import sys
 import tempfile
 import threading
 from typing import Any
+import unicodedata
 import uuid
 
 
@@ -269,27 +270,75 @@ def background_process_kwargs(*, new_process_group: bool = False) -> dict[str, A
     return {"creationflags": flags, "startupinfo": startupinfo}
 
 
-def _oem_code_page() -> str:
-    """The Windows OEM code page (cp437, cp850, ...): what cmd.exe writes to a pipe."""
+def _windows_code_page(function: str, default: str) -> str:
     try:
         import ctypes
 
-        page = int(ctypes.windll.kernel32.GetOEMCP())
+        page = int(getattr(ctypes.windll.kernel32, function)())
     except Exception:
         page = 0
-    return f"cp{page}" if page else "cp437"
+    return f"cp{page}" if page else default
 
 
-def decode_output(data: bytes | str | None, *, oem_code_page: str | None = None) -> str:
+def _oem_code_page() -> str:
+    """The Windows OEM code page (cp437, cp850, ...): a console's default."""
+    return _windows_code_page("GetOEMCP", "cp437")
+
+
+def _ansi_code_page() -> str:
+    """The Windows ANSI code page (cp1252, ...): what Python writes to a pipe outside UTF-8 mode."""
+    return _windows_code_page("GetACP", "cp1252")
+
+
+def _plausibility(text: str) -> int:
+    """How much a legacy decoding of a line reads like text: Latin letters for it, undefined bytes against.
+
+    One byte means different characters in the two code pages: 0xF6 is "ö"
+    in cp1252 and "÷" in cp437, 0x94 is "”" in cp1252 and "ö" in cp437, and
+    0x81 is undefined in cp1252. The decoding with more letters wins.
+    """
+    score = 0
+    for char in text:
+        if char < "\x80":
+            continue
+        if char == "\ufffd":
+            score -= 8
+        elif unicodedata.category(char) in ("Lu", "Ll") and "LATIN" in unicodedata.name(char, ""):
+            score += 2
+    return score
+
+
+def _decode_line(line: bytes, pages: tuple[str, ...]) -> str:
+    try:
+        return line.decode("utf-8")
+    except UnicodeDecodeError:
+        pass
+    best, best_score = None, 0
+    for page in pages:  # the first wins a tie
+        try:
+            text = line.decode(page, errors="replace")
+        except LookupError:
+            continue
+        score = _plausibility(text)
+        if best is None or score > best_score:
+            best, best_score = text, score
+    return best if best is not None else line.decode("utf-8", errors="replace")
+
+
+def decode_output(data: bytes | str | None, *, oem_code_page: str | None = None,
+                  ansi_code_page: str | None = None) -> str:
     """The text of a command's output, whatever produced it; never raises.
 
-    Programs that write UTF-8 (Git, Python in UTF-8 mode, Node) decode as
-    UTF-8. cmd.exe and its built-ins (echo, dir, cd, type) write the console's
-    OEM code page instead, so on Windows output that isn't valid UTF-8 is
-    decoded with it: the byte 0x81 is "ü" in cp437 and cp850, and cp1252,
-    Python's default here, can't decode it at all. Anything else unreadable
-    becomes U+FFFD rather than an error. Line endings become "\\n", as in a
-    text-mode pipe. ``oem_code_page`` is for tests.
+    Children are asked to write UTF-8 (``utf8_env``, ``utf8_shell``), and Git
+    and Node always do, so output is UTF-8 first. What still isn't comes
+    from a program that ignores that: Python with ``PYTHONUTF8=0`` writes the
+    ANSI code page (cp1252), cmd.exe outside ``utf8_shell`` and findstr's file
+    names the console's OEM one (cp437, cp850). One command can mix them, so
+    each line is decoded on its own: as UTF-8 when it is valid UTF-8, else
+    with whichever of the ANSI and OEM code pages reads as more letters
+    (``_plausibility``). Off Windows the fallback is UTF-8 with U+FFFD.
+    Line endings become "\\n", as in a text-mode pipe. The code page
+    arguments are for tests.
     """
     if data is None:
         return ""
@@ -299,12 +348,101 @@ def decode_output(data: bytes | str | None, *, oem_code_page: str | None = None)
         try:
             text = data.decode("utf-8")
         except UnicodeDecodeError:
-            text = ""
-            if sys.platform == "win32" or oem_code_page:
-                try:
-                    text = data.decode(oem_code_page or _oem_code_page(), errors="replace")
-                except LookupError:
-                    text = ""
-            if not text:
+            if sys.platform == "win32" or oem_code_page or ansi_code_page:
+                pages = tuple(dict.fromkeys((ansi_code_page or _ansi_code_page(), oem_code_page or _oem_code_page())))
+                text = "\n".join(_decode_line(line, pages) for line in data.split(b"\n"))
+            else:
                 text = data.decode("utf-8", errors="replace")
     return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
+def _utf8_boundary(data: bytes) -> int:
+    """Where ``data`` can be cut without splitting a UTF-8 character or a CR LF pair."""
+    end = start = len(data)
+    while start > 0 and end - start < 3 and data[start - 1] & 0xC0 == 0x80:
+        start -= 1
+    if start > 0:
+        lead = data[start - 1]
+        size = 2 if 0xC0 <= lead < 0xE0 else 3 if 0xE0 <= lead < 0xF0 else 4 if 0xF0 <= lead < 0xF8 else 1
+        if size > 1 and start - 1 + size > end:
+            end = start - 1
+    if end > 1 and data[end - 1] == 0x0D:
+        end -= 1
+    return end or len(data)
+
+
+class OutputDecoder:
+    """``decode_output`` for output read in pieces, such as a job's or preview's log.
+
+    A read can end inside a character ("ü" is two bytes in UTF-8) and one
+    line's code page can differ from the next one's, so only whole lines are
+    decoded; the rest waits for the next read, or ``final``. A line longer than
+    ``limit`` bytes is decoded in parts, never inside a UTF-8 character.
+    """
+
+    def __init__(self, limit: int = 8192, **code_pages: str):
+        self._pending = b""
+        self._limit = limit
+        self._code_pages = code_pages
+
+    def decode(self, data: bytes, *, final: bool = False) -> str:
+        self._pending += data
+        if final:
+            end = len(self._pending)
+        else:
+            end = self._pending.rfind(b"\n") + 1
+            if not end and len(self._pending) >= self._limit:
+                end = _utf8_boundary(self._pending)
+        ready, self._pending = self._pending[:end], self._pending[end:]
+        return decode_output(ready, **self._code_pages) if ready else ""
+
+
+# The command utf8_shell passes to the inner cmd.exe (see there).
+SHELL_COMMAND_VARIABLE = "LUMI_SHELL_COMMAND"
+
+
+def utf8_env(env: dict[str, str] | None = None) -> dict[str, str]:
+    """A child's environment in which Python writes UTF-8 to a pipe: ``PYTHONUTF8=1``.
+
+    Without it a child Python writes the ANSI code page (cp1252), and "Jöhn"
+    came back as "J÷hn" when read as the OEM one. A value the person set,
+    ``PYTHONUTF8=0`` included, is kept; ``decode_output`` reads that too.
+    """
+    environment = dict(os.environ if env is None else env)
+    if not any(key.upper() == "PYTHONUTF8" for key in environment):
+        environment["PYTHONUTF8"] = "1"
+    return environment
+
+
+def _cmd_exe() -> str:
+    """Windows' own cmd.exe, by its full path (never a program named cmd in the working folder)."""
+    root = os.environ.get("SystemRoot") or os.environ.get("windir") or r"C:\Windows"
+    return os.path.join(root, "System32", "cmd.exe")
+
+
+def utf8_shell(command: str, env: dict[str, str] | None = None) -> tuple[str, bool, dict[str, str]]:
+    """How to run a shell command whose output is read as text: ``(args, shell, env)`` for Popen.
+
+    Elsewhere that is the command itself with ``shell=True`` and ``utf8_env``.
+    On Windows cmd.exe and its built-ins (echo, dir, set) write the console's
+    code page, the OEM one (cp437: "ü" is 0x81). ``chcp 65001`` switches the
+    console to UTF-8, but the cmd.exe that runs it keeps writing the old code
+    page for the rest of its command line; a cmd.exe started after it writes
+    UTF-8. So the outer cmd.exe switches the code page and starts a second one
+    for the command. The command reaches it through an environment variable
+    that the outer cmd.exe expands only after parsing its own line
+    (``/v:on``, ``!name!``), so the outer one never interprets the command's
+    quotes, ``&``, ``|``, ``%`` or ``!``; the inner cmd.exe (``/s /c``) runs it
+    exactly as ``cmd.exe /c`` did before, with the command's exit status.
+    Programs that follow the console's code page (find, sort, where, .NET)
+    then write UTF-8 too. Both cmd.exe paths are absolute, and the outer one
+    skips AutoRun (``/d``) so the person's AutoRun command runs once, in the
+    inner one, as before.
+    """
+    environment = utf8_env(env)
+    if sys.platform != "win32":
+        return command, True, environment
+    cmd = _cmd_exe()
+    environment[SHELL_COMMAND_VARIABLE] = command
+    line = f'"{cmd}" /d /v:on /s /c "chcp 65001>nul 2>&1 & "{cmd}" /s /c "!{SHELL_COMMAND_VARIABLE}!""'
+    return line, False, environment

@@ -126,10 +126,12 @@ def _git(project: str, *args: str, timeout: float = 60) -> subprocess.CompletedP
     try:
         return subprocess.run(["git", "-C", project, *args], capture_output=True, text=True, timeout=timeout,
                               encoding="utf-8", errors="replace", **background_process_kwargs())
-    except OSError:
-        from .git_support import missing_result
+    except OSError as exc:
+        from .git_support import start_failure_result
 
-        return missing_result(["git", "-C", project, *args], "Model comparisons need")
+        # -C names the folder, and the process starts in Lumi's own, so an
+        # OSError here is Git itself (missing, or unable to start).
+        return start_failure_result(["git", "-C", project, *args], exc, "Model comparisons need")
 
 
 def clean(raw: dict[str, Any]) -> Comparison:
@@ -382,9 +384,7 @@ class Runner:
             result.update(_keep_diff(comparison, worktree, result["start_commit"]))
             return result
         finally:
-            removed = _git(comparison.project, "worktree", "remove", "--force", str(worktree), timeout=120)
-            if removed.returncode != 0:
-                shutil.rmtree(worktree, ignore_errors=True)
+            _remove_worktree(comparison.project, worktree)
 
     def _lumi_run(self, argv: list[str], cwd: str | None, max_minutes: int) -> tuple[dict, str, int | None]:
         from .processes import background_process_kwargs
@@ -415,6 +415,30 @@ class Runner:
         return parsed, (problems or err.strip())[:1000], process.returncode
 
 
+def _remove_worktree(project: str, worktree: Path) -> None:
+    """Remove a run's worktree, never following a link the run left in it out of it.
+
+    Not `git worktree remove --force`: Git for Windows follows a directory
+    junction inside the worktree (an npm ``file:`` dependency, a link the
+    model's shell made) and deletes the files it points to
+    (lumi/worktree_removal.py).
+    """
+    from .worktree_removal import remove_tree, remove_worktree, repository_common_dir
+
+    common = repository_common_dir(project)
+    if common is not None:
+        removal = remove_worktree(worktree, common_dir=common)
+        error = "" if removal.removed else removal.error
+    else:
+        try:
+            remove_tree(worktree)
+            error = ""
+        except OSError as exc:
+            error = str(exc)
+    if error:
+        logger.warning("Couldn't remove the comparison worktree %s: %s", worktree, error)
+
+
 def _end(process: subprocess.Popen) -> None:
     """End a run and whatever it started."""
     try:
@@ -434,19 +458,23 @@ def _check(command: str, worktree: str) -> tuple[bool, str]:
     from .processes import background_process_kwargs
     from .secrets_store import child_env
 
+    from .processes import decode_output, utf8_env, utf8_shell
+
     try:
         wrapped = os_sandbox.prepare_shell(command, roots=[worktree], cwd=worktree)
     except ValueError as exc:  # the sandbox is on and can't run here
         return False, str(exc)
+    # Output in UTF-8 where the child can, decoded whatever it is (lumi/processes.py).
+    launch, shell, environment = ((wrapped, False, utf8_env(child_env())) if wrapped is not None
+                                  else utf8_shell(command, child_env()))
     try:
-        done = subprocess.run(wrapped or command, shell=wrapped is None, cwd=worktree, capture_output=True,
-                              text=True, encoding="utf-8", errors="replace", timeout=CHECK_SECONDS,
-                              env=child_env(), **background_process_kwargs())
+        done = subprocess.run(launch, shell=shell, cwd=worktree, capture_output=True, timeout=CHECK_SECONDS,
+                              env=environment, **background_process_kwargs())
     except subprocess.TimeoutExpired:
         return False, f"The check didn't finish within {CHECK_SECONDS // 60} minutes."
     except OSError as exc:
         return False, f"The check didn't start: {exc}"
-    output = ((done.stdout or "") + (done.stderr or "")).strip()
+    output = (decode_output(done.stdout) + decode_output(done.stderr)).strip()
     return done.returncode == 0, f"exit {done.returncode}\n{output[-2000:]}".strip()
 
 
@@ -471,8 +499,12 @@ def _work_folder(comparison: Comparison) -> Path:
     from .engine.artifacts import project_state_dir
 
     work = project_state_dir(Path(comparison.project)) / "evals" / comparison.id
-    shutil.rmtree(work, ignore_errors=True)  # anything a stopped app left behind
-    _git(comparison.project, "worktree", "prune")
+    # Worktrees a stopped app left behind, each removed with its own Git
+    # record; not `git worktree prune`, which would also forget the person's
+    # own worktrees whose folders are away (an unplugged drive, a move).
+    if work.is_dir():
+        for leftover in work.iterdir():
+            _remove_worktree(comparison.project, leftover)
     work.mkdir(parents=True, exist_ok=True)
     return work
 

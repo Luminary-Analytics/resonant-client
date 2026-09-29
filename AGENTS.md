@@ -381,6 +381,12 @@ host enrollment and actual packaged/learned-benefit qualification remain open.
 - Never silently use a system/install directory as the project. Respect the
   sandbox and permission modes; writer worktrees must not reset, stash, or merge
   over a dirty user checkout. `working_subdir` may narrow, never broaden, scope.
+- Remove Lumi's worktrees only with `lumi/worktree_removal.py`, never
+  `git worktree remove --force` or `git worktree prune`: Git for Windows follows a
+  junction inside a worktree and deletes its target's files, and prune forgets
+  the person's own worktrees whose folders are away. Delete a team branch only at
+  the commit the team recorded, and keep an ended team's unapplied work until
+  the person discards it (`engine/swarming/cleanup.py`).
 - Long foreground workers use `job_start`, `job_status`, and `job_cancel`.
   Ordinary shell children are cleaned up at tool completion. Managed jobs are
   project-owned, limited to20minutes, and stopped on client exit; explicit
@@ -532,8 +538,11 @@ for publishing and update-feed verification.
 
 Git, Python and Node.js are optional on a user's computer. Code that runs
 `git` treats a program that can't start like a failed command and never lets
-it end a session (`lumi/git_support.py`); output from commands is decoded with
-`processes.decode_output` (UTF-8, else the Windows OEM code page).
+it end a session, and says Git isn't installed only when `git_available()`
+says so (`lumi/git_support.py`). Children whose output is read as text are
+asked for UTF-8 (`processes.utf8_env`, and `utf8_shell` for shell commands),
+and their output is decoded with `processes.decode_output` (per line: UTF-8,
+else the Windows ANSI or OEM code page) or `OutputDecoder` when read in pieces.
 
 ## Documentation and releases
 

@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import os
 import re
-import shutil
 import subprocess
 import threading
 import time
@@ -14,7 +13,8 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from lumi import git_support
-from lumi.processes import background_process_kwargs, decode_output
+from lumi.processes import background_process_kwargs, decode_output, utf8_shell
+from lumi.worktree_removal import remove_tree, remove_worktree
 
 from .artifacts import project_state_dir
 
@@ -128,10 +128,13 @@ class WorktreeManager:
                 lease.status = "conflict"
                 raise WorktreeError(result.stderr.strip() or "Worktree merge conflicted")
             for command in validation_commands:
+                # cmd.exe writes UTF-8 through utf8_shell (lumi/processes.py).
+                launch, shell, environment = utf8_shell(command)
                 completed = subprocess.run(
-                    command,
+                    launch,
                     cwd=self.project_path,
-                    shell=True,
+                    shell=shell,
+                    env=environment,
                     capture_output=True,
                     check=False,
                     **background_process_kwargs(),
@@ -148,13 +151,26 @@ class WorktreeManager:
     def remove(self, lease: WorktreeLease, *, delete_branch: bool = False) -> None:
         target = Path(lease.path).resolve()
         self._assert_under_root(target)
-        if target.exists():
-            result = self._git("worktree", "remove", "--force", str(target), check=False)
-            if result.returncode != 0 and target.exists():
-                shutil.rmtree(target)
-                self._git("worktree", "prune", check=False)
+        # Not `git worktree remove --force` and `prune`: Git for Windows
+        # follows a junction inside the worktree (an npm file: dependency, a
+        # link the agent's shell made) and deletes the files it points to,
+        # and prune forgets the person's own worktrees whose folders are away.
+        common = self._common_dir()
+        if common is not None:
+            removal = remove_worktree(target, common_dir=common)
+            error = "" if removal.removed else removal.error
+        else:
+            try:
+                remove_tree(target)
+                error = ""
+            except OSError as exc:
+                error = str(exc)
+        if error:
+            raise WorktreeError(f"Couldn't remove the agent worktree {target}: {error}")
         if delete_branch and lease.status in {"unchanged", "integrated"}:
-            self._git("branch", "-D", lease.branch, check=False)
+            # -d, not -D: Git deletes it only while its commits are on the
+            # checked-out branch (merged, or none made), never someone's others.
+            self._git("branch", "-d", lease.branch, check=False)
 
     def diff(self, lease: WorktreeLease) -> str:
         target = lease.commit or lease.branch
@@ -172,6 +188,16 @@ class WorktreeManager:
             return None
         value = Path(result.stdout.strip())
         return (self.project_path / value).resolve() if not value.is_absolute() else value.resolve()
+
+    def _common_dir(self) -> Path | None:
+        """``$GIT_COMMON_DIR``, where Git records linked worktrees: the git dir, or the one its ``commondir`` names."""
+        if self._git_dir is None:
+            return None
+        try:
+            named = (self._git_dir / "commondir").read_text(encoding="utf-8").strip()
+        except OSError:
+            return self._git_dir
+        return (self._git_dir / named).resolve() if named else self._git_dir
 
     def _assert_under_root(self, path: Path) -> None:
         if path != self.root and self.root not in path.parents:
@@ -209,10 +235,10 @@ class WorktreeManager:
                 check=False,
                 **background_process_kwargs(),
             )
-        except OSError:
-            # Git isn't installed (FileNotFoundError) or can't start: a failed
-            # command with the reason, like any other Git failure.
-            result = git_support.missing_result(["git", *args], "Agent worktrees need")
+        except OSError as exc:
+            # Git isn't installed, or can't start here (a folder that is gone):
+            # a failed command with the reason, like any other Git failure.
+            result = git_support.start_failure_result(["git", *args], exc, "Agent worktrees need", cwd=cwd)
         if check and result.returncode != 0:
             raise WorktreeError(result.stderr.strip() or f"git {' '.join(args)} failed")
         return result

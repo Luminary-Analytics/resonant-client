@@ -20,7 +20,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Optional, Sequence
 
-from lumi.processes import background_process_kwargs, decode_output
+from lumi.processes import background_process_kwargs, decode_output, utf8_env, utf8_shell
 
 from .truncation import (
     GREP_MAX_LINE_LENGTH,
@@ -1888,6 +1888,7 @@ def _run_subprocess_with_cancel(
     stdin=None,
     cancel_event: Optional[threading.Event] = None,
     owned_process_group: bool = False,
+    env: Optional[dict[str, str]] = None,
 ):
     def _create_windows_kill_job(process):
         if sys.platform != "win32":
@@ -1967,8 +1968,9 @@ def _run_subprocess_with_cancel(
         # worker's private host-control pipe (or compete with its reader).
         stdin=subprocess.DEVNULL if owned_process_group and stdin is None else stdin,
         # The agent's shell runs model-written commands: keep Lumi's own
-        # model keys out of its reach (secrets_store.PROVIDER_KEY_ENV).
-        env=child_env(),
+        # model keys out of its reach (secrets_store.PROVIDER_KEY_ENV). A
+        # caller's ``env`` is built from child_env() too.
+        env=child_env() if env is None else env,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         # Always bytes: a text-mode pipe decodes with the locale's code page
@@ -2097,15 +2099,23 @@ def _exec_bash(args: dict, start: float, cancel_event: Optional[threading.Event]
             metadata={"command": cmd, "not_executed": True, "reason": "windows_multiline_command"},
         )
 
+    # Children write UTF-8 where they can: Python in UTF-8 mode, and on
+    # Windows cmd.exe and its built-ins through utf8_shell; decode_output
+    # reads whatever still isn't (lumi/processes.py).
+    if sandboxed is None:
+        launch, use_shell, environment = utf8_shell(managed_cmd, child_env())
+    else:
+        launch, use_shell, environment = sandboxed, False, utf8_env(child_env())
     try:
         returncode, stdout, stderr, timed_out = _run_subprocess_with_cancel(
-            sandboxed or managed_cmd,
-            shell=sandboxed is None,
+            launch,
+            shell=use_shell,
             text=True,
             timeout=timeout,
             cwd=cwd,
             stdin=subprocess.DEVNULL,
             cancel_event=cancel_event,
+            env=environment,
         )
         elapsed = time.time() - start
         if cancel_event is not None and cancel_event.is_set():
@@ -2350,7 +2360,10 @@ def _exec_glob(args: dict, start: float, *, exclusions=None, project_path: str =
             is_error=True,
             elapsed=time.time() - start,
         )
-    all_matches = [m for m in all_matches if not _in_lumi_state(str(m), base)]
+    root = project_path or base
+    if not _names_lumi_folder(root, base, pattern):
+        # Only Lumi's old codebase index; the person's .lumi files are listed.
+        all_matches = [m for m in all_matches if not _is_old_index(str(m), root)]
     hidden = 0
     if exclusions:
         kept, hidden = exclusions.filter_paths(str(m) for m in all_matches)
@@ -2435,20 +2448,52 @@ def _ripgrep_executable(*, trusted_only: bool = False) -> Optional[str]:
 _GREP_LINE_PATH = re.compile(r"^((?:[A-Za-z]:)?[^:]*):\d+:")
 
 
-def _split_findstr_lines(lines: list[str], root: str) -> list[str]:
-    """findstr's matches, one per line.
+def _findstr_lines(data: bytes, root: str) -> list[str]:
+    """findstr's matches as ``path:line:text``, one per match.
 
     findstr doesn't end a match that is a file's last line when the file has
     no final newline, so the next file's match follows on the same line. Each
-    match starts with the search root it was given, which is where to split.
+    match starts with the search root it was given, the rest of the file's
+    path and ``:<line>:``; one match ends where the next such start begins,
+    never at the root's name elsewhere in a line's text. findstr writes the
+    path in the console's code page (the OEM one: "ö" is 0x94) and the text
+    as the file's own bytes, so each is decoded on its own: the path with the
+    code page that spells the root, the text with decode_output. Decoding
+    the whole output first read "Jöhn Smith" wrongly, nothing was split, and
+    an excluded file's match rode along on the line before it.
     """
-    prefix = re.compile("(?=" + re.escape(root.rstrip("\\/") + os.sep) + ")", re.IGNORECASE)
-    return [part for line in lines for part in prefix.split(line) if part]
+    from lumi.processes import _ansi_code_page, _oem_code_page
 
-# Lumi's own folders inside a project: its state and settings, not code the
-# agent searches for. Only below the searched folder, so a project that itself
-# lives under ~/.lumi (the fallback workspace) is still searched.
-_LUMI_STATE_DIRS = frozenset({".lumi", ".resonant"})
+    base = root.rstrip("\\/") + os.sep
+    for page in dict.fromkeys((_oem_code_page(), _ansi_code_page(), "utf-8")):
+        try:
+            prefix = base.encode(page)
+        except (UnicodeEncodeError, LookupError):
+            continue
+        starts = list(re.finditer(re.escape(prefix) + rb"([^:\r\n]*):(\d+):", data, re.IGNORECASE))
+        if not starts or data[:starts[0].start()].strip():
+            continue
+        matches = []
+        for index, found in enumerate(starts):
+            end = starts[index + 1].start() if index + 1 < len(starts) else len(data)
+            path = (prefix + found.group(1)).decode(page, errors="replace")
+            text = decode_output(data[found.end():end]).rstrip("\n")
+            matches.append(f"{path}:{found.group(2).decode('ascii')}:{text}")
+        return matches
+    # The root isn't spelled in any of those code pages (a character the
+    # console can't write): lines as they come, split before the root.
+    output = decode_output(data).strip()
+    split = re.compile("(?=" + re.escape(base) + r"[^:\n]*:\d+:)", re.IGNORECASE)
+    return [part for line in output.split("\n") if line for part in split.split(line) if part]
+
+
+# The codebase index Lumi used to keep in the project: <project>/.lumi/index.json
+# (.resonant/ before the rebrand). It lives in Lumi's state folder now
+# (engine/rag.py), and an old copy isn't the project's code, so searches skip
+# it. Everything else there is the person's (.lumi/LUMI.md, capability packs,
+# mission roadmaps) and is searched like any other file, and a search that
+# names .lumi itself (its path or pattern) skips nothing.
+_LUMI_FOLDERS = frozenset({".lumi", ".resonant"})
 
 
 def _relative_to(path: str, root: str) -> str | None:
@@ -2468,9 +2513,20 @@ def _relative_to(path: str, root: str) -> str | None:
         return None
 
 
-def _in_lumi_state(path: str, root: str) -> bool:
+def _names_lumi_folder(root: str, base: str, *patterns: str) -> bool:
+    """Whether a search names .lumi or .resonant: its folder inside ``root``, or a pattern's part."""
+    relative = _relative_to(base, root)
+    parts = [*(Path(relative).parts if relative not in (None, ".") else ())]
+    for pattern in patterns:
+        parts += [part for part in re.split(r"[\\/]+", pattern or "") if part]
+    return any(part.lower() in _LUMI_FOLDERS for part in parts)
+
+
+def _is_old_index(path: str, root: str) -> bool:
+    """Whether ``path`` is the codebase index Lumi used to keep in the project at ``root``."""
     relative = _relative_to(path, root)
-    return bool(relative) and any(part.lower() in _LUMI_STATE_DIRS for part in Path(relative).parts)
+    parts = [part.lower() for part in Path(relative).parts] if relative else []
+    return len(parts) == 2 and parts[0] in _LUMI_FOLDERS and parts[1] == "index.json"
 
 
 def _project_display_path(path: str, project_path: str) -> str:
@@ -2514,10 +2570,6 @@ def _build_grep_command(pattern: str, path: str, file_glob: str, *, trusted_only
             # no node_modules noise); only the VCS internals are force-excluded.
             "--hidden",
             "--glob", "!.git/",
-            # Lumi's own folders (.lumi/, and .resonant/ from before the
-            # rebrand) hold its state and settings, not the project's code.
-            "--glob", "!.lumi/",
-            "--glob", "!.resonant/",
         ]
         if file_glob:
             cmd.extend(["--glob", file_glob])
@@ -2583,17 +2635,16 @@ def _exec_grep(
             metadata={"pattern": pattern, "timed_out": True},
         )
 
-    try:
-        output = stdout.decode("utf-8").strip()
-    except (UnicodeDecodeError, AttributeError):
-        try:
-            output = stdout.decode("latin-1").strip()
-        except (UnicodeDecodeError, AttributeError):
-            output = str(stdout).strip()
-
-    lines = [line.rstrip("\r") for line in output.split("\n")] if output else []
-    if cmd[0] == "findstr" and lines and os.path.isdir(path):
-        lines = _split_findstr_lines(lines, path)
+    # Matched text is each file's own bytes, in whatever encoding it has, and
+    # findstr writes paths in the console's code page: decode per line
+    # (lumi.processes.decode_output), and findstr's matches as findstr
+    # wrote them (_findstr_lines).
+    raw = stdout if isinstance(stdout, bytes) else str(stdout or "").encode("utf-8")
+    if cmd[0] == "findstr" and os.path.isdir(path):
+        lines = _findstr_lines(raw, path)
+    else:
+        decoded = decode_output(raw).strip()
+        lines = decoded.split("\n") if decoded else []
     hidden = 0
     if exclusions and lines:
         # Every backend prints path:line:content; a Windows path starts
@@ -2607,18 +2658,24 @@ def _exec_grep(
             else:
                 kept_lines.append(line)
         lines = kept_lines
+    old_index = 0
     if lines:
-        # Paths relative to the project, as the files are spelled, and none
-        # from Lumi's own folders (the fallback searches don't skip them).
+        # Paths relative to the project, as the files are spelled, and not
+        # Lumi's old codebase index (only ripgrep's .gitignore handling or
+        # nothing at all would skip it otherwise).
+        root = project_path or (path if os.path.isdir(path) else os.path.dirname(path))
+        skip_index = not _names_lumi_folder(root, path, file_glob)
         shown_lines = []
         for line in lines:
             match = _GREP_LINE_PATH.match(line)
-            if match and _in_lumi_state(match.group(1), path if os.path.isdir(path) else os.path.dirname(path)):
+            if match and skip_index and _is_old_index(match.group(1), root):
+                old_index += 1
                 continue
             if match and project_path:
                 line = _project_display_path(match.group(1), project_path) + line[match.end(1):]
             shown_lines.append(line)
         lines = shown_lines
+    output = ""  # only what survived the filters above is ever shown
     count = len(lines)
     # Cap each match line at 500 chars so a single minified-JS hit can't
     # dominate the result list. Then head-truncate the overall match set.
@@ -2644,23 +2701,29 @@ def _exec_grep(
             )
         if any_line_truncated:
             output += "\n[note: some match lines were individually truncated]"
-        if hidden:
-            output += f"\n[{hidden} match{'es' if hidden != 1 else ''} in excluded files not shown (file exclusion rules)]"
     else:
         shown = 0
         next_offset = offset
 
     if not output:
-        # ripgrep honours .gitignore, which is the right default (no
-        # node_modules noise) but makes an empty result ambiguous: the agent
-        # cannot tell "not in this codebase" from "in a file I chose not to
-        # read". Say so, so it can decide rather than conclude.
         output = "(no matches)"
-        if _ripgrep_executable():
-            output += (
-                "\nNote: .gitignore'd files were not searched. "
-                "Re-run with bash `rg --no-ignore ...` to include them."
-            )
+        if cmd[0] not in ("findstr", "grep"):
+            # ripgrep honours .gitignore, which is the right default (no
+            # node_modules noise) but makes an empty result ambiguous: the
+            # agent cannot tell "not in this codebase" from "in a file I
+            # chose not to read". Say so, so it can decide rather than
+            # conclude. The shell can run rg only when it is on PATH; the
+            # copy Lumi ships isn't.
+            output += "\nNote: files your .gitignore excludes were not searched."
+            output += (" Re-run with bash `rg --no-ignore ...` to include them." if shutil.which("rg")
+                       else " Read one you need with file_read, or find it with glob.")
+    if hidden:
+        output += f"\n[{hidden} match{'es' if hidden != 1 else ''} in excluded files not shown (file exclusion rules)]"
+    if old_index and not count:
+        # Only when nothing else matched: otherwise it would ride along on
+        # every search in a project that still has the old file.
+        output += (f"\n[{old_index} match{'es' if old_index != 1 else ''} in Lumi's old codebase index "
+                   "(.lumi/index.json) not shown; search .lumi to include it]")
 
     elapsed = time.time() - start
     return ToolResult(

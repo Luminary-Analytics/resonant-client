@@ -215,9 +215,10 @@ def _git(cwd: str, *args: str) -> str:
         completed = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True, timeout=30,
                                    encoding="utf-8", errors="replace")
     except FileNotFoundError as exc:
-        from ..git_support import missing_message
+        # Git isn't installed, or the folder is gone (FileNotFoundError too off Windows).
+        from ..git_support import start_failure_message
 
-        raise GitHubError(missing_message("Pull request tools need")) from exc
+        raise GitHubError(start_failure_message(exc, "Pull request tools need", cwd=cwd)) from exc
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise GitHubError(f"git {' '.join(args)} failed: {exc}") from exc
     if completed.returncode != 0:

@@ -2,15 +2,79 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 import os
 from pathlib import Path
 import signal
 import subprocess
 import threading
 import time
+from typing import BinaryIO, Iterator
 
 from ...processes import background_process_kwargs, close_windows_job, popen_in_kill_job
 from .models import Conflict
+
+
+# The file in $GIT_COMMON_DIR that every Lumi process locks while it changes
+# the repository for a team (integration.py, cleanup.py): byte 0, exclusively.
+REPOSITORY_LOCK_NAME = "sonn-swarm-integration.lock"
+
+
+def open_repository_lock(path: Path) -> BinaryIO:
+    """The repository lock file, holding at least the one byte its holders lock."""
+    handle = path.open("a+b")
+    handle.seek(0, os.SEEK_END)
+    if handle.tell() == 0:
+        handle.write(b"0")
+        handle.flush()
+    return handle
+
+
+def try_repository_lock(handle: BinaryIO) -> None:
+    """Take the lock now, or raise OSError when another holder (any process) has it."""
+    handle.seek(0)
+    if os.name == "nt":
+        import msvcrt
+        msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+    else:
+        import fcntl
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+
+def release_repository_lock(handle: BinaryIO) -> None:
+    handle.seek(0)
+    if os.name == "nt":
+        import msvcrt
+        msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+    else:
+        import fcntl
+        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+@contextmanager
+def repository_lock(path: Path, *, timeout: float) -> Iterator[None]:
+    """Hold the repository lock, waiting up to ``timeout`` seconds for another holder.
+
+    SwarmIntegration._repository_lock is the same lock with its callers'
+    extras (ending a wait early, reporting who waits).
+    """
+    handle = open_repository_lock(path)
+    try:
+        deadline = time.monotonic() + timeout
+        while True:
+            try:
+                try_repository_lock(handle)
+                break
+            except OSError as exc:
+                if time.monotonic() >= deadline:
+                    raise Conflict(f"Another team step held this repository for {timeout:.0f} s") from exc
+                time.sleep(0.05)
+        try:
+            yield
+        finally:
+            release_repository_lock(handle)
+    finally:
+        handle.close()
 
 
 # Writer branches a team creates in the user's repository. Teams used the
@@ -37,23 +101,60 @@ def git_error_line(stderr: str, limit: int = 200) -> str:
     return lines[0][:limit] if lines else ""
 
 
+# Where Git for Windows keeps the git.exe a git.cmd launcher runs, relative to
+# the launcher's folder (cmd\git.cmd ran bin\git.exe or mingw64\bin\git.exe).
+_WRAPPED_GIT = (("cmd", "git.exe"), ("bin", "git.exe"), ("mingw64", "bin", "git.exe"), ("mingw32", "bin", "git.exe"))
+
+
 def trusted_git_executable(project: Path, runtime_root: Path) -> str:
-    """Pin an absolute host binary without cwd or repository PATH shadowing."""
-    name = "git.exe" if os.name == "nt" else "git"
+    """Pin an absolute host binary without cwd or repository PATH shadowing.
+
+    On Windows a ``git.cmd`` launcher counts as installed Git, as it does for
+    git_support.git_available(); Lumi runs the git.exe it launches, since a
+    command script would pass every argument through cmd.exe's parser. A
+    launcher whose git.exe isn't where Git for Windows puts it is named in the
+    refusal rather than reported as no Git at all.
+    """
+    names = ("git.exe", "git.cmd") if os.name == "nt" else ("git",)
     shadowed = False
+    launchers: list[Path] = []
+
+    def usable(candidate: Path) -> bool:
+        nonlocal shadowed
+        if (candidate.is_relative_to(project) or candidate.is_relative_to(runtime_root)
+                or not candidate.is_file() or not os.access(candidate, os.X_OK)):
+            shadowed = True
+            return False
+        return True
+
     for entry in os.get_exec_path():
         folder = Path(entry)
         if not folder.is_absolute():
             continue
-        try:
-            candidate = (folder / name).resolve(strict=True)
-        except OSError:
-            continue
-        if (candidate.is_relative_to(project) or candidate.is_relative_to(runtime_root)
-                or not candidate.is_file() or not os.access(candidate, os.X_OK)):
-            shadowed = True
-            continue
-        return str(candidate)
+        for name in names:
+            try:
+                candidate = (folder / name).resolve(strict=True)
+            except OSError:
+                continue
+            if not usable(candidate):
+                continue
+            if candidate.suffix.lower() != ".cmd":
+                return str(candidate)
+            for parts in _WRAPPED_GIT:
+                try:
+                    wrapped = candidate.parent.parent.joinpath(*parts).resolve(strict=True)
+                except OSError:
+                    continue
+                if usable(wrapped):
+                    return str(wrapped)
+            launchers.append(candidate)
+    if launchers:
+        from ...git_support import download_url, product_name
+
+        raise Conflict(f"Writer teams run Git without a command shell, and the Git on this computer's PATH is a "
+                       f"command script ({launchers[0]}) whose git.exe Lumi can't find. Install {product_name()} "
+                       f"from {download_url()}, or put its git.exe on PATH, and restart Lumi. "
+                       "Read-only teams work without it.")
     if not shadowed:
         # The usual case on a new computer: no Git at all. Read-only teams
         # never get here; only writers work in Git worktrees.

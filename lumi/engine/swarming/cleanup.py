@@ -1,122 +1,267 @@
-"""Remove a finished team's writer worktrees and branches from the user's repository.
+"""Remove what an ended team leaves in the user's repository, and never anyone's work.
 
 Writers work in Git worktrees under Lumi's runtime folder
 (``~/.lumi/projects/<id>/swarm/worktrees``), on branches the team creates in
 the user's repository: ``lumi/team-<writer>`` (``codex/swarm-writer-<writer>``
-before the rebrand). While a team runs, waits for review or needs recovery,
-they are its evidence and stay. Once the run has ended nothing needs the
-writers' worktrees and branches: an applied change is already on the user's
-branch, and a change nobody applied was dropped by the owner's decision
-(Stop, or a failed team). So they are removed then, and at startup for teams
-that ended earlier (the legacy branch prefix included). A stopped or failed
-team's combined candidates go too; a completed team keeps them, because its
-applied change stays inspectable (Inspect candidate reads that worktree).
+before the rebrand). Combined candidates are detached worktrees there too.
+While a team runs, waits for review or needs recovery, all of it is the team's
+evidence and stays.
+
+Once a team has ended (completed, stopped or failed), a writer's worktree and
+branch go when its change was applied (it is on the user's branch) or it made
+none, and so does an unapplied combined candidate whose writers' changes were
+all applied through another one. That happens when the team ends, and at each
+start for teams that ended earlier (the legacy branch prefix included).
+
+What may still be someone's work stays until the person chooses **Discard kept
+work** in the Team panel (``discard=True``): the worktree and branch of a
+writer whose change wasn't applied, or whose worktree may hold edits nobody
+committed (a stopped writer, one sent back, one interrupted), and any other
+combined candidate that wasn't applied. Stopping a team says what it keeps
+(``describe``).
+
+Never removed, not even by Discard:
+
+* an applied combined candidate, so Inspect candidate keeps working;
+* a branch whose tip isn't the commit the team recorded for it (the writer's
+  result, else its base): someone committed there, perhaps the person
+  salvaging the team's work in the writer's worktree. It and that worktree
+  are reported and left alone for good;
+* a branch checked out, being rebased or bisected in another worktree (until
+  it isn't, at a later cleanup).
+
+Nothing here runs ``git worktree remove`` or ``git worktree prune``: Git for
+Windows follows a directory junction inside a worktree (an npm ``file:``
+dependency) and deletes its target's files, and prune also forgets the
+person's own worktrees whose folders are away. lumi/worktree_removal.py
+unlinks junctions and links without following them and removes only that
+worktree's own entry. A branch is deleted with ``git update-ref -d`` against
+its recorded tip, so a commit that lands meanwhile keeps it. Git runs with
+hooks disabled, and the whole cleanup holds the repository lock every team
+step takes (git_boundary.repository_lock).
 
 This doesn't go through the integration's owned-effect protocol
-(integration.py) on purpose. It runs only for runs whose supervisor can start
-nothing more, touches only worktree folders under Lumi's runtime root and
-branches with a team prefix that the run recorded, and is idempotent: an
-interrupted cleanup is repeated at the next start.
+(integration.py) on purpose: it runs only for runs whose supervisor can start
+nothing more, touches only folders under Lumi's runtime root and branches the
+run recorded, and is idempotent. What it removed, and what it left and why,
+is recorded as a run event (``leftovers_removed``, ``kept_work_discarded``);
+the run's own records stay.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
 from pathlib import Path
-import shutil
 import subprocess
-from typing import Iterable
+from typing import Any, Iterable
 
 from ...processes import background_process_kwargs
+from ...worktree_removal import remove_worktree, same_path
 from ..artifacts import project_state_dir
-from .git_boundary import is_team_branch, trusted_git_executable
+from .git_boundary import REPOSITORY_LOCK_NAME, git_error_line, is_team_branch, repository_lock, trusted_git_executable
 from .models import Conflict
 from .store import SwarmStore
 
 logger = logging.getLogger(__name__)
 
 TERMINAL_STATES = ("completed", "cancelled", "failed")
-# Ended without an applied change: their candidates are discarded too.
-ABANDONED_STATES = ("cancelled", "failed")
+REMOVED_EVENT = "leftovers_removed"
+DISCARDED_EVENT = "kept_work_discarded"
+# How long cleanup waits for another team step (a check can run for 20
+# minutes) to release the repository before trying again at the next start.
+LOCK_SECONDS = 120.0
+_BRANCH_PATTERNS = ("refs/heads/lumi/team-*", "refs/heads/codex/swarm-writer-*")
 
 
-def leftovers(store: SwarmStore, run_ids: Iterable[str] | None = None) -> tuple[list[str], list[str]]:
-    """Worktree folders and writer branches recorded by teams that ended: ``(paths, branches)``."""
+def _manifest(row: dict) -> dict:
+    try:
+        value = json.loads(row.get("manifest_json") or "{}")
+    except (TypeError, ValueError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def writer_branch(row: dict) -> str:
+    """The team branch a writer recorded, or '' (only team branch names count)."""
+    branch = str(_manifest(row).get("branch") or "")
+    return branch if is_team_branch(branch) else ""
+
+
+def recorded_tip(row: dict) -> str:
+    """The commit a writer's branch should still point at: its result, else its base."""
+    return str(row.get("result_revision") or row.get("base_revision") or "")
+
+
+def classify(writers: Iterable[dict], candidates: Iterable[dict], applications: Iterable[dict]) -> dict[str, list[dict]]:
+    """What an ended team's records mean for its leftovers.
+
+    ``unused``: writers nothing needs (their change was applied, or they
+    made none). ``kept``: writers that may hold work nobody applied.
+    ``unused_candidates``: unapplied combined candidates whose writers' changes
+    were all applied through another candidate. ``kept_candidates``: the
+    other unapplied ones. ``applied_candidates``: never removed.
+    """
+    writers, candidates = [dict(row) for row in writers], [dict(row) for row in candidates]
+    applied = {row["id"] for row in candidates if row.get("state") == "applied"}
+    applied |= {row["candidate_id"] for row in applications if row.get("state") == "applied"}
+
+    def sources(candidate: dict) -> set[str]:
+        return {str(source.get("id")) for source in _manifest(candidate).get("writers") or [] if isinstance(source, dict)}
+
+    applied_writers = {writer for row in candidates if row["id"] in applied for writer in sources(row)}
+    unused, kept = [], []
+    for row in writers:
+        result = row.get("result_revision") or ""
+        # "creating" never got a worktree it could edit; "ready" committed
+        # everything it changed, which is nothing when its result is its base.
+        no_change = row.get("state") == "creating" or (
+            row.get("state") == "ready" and (not result or result == row.get("base_revision")))
+        (unused if row["id"] in applied_writers or no_change else kept).append(row)
+    unapplied = [row for row in candidates if row["id"] not in applied]
+    return {"unused": unused, "kept": kept,
+            "unused_candidates": [row for row in unapplied if sources(row) and sources(row) <= applied_writers],
+            "kept_candidates": [row for row in unapplied if not sources(row) or not sources(row) <= applied_writers],
+            "applied_candidates": [row for row in candidates if row["id"] in applied]}
+
+
+def _recorded(connection, run_id: str) -> dict[str, Any]:
+    """What earlier cleanups of this run recorded: the writers and candidates they finished, what they left."""
+    finished_writers: set[str] = set()
+    finished_candidates: set[str] = set()
+    left: dict[str, dict] = {}
+    for row in connection.execute("SELECT payload FROM events WHERE run_id=? AND kind IN (?,?) ORDER BY sequence",
+                                  (run_id, REMOVED_EVENT, DISCARDED_EVENT)):
+        try:
+            payload = json.loads(row["payload"])
+        except (TypeError, ValueError):
+            continue
+        finished_writers.update(str(value) for value in payload.get("writers") or [])
+        finished_candidates.update(str(value) for value in payload.get("candidates") or [])
+        for item in payload.get("left") or []:
+            if isinstance(item, dict) and item.get("writer_id"):
+                left[str(item["writer_id"])] = item
+    return {"writers": finished_writers, "candidates": finished_candidates, "left": left}
+
+
+def _ended_runs(store: SwarmStore, run_ids: Iterable[str] | None) -> dict[str, dict[str, Any]]:
     selected = tuple(run_ids) if run_ids is not None else None
     if selected is not None and not selected:
-        return [], []
-    only = f" AND r.id IN ({','.join('?' for _ in selected)})" if selected else ""
-    paths: list[str] = []
-    branches: list[str] = []
+        return {}
+    only = f" AND id IN ({','.join('?' for _ in selected)})" if selected else ""
+    runs: dict[str, dict[str, Any]] = {}
     with store._connection() as connection:
-        for row in connection.execute(
-                f"SELECT w.path, w.manifest_json FROM writer_worktrees w JOIN runs r ON r.id=w.run_id "
-                f"WHERE r.state IN ({','.join('?' for _ in TERMINAL_STATES)}){only}",
-                (*TERMINAL_STATES, *(selected or ()))):
-            paths.append(str(row[0]))
-            try:
-                branch = str(json.loads(row[1] or "{}").get("branch") or "")
-            except (TypeError, ValueError):
-                branch = ""
-            if branch and is_team_branch(branch):
-                branches.append(branch)
-        for row in connection.execute(
-                f"SELECT c.path FROM integration_candidates c JOIN runs r ON r.id=c.run_id "
-                f"WHERE r.state IN ({','.join('?' for _ in ABANDONED_STATES)}){only}",
-                (*ABANDONED_STATES, *(selected or ()))):
-            paths.append(str(row[0]))
-    return paths, branches
+        for run in connection.execute(
+                f"SELECT id FROM runs WHERE state IN ({','.join('?' for _ in TERMINAL_STATES)}){only} ORDER BY rowid",
+                (*TERMINAL_STATES, *(selected or ()))).fetchall():
+            run_id = run["id"]
+            writers = [dict(row) for row in connection.execute(
+                "SELECT * FROM writer_worktrees WHERE run_id=? ORDER BY rowid", (run_id,))]
+            candidates = [dict(row) for row in connection.execute(
+                "SELECT * FROM integration_candidates WHERE run_id=? ORDER BY rowid", (run_id,))]
+            if not writers and not candidates:
+                continue
+            applications = [dict(row) for row in connection.execute(
+                "SELECT a.* FROM integration_applications a JOIN integration_candidates c ON c.id=a.candidate_id "
+                "WHERE c.run_id=?", (run_id,))]
+            runs[run_id] = {"plan": classify(writers, candidates, applications), "recorded": _recorded(connection, run_id)}
+    return runs
 
 
-def clean_finished_teams(store: SwarmStore, workspace: str | Path, *, run_ids: Iterable[str] | None = None,
-                         root: str | Path | None = None) -> dict[str, int]:
-    """Remove ended teams' worktrees and writer branches; returns what was removed.
+def kept_work(store: SwarmStore, snapshot: dict[str, Any]) -> dict[str, Any] | None:
+    """What a team keeps in the repository until the person discards it, for the Team panel.
 
-    ``run_ids`` limits it to those runs (they still have to have ended);
-    without it every ended run in the store is checked.
+    From the run's records and events, without running Git: ``items`` are
+    the kept writers (their branches) and unapplied combined candidates not
+    yet discarded; ``left`` are branches Lumi won't delete (moved, or in
+    another repository). Discard applies once the team has ``ended``.
     """
-    removed = {"worktrees": 0, "branches": 0}
-    paths, branches = leftovers(store, run_ids)
-    if not paths and not branches:
-        return removed
-    project = Path(workspace).resolve()
-    runtime_root = Path(root or project_state_dir(project) / "swarm" / "worktrees").resolve()
-    existing = [Path(path) for path in paths if _under(Path(path), runtime_root) and Path(path).exists()]
-    if not existing and not branches:
-        return removed
-    try:
-        git = trusted_git_executable(project, runtime_root)
-    except Conflict:
-        return removed  # No Git now: nothing to ask it; the next start tries again.
+    writers = snapshot.get("writer_worktrees") or []
+    candidates = snapshot.get("integration_candidates") or []
+    if not writers and not candidates:
+        return None
+    run_id = snapshot["run"]["id"]
+    plan = classify(writers, candidates, snapshot.get("integration_applications") or [])
+    with store._connection() as connection:
+        recorded = _recorded(connection, run_id)
+    items = []
+    for row in plan["kept"]:
+        if row["id"] in recorded["writers"]:
+            continue
+        items.append({"kind": "writer", "id": row["id"], "branch": writer_branch(row), "state": row.get("state"),
+                      "changed": bool(row.get("result_revision")) and row.get("result_revision") != row.get("base_revision"),
+                      "folder": os.path.lexists(row.get("path") or "")})
+    for row in plan["kept_candidates"]:
+        if row["id"] in recorded["candidates"]:
+            continue
+        items.append({"kind": "candidate", "id": row["id"], "state": row.get("state"),
+                      "folder": os.path.lexists(row.get("path") or "")})
+    return {"ended": snapshot["run"]["state"] in TERMINAL_STATES, "items": items,
+            "left": list(recorded["left"].values()), "applied_candidates": len(plan["applied_candidates"])}
 
-    def run(*args: str) -> subprocess.CompletedProcess:
-        # Inherited GIT_DIR/INDEX_FILE must not redirect the user's repository.
-        environment = {key: value for key, value in os.environ.items() if not key.upper().startswith("GIT_")}
-        environment.update(GIT_TERMINAL_PROMPT="0", GIT_OPTIONAL_LOCKS="0")
-        return subprocess.run([git, "--no-pager", "-c", "core.fsmonitor=false", *args], cwd=project,
-                              env=environment, stdin=subprocess.DEVNULL, capture_output=True, text=True,
+
+def describe(kept: dict[str, Any] | None) -> str:
+    """One sentence on what a stopped team keeps and how to discard it."""
+    items = (kept or {}).get("items") or []
+    branches = [item["branch"] or "a writer's worktree" for item in items if item["kind"] == "writer"]
+    candidates = sum(1 for item in items if item["kind"] == "candidate")
+    parts = []
+    if branches:
+        shown = ", ".join(branches[:3]) + (", …" if len(branches) > 3 else "")
+        parts.append(f"{len(branches)} writer branch{'es' if len(branches) != 1 else ''} ({shown})")
+    if candidates:
+        parts.append(f"{candidates} combined candidate{'s' if candidates != 1 else ''}")
+    if not parts:
+        return ("Nothing this team changed is waiting to be applied, so its worktrees and branches are "
+                "removed once it has stopped.")
+    return (f"Its unapplied work stays in your repository until you discard it: {' and '.join(parts)}. "
+            "Once the team has stopped, Review file changes offers Discard kept work.")
+
+
+def _git(git: str, project: Path, hooks: Path, *args: str) -> subprocess.CompletedProcess:
+    """Run Git in the user's repository with hooks, fsmonitor and inherited redirection off."""
+    environment = {key: value for key, value in os.environ.items() if not key.upper().startswith("GIT_")}
+    environment.update(GIT_TERMINAL_PROMPT="0", GIT_OPTIONAL_LOCKS="0")
+    try:
+        return subprocess.run([git, "--no-pager", "-c", f"core.hooksPath={hooks}", "-c", "core.fsmonitor=false", *args],
+                              cwd=project, env=environment, stdin=subprocess.DEVNULL, capture_output=True, text=True,
                               encoding="utf-8", errors="replace", timeout=60, check=False,
                               **background_process_kwargs())
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return subprocess.CompletedProcess([git, *args], 1, "", f"error: {exc}")
 
-    for path in existing:
-        run("worktree", "remove", "--force", str(path))
-        if path.exists():
-            shutil.rmtree(path, ignore_errors=True)
-        if not path.exists():
-            removed["worktrees"] += 1
-    if existing:
-        run("worktree", "prune")
-    for branch in dict.fromkeys(branches):
-        if run("rev-parse", "--verify", "--quiet", f"refs/heads/{branch}").returncode != 0:
-            continue
-        if run("branch", "-D", branch).returncode == 0:
-            removed["branches"] += 1
-    if removed["worktrees"] or removed["branches"]:
-        logger.info("Removed %d worktrees and %d branches of finished teams in %s",
-                    removed["worktrees"], removed["branches"], project)
-    return removed
+
+def _checked_out(worktree_list: str) -> dict[str, list[str]]:
+    """Each branch ref checked out in a worktree, and where (``git worktree list --porcelain``)."""
+    found: dict[str, list[str]] = {}
+    folder = ""
+    for line in worktree_list.splitlines():
+        if line.startswith("worktree "):
+            folder = line[len("worktree "):].strip()
+        elif line.startswith("branch "):
+            found.setdefault(line[len("branch "):].strip(), []).append(folder)
+    return found
+
+
+def _rebasing_or_bisecting(common: Path) -> set[str]:
+    """Branch refs a rebase or bisect in any worktree will come back to (git branch -D's own checks)."""
+    used: set[str] = set()
+    folders = [common]
+    try:
+        folders += [entry for entry in (common / "worktrees").iterdir() if entry.is_dir()]
+    except OSError:
+        pass
+    for folder in folders:
+        for name in ("rebase-merge/head-name", "rebase-apply/head-name", "BISECT_START"):
+            try:
+                value = (folder / name).read_text(encoding="utf-8", errors="replace").strip()
+            except OSError:
+                continue
+            if value:
+                used.add(value if value.startswith("refs/") else f"refs/heads/{value}")
+    return used
 
 
 def _under(path: Path, root: Path) -> bool:
@@ -125,3 +270,160 @@ def _under(path: Path, root: Path) -> bool:
     except OSError:
         return False
     return resolved != root and resolved.is_relative_to(root)
+
+
+def clean_finished_teams(store: SwarmStore, workspace: str | Path, *, run_ids: Iterable[str] | None = None,
+                         root: str | Path | None = None, discard: bool = False,
+                         lock_seconds: float = LOCK_SECONDS) -> dict[str, Any]:
+    """Remove ended teams' leftovers nothing needs (with ``discard``, their kept work too); returns a report.
+
+    ``run_ids`` limits it to those runs (they still have to have ended);
+    without it every ended run in the store is checked. The report counts
+    removed ``worktrees`` and ``branches``, lists branches ``left`` (moved,
+    in use) and what ``failed``, and says why nothing ran (``skipped``).
+    """
+    report: dict[str, Any] = {"worktrees": 0, "branches": 0, "left": [], "failed": [], "skipped": ""}
+    runs = _ended_runs(store, run_ids)
+    targets: list[tuple[str, str, dict]] = []
+    for run_id, run in runs.items():
+        plan, recorded = run["plan"], run["recorded"]
+        writers = plan["unused"] + (plan["kept"] if discard else [])
+        candidates = plan["unused_candidates"] + (plan["kept_candidates"] if discard else [])
+        targets += [(run_id, "writer", row) for row in writers if row["id"] not in recorded["writers"]]
+        targets += [(run_id, "candidate", row) for row in candidates if row["id"] not in recorded["candidates"]]
+    if not targets:
+        return report
+    project = Path(workspace).resolve()
+    runtime_root = Path(root or project_state_dir(project) / "swarm" / "worktrees").resolve()
+    try:
+        git = trusted_git_executable(project, runtime_root)
+    except Conflict as exc:
+        report["skipped"] = str(exc)  # No Git now: the next start tries again.
+        return report
+    hooks = runtime_root / "disabled-hooks"
+    try:
+        hooks.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        report["skipped"] = f"Lumi couldn't prepare Git's settings for cleanup: {exc}"
+        return report
+
+    def run(*args: str) -> subprocess.CompletedProcess:
+        return _git(git, project, hooks, *args)
+
+    found = run("rev-parse", "--git-common-dir")
+    if found.returncode != 0 or not found.stdout.strip():
+        report["skipped"] = git_error_line(found.stderr) or "The project is no longer a Git repository."
+        return report
+    common = (project / found.stdout.strip()).resolve()
+    try:
+        with repository_lock(common / REPOSITORY_LOCK_NAME, timeout=lock_seconds):
+            outcomes = _remove(run, common, runtime_root, targets, report)
+    except (Conflict, OSError) as exc:
+        report["skipped"] = str(exc)
+        return report
+    _record(store, outcomes, discard)
+    if report["worktrees"] or report["branches"] or report["left"] or report["failed"]:
+        logger.info("Team cleanup in %s: removed %d worktrees and %d branches; left %s; failed %s", project,
+                    report["worktrees"], report["branches"], report["left"], report["failed"])
+    return report
+
+
+def _remove(run, common: Path, runtime_root: Path, targets: list[tuple[str, str, dict]],
+            report: dict[str, Any]) -> dict[str, dict[str, list]]:
+    """Check each branch, remove the worktree folders, then the branches; per-run outcomes.
+
+    A writer's branch is checked first. One that moved (someone committed
+    there, perhaps in the writer's own worktree) or belongs to another
+    repository now isn't the team's any more: it and its worktree are left
+    for good, Discard or not. One checked out in another worktree, or being
+    rebased or bisected, loses the team's worktree but stays until it is
+    free, at a later cleanup.
+    """
+    outcomes: dict[str, dict[str, list]] = {}
+
+    def outcome(run_id: str) -> dict[str, list]:
+        return outcomes.setdefault(run_id, {"writers": [], "candidates": [], "branches": [], "left": [], "failed": []})
+
+    def failed(run_id: str, row: dict, kind: str, error: str) -> None:
+        item = {"run_id": run_id, "id": row["id"], "kind": kind, "error": error}
+        report["failed"].append(item)
+        outcome(run_id)["failed"].append(item)
+
+    def left(run_id: str, row: dict, branch: str, reason: str) -> None:
+        item = {"run_id": run_id, "writer_id": row["id"], "branch": branch, "reason": reason}
+        path = str(row.get("path") or "")
+        if reason != "in_use" and path and os.path.lexists(path):
+            item["worktree"] = path  # left with it, where the person can find it
+        report["left"].append(item)
+        if reason != "in_use":  # in use now, perhaps not at the next start
+            outcome(run_id)["left"].append(item)
+            outcome(run_id)["writers"].append(row["id"])
+
+    listing = run("for-each-ref", "--format=%(objectname) %(refname)", *_BRANCH_PATTERNS)
+    if listing.returncode != 0:
+        report["skipped"] = git_error_line(listing.stderr) or "Git couldn't list the team's branches."
+        return outcomes
+    tips = {ref: sha for sha, ref in (line.split(" ", 1) for line in listing.stdout.splitlines() if " " in line)}
+    checked_out = _checked_out(run("worktree", "list", "--porcelain").stdout)
+    busy = _rebasing_or_bisecting(common)
+    repo_key = hashlib.sha256(os.path.normcase(str(common)).encode()).hexdigest()
+    deletable: list[tuple[str, dict, str]] = []
+    for run_id, kind, row in targets:
+        path = Path(row.get("path") or "")
+        branch = writer_branch(row) if kind == "writer" else ""
+        ref = f"refs/heads/{branch}"
+        tip = tips.get(ref) if branch else None
+        reason = ""
+        if tip is not None:
+            if row.get("repo_key") and row["repo_key"] != repo_key:
+                reason = "another_repository"
+            elif tip != recorded_tip(row):
+                reason = "moved"  # someone committed there: it isn't only the team's any more
+            elif ref in busy or any(not same_path(folder, path) for folder in checked_out.get(ref, ())):
+                reason = "in_use"
+        if reason in ("moved", "another_repository"):
+            left(run_id, row, branch, reason)
+            continue
+        if str(path) and _under(path, runtime_root):
+            existed = os.path.lexists(path)
+            removal = remove_worktree(path, common_dir=common)
+            if not removal.removed:
+                failed(run_id, row, kind, removal.error)
+                continue
+            if existed:
+                report["worktrees"] += 1
+        elif str(path) and os.path.lexists(path):
+            # Recorded outside Lumi's folder: never Lumi's to delete.
+            failed(run_id, row, kind, "The worktree isn't in Lumi's folder, so Lumi left it.")
+            continue
+        if kind == "candidate":
+            outcome(run_id)["candidates"].append(row["id"])
+        elif tip is None:
+            outcome(run_id)["writers"].append(row["id"])  # no branch (any more): nothing else to do
+        elif reason:
+            left(run_id, row, branch, reason)
+        else:
+            deletable.append((run_id, row, ref))
+    for run_id, row, ref in deletable:
+        # Only while it still points at the recorded commit: a commit that
+        # lands meanwhile makes Git refuse, and the branch stays.
+        deleted = run("update-ref", "-d", ref, recorded_tip(row))
+        if deleted.returncode == 0:
+            report["branches"] += 1
+            outcome(run_id)["branches"].append(ref[len("refs/heads/"):])
+            outcome(run_id)["writers"].append(row["id"])
+        else:
+            failed(run_id, row, "writer", git_error_line(deleted.stderr) or "git update-ref failed")
+    return outcomes
+
+
+def _record(store: SwarmStore, outcomes: dict[str, dict[str, list]], discard: bool) -> None:
+    """A run event for each run whose leftovers changed: what went, what was left and why."""
+    for run_id, outcome in outcomes.items():
+        if not (outcome["writers"] or outcome["candidates"] or (discard and outcome["failed"])):
+            continue
+        try:
+            with store._connection(write=True) as connection:
+                store._event(connection, run_id, DISCARDED_EVENT if discard else REMOVED_EVENT, outcome)
+        except Exception:  # noqa: BLE001 - the repository changed either way; the next cleanup re-checks
+            logger.warning("Couldn't record the cleanup of team %s", run_id, exc_info=True)

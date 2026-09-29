@@ -15,7 +15,7 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from lumi.processes import background_process_kwargs
+from lumi.processes import background_process_kwargs, decode_output
 
 
 # ── Text clipboard ─────────────────────────────────────────────────────
@@ -77,13 +77,13 @@ def write_clipboard_text(text: str) -> None:
     if sys.platform == "win32":
         # Use clip.exe — pipe text via stdin
         proc = subprocess.run(
-            ["clip"], input=text, text=True, encoding="utf-8",
+            ["clip"], input=text, text=True, encoding="utf-8", errors="replace",
             **background_process_kwargs(),
         )
         if proc.returncode != 0:
             raise RuntimeError("clip.exe failed")
     elif sys.platform == "darwin":
-        proc = subprocess.run(["pbcopy"], input=text, text=True, encoding="utf-8")
+        proc = subprocess.run(["pbcopy"], input=text, text=True, encoding="utf-8", errors="replace")
         if proc.returncode != 0:
             raise RuntimeError("pbcopy failed")
     else:
@@ -91,7 +91,7 @@ def write_clipboard_text(text: str) -> None:
         last_err: Optional[Exception] = None
         for cmd in (["wl-copy"], ["xclip", "-selection", "clipboard"], ["xsel", "-b", "-i"]):
             try:
-                proc = subprocess.run(cmd, input=text, text=True, encoding="utf-8")
+                proc = subprocess.run(cmd, input=text, text=True, encoding="utf-8", errors="replace")
                 if proc.returncode == 0:
                     return
             except FileNotFoundError as e:
@@ -188,10 +188,11 @@ if ($img -ne $null) {{
     try:
         result = subprocess.run(
             ["powershell", "-NoProfile", "-Command", ps_script],
-            capture_output=True, text=True, timeout=10,
+            capture_output=True, timeout=10,
             **background_process_kwargs(),
         )
-        output = result.stdout.strip()
+        # PowerShell writes the console's code page; bytes never fail to decode.
+        output = decode_output(result.stdout).strip()
         if output == "OK" and os.path.exists(tmp):
             image_bytes = Path(tmp).read_bytes()
             os.unlink(tmp)
@@ -227,7 +228,7 @@ def _read_macos() -> tuple[Optional[bytes], str]:
     try:
         result = subprocess.run(
             ["osascript", "-e", applescript, tmp],
-            capture_output=True, text=True, timeout=10,
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
         )
         output = result.stdout.strip()
         if output == "OK" and os.path.exists(tmp):

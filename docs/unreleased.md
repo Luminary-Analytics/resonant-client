@@ -14,62 +14,127 @@ The packaged build of `main` was run the way an alpha tester would: a fresh
 home folder named "Jöhn Smith", PATH with only Windows' own folders, a project
 in "Documents\Alpha Project" that isn't a Git repository, and a scripted
 Ollama-compatible model. These are the engine and runtime fixes; the page's
-first-run changes follow separately.
+first-run changes follow separately. An independent review on September 27
+found data loss in the first version (team cleanup deleted files outside the
+repository through a junction and could delete someone's commits); the
+September 29 revision below fixes that and the review's other findings.
 
 - **A missing Git no longer ends every session.** Every session builds an
   agent-worktree manager, which ran `git rev-parse` without catching a
   program that can't start, so choosing a model said "ollama (stub) failed to
   start: [WinError 2] The system cannot find the file specified" and every
   message failed. `WorktreeManager` now treats Git that can't start as "no
-  repository"; mission checkpoints, `@diff` context, the editor bridge's
-  comparisons, model comparisons and the pull request and git tools say that
-  Git isn't installed instead of failing obscurely. A turn's checkpoint keeps
-  the files in an archive without Git, as before. `lumi/git_support.py` holds
-  the one message and a capability the page reads (`init.git`:
-  `available`, `download_url`, what needs Git). Failed model starts are
-  logged with their traceback (they weren't).
+  repository"; mission checkpoints, `@diff` context (it attaches the reason
+  instead of nothing), the editor bridge's comparisons, model comparisons and
+  the pull request and git tools say that Git isn't installed instead of
+  failing obscurely. They say so only when `git_available()` is false: a
+  project folder that was moved or deleted fails to start Git the same way
+  ([WinError 267]) and now gets "Git couldn't run in ...: the folder doesn't
+  exist"; any other failure to start says what it was ("Git couldn't start:
+  ...", `git_support.start_failure_message`). A turn's checkpoint keeps the files
+  in an archive without Git, as before. `lumi/git_support.py` holds the one
+  message and a capability the page reads (`init.git`: `available`,
+  `download_url`, what needs Git). Failed model starts are logged with their
+  traceback (they weren't).
+- **A sub-agent that asks for its own Git worktree** in a Git repository, on a
+  computer without Git, is refused with that reason and the hint to use
+  isolation "shared"; it silently got the shared checkout before.
 - **Teams without Git.** The Team panel now says why the conversation's
   model isn't running ("This conversation's model isn't running: ...")
   instead of "Choose a configured provider and model". A team with writers
   refuses at once with "Writer teams need Git for Windows, which isn't
   installed on this computer. Install it from https://git-scm.com/download/win
   and restart Lumi. Read-only teams work without it." Read-only teams never
-  run Git.
-- **Command output with umlauts.** The shell tool decoded cmd.exe's output
-  as cp1252; cmd.exe writes the OEM code page, so one "ü" (byte 0x81) killed
-  the reader and the tool answered "Error: 'NoneType' object has no attribute
-  'strip'", and "Jöhn" came back as "J”hn". Output is now read as bytes and
-  decoded as UTF-8, else the OEM code page (`processes.decode_output`); the
-  acceptance checks of missions, the harness's validation runs and worktree
-  validation use it too.
+  run Git. A `git.cmd` launcher on PATH counts as Git, as it does for
+  `git_available()`: writers run the `git.exe` it launches, and one whose
+  `git.exe` isn't where Git for Windows puts it is named in the refusal
+  instead of "isn't installed".
+- **Command output with umlauts.** The shell tool decoded cmd.exe's output as
+  cp1252; cmd.exe writes the OEM code page, so one "ü" (byte 0x81) killed the
+  reader and the tool answered "Error: 'NoneType' object has no attribute
+  'strip'", and "Jöhn" came back as "J”hn". Reading it as the OEM code page
+  instead garbled a Python child's output ("Jürgen Jöhn" became "Jⁿrgen
+  J÷hn"), since Python writes the ANSI one. Now children are asked for UTF-8:
+  `PYTHONUTF8=1` unless the person set it (`processes.utf8_env`), and shell
+  commands run through `processes.utf8_shell`, where cmd.exe switches its
+  console to UTF-8 (`chcp 65001`) and runs the command in a second cmd.exe,
+  since the first keeps writing the old code page for the rest of its line;
+  the command reaches it through a variable expanded after parsing, so its
+  quotes, `&`, `%` and `!` mean what they did. Output is decoded line by line
+  (`processes.decode_output`): UTF-8, else whichever of the ANSI and OEM code
+  pages reads as more letters, so one command can mix cmd's `echo`, a Python
+  in UTF-8 mode and one that isn't. Jobs and previews read their output in
+  1 KiB pieces and decoded each on its own, splitting characters; they decode
+  whole lines now (`processes.OutputDecoder`). The acceptance checks of
+  missions, the harness's validation runs, worktree validation and model
+  comparison checks use the same path, and the task scheduler, OCR,
+  clipboard, pack installs, mission checkpoints, the mission factory's Git
+  probes and the Azure and Google CLI sign-ins no longer decode text-mode
+  pipes strictly with the locale's code page.
 - **A team only holds its own conversation.** After a restart, an unfinished
   team refused chat in every project ("Finish or stop the active team before
   starting an ordinary chat turn"). Now only the conversation that owns it
   waits, and the refusal names the team and how to end it (Stop team; for one
   left from before a restart, Take over expired team, Review interrupted work,
   then Finish stopped team); the event carries `code: "team_active"` and the
-  team for the page. Unreadable team storage still holds every conversation,
-  since its owner is unknown.
-- **Teams clean up after themselves.** Writer branches are now named
-  `lumi/team-<writer>` (they were `codex/swarm-writer-<writer>`). When a team
-  ends, its writers' worktrees and branches are removed from the repository,
-  and a stopped or failed team's combined candidates too; at startup the same
-  happens for teams that ended earlier, including the old branch names. A
-  completed team keeps its combined candidate, so its applied change stays
-  inspectable. A failed Git step now reports Git's `fatal:`/`error:` line, not
-  its first progress line ("Preparing worktree ...").
+  team for the page. A team holds its conversation from the moment it starts
+  or is taken over, not from the ownership observer's next refresh (a 0.1 to
+  0.2 s window in the first version), and an active team whose owner isn't
+  known yet holds every conversation. Continuing a recovered team waits for a
+  running chat turn, as starting one does. Refusing a new team while another
+  is unfinished names that team, its conversation and project, and how to
+  end it. Unreadable team storage still holds every conversation, since its
+  owner is unknown.
+- **Teams clean up after themselves, and keep what may be someone's work.**
+  Writer branches are now named `lumi/team-<writer>` (they were
+  `codex/swarm-writer-<writer>`). When a team ends, the worktree and branch
+  of each writer whose change was applied, or who made none, are removed, as
+  is a combined candidate whose writers' changes were all applied through
+  another one; at startup the same happens for teams that ended earlier,
+  including the old branch names. What may still be someone's work stays
+  until the person chooses **Discard kept work** in Review file changes: an
+  unapplied writer change, a writer worktree that may hold uncommitted
+  edits, and any other unapplied combined candidate; the panel's Needs
+  attention list mentions it. Stop says what it keeps. Applied combined candidates
+  are never removed, so Inspect candidate keeps working. A branch is deleted
+  only while it still points at the commit the team recorded (the writer's
+  result, else its base), with `git update-ref -d` against that commit; one
+  someone committed to is left for good with its worktree and reported, and
+  one checked out, rebased or bisected in another worktree waits. Worktrees
+  are removed by `lumi/worktree_removal.py`, never `git worktree remove
+  --force`, which on Windows followed a junction inside the worktree (npm
+  links a `file:` dependency that way) and deleted the files it pointed to,
+  outside the repository; links are unlinked without being followed and only
+  that worktree's own `$GIT_COMMON_DIR/worktrees/<name>` record is removed.
+  The repository-wide `git worktree prune`, which also forgot the person's
+  own worktrees whose folders were away, is gone, here and in model
+  comparisons. Agent worktrees and model comparisons use the same removal.
+  Cleanup takes the repository lock team steps take, runs Git with hooks
+  disabled, and records what it removed and left as run events
+  (`leftovers_removed`, `kept_work_discarded`). A cleanup that can't start
+  its thread is tried again instead of ending the ownership observer. A
+  failed Git step reports Git's `fatal:`/`error:` line, not its first
+  progress line ("Preparing worktree ...").
 - **Searches.** `grep` and `glob` show paths relative to the project and
   spelled as the files are (they were absolute and case-folded,
-  "c:\users\jöhn smith\documents\alpha project\README.md"), and skip Lumi's
-  own `.lumi/` and `.resonant/` folders. The codebase index now lives with
-  the project's other runtime state in `~/.lumi/projects/<id>/index.json`
-  instead of `<project>/.lumi/index.json`, where it showed up in searches and
-  `git status`; an old copy there is no longer read and can be deleted.
-  Indexing reports its line count, so Settings no longer says "2 files
-  indexed (0 lines)". Without ripgrep (a source checkout that didn't fetch
-  it), Windows' `findstr` ran a file's last match and the next file's match
-  together on one line when the file had no final newline; they are split
-  again, so dropping `.lumi/`'s match no longer drops the one after it.
+  "c:\users\jöhn smith\documents\alpha project\README.md"). The codebase index
+  now lives with the project's other runtime state in
+  `~/.lumi/projects/<id>/index.json` instead of `<project>/.lumi/index.json`,
+  where it showed up in searches and `git status`; an old copy there is no
+  longer read and can be deleted. Searches skip only that old copy (and
+  `.resonant/index.json`), unless they name `.lumi` themselves; the first
+  version skipped all of `.lumi/`, hiding the person's `.lumi/LUMI.md`,
+  capability packs and mission roadmaps, and blamed .gitignore for it. The
+  note about .gitignore'd files suggests `rg --no-ignore` only when the shell
+  can run rg. Indexing reports its line count, so Settings no longer says
+  "2 files indexed (0 lines)". Without ripgrep (a source checkout that didn't
+  fetch it), Windows' `findstr` ran a file's last match and the next file's
+  together on one line when the file had no final newline, and writes paths
+  in the console's code page: in a project under "Jöhn Smith" the matches
+  weren't split, and an excluded `secret.txt`'s match reached the model on
+  another file's line. findstr's output is now split in bytes before each
+  `<root>\...:<line>:`, its paths decoded with the code page that spells the
+  root, and nothing but the filtered lines is ever shown.
 - **The prompt's environment line** comes from what PATH has: without Python
   the model is told Python isn't installed (it was told to "Use 'python' not
   'python3'"), the `py` launcher and the Microsoft Store placeholder
@@ -77,8 +142,10 @@ first-run changes follow separately.
   (`lumi/toolchain.py`). Team workers get the same line.
 - **A copied or portable `lumi.exe`** never takes its own folder, anything in
   it, or a folder containing it (Downloads, the drive root) as the project; a
-  double-click started it there. System folders are also recognized where
-  Windows says they are.
+  double-click started it there. The folder is checked as spelled and where
+  it really is (`realpath`), so reaching it through a junction, symbolic
+  link, subst drive or mapped drive doesn't get past the check. System
+  folders are also recognized where Windows says they are.
 - **A double-clicked `lumi.exe` opens the app.** The windowless build opened
   from Explorer or a shortcut without arguments has no console, so it started
   the terminal UI invisibly, waiting for input that never came. The launch
@@ -101,15 +168,35 @@ first-run changes follow separately.
   (Windows PowerShell 5.1 stops at PyInstaller when the output is captured),
   ripgrep's license files, the SBOM tools and where the build environment
   goes.
-- **Tests:** `tests/test_clean_machine.py` (Git absent through a patched
-  `shutil.which` and a `subprocess.run` that raises `FileNotFoundError`, cmd.exe
-  output with "Jürgen Müller" and "Jöhn", searches, prompt hints, the app's
-  own folder, help text, the updater message, a double-click and a command
-  line on Windows, the tagged log) and
-  `tests/test_swarm_clean_machine.py` (writer teams without Git, the panel's
-  reason, Git's error line, the conversation-scoped gate and its refusal, and
-  cleanup of real worktrees and both branch prefixes).
+- **Tests:** `tests/test_clean_machine.py` (Git removed from PATH, not
+  patched out; messages for a missing Git and for a folder that is gone; a
+  sub-agent's worktree refusal; output from a Python child, its traceback
+  with a "Jöhn Smith" path, a Python outside UTF-8 mode, cmd's `echo` and
+  `dir`, both in one command, and cmd's quoting; line-by-line and piecewise
+  decoding; searches that show the person's `.lumi` files and skip the old
+  index; findstr in a "Jöhn Smith" project with an excluded file, with and
+  without final newlines; the portable folder through a junction; help text,
+  the updater message, a double-click and a command line, the tagged log),
+  `tests/test_worktree_removal.py` (real worktrees with a junction to a folder
+  outside, read-only files, a symbolic link, the worktree folder itself as a
+  link, the person's worktree whose folder is away, a record left behind, a
+  locked worktree, another repository's record, deep paths) and
+  `tests/test_swarm_clean_machine.py` (writer teams without Git and with a
+  `git.cmd` launcher, the panel's reason, Git's error line, the gate at a
+  team's first moment and for an unknown owner, a chat message right after
+  a start, continuing during a chat turn, the named new-team refusal, an
+  observer whose cleanup can't start; cleanup with real Git of both branch
+  prefixes, unapplied work until Discard, a moved and a checked-out branch,
+  the person's worktree, hooks and the repository lock, no Git; and through
+  `SwarmRuntime` with real writers: Stop's message, Discard through a
+  junction a declared check left in a candidate, a moved branch, an applied
+  candidate that stays inspectable, and the startup sweep), and
+  `tests/swarm_kept_work.browser.cjs` (headless Edge on the real panel:
+  Stop's message, the kept list, Discard by keyboard behind its checkbox at
+  390 px wide).
 - **Deferred:** the page's first-run changes are a separate pull request.
+  Programs launched by bare name from the project folder are handled by the
+  shared resolver in its own pull request; this one adds no such launch.
 
 ## September 27 macOS alpha: Sparkle updates and release publishing (source only, not released)
 

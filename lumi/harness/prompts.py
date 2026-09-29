@@ -33,7 +33,7 @@ from typing import TYPE_CHECKING, Any, Optional
 
 from ..engine import AGENT_TOOLS
 from ..events import EngineEvent
-from ..processes import background_process_kwargs, decode_output
+from ..processes import background_process_kwargs, decode_output, utf8_env, utf8_shell
 from .service import HarnessService
 from .state import EvaluatorReport, HarnessWorkspace
 
@@ -1978,6 +1978,7 @@ class HarnessPrompts:
             completed = subprocess.run(
                 command,
                 cwd=target_path,
+                env=utf8_env(),  # its SyntaxError names paths like "Jöhn Smith" in UTF-8
                 capture_output=True,
                 timeout=20,
                 **background_process_kwargs(),
@@ -2146,10 +2147,13 @@ class HarnessPrompts:
                 )
                 continue
             try:
+                # cmd.exe writes UTF-8 through utf8_shell (lumi/processes.py).
+                launch, shell, environment = utf8_shell(command)
                 completed = subprocess.run(
-                    command,
-                    shell=True,
+                    launch,
+                    shell=shell,
                     cwd=target_path,
+                    env=environment,
                     capture_output=True,
                     timeout=25,
                     **background_process_kwargs(),

@@ -57,7 +57,7 @@ import subprocess
 from dataclasses import dataclass
 from typing import Callable, Optional
 
-from lumi.processes import background_process_kwargs, decode_output
+from lumi.processes import background_process_kwargs, decode_output, utf8_env, utf8_shell
 
 from ..gui.roadmap import AcceptanceCriterion
 from ..secrets_store import child_env
@@ -161,7 +161,7 @@ class BashRunner:
                 proc = subprocess.run(
                     [bash_path, "-c", command],
                     cwd=self.cwd,
-                    env=child_env(),
+                    env=utf8_env(child_env()),
                     capture_output=True,
                     # Bytes, decoded below: cmd.exe writes the OEM code page.
                     timeout=self.timeout_seconds,
@@ -172,11 +172,13 @@ class BashRunner:
                 # Platform default shell. On Linux/macOS this is bash
                 # / zsh anyway; on Windows it's cmd.exe with the
                 # known POSIX-tool gap.
+                # cmd.exe writes UTF-8 through utf8_shell (lumi/processes.py).
+                launch, shell, environment = utf8_shell(command, child_env())
                 proc = subprocess.run(
-                    command,
-                    shell=True,
+                    launch,
+                    shell=shell,
                     cwd=self.cwd,
-                    env=child_env(),
+                    env=environment,
                     capture_output=True,
                     timeout=self.timeout_seconds,
                     check=False,

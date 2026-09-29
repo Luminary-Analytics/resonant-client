@@ -15,7 +15,7 @@ from urllib.parse import urlsplit
 import urllib.request
 
 from lumi.engine import os_sandbox
-from lumi.processes import background_process_kwargs, windows_kill_job, close_windows_job
+from lumi.processes import OutputDecoder, background_process_kwargs, close_windows_job, utf8_env, windows_kill_job
 from lumi.secrets_store import child_env
 
 
@@ -42,7 +42,7 @@ class PreviewManager:
                     raise ValueError('Preview port is already in use; choose another port.')
             # Inside the shell sandbox when it's on (engine/os_sandbox.py).
             launch = os_sandbox.prepare_argv(argv, roots=sandbox_roots or [root], cwd=root)
-            process = subprocess.Popen(launch, cwd=root, stdin=subprocess.DEVNULL, env=child_env(),
+            process = subprocess.Popen(launch, cwd=root, stdin=subprocess.DEVNULL, env=utf8_env(child_env()),
                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                 **background_process_kwargs(new_process_group=True))
             try:
@@ -57,11 +57,20 @@ class PreviewManager:
                         process=process, job=job, logs=deque(maxlen=64), ready=False, started_at=time.time())
             self._items[handle] = item
         def drain():
+            # Whole lines only: a read can end inside a character, and each
+            # line may come in another code page (lumi.processes.OutputDecoder).
+            decoder = OutputDecoder()
             try:
                 while chunk := process.stdout.read1(1024):
-                    with self._lock:
-                        item['logs'].append(chunk.decode('utf-8', errors='replace'))
+                    text = decoder.decode(chunk)
+                    if text:
+                        with self._lock:
+                            item['logs'].append(text)
             finally:
+                rest = decoder.decode(b'', final=True)
+                if rest:
+                    with self._lock:
+                        item['logs'].append(rest)
                 process.stdout.close()
         threading.Thread(target=drain, daemon=True).start()
         deadline = time.monotonic() + min(60, max(1, float(timeout)))

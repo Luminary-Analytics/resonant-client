@@ -26,8 +26,9 @@ from lumi.processes import background_process_kwargs, close_windows_job, popen_i
 
 from ..artifacts import project_state_dir
 from .argv_process import ArgvResult, ManagedArgvProcess, effect_support
-from .git_boundary import (TEAM_BRANCH_PREFIX, disabled_filter_options, git_bytes, git_error_line,
-                           has_custom_merge_driver, trusted_git_executable)
+from .git_boundary import (REPOSITORY_LOCK_NAME, TEAM_BRANCH_PREFIX, disabled_filter_options, git_bytes,
+                           git_error_line, has_custom_merge_driver, open_repository_lock, release_repository_lock,
+                           trusted_git_executable, try_repository_lock)
 from .integration_processes import IntegrationProcesses
 from .models import AdmissionClosed, AttemptContext, Conflict, RunAuthority, Scope, ScopeDenied, StaleAuthority, require_id
 from .policy import AssignmentGrant, normalize_scope
@@ -110,7 +111,7 @@ class SwarmIntegration:
         common = self._git(self.project, "rev-parse", "--git-common-dir").stdout.strip()
         self._common = (self.project / common).resolve()
         self.repo_key = hashlib.sha256(os.path.normcase(str(self._common)).encode()).hexdigest()
-        self._lock_path = self._common / "sonn-swarm-integration.lock"
+        self._lock_path = self._common / REPOSITORY_LOCK_NAME
         # Threads now waiting for another step to release the repository, so a
         # worker's or an operation's status can say so while it waits.
         self._waiting_threads: set[int] = set()
@@ -283,23 +284,13 @@ class SwarmIntegration:
         every quarter second while it lasts.
         """
         timeout = self.LOCK_WAIT_SECONDS if timeout is None else timeout
-        handle = self._lock_path.open("a+b")
-        handle.seek(0, os.SEEK_END)
-        if handle.tell() == 0:
-            handle.write(b"0")
-            handle.flush()
+        handle = open_repository_lock(self._lock_path)
         started, checked = time.monotonic(), None
         waiting = False
         try:
             while True:
                 try:
-                    handle.seek(0)
-                    if os.name == "nt":
-                        import msvcrt
-                        msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
-                    else:
-                        import fcntl
-                        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    try_repository_lock(handle)
                     break
                 except OSError as exc:
                     now = time.monotonic()
@@ -321,13 +312,7 @@ class SwarmIntegration:
             try:
                 yield
             finally:
-                handle.seek(0)
-                if os.name == "nt":
-                    import msvcrt
-                    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
-                else:
-                    import fcntl
-                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+                release_repository_lock(handle)
         finally:
             if waiting:
                 with self._waiting_lock:

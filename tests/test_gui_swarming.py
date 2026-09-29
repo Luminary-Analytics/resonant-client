@@ -293,7 +293,8 @@ def test_reopened_store_closes_new_work_but_allows_recovery_navigation(setup):
         assert reopened.busy and not reopened.navigation_busy
         snapshot = reopened.operate(capture, {"request_id": "inspect", "run_id": run_id})
         assert snapshot["run"]["recovery_needed"]
-        with pytest.raises(Conflict, match="current team"):
+        # The refusal names the unfinished team and how to end it.
+        with pytest.raises(Conflict, match="Investigate two independent questions.*left unfinished.*Take over"):
             reopened.operate(replace(capture, scope=replace(capture.scope, session_id="other-session")),
                              start_request(request_id="new-team"))
     finally:

@@ -60,12 +60,13 @@ _MANAGED_RECOVERY_ACTIONS = {"managed_recovery_inspect", "managed_reconcile_requ
 # Team actions available while an organization policy applies: reading,
 # stopping, revoking and recovery bookkeeping, including taking over an
 # expired team (``recover`` fences its old owner and starts nothing; continuing
-# it is governed). Every other action can start model requests, processes,
-# file changes or sharing (policy_refusal).
+# it is governed), and discarding what an ended team kept in the repository.
+# Every other action can start model requests, processes, file changes or
+# sharing (policy_refusal).
 _POLICY_SAFE_ACTIONS = frozenset({
     "view", "events", "inspect", "inspect_candidate", "inspect_process", "history",
     "read_artifact", "export_report", "collaboration_inspect", "managed_sharing_inspect",
-    "managed_recovery_inspect", "stop", "pause", "pause_worker", "cancel_worker", "revoke",
+    "managed_recovery_inspect", "stop", "discard_kept_work", "pause", "pause_worker", "cancel_worker", "revoke",
     "collaboration_revoke", "managed_sharing_revoke", "reject_result", "reconcile_action",
     "reconcile_application", "reconcile_effect", "reconcile_operation", "reconcile_process",
     "reconcile_request", "managed_reconcile_request", "managed_reconcile_action",
@@ -136,6 +137,44 @@ def _path_key(path: str) -> str:
     return os.path.normcase(str(Path(path).resolve()))
 
 
+_LEFT_REASONS = {
+    "moved": "it has commits the team didn't make",
+    "in_use": "it is checked out, or being rebased or bisected",
+    "another_repository": "it belongs to another repository now",
+}
+
+
+def _discard_message(report: dict[str, Any]) -> str:
+    """What Discard kept work did, in one notice."""
+    if report.get("skipped"):
+        return f"Nothing was discarded: {report['skipped']}"
+    worktrees, branches = report.get("worktrees", 0), report.get("branches", 0)
+    message = (f"Discarded {worktrees} worktree{'s' if worktrees != 1 else ''} and "
+               f"{branches} branch{'es' if branches != 1 else ''}.")
+    for item in report.get("left") or []:
+        message += f" Kept {item['branch']}: {_LEFT_REASONS.get(item['reason'], 'Lumi left it')}."
+    failed = report.get("failed") or []
+    if failed:
+        message += f" {len(failed)} couldn't be removed: {failed[0]['error']}"
+    return message
+
+
+def _conversation_title(workspace: str, session_id: str) -> str:
+    """A saved conversation's title, to name it in a refusal; '' when unknown."""
+    if not workspace or not session_id:
+        return ""
+    try:
+        from ...gui.sessions import _read_session_summary, _sessions_dir, is_valid_session_id
+
+        if not is_valid_session_id(session_id):
+            return ""
+        summary = _read_session_summary(_sessions_dir(workspace) / f"{session_id}.json") or {}
+    except Exception:  # noqa: BLE001 - a name for a message; the refusal stands without it
+        return ""
+    title = " ".join(str(summary.get("title") or "").split())
+    return f"{title[:60]}{'…' if len(title) > 60 else ''}"
+
+
 @dataclass(frozen=True)
 class CapturedSession:
     """Trusted host context; never deserialized from a socket payload."""
@@ -180,6 +219,10 @@ class SwarmRuntime:
         # Each watched store's project folder, to clean up after its teams end.
         self._workspaces: dict[str, str] = {}
         self._cleanup_lock = threading.Lock()
+        # Cleanups whose thread couldn't start, tried again at the next refresh.
+        self._pending_cleanups: dict[tuple[str, tuple[str, ...] | None], SwarmStore] = {}
+        # Why a run's leftovers couldn't all be removed, for the Team panel.
+        self._cleanup_problems: dict[str, str] = {}
         self._collaboration_runs: set[str] = set()
         self._collaboration_idle: set[str] = set()
         self._watched: dict[tuple[str, str, str, str], SwarmStore] = {}
@@ -206,20 +249,67 @@ class SwarmRuntime:
         depends on what other conversations run. Storage this app can't read
         (or couldn't discover at startup) is the exception: its owner is
         unknown, so every conversation (or the project's) waits.
+
+        The observer records active runs' owners every 0.2 s. A run this app
+        just started, or is recovering, is matched through its captured
+        conversation before that; any other active run whose owner isn't known
+        yet holds every conversation, since it could be this one's.
         """
         if self._storage_uncertain:
             return {"reason": "storage"}
-        for run_id, owner in tuple(self._active_owners.items()):
+        for run_id in tuple(self._active):
+            owner = self._run_owner(run_id)
+            if owner is None:
+                return {"reason": "unknown", "run_id": run_id}
             if owner.get("project_id") == project_id and owner.get("session_id") == session_id:
                 # Running here: Stop works directly. Taken over: its interrupted
                 # work needs reviewing first. Otherwise it's from before a restart
                 # and needs taking over.
-                return {"reason": "team", "run_id": run_id, "owned": "yes" if run_id in self._runners else "",
-                        "recovering": "yes" if run_id in self._recoveries else "", **owner}
+                return {**owner, "reason": "team", "run_id": run_id, "owned": "yes" if run_id in self._runners else "",
+                        "recovering": "yes" if run_id in self._recoveries else ""}
         for key in tuple(self._discovery_errors):
             if hashlib.sha256(key.encode()).hexdigest() == project_id:
                 return {"reason": "discovery"}
         return None
+
+    def _run_owner(self, run_id: str) -> dict[str, str] | None:
+        """An active run's conversation: recorded by the observer, else captured when this app started or took it over."""
+        owner = self._active_owners.get(run_id)
+        if owner is not None:
+            return owner
+        pair = self._runners.get(run_id) or self._recoveries.get(run_id)
+        if pair is None:
+            return None
+        scope = pair[0].scope
+        return {"project_id": scope.project_id, "session_id": scope.session_id, "objective": "", "state": "",
+                "workspace": pair[0].workspace}
+
+    def _busy_reason(self) -> str:
+        """Why no new team can start now: the unfinished team, its conversation and how to end it."""
+        if self._storage_uncertain:
+            return ("Lumi can't read its saved team records right now, so it can't tell whether another team is "
+                    "still unfinished. Restart Lumi if this persists.")
+        for key in tuple(self._discovery_errors):
+            return (f"Lumi couldn't read the saved teams of the project “{Path(key).name}” at startup, so it can't "
+                    "tell whether one of them is unfinished. Restart Lumi to try again.")
+        for run_id in tuple(self._active):
+            owner = self._run_owner(run_id) or {}
+            objective = " ".join(str(owner.get("objective") or "").split())
+            team = f"the team “{objective[:80]}{'…' if len(objective) > 80 else ''}”" if objective else "a team"
+            workspace = str(owner.get("workspace") or "")
+            title = _conversation_title(workspace, str(owner.get("session_id") or ""))
+            where = (f"the conversation “{title}”" if title else "another conversation") + (
+                f" in the project “{Path(workspace).name}”" if workspace else "")
+            if run_id in self._runners:
+                return (f"Finish or stop {team} in {where} before starting another: it is still working. "
+                        "Open that conversation's Team panel and choose Stop team.")
+            if run_id in self._recoveries:
+                return (f"Finish reviewing {team} in {where} before starting another: it was interrupted. In that "
+                        "conversation's Team panel, finish Review interrupted work, then choose Finish stopped team.")
+            return (f"{team[0].upper()}{team[1:]} in {where} was left unfinished, for example when Lumi closed while "
+                    "it ran. Open that conversation's Team panel, choose Take over expired team, review its "
+                    "interrupted work and stop it before starting another team.")
+        return "Finish or stop the current team before starting another"
 
     @property
     def navigation_busy(self) -> bool:
@@ -252,13 +342,15 @@ class SwarmRuntime:
                     owners[row[0]] = {"project_id": row[1], "session_id": row[2], "objective": row[3],
                                       "state": row[4], "workspace": self._workspaces.get(str(store.path), "")}
                     stores[row[0]] = store
-        # A team that just ended leaves writer worktrees and branches in the
-        # user's repository; remove them off this thread (cleanup.py).
-        for run_id in set(self._active_stores) - active:
-            self._queue_cleanup(self._active_stores[run_id], (run_id,))
+        # A team that just ended may leave writer worktrees and branches in
+        # the user's repository; clean up off this thread (cleanup.py).
+        ended = [(self._active_stores[run_id], run_id) for run_id in set(self._active_stores) - active]
         self._active = active
         self._active_owners = owners
         self._active_stores = stores
+        for store, run_id in ended:
+            self._queue_cleanup(store, (run_id,))
+        self._retry_cleanups()
         idle = set()
         for run_id in self._collaboration_runs & active:
             pair = self._runners.get(run_id)
@@ -275,6 +367,12 @@ class SwarmRuntime:
                 try:
                     self._refresh_ownership()
                 except (OSError, sqlite3.Error, SwarmError):
+                    self._storage_uncertain = True
+                except Exception:  # noqa: BLE001 - the gate must keep being refreshed
+                    # Anything else is a bug; hold every conversation (as for
+                    # unreadable storage) rather than end the observer and
+                    # leave the gate as it was.
+                    logger.exception("Refreshing team ownership failed")
                     self._storage_uncertain = True
 
     def watch_project(self, workspace: str, scope: Scope) -> None:
@@ -511,22 +609,93 @@ class SwarmRuntime:
         return self._stores[key]
 
     def _queue_cleanup(self, store: SwarmStore, run_ids: tuple[str, ...] | None) -> None:
-        """Remove ended teams' worktrees and writer branches in the background (cleanup.py)."""
+        """Remove what ended teams leave that nothing needs, in the background (cleanup.py).
+
+        Never raises: it runs inside the ownership observer, which must keep
+        refreshing the gate. When no thread can start now (the process is
+        out of threads or memory), the cleanup is tried again at the next
+        refresh.
+        """
         workspace = self._workspaces.get(str(store.path))
         if not workspace or self._closed:
             return
-        root = Path(self._state_root(workspace)) / "swarm" / "worktrees"
 
         def clean() -> None:
-            from .cleanup import clean_finished_teams
+            self._clean(store, workspace, run_ids)
 
-            with self._cleanup_lock:
-                try:
-                    clean_finished_teams(store, workspace, run_ids=run_ids, root=root)
-                except Exception:
-                    logger.warning("Couldn't remove finished teams' worktrees in %s", workspace, exc_info=True)
+        try:
+            threading.Thread(target=clean, daemon=True, name="swarm-cleanup").start()
+        except Exception:  # noqa: BLE001 - RuntimeError("can't start new thread"), MemoryError
+            logger.warning("Couldn't start cleaning up ended teams in %s; trying again shortly", workspace,
+                           exc_info=True)
+            self._pending_cleanups[(str(store.path), run_ids)] = store
 
-        threading.Thread(target=clean, daemon=True, name="swarm-cleanup").start()
+    def _retry_cleanups(self) -> None:
+        pending, self._pending_cleanups = self._pending_cleanups, {}
+        for (_, run_ids), store in pending.items():
+            self._queue_cleanup(store, run_ids)
+
+    def _clean(self, store: SwarmStore, workspace: str, run_ids: tuple[str, ...] | None, *,
+               discard: bool = False, lock_seconds: float | None = None) -> dict[str, Any]:
+        """Run cleanup.py for a store's ended runs and remember what went wrong, for the Team panel."""
+        from .cleanup import LOCK_SECONDS, clean_finished_teams
+
+        root = Path(self._state_root(workspace)) / "swarm" / "worktrees"
+        with self._cleanup_lock:
+            try:
+                report = clean_finished_teams(store, workspace, run_ids=run_ids, root=root, discard=discard,
+                                              lock_seconds=LOCK_SECONDS if lock_seconds is None else lock_seconds)
+            except Exception as exc:  # noqa: BLE001 - reported, and tried again at the next start
+                logger.warning("Couldn't clean up ended teams in %s", workspace, exc_info=True)
+                report = {"worktrees": 0, "branches": 0, "left": [], "failed": [],
+                          "skipped": f"Cleanup failed: {exc}"}
+        problems = {}
+        for item in report["failed"]:
+            problems.setdefault(item["run_id"], item["error"])
+        with self._lock:
+            for run_id in run_ids or ():
+                self._cleanup_problems.pop(run_id, None)
+                if report["skipped"]:
+                    self._cleanup_problems[run_id] = report["skipped"]
+            self._cleanup_problems.update(problems)
+        return report
+
+    def _stopped_view(self, capture: CapturedSession, store: SwarmStore, run_id: str) -> dict[str, Any]:
+        """The view after Stop, saying what the team keeps in the repository until it is discarded."""
+        from .cleanup import describe
+
+        result = self._view(capture, store, run_id)
+        snapshot = result.get("run") or {}
+        result["message"] = "Stop requested: workers stop at their next step and start nothing new." + (
+            " " + describe(snapshot.get("kept_work")) if snapshot.get("writer_setup") or snapshot.get("kept_work") else "")
+        return result
+
+    def _discard_kept_work(self, capture: CapturedSession, message: dict[str, Any]) -> dict[str, Any]:
+        """The person's Discard kept work: remove what an ended team kept (cleanup.py).
+
+        Git and file deletion run outside the control lock, so Stop and the
+        panel stay responsive while it waits for the repository.
+        """
+        with self._lock:
+            if set(message) - _FIELDS:
+                raise ValueError("Unsupported team command fields")
+            require_id(message.get("request_id"))
+            if self._closed:
+                raise Conflict("This desktop runtime has closed; reopen the retained team")
+            run_id = message.get("run_id")
+            require_id(run_id)
+            store = self._store(capture)
+            snapshot = store.snapshot(capture.scope, run_id)
+            if snapshot["run"]["state"] not in _TERMINAL:
+                raise Conflict("Stop the team and wait until it has stopped before discarding its kept work")
+            if message.get("expected_revision") != snapshot["run"]["revision"]:
+                raise RevisionConflict("Refresh the team before discarding its kept work")
+        report = self._clean(store, capture.workspace, (run_id,), discard=True, lock_seconds=30)
+        self._audit_decision(capture, run_id, "discard_kept_work")
+        with self._lock:
+            result = self._view(capture, store, run_id)
+            result["message"] = _discard_message(report)
+            return result
 
     def chat_context(self, workspace: str, scope: Scope, run_id: str) -> dict[str, str]:
         """One of a conversation's retained teams, as that conversation's context (``@team:``).
@@ -657,6 +826,11 @@ class SwarmRuntime:
             setup, result = self._setup(store, run_id)
             snapshot["writer_setup"] = ({**result.get("writer_base", {}), "write_roots": setup["write_roots"],
                                          "checks": setup["checks"]} if setup.get("write_roots") else None)
+            # What the team keeps in the repository until the person discards it (cleanup.py).
+            from .cleanup import kept_work
+            snapshot["kept_work"] = kept_work(store, snapshot)
+            if snapshot["kept_work"] is not None:
+                snapshot["kept_work"]["problem"] = self._cleanup_problems.get(run_id, "")
             chosen = setup.get("worker_model")
             snapshot["worker_model"] = ({**chosen, "label": self._provider_label(chosen["provider"])}
                                         if chosen else None)
@@ -958,7 +1132,7 @@ class SwarmRuntime:
         if refusal:
             raise Conflict(refusal)
         if self.busy:
-            raise Conflict("Finish or stop the current team before starting another")
+            raise Conflict(self._busy_reason())
         latest = self._latest(store, capture.scope)
         if latest and store.snapshot(capture.scope, latest)["run"]["state"] not in _TERMINAL:
             raise Conflict("The previous team requires review, stop or explicit recovery")
@@ -1010,6 +1184,12 @@ class SwarmRuntime:
                 frozenset({capture.backend_spec.backend_type, workers_spec.backend_type}), max_workers=workers,
                 write_roots=tuple(write_roots)))
         self._active.add(run_id)
+        # Its conversation holds from now, not from the observer's next refresh
+        # (blocking), and its end is noticed (cleanup) even if it ends before then.
+        self._active_owners = {**self._active_owners, run_id: {
+            "project_id": capture.scope.project_id, "session_id": capture.scope.session_id, "objective": objective,
+            "state": "running", "workspace": self._workspaces.get(str(store.path), capture.workspace)}}
+        self._active_stores = {**self._active_stores, run_id: store}
         self._worker_specs[run_id] = workers_spec
         runner = None
         try:
@@ -1113,6 +1293,8 @@ class SwarmRuntime:
             return self._inspect_retained(capture, message)
         if message.get("action") in _MANAGED_RECOVERY_ACTIONS:
             return self._managed_recovery_operation(capture, message)
+        if message.get("action") == "discard_kept_work":
+            return self._discard_kept_work(capture, message)
         prepared_integration = self._prepare_recovery_integration(capture, message)
         with self._lock:
             if set(message) - _FIELDS:
@@ -1142,7 +1324,7 @@ class SwarmRuntime:
                     recovered[1].command("stop", {}, command_id=message["request_id"],
                                          expected_revision=message.get("expected_revision"))
                     self._audit_decision(capture, run_id, "stop")
-                    return self._view(capture, store, run_id)
+                    return self._stopped_view(capture, store, run_id)
                 if not run_id or run_id not in self._runners:
                     raise Conflict("This team needs explicit host recovery before controls can resume")
                 self.captured_run(run_id, capture.workspace, capture.scope.session_id)
@@ -1272,6 +1454,8 @@ class SwarmRuntime:
                     self._continue_recovered(capture, store, recovery, message, prepared_integration)
             elif action not in {"view", "events"}:
                 raise ValueError("Unsupported team action")
+            if action == "stop":
+                return self._stopped_view(capture, store, run_id)
             result = self._view(capture, store, run_id, after=message.get("after", 0))
             if run_id and (message.get("grant_id") or message.get("before_grant_id")):
                 result["collaboration"] = collaboration_desktop.view(store, capture.scope, run_id,

@@ -133,8 +133,8 @@ def _app_folder() -> str:
     if not getattr(sys, "frozen", False):
         return ""
     try:
-        return os.path.normcase(os.path.normpath(str(Path(sys.executable).resolve().parent)))
-    except OSError:
+        return os.path.normcase(os.path.dirname(os.path.realpath(sys.executable)))
+    except (OSError, ValueError):
         return ""
 
 
@@ -146,10 +146,25 @@ def _is_unsafe_cwd(path: str) -> bool:
     copy in Downloads, a folder on another drive), anything inside it, and
     any folder that contains it, such as the drive root or Downloads itself:
     double-clicking lumi.exe starts it there.
+
+    Explorer starts the copy in the folder as the person reached it: through
+    a junction, a symbolic link, a subst drive or a mapped network drive. So
+    the folder is checked both as spelled and where it really is (realpath),
+    as the app's own folder is.
     """
     if not path:
         return True
-    norm = os.path.normcase(os.path.normpath(path))
+    spellings = [os.path.normcase(os.path.normpath(path))]
+    try:
+        real = os.path.normcase(os.path.realpath(path))
+    except (OSError, ValueError):
+        real = spellings[0]
+    if real not in spellings:
+        spellings.append(real)
+    return any(_is_unsafe_spelling(norm) for norm in spellings)
+
+
+def _is_unsafe_spelling(norm: str) -> bool:
     app = _app_folder()
     if app:
         container = norm.rstrip("\\/") + os.sep

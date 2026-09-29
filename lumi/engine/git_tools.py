@@ -45,10 +45,10 @@ def _run_git(args: list[str], cwd: Path | str, *, timeout: float = 30.0) -> tupl
         return proc.returncode, proc.stdout or "", proc.stderr or ""
     except subprocess.TimeoutExpired:
         return -1, "", f"git timed out after {timeout}s"
-    except OSError:
-        from lumi.git_support import missing_message
+    except OSError as exc:
+        from lumi.git_support import start_failure_message
 
-        return -1, "", missing_message()
+        return -1, "", start_failure_message(exc, cwd=cwd)
 
 
 def _is_git_repo(cwd: Path | str) -> bool:

@@ -4611,6 +4611,27 @@ class Session:
             )
             return
 
+        if (requested_isolation == "worktree" and self.worktree_manager
+                and not getattr(self.worktree_manager, "available", False)):
+            # Asked for its own worktree in a Git repository, on a computer
+            # without Git: refuse rather than let it edit the shared checkout
+            # the caller wanted kept apart. (Outside a repository there is no
+            # checkout to protect, and the agent works in the folder as before.)
+            from .. import git_support
+            from ..worktree_removal import repository_common_dir
+
+            if not git_support.git_available() and repository_common_dir(self.project_path or os.getcwd()):
+                result_output = ("Error: " + git_support.missing_message("A sub-agent in its own Git worktree needs")
+                                 + ' Or start it with isolation "shared" to let it work in the project folder itself.')
+                yield make_event(EngineEvent.TOOL_RESULT, name="task", call_id=call_id, output=result_output,
+                                 is_error=True, elapsed=0.0, metadata={"not_executed": True}, denied=False)
+                if append_parent_history:
+                    self.conversation_history.append({"role": "tool_call", "name": "task", "arguments": fn_args_str,
+                                                      "call_id": call_id, "content": "Called task"})
+                    self.conversation_history.append({"role": "tool_result", "call_id": call_id,
+                                                      "content": result_output})
+                return
+
         # Notify TUI of sub-agent start
         child_cancel = threading.Event()
         child_pause = threading.Event()

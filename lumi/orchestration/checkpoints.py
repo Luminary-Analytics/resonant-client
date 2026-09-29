@@ -100,8 +100,9 @@ class IterationCheckpointStore:
             probe = subprocess.run(
                 ["git", "cat-file", "-e", f"{checkpoint}:{rel}"],
                 cwd=self.project_path,
+                # Only the exit status matters; bytes, so no message in
+                # another code page can fail to decode.
                 capture_output=True,
-                text=True,
                 check=False,
                 **background_process_kwargs(),
             )
@@ -188,10 +189,11 @@ class IterationCheckpointStore:
                 check=False,
                 **background_process_kwargs(),
             )
-        except OSError:
-            # No Git on this computer: a CheckpointError with the reason, which
-            # callers already handle (a turn's checkpoint falls back to an archive).
-            result = git_support.missing_result(["git", *args], _NEEDS_GIT)
+        except OSError as exc:
+            # No Git on this computer, or a project folder that is gone: a
+            # CheckpointError with the reason, which callers already handle
+            # (a turn's checkpoint falls back to an archive).
+            result = git_support.start_failure_result(["git", *args], exc, _NEEDS_GIT, cwd=self.project_path)
         if check and result.returncode != 0:
             raise CheckpointError(result.stderr.strip() or f"git {' '.join(args)} failed")
         return result

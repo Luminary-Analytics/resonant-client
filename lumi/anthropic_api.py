@@ -395,11 +395,15 @@ def google_access_token() -> str:
         except ImportError:
             gcloud = shutil.which("gcloud")
             if gcloud:
+                from .processes import decode_output
+
+                # Bytes: gcloud is a batch file on Windows, and a message in
+                # the console's code page failed a text-mode pipe.
                 result = subprocess.run(
                     [gcloud, "auth", "application-default", "print-access-token"],
-                    capture_output=True, text=True, timeout=30,
+                    capture_output=True, timeout=30,
                 )
-                token = result.stdout.strip() if result.returncode == 0 else ""
+                token = decode_output(result.stdout).strip() if result.returncode == 0 else ""
         except Exception as exc:
             raise ValueError(f"Google credentials unavailable: {exc}") from exc
         if not token:

@@ -52,7 +52,9 @@ def busy_refusal(state, doing: str = "starting an ordinary chat turn") -> dict:
     """
     found = blocking_team(state) or {}
     reason = found.get("reason")
-    if reason == "starting":
+    if reason in ("starting", "unknown"):
+        # "unknown": a team just started or changed, and Lumi hasn't yet
+        # recorded which conversation it belongs to (a fraction of a second).
         message = f"A team is starting. Wait until it has started before {doing}."
     elif reason == "storage":
         message = (f"Lumi can't read its saved team records right now, so it isn't {doing} until it can "
@@ -140,14 +142,21 @@ def _capture(state, message, manager) -> CapturedSession:
     return manager.execution_capture(capture, message.get("execution_mode", "personal"))
 
 
+# Team actions that start participants in the conversation: never while one of
+# its chat turns runs, and each holds every conversation while it starts.
+# Continuing a recovered team starts its workers again, like a start.
+_STARTING_ACTIONS = frozenset({"start", "request_plan", "continue_recovered", "collaboration_prepare",
+                               "collaboration_accept_work", "managed_sharing_prepare", "managed_sharing_accept_work"})
+
+
 async def command(state, send, message, *, chat_busy=False):
     """Capture ownership before yielding; all SQLite/provider setup runs off-loop."""
     reply = {"event": "swarm_state", "request_id": message.get("request_id"),
              "project": message.get("project"), "session_id": message.get("session_id")}
     starting = False
     try:
-        if message.get("action") in {"start", "request_plan", "collaboration_prepare", "collaboration_accept_work", "managed_sharing_prepare", "managed_sharing_accept_work"} and (chat_busy or getattr(state, "_swarm_starting", False)):
-            raise Conflict("Finish or stop the current operation before starting a team")
+        if message.get("action") in _STARTING_ACTIONS and (chat_busy or getattr(state, "_swarm_starting", False)):
+            raise Conflict("Finish or stop the current operation before starting or continuing a team")
         if getattr(state, "_swarm_discovery_failed", False) and message.get("action") not in {"view", "events"}:
             # Retained runs weren't registered at startup, so starting or changing
             # team work could overlap work nobody can see (app._app_lifespan).
@@ -157,7 +166,7 @@ async def command(state, send, message, *, chat_busy=False):
         if manager is None:
             manager = state._swarm_desktop = SwarmRuntime(state.settings, managed_desktop=getattr(state, "_swarm_managed", None))
         capture = _capture(state, message, manager)
-        if message.get("action") in {"start", "request_plan", "collaboration_prepare", "collaboration_accept_work", "managed_sharing_prepare", "managed_sharing_accept_work"}:
+        if message.get("action") in _STARTING_ACTIONS:
             state._swarm_starting = starting = True
         reply.update(await asyncio.to_thread(manager.operate, capture, copy.deepcopy(message)))
     except (ValueError, SwarmError) as exc:

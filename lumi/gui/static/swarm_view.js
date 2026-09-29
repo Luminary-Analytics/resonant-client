@@ -140,7 +140,11 @@ window.LumiSwarmView = class LumiSwarmView {
             <section data-swarm="integration-section" hidden aria-labelledby="swarm-integration-title"><h3 id="swarm-integration-title">Review file changes</h3>
             <p data-swarm="writer-base" class="swarm-help"></p><div data-swarm="writer-results"></div>
             <button type="button" data-swarm="prepare-candidate">Prepare selected changes</button>
-            <p data-swarm="integration-status" role="status"></p><div data-swarm="candidates"></div></section></section>
+            <p data-swarm="integration-status" role="status"></p><div data-swarm="candidates"></div>
+            <section data-swarm="kept-work" class="swarm-kept" hidden aria-labelledby="swarm-kept-title"><h4 id="swarm-kept-title">Kept in your repository</h4>
+            <p data-swarm="kept-summary" class="swarm-help"></p><ul data-swarm="kept-items" class="swarm-kept-items"></ul><p data-swarm="kept-left" class="swarm-help"></p>
+            <form data-swarm="discard-form" aria-label="Discard kept work"><label class="swarm-switch"><input type="checkbox" data-swarm="discard-confirm" required> I no longer need these unapplied changes</label>
+            <button type="submit" data-swarm="discard">Discard kept work</button></form></section></section></section>
             <section aria-labelledby="swarm-inbox-title"><h3 id="swarm-inbox-title">Needs attention</h3><ul data-swarm="inbox" class="swarm-inbox"><li>No team decisions yet.</li></ul></section>
             <details class="swarm-activity"><summary>Recent activity</summary><ol data-swarm="activity"></ol></details>
             </div><footer class="swarm-footer"><span data-swarm="connection">Connected</span><button type="button" data-swarm="refresh">Refresh team</button></footer>`;
@@ -279,6 +283,13 @@ window.LumiSwarmView = class LumiSwarmView {
         nodes['prepare-candidate'].addEventListener('click', () => {
             const writer_ids = [...this._swarmWriterRows].filter(([, row]) => row.querySelector('input').checked && !row.querySelector('input').disabled).map(([id]) => id);
             if (writer_ids.length) this.requestSwarm('prepare_candidate', {writer_ids});
+        });
+        // An ended team's unapplied work stays until the person discards it
+        // (engine/swarming/cleanup.py); the checkbox is the confirmation.
+        nodes['discard-confirm'].addEventListener('change', () => this._renderSwarmControls());
+        nodes['discard-form'].addEventListener('submit', event => {
+            event.preventDefault();
+            if (nodes['discard-form'].reportValidity()) this.requestSwarm('discard_kept_work');
         });
         nodes.refresh.addEventListener('click', () => this.requestSwarm('view'));
         nodes['new-team'].addEventListener('click', () => {
@@ -571,6 +582,7 @@ window.LumiSwarmView = class LumiSwarmView {
             if (node?._controlTarget?.attempt_epoch === participant.attempt_epoch && input?.value.trim() === participant.text) input.value = '';
         }
         if (action === 'set_concurrency') this._swarmConcurrencyDirty = false;
+        if (action === 'discard_kept_work') this._swarmNodes['discard-confirm'].checked = false;
         if (action === 'export_report' && event.report && typeof event.report === 'object' && !Array.isArray(event.report)) {
             const contents = JSON.stringify(event.report, null, 2) + '\n';
             const url = URL.createObjectURL(new Blob([contents], {type: 'application/json;charset=utf-8'}));
@@ -1122,6 +1134,40 @@ window.LumiSwarmView = class LumiSwarmView {
                 form.hidden = candidate.state !== 'applied' || item?.state === 'accepted';
             }
         }
+        this._renderSwarmKeptWork(snapshot.kept_work);
+    }
+
+    /** What an ended team keeps in the repository until the person discards it (engine/swarming/cleanup.py). */
+    _renderSwarmKeptWork(kept) {
+        const nodes = this._swarmNodes;
+        const items = kept?.items || [];
+        const left = kept?.left || [];
+        // Shown once Stop is asked for (what Stop keeps), with Discard once the team has ended.
+        const run = this._swarmState?.run?.run;
+        const stopping = !kept?.ended && Boolean(run?.stop_requested || run?.state === 'stopping');
+        nodes['kept-work'].hidden = !(kept?.ended || stopping) || !(items.length || left.length || kept?.problem);
+        if (nodes['kept-work'].hidden) return;
+        const plural = (count, one, many) => `${count} ${count === 1 ? one : many}`;
+        const writers = items.filter(item => item.kind === 'writer').length;
+        const parts = [writers && plural(writers, 'writer branch', 'writer branches'),
+            items.length - writers && plural(items.length - writers, 'combined candidate', 'combined candidates')].filter(Boolean);
+        nodes['kept-summary'].textContent = !items.length ? 'Nothing else this team kept is waiting to be discarded.'
+            : stopping ? `Stopping keeps this team’s changes nobody applied: ${parts.join(' and ')}. They stay in your repository and Lumi’s folder until you discard them, once the team has stopped.`
+            : `This team ended with changes nobody applied: ${parts.join(' and ')}. They stay in your repository and Lumi’s folder until you discard them.`
+                + (kept.applied_candidates ? ' Applied changes stay inspectable either way.' : '');
+        nodes['kept-items'].replaceChildren(...items.map(item => {
+            const row = document.createElement('li');
+            row.textContent = item.kind === 'writer'
+                ? `${item.branch || 'Writer worktree'} · ${item.changed ? 'committed changes nobody applied' : 'may hold edits nobody committed'}`
+                : `Combined candidate · ${this._swarmStateLabel(item.state)}`;
+            return row;
+        }));
+        const reasons = {moved: 'it has commits the team didn’t make', in_use: 'it is checked out, or being rebased or bisected',
+            another_repository: 'it belongs to another repository now'};
+        nodes['kept-left'].textContent = [...left.map(item => `Kept for you: ${item.branch} (${reasons[item.reason] || 'Lumi left it'})`
+            + `${item.worktree ? `, checked out in ${item.worktree}` : ''}. Delete it yourself when you no longer need it.`),
+            kept.problem ? `Cleanup couldn’t finish: ${kept.problem}` : ''].filter(Boolean).join(' ');
+        nodes['discard-form'].hidden = !items.length || stopping;
     }
 
     _swarmRecoveryBlockers(snapshot) {
@@ -1352,6 +1398,8 @@ window.LumiSwarmView = class LumiSwarmView {
         if (pending && !orchestrated) messages.push(`${pending} investigation${pending === 1 ? ' has' : 's have'} submitted findings awaiting independent verification.`);
         const failed = (snapshot?.work_items || []).filter(row => ['failed', 'uncertain'].includes(row.state)).length;
         if (failed && !orchestrated) messages.push(`${failed} investigation${failed === 1 ? ' needs' : 's need'} review before another attempt.`);
+        const kept = snapshot?.kept_work;
+        if (kept?.ended && kept.items?.length) messages.push('Changes nobody applied are kept in your repository. Discard them under Review file changes when you no longer need them.');
         if (!messages.length) messages.push(orchestrated ? 'The orchestrator is making the team’s decisions under your grant. You’ll see here if it hands the team back.'
             : 'No decisions need your attention.');
         this._swarmNodes.inbox.replaceChildren(...messages.map(text => { const item = document.createElement('li'); item.textContent = text; return item; }));
@@ -1479,6 +1527,10 @@ window.LumiSwarmView = class LumiSwarmView {
             if (input.checked && !input.disabled) selectedWriters++;
         }
         nodes['prepare-candidate'].disabled = integrationDisabled || !selectedWriters;
+        const kept = this._swarmState?.run?.kept_work;
+        const discardClosed = !online || busy || !kept?.ended || !(kept.items || []).length;
+        nodes['discard-confirm'].disabled = discardClosed;
+        nodes.discard.disabled = discardClosed || !nodes['discard-confirm'].checked;
         for (const row of this._swarmCandidateRows.values()) {
             row.querySelector('[data-candidate-inspect]').disabled = !online || busy || row._inspecting || !row._candidateTarget?.target_revision;
             for (const check of row._checks.values()) check.querySelector('button').disabled = integrationDisabled || !['ready', 'failed', 'verified'].includes(row._candidateState);
@@ -1622,6 +1674,7 @@ window.LumiSwarmView = class LumiSwarmView {
             command_accept_writer: 'Owner accepted applied changes', command_accept_writer_under_grant: 'The orchestrator accepted applied changes (not reviewed by you)',
             command_reject: 'A result was sent back', command_retry: 'A task was retried', candidate_applied: 'Checked changes were applied to the project',
             candidate_check_observed: 'A check finished on combined changes',
+            leftovers_removed: 'Worktrees and branches nothing needed were removed', kept_work_discarded: 'Kept work was discarded',
             coordinator_proposed: 'A plan was proposed', tool_refused: 'A worker’s call was refused: outside its assignment'})[kind] || 'Team state updated';
     }
 };

@@ -432,12 +432,33 @@ Writers work in isolated Git worktrees under Lumi's runtime folder, on branches
 named `lumi/team-<writer>` in your repository (`codex/swarm-writer-<writer>`
 before). Their submitted output does not change your working checkout. The
 **Review file changes** section shows the captured base, finalized writer
-revisions and changed paths. When the team ends, Lumi removes its writers'
-worktrees and branches (an applied change is already on your branch; a change
-nobody applied is dropped with the team), and a stopped or failed team's
-combined candidates too; a completed team keeps its candidate so its applied
-change stays inspectable. At startup Lumi does the same for teams that ended
-earlier, including the old branch names (`engine/swarming/cleanup.py`).
+revisions and changed paths.
+
+When the team ends (completed, stopped or failed), Lumi removes the worktree
+and branch of each writer whose change was applied (it is on your branch) or
+who made none, and a combined candidate whose writers' changes were all
+applied through another one; at startup it does the same for teams that
+ended earlier, including the old branch names (`engine/swarming/cleanup.py`).
+Everything that may still be someone's work stays: a writer's change nobody
+applied, a writer's worktree that may hold edits nobody committed, and any
+other combined candidate nobody applied. **Stop team** says what it keeps, and once the team
+has ended, **Review file changes** lists it under **Kept in your repository**
+with **Discard kept work** (confirm with its checkbox). Lumi never removes:
+
+- an applied combined candidate, so **Inspect candidate** keeps working;
+- a branch someone committed to after the team recorded it (salvaging its
+  work, say), or its worktree: they are listed as kept for you, with where the
+  worktree is, to delete yourself when you no longer need them;
+- a branch checked out, or being rebased or bisected, in another worktree,
+  until it no longer is.
+
+Lumi removes a worktree itself, never with `git worktree remove` or `git
+worktree prune`: it unlinks junctions and symbolic links inside without
+following them (Git for Windows followed one, an npm `file:` dependency, and
+deleted the files it pointed to), and it removes only that worktree's own
+record, so your own worktrees stay registered even while their folders are
+away. Cleanup runs Git with hooks disabled and waits for other team steps on
+the repository.
 
 1. Select compatible stopped writer results and choose **Prepare selected
    changes**. This creates a combined candidate for review.

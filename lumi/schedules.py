@@ -456,9 +456,17 @@ class Registrar:
         raise NotImplementedError
 
 
-def _run(args: list[str], **kwargs) -> subprocess.CompletedProcess:
-    return subprocess.run(args, capture_output=True, text=True, timeout=30,
-                          creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0), **kwargs)
+def _run(args: list[str], *, input: str | None = None) -> subprocess.CompletedProcess:
+    """Run a system scheduler command; its output as text whatever code page it writes.
+
+    schtasks writes the console's code page (cp437 or cp850 in a German or
+    French Windows), which a text-mode pipe read as cp1252, or failed on.
+    """
+    from .processes import decode_output
+
+    done = subprocess.run(args, capture_output=True, timeout=30, input=None if input is None else input.encode("utf-8"),
+                          creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    return subprocess.CompletedProcess(done.args, done.returncode, decode_output(done.stdout), decode_output(done.stderr))
 
 
 class WindowsTasks(Registrar):

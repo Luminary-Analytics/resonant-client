@@ -69,15 +69,16 @@ couldn't read left it without the organization's policy. See
   SDDL; real folders changed with icacls (the half needing an administrator
   runs only elevated, as in CI); owner and mode rules, which the macOS job now
   runs on a real Mac; ignored and fail-closed files, `PolicyFile` cases,
-  Settings, `lumi policy` and the audit record; and a key file and a policy
-  signed with it, written without administrator rights, no longer replacing
-  Group Policy. `tests/policy_trust.browser.cjs` checks Settings and a
-  refused turn in the source app (run locally, not in CI). `build-check.yml`
-  installs the MSI over a folder the Users group owns and checks it comes out
-  locked, that a `PolicyFile` in a folder made the usual way fails closed,
-  and that the icacls recipe makes it apply. `build-linux.yml` checks the
-  installed .deb: root's `/etc/lumi/policy.json` made writable by everyone
-  fails closed, and one the runner's account owns is ignored.
+  Settings, `lumi policy` and the audit record; and the reported case end to
+  end: with Group Policy in force, files written without administrator
+  rights no longer change the policy. `tests/policy_trust.browser.cjs`
+  checks Settings and a refused turn in the source app (run locally, not in
+  CI). `build-check.yml` installs the MSI over a folder the Users group owns
+  and checks it comes out locked, that a `PolicyFile` in a folder made the
+  usual way fails closed, and that the icacls recipe makes it apply.
+  `build-linux.yml` checks the installed .deb: root's
+  `/etc/lumi/policy.json` made writable by everyone fails closed, and one
+  the runner's account owns is ignored.
 
 ## September 27 macOS alpha: Sparkle updates and release publishing (source only, not released)
 

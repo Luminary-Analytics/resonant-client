@@ -250,8 +250,8 @@ class TestLicenseTexts:
             assert f"-{component['version']}-" in Path(relative).name, (name, relative)
             [(_filename, text)] = notices.component_texts(component)
             assert text.startswith(start), name
-        texts = {name: notices.component_texts(components[name])[0][1] for name in components
-                 if components[name].get("license_files")}
+        texts = {name: notices.component_texts(components[name])[0][1]
+                 for name in ("marked", "highlight.js", "DOMPurify", "Inter")}
         assert "Permission is hereby granted" in texts["marked"] and "John Gruber" in texts["marked"]
         assert "Apache License" in texts["DOMPurify"] and "Mozilla Public License" in texts["DOMPurify"]
         assert "SIL OPEN FONT LICENSE Version 1.1" in texts["Inter"]

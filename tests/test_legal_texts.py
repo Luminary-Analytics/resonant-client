@@ -342,6 +342,11 @@ def test_the_exe_installer_shows_the_terms_once_per_version():
         # A silent install shows no page, so it records nothing.
         assert line.endswith("Check: not WizardSilent")
     assert "function ShouldSkipPage(PageID: Integer): Boolean;" in iss and "if PageID = wpLicense then" in iss
+    # Inno Setup reads any line starting with "[" as a section tag, comments in [Code] included (CI
+    # compiles the script, but only on Windows).
+    sections = {"[Setup]", "[Languages]", "[Tasks]", "[Files]", "[InstallDelete]", "[Registry]", "[Icons]",
+                "[Run]", "[Code]"}
+    assert {line.strip() for line in iss.splitlines() if line.lstrip().startswith("[")} <= sections
     code = iss[iss.index("function LicenseAlreadyShown(): Boolean;"):iss.index("function ShouldSkipPage")]
     # The EULA must match, and the test terms too when this build has them (a stable-to-beta update asks).
     assert "if eula <> '{#LicenseEulaVersion}' then" in code

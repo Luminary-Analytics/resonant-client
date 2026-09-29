@@ -208,10 +208,10 @@ end;
 { -----------------------------------------------------------------------------
   Show Lumi's terms once for each version.
 
-  [Registry] records the versions this installation's license page showed.
-  An update whose license.rtf holds the same versions skips the page, so
-  WinSparkle's updates don't stop on it every time. A new version of the
-  EULA shows it again, and so does a pre-release build over a stable
+  The registry entries above record the versions this installation's license
+  page showed. An update whose license.rtf holds the same versions skips the
+  page, so WinSparkle's updates don't stop on it every time. A new version
+  of the EULA shows it again, and so does a pre-release build over a stable
   installation, whose record has no Alpha and Beta Test Terms. The record is
   the installer's own: Lumi asks each person to accept its terms itself
   (lumi/terms.py) and never reads it.

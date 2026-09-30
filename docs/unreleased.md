@@ -22,3 +22,15 @@ now runs the suite as `tests.yml` and `team-tests.yml` do: `test` runs
 everything but `tests/test_swarm_*.py` (30 minutes), and a new `team-test` job
 runs the Team suite serially with the pinned ripgrep (60 minutes). `release`
 waits for both. `tests/test_release_supply_chain.py` checks the split.
+
+## September 30 The Pages publishing rehearsal works now that macOS feeds are live (source only, not released)
+
+`publish-dry-run` (build-macos.yml) rehearses two releases on a copy of the
+live gh-pages branch, signing with a throwaway key. Since 0.20.0-alpha.1 put
+the first macOS feeds on the branch, signed with the real key, every run
+failed: their signatures and their disk images' can't be verified with the
+throwaway key. `scripts/rehearse_pages_publish.py` now starts from the copy
+without the live macOS feeds, as the branch was before that release; the
+rehearsal's releases then make them again with its own key. Real releases add
+to the live feeds, and each one's `push_pages.py --check` covers that.
+Checked locally against the live branch: every step passes.

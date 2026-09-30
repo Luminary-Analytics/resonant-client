@@ -1279,7 +1279,7 @@ def _joined_device() -> dict:
     from .paths import state_home
 
     try:
-        data = json.loads((state_home() / "settings.json").read_text(encoding="utf-8"))
+        data = json.loads((state_home() / "settings.json").read_text(encoding="utf-8-sig"))
     except (OSError, ValueError, RecursionError):
         return {}
     section = data.get("cloud") if isinstance(data, dict) else None

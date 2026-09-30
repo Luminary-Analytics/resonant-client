@@ -3,6 +3,9 @@
 Only inference is scripted. The shipped template, app, WS handlers, supervisor,
 worker Session, file tools and durable state execute normally. Never a live-model
 or packaged-desktop qualification. Invoked by swarm_app.browser.cjs.
+
+The conversation starts in a new install's mode (Auto-edit), or in the one
+``--mode <ask|auto-edit|plan|bypass>`` names; the evidence reports it.
 """
 from __future__ import annotations
 
@@ -197,6 +200,10 @@ def main() -> None:
     state.backend = StreamingBackend(name=spec.backend_type, model=spec.model)
     state.session = Session(backend=state.backend, project_instructions="Isolated browser fixture.")
     state.session.project_path = str(workspace)
+    arguments = sys.argv[2:]
+    if "--mode" in arguments:
+        # The conversation's permission mode, as the mode menu sets it.
+        state.apply_permission_mode(arguments[arguments.index("--mode") + 1], session=state.session)
     # An orchestrated fixture also offers a second model for the team's workers.
     state.available_backends = {"ollama": {"models": [spec.model] + (["fixture-worker"] if "--autonomous" in sys.argv[2:] else [])}}
     state.detect_backends = lambda *args, **kwargs: None
@@ -255,6 +262,7 @@ def main() -> None:
             "followup_inputs": followup_inputs,
             "history_fixture": history_evidence,
             "backend_instances": len(instances), "backend_requests": sum(item.stream_count for item in instances),
+            "permission_mode": state.permission_mode,
             "current_session_id": state.project.current_session.id, "runs": runs})
 
     async def shutdown(request):

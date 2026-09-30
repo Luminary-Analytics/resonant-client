@@ -707,7 +707,15 @@ def show_in_folder_command(path: str | os.PathLike) -> list[str]:
 
 
 def show_in_folder(path: str | os.PathLike) -> None:
-    """Show ``path`` in Explorer, the Finder or the file manager, selected where possible."""
+    """Show ``path`` in Explorer, the Finder or the file manager, selected where possible.
+
+    Without the hidden start-up that ``_background`` gives console tools:
+    started with it (SW_HIDE), Explorer opens the folder window hidden
+    (checked on Windows 11). Explorer isn't a console program, so no console
+    window flashes either way.
+    """
     import subprocess
 
-    subprocess.Popen(show_in_folder_command(path), **_background())
+    options = _background()
+    options.pop("startupinfo", None)
+    subprocess.Popen(show_in_folder_command(path), **options)

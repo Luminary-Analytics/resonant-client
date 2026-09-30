@@ -569,6 +569,9 @@ def main(argv: list[str] | None = None, *, stdin: TextIO | None = None, stdout: 
         if args.handoff:
             prompt = _with_handoff(prompt, args.handoff, project)
         settings = SettingsManager()
+        if settings.load_error:
+            # Kept as it is and never written over (gui/settings.py); defaults apply to this run.
+            stderr.write(f"lumi run: {settings.load_error}\n")
         _configure(settings)
         refusal = blocked_reason()
         if refusal:

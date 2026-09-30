@@ -72,8 +72,9 @@ never sent, so its outcome is known.
 
 | Team | Needs |
 | --- | --- |
-| Read-only (no writable folders) | Any mode; every policy allows at least one |
+| Read-only (no writable folders), which you review | Any mode; every policy allows at least one |
 | With writers (edits in isolated worktrees, which you apply) | `auto-edit` or `bypass` |
+| Run by the orchestrator (**Let the orchestrator run the team**: it approves plans and accepts results for you) | `bypass` (Full-auto), as missions do |
 | With **Apply changes that pass every check** (changes your checkout and runs checks without asking) | `bypass` (Full-auto), as missions do |
 
 A team the policy's modes don't allow is refused when it starts, and a running
@@ -196,9 +197,22 @@ attachment is read without creating team state. See
 
 With a coordinator plan, **Let the orchestrator run the team** and choose
 **Orchestrator rounds** (one to eight). From the chat, `/team <objective>`
-opens this panel with the objective filled in and this option chosen. Check
-the limits and press **Start orchestrated team**. The coordinator becomes the
-team's orchestrator, and you don't approve each step:
+opens this panel with the objective filled in and this option chosen; after a
+finished team it opens a new team's form, as **New team** does, and while the
+conversation's team still works the panel says so. Check the limits and press
+**Start orchestrated team**. The coordinator becomes the team's orchestrator,
+and you don't approve each step.
+
+The orchestrator decides for you, so it needs Full-auto, as a mission does. In
+another mode the form says so, and **Start** (or **Continue** after a
+recovery) is refused with **Run this team in Full-auto** (or **Continue this
+team in Full-auto**): one click sends the same Start again with your consent
+for this team only (`full_auto: true`, `gui/swarming.py`), and the
+conversation keeps its mode. The button never takes focus, so a second Enter
+on Start can't press it. A team you review yourself needs no particular mode.
+Under a policy that doesn't allow Full-auto, a team the orchestrator runs is
+refused, even one that only reads, and nothing is offered. The orchestrator
+then works like this:
 
 - Its plans run after the checks your approval would get: the exact
   proposal, the team's policy, tools, criteria and dependencies. Each task

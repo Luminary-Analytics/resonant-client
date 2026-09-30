@@ -1,5 +1,8 @@
 /* An orchestrated writer team that applies checked changes, in the full source app:
  * real WebSocket, runtime, store, Git and check subprocess; inference scripted.
+ * The conversation is in Full-auto (the fixture's --mode bypass), so the team
+ * starts without asking; swarm_autonomous.browser.cjs covers the one-run grant
+ * a conversation in another mode is offered.
  * node tests/swarm_autonomous_writers.browser.cjs [absolute-path-to-playwright-module]
  * Optional SWARM_PYTHON and SWARM_BROWSER_EXECUTABLE select local runtimes.
  */
@@ -16,7 +19,7 @@ const {chromium} = require(process.argv[2] || 'playwright');
 
 test('The orchestrator applies writers’ checked changes and reports in Markdown', {timeout: 120000}, async () => {
     const output = fs.mkdtempSync(path.join(os.tmpdir(), 'lumi-swarm-autonomous-writers-browser-'));
-    const server = spawn(process.env.SWARM_PYTHON || 'python', [path.join(__dirname,'fixtures/swarming_ui_server.py'), output, '--autonomous', '--writer'],
+    const server = spawn(process.env.SWARM_PYTHON || 'python', [path.join(__dirname,'fixtures/swarming_ui_server.py'), output, '--autonomous', '--writer', '--mode', 'bypass'],
         {cwd:output, windowsHide:true, stdio:['ignore','pipe','pipe']});
     let stdout='', stderr='', info, browser, page;
     server.stdout.on('data', chunk=>{stdout+=chunk;});
@@ -44,6 +47,7 @@ test('The orchestrator applies writers’ checked changes and reports in Markdow
         await page.route('**/*',route=>new URL(route.request().url()).hostname==='127.0.0.1'?route.continue():route.abort());
         await page.goto(await fixtureLaunch(info));
         await page.waitForFunction(session=>window.app?.currentSessionId===session,info.session_id);
+        assert.equal(await page.locator('#perm-label').textContent(),'Full-auto');
         await page.getByRole('button',{name:'Team',exact:true}).click();
         await page.getByText('ollama · fixture-native',{exact:true}).waitFor();
         await page.getByLabel('Enable team preview').check();
@@ -80,7 +84,10 @@ test('The orchestrator applies writers’ checked changes and reports in Markdow
         assert.equal(await report.locator('strong').innerText(),'Final report:');
         assert.deepEqual(await report.locator('li code').allInnerTexts(),['src/backend.txt','src/frontend.txt']);
         await page.waitForFunction(()=>app._swarmState?.run?.run?.state==='completed');
+        // Already in Full-auto: no notice, one Start, and no grant sent with it.
         assert.equal(starts.length,1);
+        assert.equal(starts[0].full_auto,undefined);
+        assert.equal(await page.locator('.swarm-full-auto-grant').count(),0);
         assert.deepEqual(starts[0].autonomy,{rounds:1,apply:true});
         assert.deepEqual(starts[0].checks,[{key:'combined-files',argv:[info.python,'verify_changes.py'],timeout_seconds:20}]);
         const status=await page.locator('[data-swarm="orchestrator-status"]').innerText();

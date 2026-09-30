@@ -1302,8 +1302,9 @@ def _create_backend_from_available(target: str, available: dict):
 
 # The permission modes the terminal runs in, with each one's engine tier, as
 # in the app and the chat gateway. Someone answers here, so Ask asks before
-# changes (in `lumi run`, where nobody can, Ask is read only). The default is
-# Bypass; --approve and `/approve on` choose Ask.
+# changes (in `lumi run`, where nobody can, Ask is read only). It starts in
+# Settings' default permission mode, as the app does (_start_mode); --approve
+# and `/approve on` choose Ask, --full-auto and `/approve off` Bypass.
 MODES = {"ask": "ask", "auto-edit": "auto-edit", "bypass": "full-auto"}
 MODE_DESCRIPTIONS = {
     "ask": "asks before changes and commands",
@@ -1329,6 +1330,34 @@ def _policy_mode(requested: str, *, chosen: bool) -> str:
         usable = f"; here you can use {', '.join(allowed)}" if allowed else ", nor any other mode the terminal has"
         raise ValueError(f"{policy.organization}'s policy doesn't allow {requested} mode{usable}.")
     return allowed[0]
+
+
+def _start_mode(settings, *, approve: bool = False, full_auto: bool = False) -> tuple[str, bool, str]:
+    """The mode the terminal starts in, whether plan mode starts on, and a notice about it.
+
+    --approve (Ask) and --full-auto (Bypass) choose, and a mode the
+    organization's policy doesn't allow is refused (ValueError). Otherwise
+    Settings' default permission mode applies, as the app starts in it
+    (``general.default_permission_mode``): Auto-edit on a new install, or the
+    mode an existing install saved. Plan runs with Auto-edit's approvals and
+    plan mode on (think, show the plan, then act), as the app's Plan does. An
+    unknown saved value fails closed to Ask, and a mode the policy doesn't
+    allow gives way to the first one it allows that the terminal has.
+    """
+    from .gui.settings import DEFAULT_PERMISSION_MODE
+    from .policy import current as current_policy
+
+    if approve or full_auto:
+        return _policy_mode("ask" if approve else "bypass", chosen=True), False, ""
+    saved = str(settings.get("general", "default_permission_mode", "") or "").strip() or DEFAULT_PERMISSION_MODE
+    wanted = saved if saved in MODES or saved == "plan" else "ask"
+    policy = current_policy()
+    if policy is not None and not policy.mode_allowed(wanted):
+        return _policy_mode(wanted if wanted in MODES else "auto-edit", chosen=False), False, \
+            f"{policy.organization}'s policy doesn't allow {wanted}, the default in Settings"
+    if wanted == "plan":
+        return "auto-edit", True, "plan mode is on, as Settings' default is Plan (/plan turns it off)"
+    return wanted, False, ""
 
 
 def _print_refusal(reason: str) -> None:
@@ -1604,9 +1633,13 @@ Examples:
     parser.add_argument("--ollama-url", type=str, default=None)
     parser.add_argument("--dir", type=str, default=None)
     parser.add_argument("--max-tokens", type=int, default=4096)
-    parser.add_argument("--approve", action="store_true",
-                        help="Ask before changes and commands (Ask mode). Without it the agent runs tools "
-                             "without asking (Bypass), within the guardrails and your organization's policy")
+    modes = parser.add_mutually_exclusive_group()
+    modes.add_argument("--approve", action="store_true",
+                       help="Ask before changes and commands (Ask mode). Without --approve or --full-auto the "
+                            "terminal starts in the default permission mode from Settings (Auto-edit on a new install)")
+    modes.add_argument("--full-auto", action="store_true",
+                       help="Run tools without asking (Bypass, the app's Full-auto), within the guardrails and "
+                            "your organization's policy")
     parser.add_argument("--auto-plan", action="store_true",
                         help="Automatically enable plan mode for complex requests")
 
@@ -1621,7 +1654,6 @@ Examples:
     # First, and applied as `lumi run` applies them (headless._configure):
     # they decide the Ollama address, which modes and models may be used,
     # and what the session enforces. The terminal doesn't start without them.
-    requested_mode = "ask" if args.approve else "bypass"
     try:
         from .gui.settings import SettingsManager
         from .headless import _configure, scope_session
@@ -1633,21 +1665,22 @@ Examples:
         refusal = blocked_reason()
         if refusal:
             raise ValueError(refusal)
-        mode = _policy_mode(requested_mode, chosen=args.approve)
+        mode, start_in_plan, mode_notice = _start_mode(settings, approve=args.approve, full_auto=args.full_auto)
     except ValueError as exc:
         _print_refusal(str(exc))
         return
     except Exception as exc:  # noqa: BLE001 - never run a session without the rules Settings hold
         _print_refusal(f"Lumi couldn't apply its settings: {exc}")
         return
+    if settings.load_error:
+        # Kept as it is and never written over (gui/settings.py); defaults apply meanwhile.
+        _print(f"\n  [{C_WARN}]{G_CROSS} {_esc(settings.load_error)}[/{C_WARN}]")
     # Lumi's terms (lumi/terms.py), then the organization's oversight notice
     # (lumi/oversight.py), right after the policy: before anything reaches a
     # model, the warm-up below included.
     if not confirm_terms() or not confirm_oversight(settings):
         console.print(f"  [{C_DIM}]Goodbye[/{C_DIM}]")
         return
-    mode_notice = "" if mode == requested_mode else \
-        f"{current_policy().organization}'s policy doesn't allow {requested_mode}"
     settings_data = settings.get_all()
 
     # ── Resolve URL and detect Ollama ──
@@ -1813,7 +1846,8 @@ Examples:
         oversight.start_uploader(CloudClient(settings))
 
     history = FileHistory(str(_history_path()))
-    plan_mode = False
+    # On when Settings' default permission mode is Plan (_start_mode); /plan toggles it.
+    plan_mode = start_in_plan
     pending_images = []  # List of (image_bytes, media_type) for multimodal
 
     # ── Ctrl+V keybinding for image paste ──

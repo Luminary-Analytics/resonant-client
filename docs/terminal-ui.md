@@ -20,16 +20,26 @@ lumi --model qwen3-coder:30b --approve
 | `--dir DIR` | The project folder (default: the current folder) |
 | `--model MODEL` | The Ollama model. Otherwise Settings' default model when Ollama is the default provider, or you choose from the list |
 | `--ollama-url URL` | Where Ollama runs (default: `OLLAMA_HOST`, then the address in Settings, then this computer) |
-| `--approve` | Ask before changes and commands (Ask). Without it the agent doesn't ask (Bypass) |
+| `--approve` | Ask before changes and commands (Ask) |
+| `--full-auto` | Run tools without asking (Bypass, the app's Full-auto). Without `--approve` or `--full-auto`, the terminal starts in the default permission mode from Settings |
 | `--auto-plan` | Plan first when a request looks complex |
 | `--max-tokens N` | The longest reply, in tokens (default 4096) |
 
 ## What the agent does without asking
 
+The terminal starts in the default permission mode from **Settings > General**
+(`general.default_permission_mode`), as the app does: **Auto-edit** on a new
+install, or the mode an existing install saved (earlier versions saved
+Bypass). A saved **Plan** starts in Auto-edit with plan mode on (`/plan` turns
+it off), and a value the terminal doesn't know starts in Ask. If
+`settings.json` can't be read, the terminal says so when it starts and runs on
+the defaults, and never writes over the file.
+
 | Mode | Choose it with | What happens |
 | --- | --- | --- |
-| Bypass | the default, or `/approve off` | Tools run without asking. |
-| Ask | `--approve`, or `/approve on` | Reads and searches run; file changes, commands and everything else wait for `Allow …? [Y/n]`. |
+| Auto-edit | Settings' default (a new install's) | File changes in the project run; commands and everything else wait for `Allow …? [Y/n]`. |
+| Bypass | `--full-auto`, `/approve off`, or Settings' default Full-auto | Tools run without asking. |
+| Ask | `--approve`, `/approve on`, or Settings' default Ask | Reads and searches run; file changes, commands and everything else wait for `Allow …? [Y/n]`. |
 
 Some calls are refused before anyone is asked, in every mode:
 
@@ -46,13 +56,13 @@ calls it matches, in Bypass too. A command your organization sends for a
 which has no Lumi Cloud connection to ask.
 
 Your organization's policy decides which modes you can use. If it doesn't
-allow Bypass, the terminal starts in the first mode it allows (Ask or
-Auto-edit, which edits files and asks about the rest) and the banner says
-so. When the policy turns on [organization
+allow the default from Settings, the terminal starts in the first mode it
+allows (Ask or Auto-edit, which edits files and asks about the rest) and the
+banner says so. When the policy turns on [organization
 oversight](organization-oversight.md), the banner shows its notice and the
 terminal asks you to type `yes` before anything reaches a model; anything
 else quits. It asks again before a turn if the confirmation was forgotten
-meanwhile (you signed out of Lumi Cloud in the app). `--approve` or `/approve` for a mode it doesn't allow is refused. Only the
+meanwhile (you signed out of Lumi Cloud in the app). `--approve`, `--full-auto` or `/approve` for a mode it doesn't allow is refused. Only the
 models it allows are offered, and a policy that is invalid or has expired
 stops the terminal before it starts.
 

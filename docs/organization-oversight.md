@@ -182,7 +182,9 @@ notice text that was shown:
 
 - `organization` and `device_id` are this computer's enrollment;
   `account` is the signed-in Lumi Cloud user (`null` when nobody is signed
-  in, and always for a chat, whose people aren't this computer's account).
+  in, when the sign-in is another Lumi Cloud's than the one the computer
+  enrolled with, and always for a chat, whose people aren't this computer's
+  account). A person signed in to one Lumi Cloud is never named to another.
 - The notice text is Lumi's sentence and the organization's words, as the
   surface shows it ("from Lumi on this computer" in the app and terminals,
   "from Lumi through this chat" in a chat).
@@ -203,8 +205,11 @@ notice text that was shown:
   joined it to the organization in the app), or, on a managed computer
   (enrolled with a token, so it belongs to nobody), the person's own desktop
   sign-in goes with it in a `Lumi-Account-Token` header: Lumi sends the
-  signed-in person's access token when the record names them and they're
-  still the one signed in. With nobody signed in to Lumi Cloud, the record
+  signed-in person's access token when the record names them, they're still
+  the one signed in, and the Lumi Cloud it goes to issued their sign-in
+  (`CloudClient.account_token(destination, user_id=...)`); the record goes
+  only to the Lumi Cloud the computer enrolled with, or not at all if the
+  enrollment moved meanwhile. With nobody signed in to Lumi Cloud, the record
   names no account and counts for the computer. Anything else is kept as an
   unverified claim. Settings says which, before and after confirming.
 - The person is unblocked at once. The record then waits in the queue's

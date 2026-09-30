@@ -754,7 +754,7 @@ class TestNothingWaitsInTheWrongPlace:
             def device(self):
                 return {"id": "dev", "how": "personal"}
 
-            def device_call(self, method, path, json=None):
+            def device_call(self, method, path, json=None, expect=None):
                 self.calls.append((method, path, json))
                 if path.endswith("/claim"):
                     return self.queue.pop(0) if self.queue else {}

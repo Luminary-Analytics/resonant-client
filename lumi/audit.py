@@ -18,8 +18,10 @@ Event types: ``turn.start``, ``turn.end``, ``model.usage``, ``tool.call``,
 count, never the matched text), ``settings.change``, ``trust.decision``,
 ``policy.file_ignored`` (lumi/policy.py: a machine policy, key or license
 file Lumi didn't use, and why),
-``budget.warning``, ``budget.approval``, ``budget.block``, ``model.fallback``
-and ``error``; for organization oversight (lumi/oversight.py)
+``budget.warning``, ``budget.approval``, ``budget.block``, ``model.fallback``,
+``feedback.sent``, ``feedback.queued``, ``feedback.held``, ``feedback.refused``
+and ``feedback.dropped`` (lumi/feedback.py: kind and size, never the text) and
+``error``; for organization oversight (lumi/oversight.py)
 ``oversight.notice_shown``, ``oversight.notice_forgotten``,
 ``oversight.unattended_run``, ``oversight.acknowledgment_refused`` and
 ``oversight.discarded``; for the Team preview (engine/swarming/organization.py)

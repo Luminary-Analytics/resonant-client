@@ -54,6 +54,37 @@
   - Panels are listed under View, which is used with the pointer, and in the
     command palette for the keyboard. Contrast inside a panel is the pack's
     own, not measured here.
+- **Also added September 27**: the Send feedback dialog
+  ([Sending feedback](feedback.md)), with real key presses in headless Edge
+  (tests/feedback.browser.cjs), in both themes and at 375 px wide.
+  - It opens from Help with the pointer, and from the command palette, the
+    profile menu and About Lumi by keyboard; focus starts in the message.
+  - Tab and Shift+Tab stay inside it, and Escape closes it and returns focus
+    to what opened it (the Menu button when it came from Help). When the
+    control holding focus goes away (the waiting reports' **Send now** once
+    they're sent), focus moves to the message box, not out of the dialog.
+  - A field's error is tied to it (`aria-describedby`, `aria-invalid`), and
+    Send moves focus to the first field to fix and says the error on the
+    status line, since a field that already had focus isn't read again.
+    Refusals are announced (`role="alert"`), progress politely
+    (`role="status"`), and the report it will send can be scrolled from the
+    keyboard. When no report could be made (offline mode), its empty box is
+    hidden rather than left as a tab stop. A result that arrives after the
+    dialog closed is announced through a polite live region outside the
+    dialog (`#feedback-announcer`) as well as shown as a notification, and a
+    refusal from the last time is cleared when the dialog opens again.
+  - Each report waiting on this computer is a list item saying what it waits
+    for, with its own **Copy**, **Send to** and **Discard** buttons named for
+    it ("Discard the bug report"). An organization's switch is said in the
+    dialog's text, not only by a disabled button.
+  - The character counter counts what's sent (an emoji is one character) and
+    turns to the error color over the limit; the message box has no
+    `maxlength`, which browsers count in UTF-16 units.
+  - The report, its status line and notices, the error text, the character
+    counter, the destination line, the organization's switch and a waiting
+    report's text measured at least 4.5:1 in both themes. At 375 px the dialog
+    and the waiting reports' list stay on screen with no sideways scrolling,
+    and their buttons are at least 24 px.
 - **Added September 27, later**: the dialog that asks for Lumi's terms at
   first launch, the notice it leaves above the message box, and the same
   dialog reading a text from About Lumi, with real key presses in headless

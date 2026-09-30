@@ -2339,9 +2339,11 @@ class AppState:
         self._push_ws_event({"event": "cloud_status", "data": status})
         # Signing out or leaving forgets the oversight notice's confirmation
         # (lumi/oversight.py): the page shows the notice, and locks, at once.
-        from .. import oversight
+        from .. import feedback, oversight
 
         self._push_ws_event({"event": "oversight_status", "data": oversight.status()})
+        # Feedback waiting for an address or a sign-in may go now (lumi/feedback.py).
+        feedback.wake()
         marker = (status.get("policy_version"), status.get("policy_source"))
         if marker == getattr(self, "_cloud_policy_marker", None):
             return

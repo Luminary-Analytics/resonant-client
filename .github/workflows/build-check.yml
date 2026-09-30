@@ -238,6 +238,8 @@ jobs:
           $mismatch = & $iscc /O- "/DAppVersion=0.0.1" "packaging/installer.iss" 2>&1 | Out-String
           if ($LASTEXITCODE -eq 0) { throw "ISCC compiled installer.iss for a version dist\legal wasn't rendered for" }
           if ($mismatch -notmatch "rendered for another version") { throw "Unexpected ISCC failure: $mismatch" }
+          # That failure was expected: the runner's wrapper exits with the last native exit code otherwise.
+          $global:LASTEXITCODE = 0
           Write-Host "✓ installer.iss refuses a license page rendered for another version"
 
       # The .NET WiX tool, pinned; NuGet verifies the package signature.

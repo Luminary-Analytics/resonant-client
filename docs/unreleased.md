@@ -8,6 +8,82 @@ The heartbeat remains paused. Documentation maintenance does not resume work,
 spending or grants, and changes no native implementation or installed bundle.
 The dated September 15/18 records below are historical.
 
+## September 29 security fix: machine policy only from places only administrators can write (source only, not released)
+
+Organization policy, the keys that sign policies, and a machine
+`license.json` now count only where nobody but administrators can change
+them, and a policy file Group Policy names fails closed. Before, files in
+`C:\ProgramData\Lumi`, which any user can create where no administrator did,
+counted as the machine's policy and signing keys, and a `PolicyFile` Lumi
+couldn't read left it without the organization's policy. See
+[the file rules](enterprise-policy.md#only-files-only-administrators-can-change-count).
+
+- **The check** (`lumi/admin_files.py`, ctypes, no pywin32). Windows: the
+  file and each folder up to ProgramData (or the drive's or share's root)
+  must be owned by SYSTEM, Administrators or TrustedInstaller, and no
+  permission entry may let anyone else write, append, add files or folders,
+  change attributes, delete, change permissions or take ownership, including
+  the `BUILTIN\Users:(CI)(WD,AD,WEA,WA)` entry every folder made under
+  ProgramData inherits. On a UNC path the Domain Admins and Enterprise Admins
+  of this computer's own domain (read from LSA's primary domain) count too;
+  never another domain's, and never on a local path. Inherit-only and deny
+  entries don't count; a junction or symbolic link anywhere on the way, the
+  root included, does, and a path naming an alternate data stream is refused.
+  The root itself may let people add folders but not replace them. macOS and
+  Linux: root must own the file and each folder up to `/etc`,
+  `/Library/Application Support` or `/Library`, and none may be writable by
+  its group or others.
+- **A file that fails is ignored, never silently:** Settings > Privacy &
+  security > Organization policy shows "Policy file ignored: writable by
+  non-administrators" with the file and the reason, `lumi policy` lists it,
+  and the audit log records `policy.file_ignored` (once per file and reason in
+  a process). A file someone other than an administrator owns, or one in a
+  folder someone else owns, reads as absent. A file an administrator put
+  there (it and its folder are an administrator's) in a place others can
+  change fails closed.
+- **`PolicyFile` fails closed.** A file Group Policy names that can't be read
+  (a share out of reach, a missing file, a path that isn't a full one, such
+  as one with an unexpanded `%USERPROFILE%`), that others can change, or a
+  policy registry key Lumi can't read, refuses model requests through the
+  existing unusable-policy path (and keeps offline mode on with no hosts).
+  A read error there used to fall through to
+  `C:\ProgramData\Lumi\policy.json`, `LUMI_POLICY_FILE` or no policy.
+- **Signing keys on Windows come only from Group Policy's `PolicyKeys`**
+  (and a machine policy's `trusted_keys`). `policy-keys.json` isn't read on
+  Windows any more, as `license-keys.json` already wasn't: these keys decide
+  which downloaded policy replaces the machine's, a registry policy value can
+  only be an administrator's, and a file under ProgramData is theirs only
+  while its folder stays locked down. Settings notes a `policy-keys.json`
+  that is there. On macOS and Linux the file stays, behind the check.
+- **Licenses:** a machine `license.json`, and `license-keys.json` on macOS
+  and Linux, pass the same check; one that fails is skipped (the next place
+  is used) and shown in `lumi license status` and Settings > Offline mode.
+- **The MSI creates `%ProgramData%\Lumi` locked** (`packaging/lumi.wxs`,
+  `MsiLockPermissionsEx`: owned by Administrators, full control for SYSTEM and
+  Administrators, read and execute for Users, nothing inherited), taking over
+  a folder someone made first; uninstalling removes it when empty. Each
+  install replaces the folder's owner and permissions, and files inside keep
+  their own owners.
+  [Organization policy](enterprise-policy.md#locking-down-a-policy-folder-on-windows)
+  gives the icacls recipe for Group Policy and Intune scripts.
+- **`lumi policy`** prints the policy in force as JSON (source, error,
+  ignored files, summary) and exits 1 while Lumi refuses model requests under
+  it, for administrators checking a deployment.
+- **Tests:** `tests/test_machine_policy_trust.py` checks every kind of
+  permission entry on descriptors built in the test and, on Windows, from
+  SDDL; real folders changed with icacls (the half needing an administrator
+  runs only elevated, as in CI); owner and mode rules, which the macOS job now
+  runs on a real Mac; ignored and fail-closed files, `PolicyFile` cases,
+  Settings, `lumi policy` and the audit record; and the reported case end to
+  end: with Group Policy in force, files written without administrator
+  rights no longer change the policy. `tests/policy_trust.browser.cjs`
+  checks Settings and a refused turn in the source app (run locally, not in
+  CI). `build-check.yml` installs the MSI over a folder the Users group owns
+  and checks it comes out locked, that a `PolicyFile` in a folder made the
+  usual way fails closed, and that the icacls recipe makes it apply.
+  `build-linux.yml` checks the installed .deb: root's
+  `/etc/lumi/policy.json` made writable by everyone fails closed, and one
+  the runner's account owns is ignored.
 ## September 29 Tests no longer register real scheduled tasks (source only, not released)
 
 Tests that saved a schedule registered a real Task Scheduler entry

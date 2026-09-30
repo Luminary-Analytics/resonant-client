@@ -248,7 +248,10 @@ spaces, UTF-8), as for a [signed policy](enterprise-policy.md#signed-policies-an
 1. `license.json` beside the machine policy file: `C:\ProgramData\Lumi\` on
    Windows (the ProgramData folder Windows reports, never the `ProgramData`
    environment variable), `/Library/Application Support/Lumi/` on macOS,
-   `/etc/lumi/` on Linux;
+   `/etc/lumi/` on Linux, when only administrators can change it and its
+   folder, as for a [machine policy](enterprise-policy.md#only-files-only-administrators-can-change-count).
+   One others could have written is ignored: `lumi license status` and
+   Settings > Offline mode say so, and the next place is used;
 2. the file `LUMI_LICENSE_FILE` names, when there is none there;
 3. the copy `lumi license install <file>` keeps in `~/.lumi/license.json`.
 
@@ -266,6 +269,9 @@ a JSON object such as `{"luminary-2026": "<base64 public key>"}`:
 - macOS: the `LicenseKeys` key of the configuration profile, or
   `license-keys.json` in `/Library/Application Support/Lumi/`.
 - Linux: `/etc/lumi/license-keys.json`.
+
+On macOS and Linux the key file counts only when root owns it and its folder
+and neither is writable by their group or others.
 
 Keys in your own folders or environment are never trusted. No production key
 is built into this version yet, so for now an administrator installs

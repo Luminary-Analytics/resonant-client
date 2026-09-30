@@ -238,6 +238,42 @@ are fixed below too.
     terms (#104) in their throwaway home, so `first_run`, `open_files` and
     `git_trust` reach the app again.
 
+## September 29 Send feedback: reports fit the limits their Lumi Cloud publishes (source only, not released)
+
+Lumi Cloud takes a report sent without an account up to 48 KB, with at most
+16 KB of diagnostics, while Lumi fitted every report to 64 KB and 32 KB, so
+a report without an account and a long log was refused as too large (413)
+and kept with Copy and Discard.
+
+- **Lumi obeys the limits its Lumi Cloud publishes** in
+  `GET /api/v1/feedback/info` (`limits`: `body_bytes` and
+  `diagnostics_bytes`, `anonymous_body_bytes` and
+  `anonymous_diagnostics_bytes`), with an account or without one, and never
+  beyond its own 64 KB and 32 KB; odd values are ignored
+  (`feedback.limits_for`, `_published`). It asks when the dialog opens and
+  before each round of waiting reports, and keeps the answer ten minutes.
+- **The fallback trims**: a Lumi Cloud that publishes none gets 64 KB and
+  32 KB with an account, and 48 KB and 16 KB without one
+  (`ANONYMOUS_BODY_BYTES`, `ANONYMOUS_DIAGNOSTICS_BYTES`).
+- A report is fitted again as it goes, for the account it goes with: one
+  written with the account and sent with **Send without your account**
+  loses more of its log's oldest lines if it has to.
+
+Validation: `tests/test_feedback.py` (4 new): a report without an account
+and 20 KB of diagnostics against an older Lumi Cloud (fitted to 16 KB and 48
+KB, the newest lines kept, what was shown is what went) and with the account
+(all of it); limits a Lumi Cloud publishes, smaller, obeyed with and without
+the account; published limits above Lumi's own capped, and odd ones ignored;
+a report written with the account and sent without it, fitted again.
+`pytest` as CI runs it (without `tests/test_swarm_*.py`), with an isolated
+home: 6,032 passed and 24 skipped; the Node tests CI runs: 180 passed. Five
+deliberate breakages (published limits ignored, no anonymous fallback,
+published limits not capped, odd ones obeyed, a waiting report not fitted
+for the account it goes with) each fail these tests. Against a Lumi Cloud
+server over real HTTP on loopback, a report without an account and 20 KB of
+diagnostics got 413 from the app before this change, and with it was fitted
+to 16,226 bytes and delivered.
+
 ## September 27 Lumi Cloud: device requests stay with their enrollment, and a sign-in's tokens with their issuer (security fix, source only, not released)
 
 A second review of the sign-in fix below found the same kind of problem on

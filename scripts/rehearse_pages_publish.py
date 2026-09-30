@@ -161,6 +161,22 @@ def main(argv: list[str] | None = None) -> int:
         return run(TOOL, "sign", "--private-key-file", key, path, env=env).stdout.strip()
 
     try:
+        # Since the first macOS release (0.20.0-alpha.1) the live branch has macOS
+        # feeds whose signatures, and whose items' disk image signatures, were made
+        # with the real key, which the throwaway key can't reproduce or verify. Start
+        # from the branch without them, as it was before that release: the rehearsal's
+        # own releases then make the feeds again, signed with its key. (Real releases
+        # add to the live feeds, which each release's own push_pages.py --check covers.)
+        live_feeds = sorted(name for name in tracked(origin, env, "gh-pages")
+                            if re.fullmatch(r"appcast-macos[^/]*\.xml", name))
+        if live_feeds:
+            live = checkout("live-feeds")
+            run("git", "-C", live, "rm", "--quiet", *live_feeds, env=env)
+            run("git", "-C", live, "-c", "user.name=rehearsal", "-c", "user.email=rehearsal@example.invalid",
+                "commit", "--quiet", "-m", "rehearsal: start without the live macOS feeds", env=env)
+            run("git", "-C", live, "push", "--quiet", "origin", "HEAD:refs/heads/gh-pages", env=env)
+            print(f"OK started from the live branch without its macOS feeds ({', '.join(live_feeds)})", flush=True)
+
         for version in VERSIONS:
             # The Windows job.
             windows = checkout(f"windows-{version}")

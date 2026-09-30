@@ -11,6 +11,7 @@ Tests cover:
 """
 
 import base64
+import sys
 import time
 from unittest.mock import patch, MagicMock
 
@@ -205,12 +206,16 @@ class TestScreenOCR:
 class TestOpenApplication:
     @patch("sys.platform", "win32")
     def test_open_app_windows(self):
+        # exec_open_application opens apps with os.startfile on Windows; patching only Popen
+        # let every Windows run open a real Notepad (and hold the test folder open).
         from lumi.engine.computer_use import exec_open_application
-        with patch("subprocess.Popen"):
+        with patch("subprocess.Popen"), patch("os.startfile", create=True) as startfile:
             with patch("time.sleep"):
                 result = exec_open_application({"name": "notepad"}, start=time.time())
                 assert not result.is_error
                 assert "notepad" in result.output
+        if sys.platform == "win32":
+            assert startfile.called
 
     def test_open_app_no_name(self):
         from lumi.engine.computer_use import exec_open_application

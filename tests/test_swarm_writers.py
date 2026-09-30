@@ -195,6 +195,36 @@ def test_model_file_write_and_edit_finalize_to_checked_candidate_without_touchin
         runtime.close()
 
 
+def test_new_files_keep_their_case_in_the_writer_commit(fixture):
+    """The writer's commit names new files as the model spelled them.
+
+    On Windows the path sandbox used to hand tools a case-folded path, so a
+    writer's src/NewModule.py was committed as src/newmodule.py, and applied
+    to the person's repository that way (tests/test_file_name_case.py).
+    """
+    context, writer = assign(fixture)
+    backend = Backend(scripts=[[
+        tool_call("file_write", {"path": "src/NewModule.py", "content": "VALUE = 1\n"}, "write-1"),
+        tool_call("file_write", {"path": "src/Nested/Helper.PY", "content": "HELPER = 2\n"}, "write-2"), done()],
+        [text_delta("Added two modules; checks require host review."), done()],
+    ])
+    runtime = runner(fixture, backend)
+    try:
+        runtime.start(context, BackendSpec("ollama", "chosen"), writer_id=writer["id"])
+        finished(runtime, context)
+        assert runtime.inspect(context.attempt_id)["state"] == "submitted", explain(runtime)
+        state = snapshot(fixture)
+        assert [action["state"] for action in state["action_receipts"]] == ["completed", "completed"], explain(runtime)
+        recorded_writer = state["writer_worktrees"][0]
+        project = fixture[3]
+        names = git(project, "ls-tree", "-r", "--name-only", recorded_writer["result_revision"]).splitlines()
+        # A new folder keeps the model's spelling too.
+        assert {"src/NewModule.py", "src/Nested/Helper.PY"} <= set(names), names
+        assert not {"src/newmodule.py", "src/nested/helper.py"} & set(names), names
+    finally:
+        runtime.close()
+
+
 @pytest.mark.parametrize("name,args", [
     ("file_write", {"path": "private/fact.txt", "content": "escape"}),
     ("file_write", {"path": "../outside.txt", "content": "escape"}),

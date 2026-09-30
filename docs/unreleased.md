@@ -8,6 +8,52 @@ The heartbeat remains paused. Documentation maintenance does not resume work,
 spending or grants, and changes no native implementation or installed bundle.
 The dated September 15/18 records below are historical.
 
+## September 30 New files and folders keep their names' case on Windows (source only, not released)
+
+The September 30 clean-PC pass of the packaged build found every file and
+folder the agent created named in lowercase. This fixes it.
+
+- **Files the agent creates keep the case it asked for.** The path sandbox
+  handed tools its boundary key as the path to use
+  (`PathSandbox.validate_path`), and on Windows that key is case-folded
+  (`os.path.normcase`). So "Docs/NewFile.md" was created as
+  `docs\newfile.md`, "MakeFile.TXT" as `makefile.txt` and
+  "notes/Jürgen-ö.txt" as `notes\jürgen-ö.txt`, and the tool's result named
+  the lowercased path. Writer teams committed their new files that way
+  (`src/NewModule.py` as `src/newmodule.py`) and applied them to the person's
+  repository, where imports that name the file and builds on case-sensitive
+  systems break. The sandbox now returns each path as it is spelled: the
+  parts that exist as they are on disk and the rest as given (`realpath`).
+  It folds case only to compare a path with the project (`_canonical_path`).
+  A new file under an existing folder spelled in another case
+  ("SRC/Helper.py" under `src`) goes into that folder as `src\Helper.py`,
+  and paths outside the project are refused in any case, as before. Writing
+  an existing file never changed its name, so only files and folders the
+  agent created are affected; rename any that came out in lowercase.
+- **Commands, the Git tools and code intelligence use the project as it is
+  spelled.** `bash`, the Git tools and the REPLs got a case-folded working
+  folder from the same check (`cd` printed `c:\users\...`), and
+  `code_intel` opened files by a lowercased path. Managed jobs
+  (`job_start`) ran in the case-folded project folder too, and their status
+  showed it. TypeScript ("File name differs from already included file name
+  only in casing"), webpack and Jest treat differently cased folders as
+  different paths. Jobs now run in the folder as it is spelled and fold
+  case only to match a job to its project (`JobManager._key`).
+- **Kept as designed:** a Team worker's path is checked against its
+  assignment's folders as it is spelled, before it is resolved. On Windows,
+  "SRC/x.py" is therefore refused for a worker allowed to write "src" ("File
+  path exceeds the assignment roots"), and the worker can retry with the
+  folder's own spelling. That check fails closed and is unchanged.
+- Tests: `tests/test_file_name_case.py` runs through `Session.run`. It
+  covers new files and folders, a non-ASCII name, and a new file under an
+  existing folder spelled in another case. It also checks the paths the
+  sandbox returns, that escapes are still refused in any case, and a job's
+  working folder. `tests/test_swarm_writers.py` checks that a writer's
+  commit keeps `src/NewModule.py` and a new `src/Nested/Helper.PY`. The
+  boundary and working-subdir tests no longer expect case-folded paths.
+  Checked in a packaged build of the branch on the clean-PC fixture: new
+  files, `cd`, and a writer team's diff and applied commit keep their case.
+
 ## September 30 Clean-machine follow-ups: search results keep excluded files out, team controls survive lease renewals (source only, not released)
 
 The final review of the clean-machine fixes (#102) left these.

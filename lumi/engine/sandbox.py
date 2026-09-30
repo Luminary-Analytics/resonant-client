@@ -68,10 +68,12 @@ class PathSandbox:
     ):
         # Resolve symlinks/junctions at the boundary, not only lexical ``..``
         # components.  ``abspath`` alone lets ``project/link/file`` escape when
-        # ``link`` points outside the project.
-        self.project_path = self._canonical_path(project_path)
+        # ``link`` points outside the project.  The roots keep their spelling:
+        # relative paths are joined to project_path, and the path validate_path
+        # returns is the one tools open, create and show.
+        self.project_path = self._resolved_path(project_path)
         self.allowed_dirs = [
-            self._canonical_path(d)
+            self._resolved_path(d)
             for d in (allowed_dirs or [])
         ]
         self.enabled = enabled
@@ -82,7 +84,9 @@ class PathSandbox:
 
         - Relative paths are resolved against project_path
         - Absolute paths must be within project_path or allowed_dirs
-        - Returns the resolved absolute path
+        - Returns the resolved absolute path, spelled as it is on disk where
+          it exists and as given where it doesn't: a new file or folder keeps
+          the case it was asked for (``_resolved_path``)
         - Raises SandboxViolation if path escapes the sandbox
         """
         if not self.enabled:
@@ -90,9 +94,9 @@ class PathSandbox:
 
         # Resolve the path
         if os.path.isabs(path):
-            resolved = self._canonical_path(path)
+            resolved = self._resolved_path(path)
         else:
-            resolved = self._canonical_path(os.path.join(self.project_path, path))
+            resolved = self._resolved_path(os.path.join(self.project_path, path))
 
         # Check if path is within allowed boundaries
         if self._is_within_bounds(resolved):
@@ -101,22 +105,27 @@ class PathSandbox:
         raise SandboxViolation(path, self.project_path)
 
     def validate_bash_cwd(self, cwd: str) -> str:
-        """Validate that a bash working directory is within the sandbox."""
+        """Validate that a bash working directory is within the sandbox; returns it as spelled on disk."""
         if not self.enabled:
             return cwd
 
-        resolved = self._canonical_path(cwd)
+        resolved = self._resolved_path(cwd)
         if self._is_within_bounds(resolved):
             return resolved
 
         raise SandboxViolation(cwd, self.project_path)
 
     def _is_within_bounds(self, resolved_path: str) -> bool:
-        """Check if a resolved path falls within project_path or allowed_dirs."""
+        """Check if a resolved path falls within project_path or allowed_dirs.
+
+        Compared case-folded where the file system ignores case (Windows), so
+        "C:\\Proj\\SRC" is inside "C:\\proj"; only the comparison is folded.
+        """
         candidate = self._canonical_path(resolved_path)
         for root in (self.project_path, *self.allowed_dirs):
+            root_key = os.path.normcase(root)
             try:
-                if os.path.commonpath((candidate, root)) == root:
+                if os.path.commonpath((candidate, root_key)) == root_key:
                     return True
             except ValueError:
                 # Different Windows drives have no common path.
@@ -124,9 +133,23 @@ class PathSandbox:
         return False
 
     @staticmethod
-    def _canonical_path(path: str) -> str:
-        """Return a normalized, symlink-aware path for boundary checks."""
-        return os.path.normcase(os.path.realpath(os.path.abspath(path)))
+    def _resolved_path(path: str) -> str:
+        """The absolute, symlink- and junction-resolved path, keeping its spelling.
+
+        Never case-folded: this is the path a tool creates. On Windows
+        ``normcase`` lowercases, and when the sandbox returned that, every new
+        file and folder the agent made came out in lowercase ("Docs/NewFile.md"
+        became "docs\\newfile.md") and was committed that way. ``realpath``
+        spells the parts that exist as they are on disk and keeps the rest as
+        given, so "DOCS/NewFile.md" under an existing "docs" folder lands in
+        that folder as "docs\\NewFile.md", never in a second one.
+        """
+        return os.path.realpath(os.path.abspath(path))
+
+    @classmethod
+    def _canonical_path(cls, path: str) -> str:
+        """The key boundary checks compare: the resolved path, case-folded where the OS ignores case."""
+        return os.path.normcase(cls._resolved_path(path))
 
     def validate_glob_pattern(
         self,

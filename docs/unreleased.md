@@ -76,8 +76,9 @@ their conversation's level.
   levels, each accepted by those rules; the budget Lumi used to send, refused
   with the API's message and Lumi's error for it; an unrecognized model's
   refusal; Bedrock and Vertex bodies; streamed thinking (empty, progress notes,
-  redacted) and its replay; a chat on Opus 5.5 over two turns whose system
-  prompt changed, and without the new check, the API's refusal; tools added
+  redacted) and its replay; a chat on Opus 5.5 over three turns, its system
+  prompt changed before the second, and without the new check, the API's
+  refusal; tools added
   mid-turn; and the vision role. `tests/test_swarm_api_providers.py`: a team
   on Sonnet 5 and on Opus 5.5 at its conversation's level, which fails on the
   old adapter with the API's 400. No Anthropic key was used: live checks are

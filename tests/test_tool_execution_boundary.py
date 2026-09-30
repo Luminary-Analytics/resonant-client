@@ -160,6 +160,8 @@ def test_grep_prefers_ripgrep_when_available():
 
     assert command[0] == "/usr/bin/rg"
     assert command[-2:] == ["--", "src"]
+    # A NUL ends each path, so it is decoded apart from the file's own text.
+    assert "--null" in command
     # Dotfile directories like .github/ are working files, not noise.
     assert "--hidden" in command
     assert command[command.index("--glob") + 1] == "!.git/"
@@ -199,6 +201,7 @@ def test_grep_falls_back_to_posix_grep_without_ripgrep():
     assert Path(command[0]).stem.lower() == "grep" and Path(command[0]).is_absolute()
     # Extended syntax: `a|b`, `x+` and groups mean what they do in ripgrep.
     assert command[1] == "-rnE"
+    assert "--null" in command  # GNU and BSD grep (BSD's -Z decompresses)
     assert "--include=*.py" in command
     assert command[-2:] == ["needle", "src"]
 

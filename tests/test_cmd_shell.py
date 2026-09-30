@@ -27,6 +27,7 @@ import pytest
 from lumi.engine.tools import execute_tool
 from lumi.processes import (CMD_COMMAND_LIMIT, CMD_TOO_LONG, _oem_code_page, background_process_kwargs,
                             decode_output, run_command, utf8_env)
+from lumi.secrets_store import child_env
 
 windows = pytest.mark.skipif(sys.platform != "win32", reason="cmd.exe")
 PAGES = {"ansi_code_page": "cp1252", "oem_code_page": "cp437"}
@@ -215,7 +216,7 @@ def test_run_command_ends_the_whole_tree_at_its_timeout(tmp_path):
     for command in _endless(marker):
         started = time.monotonic()
         with pytest.raises(subprocess.TimeoutExpired):
-            run_command(command, shell=True, cwd=tmp_path, env=utf8_env(), timeout=2)
+            run_command(command, shell=True, cwd=tmp_path, env=utf8_env(child_env()), timeout=2)
         assert time.monotonic() - started < 10, command  # was 11+ s: the pipes waited for ping
         time.sleep(0.3)
         assert _left_running(marker) == [], command
@@ -235,7 +236,7 @@ def test_run_command_ends_what_a_finished_command_left_running(tmp_path):
     else:
         command = (f"\"{sys.executable}\" -c \"import time; time.sleep(60)\" f102-{marker} >/dev/null 2>&1 & "
                    "echo started")
-    done = run_command(command, shell=True, cwd=tmp_path, env=utf8_env(), timeout=30)
+    done = run_command(command, shell=True, cwd=tmp_path, env=utf8_env(child_env()), timeout=30)
     assert (done.returncode, decode_output(done.stdout).strip()) == (0, "started")
     time.sleep(0.5)
     assert _left_running(marker) == []

@@ -39,7 +39,9 @@ unlinks junctions and links without following them and removes only that
 worktree's own entry. Each branch goes right after its own worktree: whether
 it is checked out, rebased or bisected anywhere is read again just before
 ``git update-ref -d`` deletes it against its recorded tip, so a checkout or a
-commit that happened while its worktree went keeps it. Git runs through
+commit that happened while its worktree went keeps it; a recorded tip that
+isn't a whole commit id (Git would delete against an empty or all-zero one
+unconditionally) is refused before Git runs (``_delete_branch``). Git runs through
 lumi/safe_git.py (the installed Git, hooks and the other programs a
 repository's settings name off; none in an untrusted project whose settings
 name some), and the whole cleanup holds the repository lock every team step
@@ -469,6 +471,26 @@ def clean_finished_teams(store: SwarmStore, workspace: str | Path, *, run_ids: I
     return report
 
 
+def _is_commit_id(value: str) -> bool:
+    """Whether ``value`` is a whole commit id: 40 hex digits (64 in a SHA-256 repository), not all zero."""
+    return (len(value) in (40, 64) and all(character in "0123456789abcdef" for character in value)
+            and value.strip("0") != "")
+
+
+def _delete_branch(run, ref: str, expected: str) -> subprocess.CompletedProcess:
+    """``git update-ref -d <ref> <expected>``: delete the branch only if it still points at ``expected``.
+
+    Git treats an empty or all-zero old value as no condition at all and
+    deletes the branch whatever it points at, and an abbreviated id isn't
+    the commit the team recorded, so anything but a whole commit id is
+    refused here (ValueError) without running Git.
+    """
+    if not _is_commit_id(expected):
+        raise ValueError(f"The team's record of {ref.removeprefix('refs/heads/')} isn't a whole commit id "
+                         f"({expected!r}), so Lumi left the branch.")
+    return run("update-ref", "-d", ref, expected)
+
+
 def _tip(run, ref: str) -> str | None:
     """The commit a branch points at now, or None when there is no such branch; OSError when Git can't tell."""
     found = run("rev-parse", "--quiet", "--verify", ref)
@@ -564,7 +586,11 @@ def _remove(run, common: Path, runtime_root: Path, targets: list[tuple[str, str,
         if _in_use(run, common, ref, path):
             left(run_id, row, branch, "in_use")
             continue
-        deleted = run("update-ref", "-d", ref, recorded_tip(row))
+        try:
+            deleted = _delete_branch(run, ref, recorded_tip(row))
+        except ValueError as exc:
+            failed(run_id, row, "writer", str(exc))
+            continue
         if deleted.returncode == 0:
             report["branches"] += 1
             outcome(run_id)["branches"].append(branch)

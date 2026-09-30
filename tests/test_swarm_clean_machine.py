@@ -634,6 +634,32 @@ def test_a_commit_landing_while_its_worktree_goes_keeps_the_branch(writer_repo, 
     assert [item["branch"] for item in _events(store, authority.run_id, REMOVED_EVENT)[0]["left"]] == [branch]
 
 
+def test_a_branch_is_deleted_only_against_a_whole_commit_id(tmp_path):
+    """Git deletes a branch against an empty or all-zero old value whatever it points at."""
+    project = tmp_path / "project"
+    project.mkdir()
+    git(project, "init", "-b", "main")
+    git(project, "commit", "--allow-empty", "-m", "Fixture base")
+    base = git(project, "rev-parse", "HEAD")
+    git(project, "branch", "lumi/team-guard", base)
+    git(project, "branch", "lumi/team-unguarded", base)
+    git(project, "update-ref", "-d", "refs/heads/lumi/team-unguarded", "")  # what the guard is for
+    assert git(project, "branch", "--list", "lumi/team-unguarded") == ""
+    calls = []
+
+    def run(*args):
+        calls.append(args)
+        return cleanup._git(project, *args)
+
+    for expected in ("", "0" * 40, "0" * 64, base[:12], base.upper(), base + "0", "g" * 40):
+        with pytest.raises(ValueError, match="isn't a whole commit id"):
+            cleanup._delete_branch(run, "refs/heads/lumi/team-guard", expected)
+    assert calls == [] and git(project, "rev-parse", "lumi/team-guard") == base
+    assert cleanup._delete_branch(run, "refs/heads/lumi/team-guard", base).returncode == 0
+    assert calls == [("update-ref", "-d", "refs/heads/lumi/team-guard", base)]
+    assert git(project, "branch", "--list", "lumi/team-guard") == ""
+
+
 def test_discard_removes_applied_candidates_worktrees_too(writer_repo):
     """Kept so Inspect candidate works, one checkout each, until Discard frees them."""
     from tests.test_swarm_integration import finish, writers

@@ -53,7 +53,10 @@ content. Compare the full immutable semantics, not just the command kind.
 Acknowledgement follows
 durable commit. Model work and subprocess execution never occur inside a database
 transaction. `SwarmSupervisor` implements optimistic revisions and the command
-dispatcher. The original storage-spike mutation methods reject supervisor-managed
+dispatcher. Every command advances the run's revision except a lease renewal,
+which changes only the lease (unless its checkpoint moves the run on, from
+stopping to cancelled): renewals come every 5 s while a team runs, and each
+refused a Stop or decision sent from the view read just before it. The original storage-spike mutation methods reject supervisor-managed
 runs, so they cannot bypass policy. Neither API is a network endpoint.
 
 Reads are authorized too: snapshots, replay, messages, artifacts, diagnostics and

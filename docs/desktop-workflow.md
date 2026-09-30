@@ -33,6 +33,14 @@ project without asking and asks before running commands.
 The **×** button hides the checklist for good (`onboarding.dismissed`), and it
 goes away by itself once all three steps are done.
 
+A message Lumi refuses before any turn starts (no model is running, say, or
+the organization's oversight notice isn't confirmed yet) doesn't stay
+"running": its card reads **Not sent** with the reason and no Retry, and its
+text and attached images go back into the message box. If something was typed
+or attached since, the message waits under the message box as **Not sent**
+instead, with **Edit** (add it to the message box) and **×** (discard it),
+so nothing is overwritten or lost.
+
 Opening a folder from the chat (**File > Open Folder**, a recent project)
 keeps the chat, with its empty state and checklist for the new project, even
 without a model. The welcome screen's **Open**, browse and Enter work however
@@ -172,7 +180,8 @@ every token.
 New installs start in **Auto-edit** (`general.default_permission_mode`,
 Settings > General). An install whose settings already name a mode keeps it:
 every earlier first launch saved its Full-auto default, and a settings file
-without a mode keeps Full-auto too (`gui/settings.py`).
+without a mode keeps Full-auto too (`gui/settings.py`). The
+[terminal UI](terminal-ui.md) starts in the same default.
 
 The composer's mode menu applies immediately to the current conversation,
 including a run in progress, for native providers. **Ask** runs read-only tools
@@ -195,11 +204,19 @@ Work that runs with nobody there to approve its steps runs in Full-auto: a
 plan (`/plan`), **Build this roadmap**, an autonomous session (and **Resume**
 after an interruption) and a team the orchestrator runs (and **Continue**
 after a recovery). From another mode it doesn't start: it says why where you
-asked for it, with **Switch to Full-auto and …**, one click that switches this
-conversation to Full-auto and asks again (`AppState.full_auto_needed`,
-`code: "needs_full_auto"`). If your organization's policy doesn't allow
-Full-auto, its own refusal applies and no switch is offered. Pausing and
-resuming work that is still running doesn't ask again.
+asked for it, and offers to run just that one in Full-auto (**Run this plan
+in Full-auto**, **Build this roadmap in Full-auto**, **Run this session in
+Full-auto**, **Resume this session in Full-auto**, **Run this team in
+Full-auto**, **Continue this team in Full-auto**). Choosing it sends the same
+request again with your consent for that run (`full_auto: true`,
+`AppState.full_auto_needed`, `code: "needs_full_auto"`): it runs in Full-auto,
+as such work always has, and the conversation keeps its mode, so its own turns,
+a new conversation and the next plan still ask as before. The notice is
+announced as a status and never takes the typing focus: keys meant for the
+message box can't press its button. If your organization's policy doesn't allow
+Full-auto, its own refusal applies and nothing is offered; that includes a team
+the orchestrator runs, even one that only reads. Pausing and resuming work that
+is still running doesn't ask again.
 
 **Deny** is final: nothing, including a hook, runs the call afterward. The
 approval dialog takes focus when it opens, so typing in the composer cannot
@@ -301,11 +318,19 @@ your organization's rules apply either way.
 computer that runs Ollama (empty means this one, `http://127.0.0.1:11434`),
 **Test**, which checks the typed address and saves nothing, and **Save**, which
 stores it as `network.ollama_url` (an organization's policy can lock it; the
-audit log records the change) and checks it. The card says what the last
-check found: how many chat models answered, that Ollama has none yet (pull
-one, for example `ollama pull qwen3-coder:30b`), or that nothing answered.
-When the saved address answers and no model runs yet, one starts, as the
-welcome screen's setup does.
+audit log records the change) and then checks the address Lumi uses. The card
+says what the last check found: how many chat models answered, that Ollama has
+none yet (pull one, for example `ollama pull qwen3-coder:30b`), or that nothing
+answered. When that address answers and no model runs yet, one starts, as the
+welcome screen's setup does. A check updates only the card, so fields being
+edited elsewhere on the page and the focus stay as they are. A Test never ticks
+the checklist's "Connect a model"; a saved address that answers does.
+
+`OLLAMA_HOST` in Lumi's environment comes before the saved address
+(`network_defaults.resolve_ollama_url`). While it's set, the card says so, names
+the address Lumi uses instead, and says what to do: remove or change the
+variable, then restart Lumi. Save still stores the address, which applies once
+the variable is gone.
 
 ## ChatGPT/Codex and OpenRouter
 
@@ -523,7 +548,8 @@ With two windows open (File > Open in Browser), a plan's updates go to the
 window that connected last, or that last used one of the plan's controls.
 
 Specialists run in Full-auto, with the guardrails that apply in every mode,
-so a plan starts only from a conversation in Full-auto ([permission
+so from another mode a plan asks first and runs only once you choose **Run
+this plan in Full-auto** for it ([permission
 modes](#permission-modes-and-approvals)). See [Unreleased](unreleased.md).
 
 ## Creative editors

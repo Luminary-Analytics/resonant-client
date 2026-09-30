@@ -121,7 +121,8 @@ async def command(state, send, message, *, chat_busy=False):
         needed = await asyncio.to_thread(_full_auto_needed, state, manager, capture, message)
         if needed:
             # The panel offers to run (or continue) this one team in Full-auto.
-            reply.update(error=needed["message"], code=needed["code"], can_grant=needed["can_grant"])
+            reply.update(error=needed["message"], code=needed["code"], can_grant=needed["can_grant"],
+                         work=needed.get("work", ""))
             await send(reply)
             return
         if message.get("action") in {"start", "request_plan", "collaboration_prepare", "collaboration_accept_work", "managed_sharing_prepare", "managed_sharing_accept_work"}:

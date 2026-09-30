@@ -8,33 +8,63 @@ The heartbeat remains paused. Documentation maintenance does not resume work,
 spending or grants, and changes no native implementation or installed bundle.
 The dated September 15/18 records below are historical.
 
-## September 27 A new tester's first hour: Auto-edit for new installs, clear refusals and labels (source only, not released)
+## September 29 A new tester's first hour: Auto-edit for new installs, clear refusals and labels (source only, not released)
 
 Found running the packaged app the way a new alpha tester would, on a new
 Windows computer. The engine and runtime fixes are in the clean-machine pull
-request (#102); these are the page's.
+request (#102); these are the page's. An independent review then found the
+problems fixed below (a keystroke could switch the app to Full-auto, the
+switch applied to every conversation, the Ollama card wiped fields, and
+more), and a settings file with a byte-order mark lost every setting.
 
 - **New installs start in Auto-edit** (the owner's decision): file edits in
   the project apply without asking; shell commands and everything else ask
   (`settings.DEFAULT_PERMISSION_MODE`). Only new installs change. Every
   earlier first launch wrote its Full-auto default into `settings.json`, so
   an existing install keeps the mode its file names. A file without one
-  (written by hand or by a tool) keeps Full-auto; an unreadable one gets the
-  new default with its other defaults, as before. The terminal UI (Full-auto
-  unless `--approve`) and `lumi run` (Auto-edit already) don't read this
-  setting and are unchanged.
-- **Unattended work asks for Full-auto.** A plan (`/plan`), **Build this
-  roadmap**, an autonomous session (**Build autonomously**, and **Resume**
-  after an interruption) and a team the orchestrator runs (**Start**, and
-  **Continue** after a recovery) ran in Full-auto whatever the conversation's
-  mode. From another mode they now start nothing and say why where they were
-  asked for (the /plan card, the conversation, the interrupted session's card,
-  the Team panel), with one button that switches the conversation to Full-auto
-  and asks again (`AppState.full_auto_needed`, `code: "needs_full_auto"`).
-  Where the organization's policy doesn't allow Full-auto, its own refusal
-  applies as before, with no switch. Pausing and resuming work that is still
-  running doesn't ask again. The Team form says so beside the orchestrator
-  switch, and Settings > General beside the default mode.
+  (written by hand or by a tool) keeps Full-auto. `lumi run` (Auto-edit
+  already) is unchanged.
+- **The terminal UI starts in the same default** (`tui._start_mode`): Settings'
+  `general.default_permission_mode`, so Auto-edit on a new install and the
+  saved mode on an existing one (earlier installs saved Bypass). A saved Plan
+  starts in Auto-edit with plan mode on, and an unknown value in Ask. A mode
+  the policy doesn't allow gives way to the first one it allows, as before.
+  `--approve` (Ask) stays, and **`--full-auto`** (Bypass) is new; the two
+  can't be combined.
+- **Unattended work asks before it runs in Full-auto, for that run only.** A
+  plan (`/plan`), **Build this roadmap**, an autonomous session (**Build
+  autonomously**, and **Resume** after an interruption) and a team the
+  orchestrator runs (**Start**, and **Continue** after a recovery) have always
+  run in Full-auto, whatever the conversation's mode.
+  - From another mode they now start nothing and say why where they were asked
+    for (the /plan card, the conversation, the interrupted session's card, the
+    Team panel), with one button: **Run this plan in Full-auto**, **Build this
+    roadmap in Full-auto**, **Run this session in Full-auto**, **Resume this
+    session in Full-auto**, **Run this team in Full-auto** or **Continue this
+    team in Full-auto** (`AppState.full_auto_needed`, `code: "needs_full_auto"`,
+    `can_grant`).
+  - The button sends the same request again with `full_auto: true`, the
+    person's consent for that run (`ws_commands.full_auto_granted`). That run
+    goes ahead as before; the conversation keeps its mode, so its own turns, a
+    new conversation and the next plan still ask. (The first version switched
+    the whole app to Full-auto.)
+  - The notice is a `role="status"`, and focus never moves onto its button:
+    in the review, a space typed after `/plan` pressed the button the notice
+    had focused and started the plan. Someone typing keeps their place. Only
+    when the control that asked lost focus (a disabled Build or Resume button)
+    does the notice itself take focus, as the approval dialog does; Tab then
+    reaches the button.
+  - A resume refusal finds the interrupted session's card in the page's own
+    banner (`#autonomous-orphans-banner`) only. A model's reply can hold a
+    look-alike card, and the real button went into one in the review.
+  - Where the organization's policy doesn't allow Full-auto, nothing is
+    offered and its own refusal applies (`policy.full_auto_refusal`). That now
+    includes **a team the orchestrator runs, even one that only reads**
+    (`organization.mode_refusal(orchestrated=True)`): before, such a policy
+    started one from Ask with no question at all, while the same team asked
+    for Full-auto without a policy. Pausing and resuming work that is still
+    running doesn't ask again. The Team form says so beside the orchestrator
+    switch, and Settings > General beside the default mode.
 - **Full-auto says what it does.** "Sandboxed" only while the shell sandbox
   is on (macOS and Linux); otherwise the mode menu says file changes stay in
   the project and shell commands run without a sandbox, with ⚡ instead of the
@@ -42,11 +72,19 @@ request (#102); these are the page's.
   do. A settings save no longer re-labels the mode menu with the default (the
   server kept the conversation's mode, so the label could disagree).
 - **A refused message ends the "running" state.** The server marks a message
-  it starts no turn for (`refused: true`, `ws_commands.refused_turn`: no
-  model running, the organization's oversight notice); #102's team refusal
-  carries `code: "team_active"`. The page ends its running state, and the text
-  goes back into an empty message box; a refused queued follow-up leaves the
-  queue with a note.
+  it starts no turn for (`refused: true`, `ws_commands.refused_turn`, whose
+  name and contract #104 also uses: no model running, the organization's
+  oversight notice). The page ends its running state.
+  - Its card reads **Not sent**, with the reason and no Retry or Continue (as
+    #104's copy does).
+  - Its text and attached images go back into an empty message box. When
+    something was typed or attached since, it waits under the message box as
+    **Not sent**, with **Edit** (add it after what's there) and **×**; a
+    refused queued follow-up was dropped there before.
+  - A message waits to be given back only while the page shows it running:
+    an ordinary error or the end of the running state forgets it. #102's team
+    refusal (`code: "team_active"`, which names no message) counts only while
+    a sent message still waits, so it can't bring back stale text.
 - **Opening a folder without a model** (File > Open Folder from the chat)
   keeps the chat, with its empty state and checklist for the new project; it
   used to go blank. The welcome screen's **Open**, browse and Enter work
@@ -54,15 +92,40 @@ request (#102); these are the page's.
   Agents could show dead buttons), and View > Agents with a project open shows
   the chat.
 - **Settings > Connections: Ollama.** A card with the address, **Test** (the
-  typed address; saves nothing), **Save** (stores `network.ollama_url`, which a
-  policy can lock, audited; then checks it and starts a model when none runs)
-  and what the last check found. `network.ollama_url` is checked like the
-  other addresses. The checklist's "Connect a model" is done only once a model
-  answered: the conversation's model runs, Ollama answered with chat models,
-  or a connection check succeeded.
+  typed address, or this computer when empty; saves nothing), **Save** (stores
+  `network.ollama_url`, which a policy can lock, audited; then checks the
+  address Lumi uses and starts a model when none runs) and what the last check
+  found. `network.ollama_url` is checked like the other addresses.
+  - A check updates only the card (`_updateOllamaCard`): a forced re-render of
+    the whole page used to wipe an API key being typed and move focus. The
+    buttons show the check running with `aria-disabled` and keep focus.
+  - With `OLLAMA_HOST` set, which comes before the saved address, the card
+    says so, names the address Lumi uses and says to remove or change the
+    variable and restart Lumi. It used to name that address as the one saved,
+    and promise that Save "uses it from now on" (`init.ollama_address`,
+    `ws_commands.ollama_address_in_use`).
+  - The checklist's "Connect a model" is done only by a saved connection that
+    works: the conversation's model runs, Ollama answered at the address Lumi
+    uses, or a check of a saved connection succeeded. A Test ticked it before.
+- **Settings files that can't be read are kept (pre-existing).** A
+  `settings.json` with a UTF-8 byte-order mark (Notepad, Windows PowerShell
+  5.1), or one another program held for a moment (an antivirus scan), was read
+  as empty and rewritten with defaults: every setting and key it held was
+  lost.
+  - It's read as `utf-8-sig`, and a read that fails is tried again for about
+    a second and a half (`settings._read_locked`).
+  - A file that exists but still can't be read or parsed is never written
+    over: Lumi runs on defaults and saves nothing (`SettingsManager.load_error`).
+    Settings and the banner above the message box say so, and so do the
+    terminal UI and `lumi run` when they start.
+  - Each save keeps the file as it was in `settings.json.bak` and replaces
+    it in one step, keeping its permissions (POSIX) and a linked file's link.
+  - The policy's joined-device read, the network defaults and the
+    diagnostics ZIP read it as `utf-8-sig` too.
 - **Without Git** (#102's `init.git`), the banner above the message box names
   what needs it and links Git for Windows, and the Team panel keeps "Allow
-  scoped file changes" off with the same explanation.
+  scoped file changes" off with the same explanation. Without #102 the page
+  shows neither.
 - **Sign in with ChatGPT without the Codex CLI** says what to install
   (Node.js, then `npm install -g @openai/codex`) instead of offering a sign-in
   that can't start (`codex_account.CodexCliMissing`).
@@ -90,16 +153,44 @@ request (#102); these are the page's.
   uses SONN (a SONN key or project URL, or its models); the profile never
   shows "SONN account" to anyone else, and never a ChatGPT identity.
 - **Diagnostics.** The saved ZIP's note says what's in it (Lumi's logs and
-  recent session logs, keys removed) and to send it to Luminary Analytics
-  support, not to a GitHub issue; Help > Send Feedback (#101) isn't merged
-  yet. **Show in folder** selects it (`reveal_diagnostics`, only the file the
-  last save made). It goes to Downloads, else the Desktop, else home, as
-  before.
-- **Tests:** `tests/test_first_run_polish.py` (the default mode for new and
-  existing settings, refused turns, each Full-auto gate, the orchestrated-team
-  check, Ollama's address, probe, Test and Save, the Codex CLI message and
-  Show in folder) and `tests/ui_recovery.test.cjs` (the page's refused turn,
-  model readiness and Full-auto wording).
+  recent session logs, keys removed) and to email it with the report to
+  Luminary Analytics support at rich.bellantoni@luminaryanalytics.com, with
+  **Copy address** beside **Copy path**; Help > Send Feedback (#101) isn't
+  merged yet. **Show in folder** selects it (`reveal_diagnostics`, only the
+  file the last save made). Explorer starts by its absolute path from
+  `GetWindowsDirectoryW`, with its arguments as a list: by bare name, Windows
+  looked in the open project first, so a repository's `explorer.exe` would
+  have run (`ws_commands.show_in_folder_command`, to give way to #110's
+  `executables.show_in_folder`). The Finder's `open` comes from `/usr/bin`
+  and `xdg-open` from the system folders. The ZIP goes to Downloads, else
+  the Desktop, else home, as before.
+- **Tests:**
+  - `tests/test_first_run_polish.py`: the default mode for new and existing
+    settings; settings files with a byte-order mark, held for a moment, still
+    locked, unparseable, backed up, and a save that fails; refused turns; each
+    Full-auto gate refused, granted for one run with the mode unchanged, and
+    refused by a policy grant or not; the team engine never seeing the grant;
+    Ollama's address, probe, Test (empty means this computer), Save and the
+    `OLLAMA_HOST` override; the Codex CLI message; Show in folder by absolute
+    path, never a project's `explorer.exe`.
+  - `tests/test_tui_session.py`: the terminal's start mode from Settings,
+    `--full-auto` and `--approve`, a policy refusing each, an unreadable
+    settings file. `tests/test_swarm_organization_policy.py`: an orchestrated
+    team under a policy without Full-auto.
+  - `tests/ui_recovery.test.cjs`: the notice's focus and grant for /plan, a
+    roadmap, a resume (the banner only) and a team; refused turns with images,
+    Not sent, stale text; the Ollama card in place and its override; the
+    diagnostics note.
+  - Browser (Playwright, headless Edge; **CI runs none of `tests/*.browser.cjs`**):
+    the new `tests/first_run.browser.cjs` (a /plan granted once by keyboard
+    while typing goes on, the mode staying Auto-edit in that and a new
+    conversation, a model's look-alike, a refused message with its image, the
+    Ollama card by keyboard with Test, Save and `OLLAMA_HOST`, 375 px in both
+    themes), and `tests/swarm_autonomous.browser.cjs` (Run this team in
+    Full-auto by keyboard) and `swarm_autonomous_writers.browser.cjs` (a
+    conversation in Full-auto, `--mode bypass` in
+    `tests/fixtures/swarming_ui_server.py`), which stopped at the new notice
+    before.
 
 ## September 29 security fix: machine policy only from places only administrators can write (source only, not released)
 

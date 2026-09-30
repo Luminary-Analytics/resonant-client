@@ -114,7 +114,7 @@ def needs_full_auto(needed: dict[str, Any], message: str = "", **fields: Any) ->
     in Full-auto (the page sends it again with ``full_auto: true``).
     """
     return {"event": "error", "message": message or needed["message"], "detail": needed["message"],
-            "code": needed["code"], "can_grant": needed["can_grant"], **fields}
+            "code": needed["code"], "can_grant": needed["can_grant"], "work": needed.get("work", ""), **fields}
 
 
 def _is_connection_closed(exc: BaseException) -> bool:

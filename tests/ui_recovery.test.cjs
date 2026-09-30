@@ -2883,10 +2883,16 @@ test('a notice that says nothing is collected asks for no confirmation and locks
 });
 
 test('a refused message ends the running state and gives its text back', () => {
-    const app = setup(async () => ({ok: true}));
+    const dom = withElementMethods(fakeDom());
+    const app = setup(async () => ({ok: true}), {document: dom.document});
     let running = true;
     app.setRunning = value => { running = value; };
     app.clearTerminals = () => {};
+    app._markDraftEdited = () => {};
+    app._saveDraft = () => {};
+    app._syncComposerQueue = () => {};
+    app.userInput.focus = () => {};
+    app.composerQueue = dom.document.createElement('div');
     app._queuedMessages = new Map();
     app._pendingTurnText = 'Fix the failing test';
     // Nothing more to skip: the refusal is shown as the turn's error.
@@ -2894,11 +2900,15 @@ test('a refused message ends the running state and gives its text back', () => {
     assert.equal(running, false);
     assert.equal(app.userInput.value, 'Fix the failing test');
     assert.equal(app._pendingTurnText, '');
-    // A draft typed since then is never replaced.
+    // A draft typed since then is never replaced, and the refused message isn't lost:
+    // it waits under the message box as "Not sent".
     app._pendingTurnText = 'another message';
     app.userInput.value = 'typing';
     app._endRefusedTurn({refused: true, message: 'Busy'});
     assert.equal(app.userInput.value, 'typing');
+    const [unsent] = app.composerQueue.children;
+    assert.equal(unsent.querySelector('strong').textContent, 'Not sent');
+    assert.equal(unsent.querySelector('small').textContent, 'another message');
 });
 
 test('a refused follow-up leaves the queue and the turn it followed keeps running', () => {
@@ -2947,4 +2957,393 @@ test('Full-auto is called sandboxed only while the shell sandbox is on', () => {
     assert.match(app._onboardingModeNote(), /changes files in this project without asking, and asks before running commands/);
     app.permissionMode = 'ask';
     assert.match(app._onboardingModeNote(), /asks before changing files/);
+});
+
+// ── PR #105 review: one-run Full-auto grants, refused turns, the Ollama card ──
+
+// fakeDom() with the few element methods the notices, the "Not sent" item and
+// the Team panel use, a body to be connected to, and focus. Only the elements
+// of this fakeDom change.
+function withElementMethods(dom) {
+    const {document} = dom;
+    const proto = Object.getPrototypeOf(document.createElement('div'));
+    const body = document.createElement('body');
+    Object.defineProperty(proto, 'isConnected', {configurable: true, get() {
+        let node = this;
+        while (node.parentNode) node = node.parentNode;
+        return node === body;
+    }});
+    Object.assign(proto, {
+        append(...nodes) {
+            for (const node of nodes) {
+                if (typeof node !== 'string') { this.appendChild(node); continue; }
+                const span = document.createElement('span');
+                span.textContent = node;
+                this.appendChild(span);
+            }
+        },
+        after(node) {
+            const siblings = this.parentNode.childNodes;
+            this.parentNode.insertBefore(node, siblings[siblings.indexOf(this) + 1] || null);
+        },
+        closest(selector) {
+            const matches = selector.startsWith('#') ? node => node.getAttribute('id') === selector.slice(1)
+                : node => node.matches(selector);
+            for (let node = this; node && node.nodeType === 1; node = node.parentNode) {
+                if (matches(node)) return node;
+            }
+            return null;
+        },
+        focus() { document.activeElement = this; },
+    });
+    Object.assign(document, {body, activeElement: body});
+    dom.body = body;
+    return dom;
+}
+
+// The real handlers of app.js with autonomous_view.js, settings_view.js and
+// swarm_view.js mixed in, as applyMixin does, over that DOM. `sent` records
+// what the page sends; setPermissionMode must never be reached.
+function grantApp() {
+    const dom = withElementMethods(fakeDom());
+    const context = vm.createContext({console, document: dom.document, CSS: dom.CSS, window: {},
+        WebSocket: {OPEN: 1}, crypto: {randomUUID: () => 'uuid'}, setTimeout, clearTimeout});
+    vm.runInContext(source + '\nthis.App = LumiApp;', context);
+    for (const file of ['autonomous_view.js', 'settings_view.js', 'swarm_view.js']) {
+        vm.runInContext(fs.readFileSync(path.join(__dirname, '../lumi/gui/static', file), 'utf8'), context);
+    }
+    const app = Object.create(context.App.prototype);
+    for (const mixin of [context.window.LumiAutonomousView, context.window.LumiSettingsView, context.window.LumiSwarmView]) {
+        const own = Object.getOwnPropertyDescriptors(mixin.prototype);
+        delete own.constructor;
+        Object.defineProperties(Object.getPrototypeOf(app), own);
+    }
+    const sent = [];
+    const composer = dom.document.createElement('textarea');
+    dom.body.appendChild(composer);
+    const chatMessages = dom.document.createElement('div');
+    dom.body.appendChild(chatMessages);
+    Object.assign(app, {
+        dom, sent, composer, chatMessages,
+        permissionMode: 'auto-edit',
+        send: message => sent.push(JSON.parse(JSON.stringify(message))),
+        setPermissionMode: mode => { throw new Error(`the mode changed to ${mode}`); },
+        scrollToBottom: () => {}, showStatusMessage: () => {}, openPlanTab: () => {}, pushPreviewConsole: () => {},
+        _collapseDispatchCardToChip: card => card,
+        el: (tag, className = '') => {
+            const element = dom.document.createElement(tag);
+            if (className) element.className = className;
+            return element;
+        },
+    });
+    return app;
+}
+
+const NEEDS_PLAN = {event: 'error', code: 'needs_full_auto', can_grant: true, work: 'plan',
+    message: 'intent_start failed: A plan runs its steps in Full-auto.',
+    detail: 'A plan runs its steps in Full-auto: they change files and run commands without asking. This conversation is in Auto-edit, and stays in Auto-edit if you run this plan in Full-auto.'};
+
+test('a refused /plan offers to run just that plan in Full-auto, and never takes the typing focus', () => {
+    const app = planApp();
+    withElementMethods(app.dom);
+    const sent = [];
+    Object.assign(app, {permissionMode: 'auto-edit', send: message => sent.push(JSON.parse(JSON.stringify(message))),
+        setPermissionMode: mode => { throw new Error(`the mode changed to ${mode}`); }});
+    app.dom.body.appendChild(app.chatMessages);
+    const composer = app.dom.document.createElement('textarea');
+    app.dom.body.appendChild(composer);
+    app.startIntent('Add a counter');
+    // The person keeps typing in the message box: a space or Enter mustn't press anything.
+    composer.focus();
+    app.handleEvent({...NEEDS_PLAN});
+    const [card] = app.chatMessages.children;
+    const notice = card.querySelector('.full-auto-notice');
+    assert.equal(notice.getAttribute('role'), 'status');
+    assert.match(notice.querySelector('.full-auto-notice-text').textContent, /stays in Auto-edit if you run this plan in Full-auto/);
+    const button = notice.querySelector('.full-auto-grant');
+    assert.equal(button.textContent, 'Run this plan in Full-auto');
+    assert.equal(app.dom.document.activeElement, composer);
+    assert.deepEqual(sent, [{command: 'intent_start', text: 'Add a counter'}]);
+    button.listeners.click();
+    // The same plan, granted Full-auto for this run only; the conversation's mode stays.
+    assert.deepEqual(sent.at(-1), {command: 'intent_start', text: 'Add a counter', full_auto: true});
+    assert.equal(card.querySelector('.full-auto-notice'), null);
+    assert.equal(app.permissionMode, 'auto-edit');
+});
+
+test('a notice takes focus itself, never its button, only when the control that asked lost it', () => {
+    const app = grantApp();
+    const run = () => app.send({command: 'mission_dispatch_roadmap', full_auto: true});
+    // Focus was lost (the Build button was disabled): the notice, not its button, takes it.
+    app.dom.document.activeElement = app.dom.body;
+    const notice = app._showFullAutoNotice({...NEEDS_PLAN, work: 'roadmap'}, run, 'roadmap');
+    assert.equal(app.dom.document.activeElement, notice);
+    assert.equal(notice.tabIndex, -1);
+    assert.equal(notice.querySelector('.full-auto-grant').textContent, 'Build this roadmap in Full-auto');
+    // Someone typing keeps their place.
+    app.composer.focus();
+    app._showFullAutoNotice({...NEEDS_PLAN, work: 'autonomous'}, run, 'autonomous');
+    assert.equal(app.dom.document.activeElement, app.composer);
+    // Without the organization's leave to grant Full-auto, there is no button at all.
+    const refused = app._fullAutoNotice({...NEEDS_PLAN, can_grant: false}, run, 'plan');
+    assert.equal(refused.querySelector('button'), null);
+});
+
+test('a refused Build this roadmap is built again in Full-auto for that run only', () => {
+    const app = grantApp();
+    const message = app.el('div', 'msg-assistant');
+    app.chatMessages.appendChild(message);
+    app._currentMissionIsAutonomous = () => false;
+    app.handleMissionSpecReady({refined_intent: 'A counter', spec_markdown: '## Final spec', session_id: 's1'});
+    // No real innerHTML parsing here for the button's label: press it through its handler.
+    const build = message.querySelector('.mission-build-btn');
+    build.listeners.click();
+    assert.deepEqual(app.sent.at(-1), {command: 'mission_dispatch_roadmap', session_id: 's1',
+        spec_markdown: '## Final spec', refined_intent: 'A counter'});
+    app.handleEvent({event: 'error', source: 'mission_dispatch', code: 'needs_full_auto', can_grant: true,
+        message: 'A roadmap is built in Full-auto.'});
+    assert.equal(build.disabled, false);  // the Build button is back
+    const notice = app.chatMessages.querySelector('.full-auto-notice');
+    const grant = notice.querySelector('.full-auto-grant');
+    assert.equal(grant.textContent, 'Build this roadmap in Full-auto');
+    grant.listeners.click();
+    assert.deepEqual(app.sent.at(-1), {command: 'mission_dispatch_roadmap', session_id: 's1',
+        spec_markdown: '## Final spec', refined_intent: 'A counter', full_auto: true});
+    assert.match(notice.querySelector('.full-auto-notice-text').textContent,
+        /^This roadmap is built in Full-auto; this conversation stays in Auto-edit\.$/);
+    // A later click on Build itself carries no grant.
+    build.listeners.click();
+    assert.equal(app.sent.at(-1).full_auto, undefined);
+});
+
+test('a resume refusal reaches only the page\'s own banner, never a card a model wrote', () => {
+    const app = grantApp();
+    // A model's reply earlier in the page holds a look-alike card for the same session.
+    const reply = app.el('div', 'message-content');
+    reply.innerHTML = '<div class="autonomous-orphan-card" data-intent-id="auto-1"><button type="button" class="autonomous-orphan-resume" data-intent-id="auto-1">Resume</button></div>';
+    app.chatMessages.appendChild(reply);
+    const banner = app.el('div', 'autonomous-orphans-banner');
+    banner.setAttribute('id', 'autonomous-orphans-banner');
+    const card = app.el('div', 'autonomous-orphan-card');
+    card.dataset.intentId = 'auto-1';
+    const resume = app.el('button', 'autonomous-orphan-resume');
+    resume.dataset.intentId = 'auto-1';
+    card.appendChild(resume);
+    banner.appendChild(card);
+    app.dom.body.appendChild(banner);
+    app.dom.document.getElementById = id => (id === 'autonomous-orphans-banner' ? banner : null);
+
+    app._handleResumeOrphanClick('auto-1', 's1', resume);
+    assert.deepEqual(app.sent.at(-1), {command: 'autonomous_mission_resume', intent_id: 'auto-1', session_id: 's1'});
+    app.dom.document.activeElement = app.dom.body;  // the disabled Resume button lost focus
+    app.handleEvent({event: 'error', source: 'autonomous_resume', code: 'needs_full_auto', can_grant: true,
+        intent_id: 'auto-1', session_id: 's1', message: 'An autonomous session runs in Full-auto.'});
+    assert.equal(reply.querySelector('.full-auto-notice'), null);
+    const notice = card.querySelector('.full-auto-notice');
+    assert.equal(app.dom.document.activeElement, notice);
+    assert.equal(resume.disabled, false);
+    const grant = notice.querySelector('.full-auto-grant');
+    assert.equal(grant.textContent, 'Resume this session in Full-auto');
+    grant.listeners.click();
+    assert.deepEqual(app.sent.at(-1), {command: 'autonomous_mission_resume', intent_id: 'auto-1', session_id: 's1',
+        full_auto: true});
+    // Without a card in the banner, the notice goes in the conversation instead.
+    const elsewhere = grantApp();
+    elsewhere.chatMessages.appendChild(reply);
+    elsewhere.handleEvent({event: 'error', source: 'autonomous_resume', code: 'needs_full_auto', can_grant: true,
+        intent_id: 'auto-1', session_id: '', message: 'An autonomous session runs in Full-auto.'});
+    assert.equal(reply.querySelector('.full-auto-notice'), null);
+    assert.ok(elsewhere.chatMessages.children.some(node => node.classList.contains('full-auto-notice-chat')));
+});
+
+test('Run this team in Full-auto grants the one Start it sends, and nothing after it', () => {
+    const app = grantApp();
+    const notice = app.el('p', 'swarm-notice');
+    notice.setAttribute('role', 'status');
+    app.dom.body.appendChild(notice);
+    const form = {requestSubmit: () => app.requestSwarm('start', {objective: 'Check the CSV export', autonomy: {rounds: 2}})};
+    Object.assign(app, {
+        _swarmDialog: {open: true}, ws: {readyState: 1}, _swarmRequestCounter: 0, _swarmCursor: 0,
+        _swarmScope: {project: 'p', session_id: 's', run_id: ''}, _renderSwarmControls: () => {},
+        _swarmNodes: {notice, form, 'continue-form': form},
+    });
+    app.composer.focus();
+    app._swarmOfferFullAuto('start');
+    const button = notice.querySelector('.swarm-full-auto-grant');
+    assert.equal(button.textContent, 'Run this team in Full-auto');
+    assert.equal(app.dom.document.activeElement, app.composer);  // never moved onto the button
+    button.listeners.click();
+    const [granted] = app.sent;
+    assert.equal(granted.action, 'start');
+    assert.equal(granted.full_auto, true);
+    assert.equal(button.disabled, true);
+    app._swarmPending = null;
+    app.requestSwarm('start', {objective: 'Another team', autonomy: {rounds: 2}});
+    assert.equal(app.sent.at(-1).full_auto, undefined);
+    // A Start the form keeps from sending leaves the offer, and grants nothing later.
+    const blocked = grantApp();
+    const blockedNotice = blocked.el('p', 'swarm-notice');
+    Object.assign(blocked, {_swarmNodes: {notice: blockedNotice, form: {requestSubmit: () => {}}}});
+    blocked._swarmOfferFullAuto('start');
+    const offer = blockedNotice.querySelector('.swarm-full-auto-grant');
+    offer.listeners.click();
+    assert.equal(offer.disabled, false);
+    assert.equal(blocked._swarmFullAutoGrant, null);
+});
+
+test('a refused message gives its images back, and waits as Not sent under a busy message box', () => {
+    const app = grantApp();
+    const images = [{data: 'AAA', media_type: 'image/png', dataUrl: 'data:image/png;base64,AAA'}];
+    let rendered = 0;
+    const saved = [];
+    Object.assign(app, {
+        userInput: {value: '', style: {}, scrollHeight: 40, focus: () => {}},
+        attachedImages: [], renderAttachedImages: () => { rendered += 1; },
+        _markDraftEdited: () => {}, _saveDraft: () => saved.push(app.userInput.value),
+        _syncComposerQueue: () => {}, clearTerminals: () => {}, setRunning: running => { app.isRunning = running; },
+        composerQueue: app.el('div', 'composer-queue'), _queuedMessages: new Map(), currentSessionId: 's1',
+    });
+    app._pendingTurnText = 'Fix the chart';
+    app._pendingTurnImages = images.map(image => ({...image}));
+    app._endRefusedTurn({refused: true, message: 'No model is running.'});
+    assert.equal(app.userInput.value, 'Fix the chart');
+    assert.deepEqual(JSON.parse(JSON.stringify(app.attachedImages)), images);
+    assert.equal(rendered, 1);
+    // A queued follow-up refused while something is typed: kept, not dropped.
+    app.userInput.value = 'typing the next one';
+    const removed = [];
+    app._queuedMessages.set('m-2', {text: 'also update the docs', images, el: {remove: () => removed.push('m-2')}});
+    app._endRefusedTurn({refused: true, message_id: 'm-2', message: 'Busy'});
+    assert.deepEqual(removed, ['m-2']);
+    assert.equal(app.userInput.value, 'typing the next one');
+    const unsent = app.composerQueue.children.at(-1);
+    assert.ok(unsent.classList.contains('is-unsent'));
+    assert.equal(unsent.dataset.sessionId, 's1');
+    assert.equal(unsent.querySelector('small').textContent, 'also update the docs');
+    // Edit adds it after what's typed, images included; the item goes.
+    unsent.querySelector('.steer-queue-promote').listeners.click();
+    assert.equal(app.userInput.value, 'typing the next one\n\nalso update the docs');
+    assert.equal(app.attachedImages.length, 2);
+    assert.equal(app.composerQueue.children.length, 0);
+    // × discards another one.
+    app.userInput.value = 'more typing';
+    app._restoreRefusedText('discard me', []);
+    app.composerQueue.children.at(-1).querySelector('.steer-queue-remove').listeners.click();
+    assert.equal(app.composerQueue.children.length, 0);
+    assert.equal(app.userInput.value, 'more typing');
+});
+
+test('an ordinary error or an ended turn leaves no text for a later refusal to bring back', () => {
+    const app = grantApp();
+    const restored = [];
+    const noop = () => {};
+    Object.assign(app, {
+        _restoreRefusedText: text => restored.push(text), clearTerminals: noop, _queuedMessages: new Map(),
+        removeThinking: noop, _finalizeLiveCollapsedGroup: noop, ensureStepRendered: noop, _finishActiveTask: noop,
+        getRenderTarget: () => app.chatMessages, _renderAccountMenu: noop, _setSessionActivity: noop,
+        _clearPromptSuggestion: noop, _startLiveRun: noop, _stopLiveRun: noop,
+        sendBtn: {style: {}, setAttribute: noop}, stopBtn: {style: {}},
+        userInput: {value: '', style: {}, focus: noop, closest: () => null},
+    });
+    // An ordinary error before the turn started: the text isn't coming back.
+    app.isRunning = true;
+    app._pendingTurnText = 'first message';
+    app._pendingTurnImages = [{data: 'A'}];
+    app.handleEvent({event: 'error', message: 'The model stopped responding.'});
+    assert.equal(app._pendingTurnText, '');
+    assert.equal(app._pendingTurnImages.length, 0);
+    // So a team_active refusal of the next command brings nothing back.
+    app.handleEvent({event: 'error', code: 'team_active', message: 'The team is still working.'});
+    assert.deepEqual(restored, []);
+    // Nor does one after the running state ended: setRunning(false) clears what waited.
+    app.setRunning(true);
+    app._pendingTurnText = 'left over';
+    app.setRunning(false);
+    assert.equal(app._pendingTurnText, '');
+    app.handleEvent({event: 'error', code: 'team_active', message: 'The team is still working.'});
+    assert.deepEqual(restored, []);
+    // While a sent message waits to start, team_active refuses it like any refusal.
+    app.setRunning(true);
+    app._pendingTurnText = 'the waiting one';
+    app.handleEvent({event: 'error', code: 'team_active', message: 'The team is still working.'});
+    assert.deepEqual(restored, ['the waiting one']);
+    assert.equal(app.isRunning, false);
+});
+
+test('the Ollama card says when OLLAMA_HOST overrides the saved address, and a Test ticks nothing', () => {
+    const app = grantApp();
+    Object.assign(app, {
+        settings: {network: {ollama_url: 'http://gpu-box:11434'}, onboarding: {}},
+        _ollamaAddress: {in_use: 'http://127.0.0.1:9', saved: 'http://gpu-box:11434', environment: 'OLLAMA_HOST'},
+        backends: {},
+    });
+    assert.match(app._ollamaOverrideNote(), /^OLLAMA_HOST is set to http:\/\/127\.0\.0\.1:9 in Lumi’s environment, so Lumi uses that address instead of the one saved here \(http:\/\/gpu-box:11434\)\. To use the saved address, remove OLLAMA_HOST/);
+    // Save: stored, but never named as the address Lumi now uses.
+    app.providerConnections = {ollama: {status: 'unreachable', url: 'http://127.0.0.1:9', saved: true, action: 'save',
+        error: 'Nothing answered as Ollama at http://127.0.0.1:9.', address: app._ollamaAddress}};
+    assert.equal(app._ollamaCardStatus(), 'Saved http://gpu-box:11434, but Lumi uses http://127.0.0.1:9 from OLLAMA_HOST. Nothing answered as Ollama at http://127.0.0.1:9.');
+    // A Test found a server at the typed address: nothing saved, and "Connect a model" isn't done.
+    app.providerConnections = {ollama: {status: 'ready', url: 'http://gpu-box:11434', model_count: 2, saved: false,
+        action: 'test', address: app._ollamaAddress}};
+    assert.match(app._ollamaCardStatus(), /Nothing was saved; while OLLAMA_HOST is set, Lumi uses its address instead\./);
+    assert.equal(app._onboardingSteps().model, false);
+    // Without the override, the help never promises what a save does beyond storing it.
+    app._ollamaAddress = {in_use: 'http://gpu-box:11434', saved: 'http://gpu-box:11434', environment: ''};
+    assert.equal(app._ollamaOverrideNote(), '');
+    app.providerConnections = {ollama: {status: 'ready', url: 'http://gpu-box:11434', model_count: 2, saved: true,
+        action: 'save', address: app._ollamaAddress}};
+    assert.equal(app._ollamaCardStatus(), 'Connected to http://gpu-box:11434 · 2 chat models. Choose one in the model menu.');
+    assert.equal(app._onboardingSteps().model, true);  // a saved, working connection
+});
+
+test('a check updates only the Ollama card: other fields and focus stay as they are', () => {
+    const app = grantApp();
+    const body = app.el('div');
+    const card = app.el('div');
+    card.setAttribute('data-ollama-card', '');
+    const status = app.el('p');
+    status.setAttribute('data-ollama-status', '');
+    const override = app.el('p');
+    override.setAttribute('data-ollama-override', '');
+    const input = app.el('input');
+    input.setAttribute('data-ollama-url', '');
+    input.value = 'typed-but-not-saved';
+    const buttons = ['test', 'save'].map(action => {
+        const button = app.el('button');
+        button.setAttribute('data-ollama-action', action);
+        button.textContent = action === 'test' ? 'Testing…' : 'Save';
+        button.setAttribute('aria-disabled', 'true');
+        return button;
+    });
+    card.append(status, override, input, ...buttons);
+    const key = app.el('input');  // an API key being typed further down the page
+    key.value = 'sk-ant-half-typ';
+    body.append(card, key);
+    app.dom.body.appendChild(body);
+    key.focus();
+    let rendered = 0;
+    Object.assign(app, {settingsBody: body, currentView: 'settings', settings: {network: {ollama_url: ''}},
+        renderSettingsView: () => { rendered += 1; }, _renderAccountMenu: () => {}, _ollamaPending: 'test',
+        _ollamaUrlDraft: 'typed-but-not-saved'});
+    app.handleEvent({event: 'provider_connection', provider: 'ollama', data: {status: 'ready',
+        url: 'http://127.0.0.1:11434', model_count: 1, saved: false, action: 'test',
+        address: {in_use: 'http://127.0.0.1:11434', saved: '', environment: ''}}});
+    assert.equal(rendered, 0);
+    assert.equal(app.dom.document.activeElement, key);
+    assert.equal(key.value, 'sk-ant-half-typ');
+    assert.equal(input.value, 'typed-but-not-saved');
+    assert.match(status.textContent, /^Ollama answered at http:\/\/127\.0\.0\.1:11434 with 1 chat model\. Nothing was saved/);
+    assert.deepEqual(buttons.map(button => [button.textContent, button.getAttribute('aria-disabled')]),
+        [['Test', null], ['Save', null]]);
+    assert.equal(override.hidden, true);
+});
+
+test('the diagnostics note names Luminary Analytics support and its address', () => {
+    const app = grantApp();
+    app._showDiagnosticsToast('C:/Users/x/Downloads/lumi-diagnostics-1.zip', 2048, true);
+    const toast = app.chatMessages.querySelector('.diagnostics-toast');
+    assert.match(toast.querySelector('.diagnostics-toast-meta').textContent,
+        /email it with your report to Luminary Analytics support at rich\.bellantoni@luminaryanalytics\.com\./);
+    assert.ok(toast.querySelector('.diagnostics-toast-copy-email'));
+    assert.doesNotMatch(toast.textContent, /GitHub/);
 });

@@ -72,8 +72,9 @@ never sent, so its outcome is known.
 
 | Team | Needs |
 | --- | --- |
-| Read-only (no writable folders) | Any mode; every policy allows at least one |
+| Read-only (no writable folders), which you review | Any mode; every policy allows at least one |
 | With writers (edits in isolated worktrees, which you apply) | `auto-edit` or `bypass` |
+| Run by the orchestrator (**Let the orchestrator run the team**: it approves plans and accepts results for you) | `bypass` (Full-auto), as missions do |
 | With **Apply changes that pass every check** (changes your checkout and runs checks without asking) | `bypass` (Full-auto), as missions do |
 
 A team the policy's modes don't allow is refused when it starts, and a running
@@ -204,10 +205,14 @@ and you don't approve each step.
 
 The orchestrator decides for you, so it needs Full-auto, as a mission does. In
 another mode the form says so, and **Start** (or **Continue** after a
-recovery) is refused with **Switch to Full-auto and start the team**: one
-click switches the conversation and starts it (`gui/swarming.py`). A team you
-review yourself needs no particular mode. The orchestrator then works like
-this:
+recovery) is refused with **Run this team in Full-auto** (or **Continue this
+team in Full-auto**): one click sends the same Start again with your consent
+for this team only (`full_auto: true`, `gui/swarming.py`), and the
+conversation keeps its mode. The button never takes focus, so a second Enter
+on Start can't press it. A team you review yourself needs no particular mode.
+Under a policy that doesn't allow Full-auto, a team the orchestrator runs is
+refused, even one that only reads, and nothing is offered. The orchestrator
+then works like this:
 
 - Its plans run after the checks your approval would get: the exact
   proposal, the team's policy, tools, criteria and dependencies. Each task

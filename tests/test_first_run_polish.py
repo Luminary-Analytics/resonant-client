@@ -9,7 +9,9 @@ the Codex CLI, and the diagnostics file pointed at GitHub issues.
 
 from __future__ import annotations
 
+import asyncio
 import json
+import os
 import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -65,10 +67,139 @@ def test_an_existing_file_without_a_mode_keeps_the_earlier_full_auto(tmp_path, g
     assert json.loads(path.read_text(encoding="utf-8"))["general"]["default_permission_mode"] == "bypass"
 
 
-def test_an_unreadable_settings_file_gets_the_new_default(tmp_path):
+def test_an_unreadable_settings_file_runs_on_the_new_default_and_is_kept(tmp_path):
     path = tmp_path / "settings.json"
     path.write_text("{not json", encoding="utf-8")
-    assert SettingsManager(path).get("general", "default_permission_mode") == "auto-edit"
+    settings = SettingsManager(path)
+    assert settings.get("general", "default_permission_mode") == "auto-edit"
+    assert path.read_text(encoding="utf-8") == "{not json"
+
+
+# ── settings.json that can't be read is never written over ─────────────────
+# Before, a file with a byte-order mark (Notepad, Windows PowerShell 5.1) or
+# one another program held for a moment (an antivirus scan) was read as empty
+# and rewritten with defaults: every setting and key it held was lost.
+
+_SAVED = {"general": {"default_permission_mode": "ask", "theme": "light", "display_name": "Alex"},
+          "api_keys": {"openrouter": "sk-or-kept"}}
+
+
+def test_a_settings_file_with_a_byte_order_mark_is_read(tmp_path):
+    path = tmp_path / "settings.json"
+    path.write_bytes(b"\xef\xbb\xbf" + json.dumps(_SAVED).encode("utf-8"))
+    settings = SettingsManager(path)
+    assert settings.load_error == ""
+    assert (settings.get("general", "display_name"), settings.get("general", "theme")) == ("Alex", "light")
+    assert settings.get("general", "default_permission_mode") == "ask"
+    assert settings.get("api_keys", "openrouter") == "sk-or-kept"
+    # Saved again without the mark, and with everything it held.
+    saved = json.loads(path.read_text(encoding="utf-8"))
+    assert saved["general"]["display_name"] == "Alex" and saved["api_keys"]["openrouter"] == "sk-or-kept"
+
+
+@pytest.mark.parametrize("content", [b"{not json", b"[1, 2]", b"\xff\xfe{\x00}\x00", b""],
+                         ids=["invalid JSON", "not an object", "not UTF-8", "empty"])
+def test_a_settings_file_that_cant_be_parsed_is_kept_and_never_written_over(tmp_path, monkeypatch, content):
+    from lumi.gui import settings as settings_module
+
+    monkeypatch.setattr(settings_module, "_FILE_RETRY_SECONDS", 0)
+    path = tmp_path / "settings.json"
+    path.write_bytes(content)
+    settings = SettingsManager(path)
+    assert str(path) in settings.load_error and "won't save any change" in settings.load_error
+    assert settings.get("general", "default_permission_mode") == "auto-edit"  # defaults meanwhile
+    settings.set("general", "theme", "light")
+    assert settings.get("general", "theme") == "light"  # for this run
+    assert path.read_bytes() == content
+    assert not settings.backup_path.exists()
+    # The page and the terminal say so (Settings, the banner above the message box).
+    assert settings.get_masked()["_meta"]["load_error"] == settings.load_error
+
+
+def test_a_settings_file_held_for_a_moment_is_read_once_it_is_free(tmp_path, monkeypatch):
+    from pathlib import Path
+
+    from lumi.gui import settings as settings_module
+
+    monkeypatch.setattr(settings_module, "_FILE_RETRY_SECONDS", 0)
+    path = tmp_path / "settings.json"
+    path.write_text(json.dumps(_SAVED), encoding="utf-8")
+    real_read = Path.read_text
+    attempts = []
+
+    def held(self, *args, **kwargs):
+        if self == path and len(attempts) < 2:
+            attempts.append("held")
+            raise PermissionError(13, "The process cannot access the file because it is being used by another process")
+        return real_read(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", held)
+    settings = SettingsManager(path)
+    assert attempts == ["held", "held"] and settings.load_error == ""
+    assert settings.get("general", "display_name") == "Alex"
+
+
+def test_a_settings_file_that_stays_locked_is_kept(tmp_path, monkeypatch):
+    from pathlib import Path
+
+    from lumi.gui import settings as settings_module
+
+    monkeypatch.setattr(settings_module, "_FILE_RETRY_SECONDS", 0)
+    path = tmp_path / "settings.json"
+    path.write_text(json.dumps(_SAVED), encoding="utf-8")
+    real_read = Path.read_text
+
+    def locked(self, *args, **kwargs):
+        if self == path:
+            raise PermissionError(13, "The process cannot access the file because it is being used by another process")
+        return real_read(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", locked)
+    settings = SettingsManager(path)
+    monkeypatch.setattr(Path, "read_text", real_read)
+    assert "being used by another process" in settings.load_error
+    settings.set("general", "theme", "dark")
+    assert json.loads(path.read_text(encoding="utf-8")) == _SAVED
+
+
+def test_each_save_keeps_the_file_as_it_was_in_a_backup(tmp_path):
+    path = tmp_path / "settings.json"
+    path.write_text(json.dumps(_SAVED), encoding="utf-8")
+    settings = SettingsManager(path)
+    before = path.read_text(encoding="utf-8")
+    settings.set("general", "theme", "dark")
+    assert settings.backup_path == tmp_path / "settings.json.bak"
+    assert settings.backup_path.read_text(encoding="utf-8") == before
+    assert json.loads(path.read_text(encoding="utf-8"))["general"]["theme"] == "dark"
+    # One backup: the next save replaces it with the file before that save.
+    settings.set("general", "theme", "light")
+    assert json.loads(settings.backup_path.read_text(encoding="utf-8"))["general"]["theme"] == "dark"
+    assert sorted(item.name for item in tmp_path.iterdir()) == ["settings.json", "settings.json.bak"]
+    # A new install has nothing to back up.
+    fresh = SettingsManager(tmp_path / "new" / "settings.json")
+    assert fresh.load_error == "" and not fresh.backup_path.exists()
+
+
+def test_a_save_that_fails_leaves_the_file_whole(tmp_path, monkeypatch):
+    from lumi.gui import settings as settings_module
+
+    monkeypatch.setattr(settings_module, "_FILE_RETRY_SECONDS", 0)
+    path = tmp_path / "settings.json"
+    path.write_text(json.dumps(_SAVED), encoding="utf-8")
+    settings = SettingsManager(path)
+    before = path.read_text(encoding="utf-8")
+    real_replace = settings_module.os.replace
+
+    def refuse(source, target):
+        if str(target) == str(path):
+            raise PermissionError(13, "Access is denied")
+        return real_replace(source, target)
+
+    monkeypatch.setattr(settings_module.os, "replace", refuse)
+    settings.set("general", "theme", "dark")
+    assert path.read_text(encoding="utf-8") == before
+    # No half-written copy is left beside it.
+    assert sorted(item.name for item in tmp_path.iterdir()) == ["settings.json", "settings.json.bak"]
 
 
 def test_an_empty_mode_means_a_new_installs_default():
@@ -102,19 +233,56 @@ def _app_state(mode: str) -> AppState:
     return state
 
 
-@pytest.mark.parametrize("work", ["plan", "roadmap", "autonomous", "autonomous_resume", "team", "team_continue"])
-def test_unattended_work_outside_full_auto_is_refused_with_the_switch(work):
-    needed = _app_state("auto-edit").full_auto_needed(work)
-    assert needed["code"] == "needs_full_auto" and needed["can_switch"] is True
-    assert "Full-auto" in needed["message"] and "This conversation is in Auto-edit." in needed["message"]
-    assert _app_state("ask").full_auto_needed(work)["message"].count("in Ask.") == 1
+@pytest.mark.parametrize(("work", "grant"), [
+    ("plan", "run this plan"), ("roadmap", "build this roadmap"), ("autonomous", "run this session"),
+    ("autonomous_resume", "resume this session"), ("team", "run this team"), ("team_continue", "continue this team"),
+])
+def test_unattended_work_outside_full_auto_asks_to_run_just_that_in_full_auto(work, grant):
+    state = _app_state("auto-edit")
+    needed = state.full_auto_needed(work)
+    assert needed["code"] == "needs_full_auto" and needed["can_grant"] is True and needed["work"] == work
+    assert needed["message"].endswith(f"This conversation is in Auto-edit, and stays in Auto-edit if you {grant} in Full-auto.")
+    assert "stays in Ask" in _app_state("ask").full_auto_needed(work)["message"]
     assert _app_state("bypass").full_auto_needed(work) is None
+    # The person's grant for this one run: it goes ahead, and the conversation keeps its mode.
+    assert state.full_auto_needed(work, granted=True) is None
+    assert state.permission_mode == "auto-edit"
+
+
+def test_only_a_grant_the_page_sends_as_true_counts():
+    assert ws_commands.full_auto_granted({"full_auto": True}) is True
+    for msg in ({}, {"full_auto": "true"}, {"full_auto": 1}, None, "full_auto"):
+        assert ws_commands.full_auto_granted(msg) is False
 
 
 def test_where_the_organization_doesnt_allow_full_auto_its_own_refusal_applies():
     _without_full_auto()
-    # policy.full_auto_refusal (and the team's mode_refusal) say it in the organization's words.
+    # policy.full_auto_refusal (and the team's mode_refusal) say it in the organization's words,
+    # grant or not: there is no grant to offer.
     assert _app_state("auto-edit").full_auto_needed("plan") is None
+    assert _app_state("auto-edit").full_auto_needed("team", granted=True) is None
+    assert "doesn't allow Full-auto" in lumi_policy.full_auto_refusal()
+
+
+@pytest.mark.parametrize("apply", [False, True], ids=["reads and reports", "applies changes"])
+def test_a_policy_without_full_auto_refuses_a_team_the_orchestrator_runs(tmp_path, apply):
+    # The rule AppState.full_auto_needed defers to: an orchestrated team needs
+    # Full-auto under a policy too, not only one whose orchestrator applies changes.
+    from lumi.engine.swarming import organization
+
+    _without_full_auto()
+    refusal = organization.mode_refusal(writers=apply, applies=apply, orchestrated=True)
+    assert refusal.startswith("Acme's policy doesn't allow Full-auto")
+    assert organization.mode_refusal(writers=False, applies=False) == ""  # a team the owner reviews
+    setup = {"model": {"provider": "ollama", "model": "m"}, "plan_mode": "coordinator",
+             "autonomy": {"rounds": 2, **({"apply": True} if apply else {})},
+             **({"write_roots": ["src"]} if apply else {})}
+    governance = organization.TeamGovernance.from_setup(None, setup, run_id="run-1", project=str(tmp_path),
+                                                        session="s", personal=True)
+    assert governance.orchestrated is True and "doesn't allow Full-auto" in governance.refusal()
+    reviewed = organization.TeamGovernance.from_setup(None, {**setup, "autonomy": {}}, run_id="run-2",
+                                                      project=str(tmp_path), session="s", personal=True)
+    assert reviewed.orchestrated is False
 
 
 class _Intents:
@@ -141,7 +309,36 @@ def test_a_plan_outside_full_auto_is_refused_before_it_starts():
     # The /plan card matches the prefix (app.js _failStartingPlan); detail is the explanation alone.
     assert event["event"] == "error" and event["message"].startswith("intent_start failed: A plan runs its steps")
     assert event["detail"].startswith("A plan runs its steps") and event["code"] == "needs_full_auto"
-    assert event["can_switch"] is True and intents.started == []
+    assert event["can_grant"] is True and event["work"] == "plan" and intents.started == []
+
+
+def test_a_plan_granted_full_auto_runs_and_the_conversation_keeps_its_mode():
+    intents = _Intents()
+    conversation = _app_state("auto-edit")
+    state = SimpleNamespace(full_auto_needed=conversation.full_auto_needed, backend=object(),
+                            get_intent_service=lambda on_event=None: intents)
+    msg = {"command": "intent_start", "text": "Add a counter", "full_auto": True}
+    sent = _run(ws_commands.HANDLERS["intent_start"], _ctx(state, msg))
+    assert sent == [{"event": "intent.accepted", "intent_id": "intent-1", "text": "Add a counter"}]
+    assert intents.started == ["Add a counter"]
+    # Nothing switched the conversation: its next plan asks again.
+    assert conversation.permission_mode == "auto-edit"
+    [again] = _run(ws_commands.HANDLERS["intent_start"], _ctx(state, {"command": "intent_start", "text": "More"}))
+    assert again["code"] == "needs_full_auto" and intents.started == ["Add a counter"]
+
+
+def test_a_granted_plan_is_still_refused_where_the_policy_doesnt_allow_full_auto(tmp_path):
+    # The engine's own refusal: IntentService.start_intent checks the policy.
+    from lumi.orchestration.intent_service import IntentService
+
+    _without_full_auto()
+    service = IntentService(project_path=str(tmp_path), backend=object(), all_tools=[], settings=None)
+    state = SimpleNamespace(full_auto_needed=_app_state("auto-edit").full_auto_needed, backend=object(),
+                            get_intent_service=lambda on_event=None: service)
+    msg = {"command": "intent_start", "text": "Add a counter", "full_auto": True}
+    [event] = _run(ws_commands.HANDLERS["intent_start"], _ctx(state, msg))
+    assert event["event"] == "error" and "Acme's policy doesn't allow Full-auto" in event["message"]
+    assert "code" not in event  # no grant to offer
 
 
 def test_a_plan_in_full_auto_starts():
@@ -160,10 +357,26 @@ def test_build_this_roadmap_outside_full_auto_leaves_the_mission_in_drafting():
     state = _refusing_state(project=SimpleNamespace(project_path="/p", current_session=mission),
                             get_intent_service=lambda on_event=None: intents)
     [event] = _run(ws_commands.HANDLERS["mission_dispatch_roadmap"], _ctx(state, {"spec_markdown": "## Final spec"}))
-    # source puts the Build button back; the page's notice offers the switch.
+    # source puts the Build button back; the page's notice offers to build this roadmap in Full-auto.
     assert event["source"] == "mission_dispatch" and event["code"] == "needs_full_auto"
-    assert event["message"].startswith("A roadmap is built in Full-auto")
+    assert event["message"].startswith("A roadmap is built in Full-auto") and event["can_grant"] is True
     assert advanced == [] and intents.started == []
+
+
+def test_build_this_roadmap_in_full_auto_dispatches_it_and_keeps_the_mode():
+    advanced = []
+    mission = SimpleNamespace(id="s1", mission_state={"phase": "drafting"},
+                              advance_mission_phase=lambda *args, **kwargs: advanced.append(args), save=lambda: None)
+    intents = _Intents()
+    conversation = _app_state("auto-edit")
+    state = SimpleNamespace(full_auto_needed=conversation.full_auto_needed,
+                            project=SimpleNamespace(project_path="/p", current_session=mission,
+                                                    list_sessions=lambda: [], list_all_sessions=lambda: []),
+                            get_intent_service=lambda on_event=None: intents)
+    sent = _run(ws_commands.HANDLERS["mission_dispatch_roadmap"],
+                _ctx(state, {"spec_markdown": "## Final spec", "full_auto": True}))
+    assert intents.started == ["## Final spec"] and advanced == [("planning_dispatched",)]
+    assert sent[0]["event"] == "mission_phase_changed" and conversation.permission_mode == "auto-edit"
 
 
 def test_an_autonomous_session_outside_full_auto_neither_starts_nor_resumes(monkeypatch):
@@ -195,8 +408,48 @@ def test_an_autonomous_session_outside_full_auto_neither_starts_nor_resumes(monk
     assert dispatch["source"] == "mission_dispatch" and dispatch["code"] == "needs_full_auto"
     assert dispatch["message"].startswith("An autonomous session runs in Full-auto")
     assert (resume["source"], resume["intent_id"], resume["session_id"]) == ("autonomous_resume", "auto-1", "s-other")
-    assert resume["code"] == "needs_full_auto" and resume["can_switch"] is True
+    assert resume["code"] == "needs_full_auto" and resume["can_grant"] is True
     assert started == [] and gui_app.state.project.current_session is mission
+
+
+def test_an_autonomous_session_granted_full_auto_starts_and_resumes_in_its_mode(monkeypatch):
+    from lumi.gui import app as gui_app
+    from tests.gui_access import LocalClient
+
+    started = []
+
+    def start(kind):
+        def reached(**kwargs):
+            started.append((kind, gui_app.state.permission_mode))
+            raise ValueError("stopped here by the test")  # the handler reports it; nothing runs
+        return reached
+
+    monkeypatch.setattr(gui_app, "_start_autonomous_mission", start("start"))
+    monkeypatch.setattr(gui_app, "_resume_autonomous_mission", start("resume"))
+    mission = SimpleNamespace(id="s1", title="Counter", mission_state={"phase": "drafting"})
+    monkeypatch.setattr(gui_app.state, "permission_mode", "auto-edit")
+    monkeypatch.setattr(gui_app.state.project, "current_session", mission)
+
+    def first_error(websocket):
+        for _ in range(20):
+            event = websocket.receive_json()
+            if event.get("event") == "error":
+                return event
+        raise AssertionError("no error event")
+
+    with LocalClient(gui_app.app) as client:
+        with client.websocket_connect("/ws") as websocket:
+            websocket.send_json({"command": "mission_dispatch_autonomous", "spec_markdown": "## Final spec",
+                                 "time_budget": "4h", "full_auto": True})
+            dispatch = first_error(websocket)
+            websocket.send_json({"command": "autonomous_mission_resume", "intent_id": "auto-1",
+                                 "session_id": "s1", "full_auto": True})
+            resume = first_error(websocket)
+    assert dispatch["message"] == "Autonomous dispatch failed: stopped here by the test"
+    assert resume["message"] == "Resume failed: stopped here by the test"
+    # Both reached their start in the conversation's own mode: only that run was granted Full-auto.
+    assert started == [("start", "auto-edit"), ("resume", "auto-edit")]
+    assert gui_app.state.permission_mode == "auto-edit"
 
 
 class _Manager:
@@ -217,16 +470,50 @@ class _Manager:
 ], ids=["orchestrated", "applies changes", "continue orchestrated", "reviewed by the owner",
         "continue reviewed", "resume a running team"])
 def test_a_team_the_orchestrator_runs_needs_full_auto(message, orchestrated, work):
-    asked = []
-
-    def full_auto_needed(kind):
-        asked.append(kind)
-        return {"message": "needs it", "code": "needs_full_auto", "can_switch": True}
-
-    state = SimpleNamespace(full_auto_needed=full_auto_needed)
+    state = _app_state("auto-edit")
     needed = swarming._full_auto_needed(state, _Manager(orchestrated), object(), message)
-    assert asked == ([work] if work else [])
     assert (needed is not None) == bool(work)
+    if work:
+        assert needed["code"] == "needs_full_auto" and needed["can_grant"] is True
+        # The owner's grant for this one team: no refusal, and the conversation's mode stays.
+        granted = swarming._full_auto_needed(state, _Manager(orchestrated), object(), {**message, "full_auto": True})
+        assert granted is None and state.permission_mode == "auto-edit"
+
+
+class _Operated:
+    """A SwarmRuntime stand-in that records what reaches the team engine."""
+
+    busy = False
+
+    def __init__(self):
+        self.operated = []
+
+    def orchestrated(self, capture, run_id):
+        return False
+
+    def operate(self, capture, message):
+        self.operated.append(message)
+        return {"run": None}
+
+
+def test_the_team_engine_never_sees_the_grant_and_the_mode_stays(monkeypatch):
+    runtime = _Operated()
+    conversation = _app_state("auto-edit")
+    state = SimpleNamespace(full_auto_needed=conversation.full_auto_needed, _swarm_desktop=runtime)
+    monkeypatch.setattr(swarming, "_capture", lambda *args: object())
+    replies = []
+
+    async def send(reply):
+        replies.append(reply)
+
+    start = {"command": "swarm", "action": "start", "request_id": "r1", "project": "p", "session_id": "s",
+             "objective": "Check the CSV export", "plan_mode": "coordinator", "autonomy": {"rounds": 2}}
+    asyncio.run(swarming.command(state, send, dict(start)))
+    assert replies[-1]["code"] == "needs_full_auto" and replies[-1]["can_grant"] is True and runtime.operated == []
+    asyncio.run(swarming.command(state, send, {**start, "full_auto": True}))
+    [operated] = runtime.operated
+    assert "full_auto" not in operated and operated["autonomy"] == {"rounds": 2}
+    assert conversation.permission_mode == "auto-edit"
 
 
 def test_the_runtime_knows_which_retained_teams_the_orchestrator_runs(tmp_path):
@@ -351,24 +638,67 @@ def _connection(state, action, url=""):
 
 
 def test_testing_an_ollama_address_saves_nothing(tmp_path, ollama, monkeypatch):
+    monkeypatch.delenv("OLLAMA_HOST", raising=False)
     server, url = ollama
     monkeypatch.setattr(_Ollama, "models", ["qwen3-coder:30b"])
     state = _OllamaState(tmp_path, "http://127.0.0.1:9")
     [event] = _connection(state, "test", url)
-    assert event["data"] == {"status": "ready", "url": url, "models": ["qwen3-coder:30b"], "model_count": 1, "saved": False}
+    assert event["data"] == {"status": "ready", "url": url, "models": ["qwen3-coder:30b"], "model_count": 1,
+                             "saved": False, "action": "test",
+                             "address": {"in_use": "http://127.0.0.1:9", "saved": "", "environment": ""}}
     assert state.settings.get("network", "ollama_url") == "" and state.detected == 0 and state.started == 0
 
 
+def test_testing_an_empty_address_checks_this_computer(tmp_path, monkeypatch):
+    # "Leave it empty for this computer": what saving it would mean, whatever OLLAMA_HOST says.
+    monkeypatch.setenv("OLLAMA_HOST", "http://10.9.9.9:11434")
+    probed = []
+    monkeypatch.setattr(ws_commands, "probe_ollama", lambda url: probed.append(url) or {"status": "unreachable", "url": url})
+    state = _OllamaState(tmp_path, "http://10.9.9.9:11434")
+    _connection(state, "test", "")
+    assert probed == ["http://127.0.0.1:11434"]
+
+
 def test_saving_an_ollama_address_stores_it_and_starts_a_model(tmp_path, ollama, monkeypatch):
+    monkeypatch.delenv("OLLAMA_HOST", raising=False)
     server, url = ollama
     monkeypatch.setattr(_Ollama, "models", ["qwen3-coder:30b"])
     state = _OllamaState(tmp_path, "http://127.0.0.1:9")
     settings_event, connection, init = _connection(state, "save", url + "/")
     assert settings_event == {"event": "settings", "data": {"network": {"ollama_url": url}}}
     assert connection["data"]["status"] == "ready" and connection["data"]["saved"] is True
+    assert connection["data"]["action"] == "save"
+    assert connection["data"]["address"] == {"in_use": url, "saved": url, "environment": ""}
     assert init == {"event": "init", "refresh_only": True}
     assert state.settings.get("network", "ollama_url") == url
     assert state.detected == 1 and state.started == 1
+
+
+class _ResolvingOllamaState(_OllamaState):
+    """Resolves the address as the app does (network_defaults.resolve_ollama_url): OLLAMA_HOST first."""
+
+    def update_setting_value(self, section, key, value):
+        from lumi.network_defaults import resolve_ollama_url
+
+        self.settings.set(section, key, value)
+        self.ollama_url = resolve_ollama_url(settings_data=self.settings.get_all())
+        return {"network": {"ollama_url": value}}
+
+
+def test_ollama_host_takes_the_saved_address_place_and_the_card_is_told(tmp_path, ollama, monkeypatch):
+    server, url = ollama
+    monkeypatch.setattr(_Ollama, "models", ["qwen3-coder:30b"])
+    monkeypatch.setenv("OLLAMA_HOST", "http://127.0.0.1:9")
+    state = _ResolvingOllamaState(tmp_path, "http://127.0.0.1:9")
+    settings_event, connection, init = _connection(state, "save", url)
+    # Saved as asked, but the app goes on using OLLAMA_HOST's address, and says so.
+    assert state.settings.get("network", "ollama_url") == url
+    assert connection["data"]["address"] == {"in_use": "http://127.0.0.1:9", "saved": url, "environment": "OLLAMA_HOST"}
+    # The check was of the address in use, never reported as the one saved.
+    assert connection["data"]["url"] == "http://127.0.0.1:9" and connection["data"]["status"] == "unreachable"
+    assert state.started == 0
+    monkeypatch.delenv("OLLAMA_HOST")
+    assert ws_commands.ollama_address_in_use(state, lambda: "unused")["environment"] == ""
 
 
 def test_a_bad_ollama_address_is_refused_and_not_saved(tmp_path):
@@ -413,9 +743,17 @@ def test_chatgpt_sign_in_without_the_codex_cli_says_what_to_install(monkeypatch)
 # ── Diagnostics ────────────────────────────────────────────────────────────
 
 
+def _windows_folder() -> str:
+    import ctypes
+
+    buffer = ctypes.create_unicode_buffer(32768)
+    assert ctypes.windll.kernel32.GetWindowsDirectoryW(buffer, len(buffer))
+    return buffer.value
+
+
 def test_show_in_folder_reveals_only_the_saved_diagnostics(tmp_path, monkeypatch):
     opened = []
-    monkeypatch.setattr(ws_commands.subprocess, "Popen", lambda args, **kwargs: opened.append(args))
+    monkeypatch.setattr(ws_commands.subprocess, "Popen", lambda args, **kwargs: opened.append((args, kwargs)))
     state = SimpleNamespace()
     [event] = _run(ws_commands.HANDLERS["reveal_diagnostics"], _ctx(state, {"path": str(tmp_path / "other.zip")}))
     assert "isn't there anymore" in event["message"] and opened == []
@@ -426,5 +764,40 @@ def test_show_in_folder_reveals_only_the_saved_diagnostics(tmp_path, monkeypatch
     # The page names no path; one it sends anyway is ignored.
     [event] = _run(ws_commands.HANDLERS["reveal_diagnostics"], _ctx(state, {"path": "C:/Windows/System32"}))
     assert event["message"] == "Showing lumi-diagnostics-1.zip in its folder"
-    expected = {"win32": f'explorer /select,"{saved}"', "darwin": ["open", "-R", str(saved)]}
-    assert opened == [expected.get(sys.platform, ["xdg-open", str(tmp_path)])]
+    [(args, kwargs)] = opened
+    # A list of arguments, never a command line for a shell to read.
+    assert isinstance(args, list) and args[-1] in {str(saved), str(tmp_path)}
+    assert kwargs.get("shell") is not True
+    if sys.platform == "win32":
+        assert args[1:] == ["/select,", str(saved)]
+        # The file manager's window shows: no hidden start-up for it.
+        assert "startupinfo" not in kwargs
+    elif sys.platform == "darwin":
+        assert args == ["/usr/bin/open", "-R", str(saved)]
+
+
+def test_show_in_folder_starts_the_file_manager_by_its_absolute_path(tmp_path, monkeypatch):
+    # The app's working folder is the open project, and Windows looks for a
+    # bare "explorer" there first: a repository's own explorer.exe must never run.
+    project = tmp_path / "cloned-repo"
+    project.mkdir()
+    (project / "explorer.exe").write_bytes(b"MZ not the real one")
+    (project / "explorer.bat").write_text("@echo off\r\necho hijacked\r\n", encoding="ascii")
+    monkeypatch.chdir(project)
+    saved = tmp_path / "lumi-diagnostics-1.zip"
+    saved.write_bytes(b"PK")
+    started = []
+    monkeypatch.setattr(ws_commands.subprocess, "Popen", lambda args, **kwargs: started.append(args))
+    state = SimpleNamespace(_last_diagnostics_zip=str(saved))
+    _run(ws_commands.HANDLERS["reveal_diagnostics"], _ctx(state, {}))
+    [args] = started
+    program = args[0]
+    assert os.path.isabs(program), program
+    assert not os.path.normcase(program).startswith(os.path.normcase(str(project)))
+    if sys.platform == "win32":
+        # From GetWindowsDirectoryW, not from the environment or PATH.
+        assert os.path.normcase(program) == os.path.normcase(os.path.join(_windows_folder(), "explorer.exe"))
+        assert os.path.isfile(program)
+    assert ws_commands.show_in_folder_command(str(saved))[0] == program
+    with pytest.raises(ValueError):
+        ws_commands.show_in_folder_command("relative/lumi-diagnostics-1.zip")

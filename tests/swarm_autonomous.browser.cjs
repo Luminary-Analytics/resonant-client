@@ -1,4 +1,6 @@
 /* An orchestrated team in the full source app: real WebSocket, runtime and store; inference scripted.
+ * The conversation is in Auto-edit, a new install's mode: Start is refused with the offer to
+ * run just this team in Full-auto, which the keyboard takes; the conversation stays in Auto-edit.
  * node tests/swarm_autonomous.browser.cjs [absolute-path-to-playwright-module]
  * Optional SWARM_PYTHON and SWARM_BROWSER_EXECUTABLE select local runtimes.
  */
@@ -83,9 +85,24 @@ test('The orchestrator runs a team from the panel and reports back', {timeout: 9
                 if(form&&!form.hidden&&app._swarmState?.autonomy?.active)window.__followupShown=true;
             }).observe(document.body,{subtree:true,childList:true,characterData:true,attributes:true});
         });
+        assert.equal(await page.locator('#perm-label').textContent(),'Auto-edit');
+        await page.getByText('starting asks first, and offers to run just this team in Full-auto',{exact:false}).waitFor();
         await page.getByRole('button',{name:'Start orchestrated team'}).click();
+        // Refused in Auto-edit, with the offer; focus never lands on it, so a second Enter grants nothing.
+        const grant=page.getByRole('button',{name:'Run this team in Full-auto'});
+        await grant.waitFor();
+        assert.equal(await page.evaluate(()=>document.activeElement?.classList.contains('swarm-full-auto-grant')),false);
+        assert.equal(await page.evaluate(()=>getComputedStyle(document.querySelector('[data-swarm="notice"]')).display!=='none'),true);
+        // The keyboard path: the notice (a status), then Tab to its button, then Enter.
+        await page.locator('[data-swarm="notice"]').click({position:{x:4,y:4}});
+        await page.keyboard.press('Tab');
+        assert.equal(await page.evaluate(()=>document.activeElement?.textContent),'Run this team in Full-auto');
+        await page.keyboard.press('Enter');
         const report=page.locator('[data-swarm="orchestrator-report-text"]');
         await report.waitFor({state:'visible',timeout:45000});
+        // Only this team ran in Full-auto: the conversation, and the server's mode for it, stay Auto-edit.
+        assert.equal(await page.locator('#perm-label').textContent(),'Auto-edit');
+        assert.equal((await (await fetch(info.url+'/__fixture__/evidence')).json()).permission_mode,'auto-edit');
         const text=await report.innerText();
         assert.match(text,/^Final report: quoted CSV fields preserve commas\. The orchestrator read 2 findings and 1 worker question/);
         await page.waitForFunction(()=>app._swarmState?.run?.run?.state==='completed');
@@ -95,9 +112,12 @@ test('The orchestrator runs a team from the panel and reports back', {timeout: 9
         // Orchestrator turns say what each was for.
         const purposes=await page.evaluate(()=>[...document.querySelectorAll('.swarm-worker')].map(node=>node.textContent).join('\n'));
         assert.ok(purposes.includes('Plan the team’s work, or write its report')&&purposes.includes('Answer workers’ questions'),purposes.slice(0,2000));
-        assert.equal(starts.length,1);
-        assert.deepEqual(starts[0].autonomy,{rounds:2});
-        assert.equal(starts[0].plan_mode,'coordinator');
+        // The refused Start, then the same Start with the grant for this team only.
+        assert.equal(starts.length,2);
+        assert.equal(starts[0].full_auto,undefined);
+        assert.equal(starts[1].full_auto,true);
+        assert.deepEqual(starts[1].autonomy,{rounds:2});
+        assert.equal(starts[1].plan_mode,'coordinator');
         // The team's own messages, readable in the panel.
         // The worker waited for its answer, and the orchestrator answered in the same round.
         const summary=page.locator('[data-swarm="messages-summary"]');
@@ -154,7 +174,7 @@ test('The orchestrator runs a team from the panel and reports back', {timeout: 9
         assert.deepEqual(run.coordinator_proposals.map(row=>row.state),['accepted','accepted']);
         assert.ok(run.check_receipts.length===2&&run.check_receipts.every(row=>row.executor_id.startsWith('autonomy:')));
         assert.equal(evidence.followup_inputs.length,2);
-        assert.deepEqual(starts[0].worker_model,{provider:'ollama',model:'fixture-worker'});
+        assert.deepEqual(starts[1].worker_model,{provider:'ollama',model:'fixture-worker'});
         assert.deepEqual([...new Set(run.attempts.filter(row=>row.kind==='worker').map(row=>JSON.parse(row.grant_json).model.model))],['fixture-worker']);
         assert.deepEqual([...new Set(run.attempts.filter(row=>row.kind==='coordinator').map(row=>JSON.parse(row.grant_json).model.model))],['fixture-native']);
         // One answer turn, which proposed nothing: the two proposals above are the plan and the report.

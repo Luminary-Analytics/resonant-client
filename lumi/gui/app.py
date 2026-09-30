@@ -659,6 +659,7 @@ class AppState:
             "message": f"{what} This conversation is in {mode}, and stays in {mode} if you {grant} in Full-auto.",
             "code": "needs_full_auto",
             "can_grant": True,
+            "work": work,
             "permission_mode": self.permission_mode,
         }
 

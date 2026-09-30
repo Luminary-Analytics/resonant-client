@@ -258,8 +258,9 @@ each specialist starts, so a change applies from the next one:
   fails blocks the specialist.
 
 Specialists run in Full-auto, since nobody can answer their approval prompts.
-The desktop starts a plan, a roadmap or an autonomous session only from a
-conversation in Full-auto, and otherwise offers the switch
+From a conversation in another mode, the desktop asks before it starts a
+plan, a roadmap or an autonomous session, and runs that one in Full-auto only
+once the person chooses it for that run; the conversation keeps its mode
 (`AppState.full_auto_needed`; [permission modes](desktop-workflow.md#permission-modes-and-approvals)).
 Where the organization's `permissions.allowed_modes` leaves out `bypass`,
 missions and autonomous sessions don't run (`policy.full_auto_refusal`):

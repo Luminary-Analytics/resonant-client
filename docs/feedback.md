@@ -161,9 +161,16 @@ with what you saw: a rule named after its own keyword (whose marker,
 5. **Lumi Cloud's limits**, enforced before sending: a message of up to
    8,000 characters as sent (markers such as `[REDACTED GitHub token]` can
    make it longer than you typed; a longer one isn't sent), each diagnostic
-   text up to 16,000 characters, the diagnostics up to 32 KB and the whole
-   report up to 64 KB, in UTF-8. When the diagnostics are too large, the
-   log's oldest lines are left out, and the dialog says so.
+   text up to 16,000 characters, and the diagnostics and the whole report
+   within what that Lumi Cloud takes, in UTF-8. It says so itself
+   (`GET /api/v1/feedback/info`, `limits`), with your account and without
+   one, and Lumi never goes beyond its own 32 KB and 64 KB. A Lumi Cloud that
+   doesn't say gets those with your account, and 16 KB of diagnostics in a
+   48 KB report without one, what Lumi Cloud takes from anyone. When the
+   diagnostics are too large, the log's oldest lines are left out, and the
+   dialog says so. A report you wrote with your account and send without it
+   (**Send without your account**) is fitted again, and can lose more lines
+   than you saw.
 
 **The outcome says what the checks changed**: secrets removed, a
 redaction, a reply-to address left out, log lines left out. It's shown with
@@ -286,8 +293,16 @@ signed-in account. Answers:
 | 3xx, 202, 204 | | Not an acknowledgment: keeps it and tries again (redirects aren't followed) |
 
 `GET <address>/api/v1/feedback/info` answers `{"accepting": true, "operator":
-"<who reads the reports>"}`; the dialog shows "read by" that name next to
-the address.
+"<who reads the reports>", "limits": {...}}`; the dialog shows "read by"
+that name next to the address. `limits` holds `body_bytes` and
+`diagnostics_bytes` (with an account), `anonymous_body_bytes` and
+`anonymous_diagnostics_bytes` (without one), and `message_characters`.
+Lumi fits each report to the pair for the account it goes with, never
+beyond its own maxima, and ignores limits that aren't whole numbers of at
+least 4 KB. Without them (an older Lumi Cloud), a report without an account
+is fitted to 48 KB with 16 KB of diagnostics. Lumi asks when the dialog
+opens and before each round of waiting reports, and keeps the answer ten
+minutes.
 
 ## For administrators
 

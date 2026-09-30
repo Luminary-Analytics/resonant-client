@@ -46,6 +46,10 @@ class Backend:
     proves its path reaches the backend through dlp.send or dlp.permit.
     """
 
+    # One stream() is one scripted response, never a retry: it keeps the
+    # supervised request contract a team participant needs (connections.participant_refusal).
+    supervised_requests = True
+
     def __init__(self, *, scripts=None, events=None, name="ollama", model="test-model"):
         self.name, self.model = name, model
         self.base_url, self.api_key, self.tool_mode, self.handles_tools = "http://test", None, "native", False

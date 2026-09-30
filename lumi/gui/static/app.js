@@ -77,6 +77,9 @@ const _AUTONOMOUS_PHASES = new Set([
 
 const MAX_OUTPUT_LINES = 5;
 
+// Where a saved diagnostics ZIP goes with a problem report (_showDiagnosticsToast).
+const SUPPORT_EMAIL = 'rich.bellantoni@luminaryanalytics.com';
+
 function getToolInfo(name) {
     return TOOL_DISPLAY[name] || { icon: '⚙', label: name, color: 'tool' };
 }
@@ -1902,6 +1905,7 @@ class LumiApp {
         this._syncComposerQueue();
         this._prepareTurnUI(text, images);
         this._pendingTurnText = text;
+        this._pendingTurnImages = images.map(image => ({...image}));
         this.setRunning(true);
     }
 
@@ -2035,6 +2039,7 @@ class LumiApp {
         this._prepareTurnUI(text, this.attachedImages);
         // Given back if the server refuses the message (_endRefusedTurn).
         this._pendingTurnText = text;
+        this._pendingTurnImages = this.attachedImages.map(image => ({...image}));
 
         // Send to server (include images if attached)
         const msg = { command: 'message', text };
@@ -2425,7 +2430,7 @@ class LumiApp {
         `;
     }
 
-    _handleResumeOrphanClick(intentId, sessionId, btn) {
+    _handleResumeOrphanClick(intentId, sessionId, btn, {fullAuto = false} = {}) {
         if (!intentId) return;
         // Disable the buttons in this card so a double-click doesn't
         // race two resume requests through. The server rejects the
@@ -2441,6 +2446,8 @@ class LumiApp {
             command: 'autonomous_mission_resume',
             intent_id: intentId,
             session_id: sessionId || undefined,
+            // The person chose "Resume this session in Full-auto" for this run only.
+            ...(fullAuto ? {full_auto: true} : {}),
         });
     }
 
@@ -3197,6 +3204,12 @@ class LumiApp {
 
     setRunning(running) {
         this.isRunning = running;
+        // A sent message waits to start only while the page shows it running;
+        // once that ends, a later refusal has nothing of it to give back.
+        if (!running) {
+            this._pendingTurnText = '';
+            this._pendingTurnImages = [];
+        }
         this._renderAccountMenu();
         if (running) this._clearPromptSuggestion();
         this._setSessionActivity(running ? 'working' : 'idle');
@@ -3665,9 +3678,10 @@ class LumiApp {
                 // A refused mission dispatch un-marks its Build button or card (autonomous_view.js).
                 if (event.source === 'mission_dispatch') {
                     const retry = this._missionDispatchRefused();
-                    // Unattended work outside Full-auto: explain, and offer the switch.
+                    // Unattended work outside Full-auto: explain, and offer to run
+                    // just this roadmap or session in Full-auto.
                     if (event.code === 'needs_full_auto') {
-                        this._showFullAutoNotice(event, retry, 'Switch to Full-auto and build');
+                        this._showFullAutoNotice(event, retry?.run, retry?.work || event.work);
                         break;
                     }
                 }
@@ -3675,9 +3689,11 @@ class LumiApp {
                     this._autonomousResumeNeedsFullAuto(event);
                     break;
                 }
-                // The server started no turn for a message (`refused`; a team this
-                // conversation owns refuses one with `team_active`).
-                if ((event.refused || (event.code === 'team_active' && this._pendingTurnText))
+                // The server started no turn for a message (`refused`). A team this
+                // conversation owns refuses one with `team_active` (#102), which
+                // names no message: only a message still waiting to start counts,
+                // never text left from an earlier one (setRunning clears it).
+                if ((event.refused || (event.code === 'team_active' && this.isRunning && this._pendingTurnText))
                     && this._endRefusedTurn(event)) break;
                 // Organization oversight refused work before any turn started: the
                 // notice above the message box says why (settings_view.js), so this
@@ -4209,12 +4225,16 @@ class LumiApp {
                 this.providerConnections ||= {};
                 this.providerConnections[event.provider] = event.data || {};
                 this._renderAccountMenu();
-                if (this.currentView === 'settings') this.renderSettingsView({force: event.provider === 'ollama'});
-                if (event.provider === 'ollama' && this._ollamaFocus) {
-                    document.getElementById(`ollama-${this._ollamaFocus}`)?.focus({preventScroll: true});
-                    this._ollamaFocus = null;
+                if (event.provider === 'ollama') {
+                    // Only the Ollama card changes, in place: fields being edited
+                    // elsewhere on the page and focus stay as they are.
+                    this._ollamaPending = '';
+                    if (event.data?.address) this._ollamaAddress = event.data.address;
+                    if (this.currentView === 'settings') this._updateOllamaCard?.();
+                } else if (this.currentView === 'settings') {
+                    this.renderSettingsView();
                 }
-                // The first-run checklist's "Connect a model" follows a successful check.
+                // The first-run checklist's "Connect a model" follows a saved, working connection.
                 if (this.chatMessages?.querySelector('.chat-empty-state')) this._maybeRenderChatEmptyState();
                 break;
             case 'voice_status':
@@ -4254,7 +4274,7 @@ class LumiApp {
                 // A changed default mode applies to this conversation, as the
                 // server applies it (app.py apply_settings). Any other save
                 // keeps the mode the conversation is in, which the mode menu
-                // or a "Switch to Full-auto" may have changed since.
+                // may have changed since.
                 const defaultMode = this.settings.general?.default_permission_mode;
                 if (defaultMode && previousDefaultMode !== undefined && defaultMode !== previousDefaultMode) {
                     this.setPermissionMode(defaultMode, false);
@@ -4596,6 +4616,11 @@ class LumiApp {
         this._modelRunning = Boolean(event?.current_backend) && event?.runtime_ready !== false;
         // Whether Git is installed, and what needs it (lumi/git_support.py).
         if (event?.git && typeof event.git === 'object') this._gitStatus = event.git;
+        // The Ollama address in use, the saved one, and OLLAMA_HOST overriding
+        // it (ws_commands.ollama_address_in_use), for Settings > Connections.
+        if (event?.ollama_address && typeof event.ollama_address === 'object') this._ollamaAddress = event.ollama_address;
+        // A check started before a reconnect never answers this page.
+        if (!event?.refresh_only) this._ollamaPending = '';
 
         const {
             backends,
@@ -4796,8 +4821,13 @@ class LumiApp {
 
                 // The queue is owned by the server-side run loop. Recreate its
                 // controls after reconnect so the user can still promote or
-                // remove a follow-up they queued before refreshing.
-                if (this.composerQueue) this.composerQueue.replaceChildren();
+                // remove a follow-up they queued before refreshing. A message
+                // that wasn't sent stays while its conversation is the one shown.
+                if (this.composerQueue) {
+                    const unsent = [...this.composerQueue.querySelectorAll('.is-unsent')]
+                        .filter(item => item.dataset.sessionId === (this.currentSessionId || ''));
+                    this.composerQueue.replaceChildren(...unsent);
+                }
                 this._queuedMessages.clear();
                 for (const queued of (queued_messages || [])) {
                     this._renderQueuedMessage(queued.message_id, queued.text || '');
@@ -5066,12 +5096,14 @@ class LumiApp {
      */
     _onboardingSteps() {
         const onboarding = this.settings?.onboarding || {};
-        // Done once a model answered: this conversation's model runs, Ollama
-        // answered with chat models, or a connection check succeeded. A provider
-        // listed without one (a Codex CLI nobody signed in to) isn't enough.
+        // Done once a saved connection works: this conversation's model runs,
+        // Ollama answered with chat models at the address Lumi uses, or a
+        // check of a saved connection succeeded. A provider listed without one
+        // (a Codex CLI nobody signed in to) isn't enough, and neither is the
+        // Ollama card's Test, which checks a typed address and saves nothing.
         const modelReady = Boolean(this._modelRunning)
             || Boolean(this.backends?.ollama?.models?.length)
-            || Object.values(this.providerConnections || {}).some(info => info?.status === 'ready');
+            || Object.values(this.providerConnections || {}).some(info => info?.status === 'ready' && info?.saved !== false);
         const playground = this._normalizeProjectPath(this.playgroundProject?.path || '');
         const cwd = this._normalizeProjectPath(this.currentCwd || '');
         const projectReady = Boolean(cwd) && cwd !== playground;
@@ -5661,6 +5693,7 @@ class LumiApp {
 
     handleSessionStart(event) {
         this._pendingTurnText = '';
+        this._pendingTurnImages = [];
         this._setSessionActivity('working');
         // Show tool mode indicator for adaptive backends
         const toolMode = event.tool_mode || 'native';
@@ -8093,6 +8126,7 @@ class LumiApp {
 
     handleSessionEnd(event) {
         this._pendingTurnText = '';
+        this._pendingTurnImages = [];
         const finishedTask = this._activeTask;
         this.removeThinking();
         this._removeLiveAgentTodoStrip();
@@ -8399,16 +8433,18 @@ class LumiApp {
         if (needsFullAuto && run.card?.el) {
             run.card.el.querySelector('.full-auto-notice')?.remove();
             const notice = this._fullAutoNotice(event, () => {
-                // The same card starts again, as the plan it asked for.
+                // The same card starts again, as the plan it asked for: in
+                // Full-auto for this plan only; the conversation keeps its mode.
                 notice.remove();
                 run.error = '';
                 this._planRegistry().pending.push(run);
                 this._setPlanStatus(run, 'starting');
-                this.send({ command: 'intent_start', text: run.intentText });
+                this.send({ command: 'intent_start', text: run.intentText, full_auto: true });
                 this.openPlanTab(true);
-            }, 'Switch to Full-auto and start the plan');
+            }, 'plan');
             run.card.statusEl.after(notice);
-            notice.querySelector('button')?.focus({preventScroll: true});
+            // /plan was typed in the message box, where the person may keep typing.
+            this._focusNotice(notice);
             this.scrollToBottom();
         }
         return true;
@@ -9910,72 +9946,121 @@ class LumiApp {
     }
 
     /**
+     * What the one-run Full-auto grant says for each kind of unattended work
+     * (AppState._FULL_AUTO_WORK): its button, and the notice once chosen.
+     */
+    _fullAutoGrant(work) {
+        const grants = {
+            plan: ['Run this plan in Full-auto', 'This plan runs in Full-auto'],
+            roadmap: ['Build this roadmap in Full-auto', 'This roadmap is built in Full-auto'],
+            autonomous: ['Run this session in Full-auto', 'This session runs in Full-auto'],
+            autonomous_resume: ['Resume this session in Full-auto', 'This session resumes in Full-auto'],
+            team: ['Run this team in Full-auto', 'This team runs in Full-auto'],
+            team_continue: ['Continue this team in Full-auto', 'This team continues in Full-auto'],
+        };
+        const [label, granted] = grants[work] || ['Run this in Full-auto', 'This runs in Full-auto'];
+        return {label, granted};
+    }
+
+    /** A permission mode by the name the mode menu gives it. */
+    _permissionModeName(mode = this.permissionMode) {
+        return {ask: 'Ask', 'auto-edit': 'Auto-edit', plan: 'Plan', bypass: 'Full-auto'}[mode] || String(mode || '');
+    }
+
+    /**
      * Unattended work (a plan, a roadmap, an autonomous session, a team the
      * orchestrator runs) runs in Full-auto, and the server refused to start
      * it from another mode (code "needs_full_auto", AppState.full_auto_needed).
-     * The notice says why; when the organization allows Full-auto
-     * (`can_switch`), one button switches this conversation to it and asks
-     * again. The mode menu shows the switch like any other.
+     * The notice says why. When the organization allows Full-auto
+     * (`can_grant`), one button runs just that request in Full-auto: `run`
+     * sends it again with `full_auto: true`, and this conversation keeps its
+     * mode, so nothing else runs in Full-auto because of it.
+     *
+     * The notice is a status, so it's announced, and focus never moves onto
+     * its button: a key meant for the message box can't press it
+     * (_focusNotice).
      */
-    _fullAutoNotice(event, retry, label = 'Switch to Full-auto and continue') {
+    _fullAutoNotice(event, run, work) {
+        const grant = this._fullAutoGrant(work);
         const notice = document.createElement('div');
         notice.className = 'full-auto-notice';
         notice.setAttribute('role', 'status');
+        notice.tabIndex = -1;
         const text = document.createElement('p');
         text.className = 'full-auto-notice-text';
         text.textContent = event.detail || event.message || 'This needs Full-auto.';
         notice.appendChild(text);
-        if (event.can_switch && typeof retry === 'function') {
+        if (event.can_grant && typeof run === 'function') {
             const button = document.createElement('button');
             button.type = 'button';
-            button.className = 'btn-sm full-auto-switch';
-            button.textContent = label;
+            button.className = 'btn-sm full-auto-grant';
+            button.textContent = grant.label;
             button.addEventListener('click', () => {
                 button.disabled = true;
-                this.setPermissionMode('bypass');
-                text.textContent = 'Switched this conversation to Full-auto.';
-                retry();
+                text.textContent = `${grant.granted}; this conversation stays in ${this._permissionModeName()}.`;
+                run();
             });
             notice.appendChild(button);
         }
         return notice;
     }
 
+    /**
+     * Focus a notice itself, never its button, and only when nothing has
+     * focus any more (the control that asked was disabled or replaced), as
+     * the approval dialog takes focus. Someone typing keeps their place, and
+     * Tab from the notice reaches its button.
+     */
+    _focusNotice(notice) {
+        const active = document.activeElement;
+        const lost = !active || active === document.body || !active.isConnected || active.disabled === true;
+        if (lost) notice.focus({preventScroll: true});
+    }
+
     /** A Full-auto notice in the conversation, for work refused away from its own card. */
-    _showFullAutoNotice(event, retry, label) {
-        const notice = this._fullAutoNotice(event, retry, label);
+    _showFullAutoNotice(event, run, work) {
+        const notice = this._fullAutoNotice(event, run, work);
         notice.classList.add('full-auto-notice-chat');
         this.chatMessages.appendChild(notice);
         this.scrollToBottom();
-        notice.querySelector('button')?.focus({preventScroll: true});
+        this._focusNotice(notice);
         return notice;
     }
 
-    /** Resume on an interrupted autonomous session was refused outside Full-auto: its card offers the switch. */
+    /**
+     * Resume on an interrupted autonomous session was refused outside
+     * Full-auto: its card offers to resume it in Full-auto. The card is
+     * looked up in the page's own banner only: a model's reply can hold a
+     * look-alike card, and the real button must never land in one.
+     */
     _autonomousResumeNeedsFullAuto(event) {
         const intentId = String(event.intent_id || '');
-        const button = [...document.querySelectorAll('.autonomous-orphan-resume')]
-            .find(node => node.dataset.intentId === intentId);
+        const banner = document.getElementById('autonomous-orphans-banner');
+        const button = [...(banner?.querySelectorAll('.autonomous-orphan-resume') || [])]
+            .find(node => node.dataset.intentId === intentId) || null;
         const card = button?.closest('.autonomous-orphan-card');
-        const retry = () => this._handleResumeOrphanClick(intentId, event.session_id || '', button || null);
+        const run = () => this._handleResumeOrphanClick(intentId, event.session_id || '', button, {fullAuto: true});
         if (!card) {
-            this._showFullAutoNotice(event, retry, 'Switch to Full-auto and resume');
+            this._showFullAutoNotice(event, run, 'autonomous_resume');
             return;
         }
         card.querySelectorAll('button').forEach(node => { node.disabled = false; });
         button.textContent = 'Resume';
         card.querySelector('.full-auto-notice')?.remove();
-        const notice = this._fullAutoNotice(event, () => { notice.remove(); retry(); }, 'Switch to Full-auto and resume');
+        const notice = this._fullAutoNotice(event, () => { notice.remove(); run(); }, 'autonomous_resume');
         card.appendChild(notice);
-        notice.querySelector('button')?.focus({preventScroll: true});
+        this._focusNotice(notice);
     }
 
     /**
      * The server refused a chat message before any turn started. A refused
      * follow-up leaves the queue, and the turn it followed keeps running;
-     * otherwise the running state sendMessage set ends. The text goes back
-     * into an empty message box either way. Returns true when nothing more is
-     * shown: a follow-up's refusal is a toast, not a failed turn.
+     * otherwise the running state sendMessage set ends. Its text and images
+     * go back into the message box when that's empty; when something was
+     * typed or attached since, the message waits under it as "Not sent"
+     * (_keepUnsentMessage), so nothing is lost or overwritten. Returns true
+     * when nothing more is shown: a follow-up's refusal is a toast, not a
+     * failed turn.
      */
     _endRefusedTurn(event) {
         const queued = event.message_id ? this._queuedMessages?.get(event.message_id) : null;
@@ -9983,23 +10068,35 @@ class LumiApp {
             queued.el?.remove();
             this._queuedMessages.delete(event.message_id);
             this._syncComposerQueue();
-            this._restoreRefusedText(queued.text);
+            this._restoreRefusedText(queued.text, queued.images);
             this.showToastMessage(event.message || 'That follow-up wasn’t sent.');
             return true;
         }
         const text = this._pendingTurnText;
+        const images = this._pendingTurnImages || [];
         this._pendingTurnText = '';
+        this._pendingTurnImages = [];
         // Its card shows the reason without Retry or Continue (run_cards.js).
         this._agentRunRefused = true;
         this.clearTerminals();
         this.setRunning(false);
-        this._restoreRefusedText(text);
+        this._restoreRefusedText(text, images);
         return false;
     }
 
-    _restoreRefusedText(text) {
-        if (!text || this.userInput.value.trim()) return;
-        this.userInput.value = text;
+    /** Give a refused message back: into an empty message box, or under what's there now. */
+    _restoreRefusedText(text, images = []) {
+        const pictures = Array.isArray(images) ? images : [];
+        if (!text && !pictures.length) return;
+        if (this.userInput.value.trim() || this.attachedImages?.length) {
+            this._keepUnsentMessage(text, pictures);
+            return;
+        }
+        this.userInput.value = text || '';
+        if (pictures.length) {
+            this.attachedImages = pictures.map(image => ({...image}));
+            this.renderAttachedImages();
+        }
         this._markDraftEdited();
         this._saveDraft();
         this.userInput.style.height = 'auto';
@@ -10007,7 +10104,67 @@ class LumiApp {
         this._syncComposerGutter?.();
     }
 
+    /**
+     * A refused message that can't go back into the message box, because the
+     * person typed or attached something since, waits under it as "Not
+     * sent": Edit adds it to the message box after what's there, and ×
+     * discards it. It stays with its conversation while the page does.
+     */
+    _keepUnsentMessage(text, images = []) {
+        const item = document.createElement('section');
+        item.className = 'steer-queue-item is-unsent';
+        item.dataset.sessionId = this.currentSessionId || '';
+        const copy = document.createElement('span');
+        copy.className = 'steer-queue-copy';
+        const heading = document.createElement('strong');
+        heading.textContent = 'Not sent';
+        const body = document.createElement('small');
+        body.textContent = text || `${images.length} image${images.length === 1 ? '' : 's'}`;
+        copy.append(heading, body);
+        const actions = document.createElement('span');
+        actions.className = 'steer-queue-actions';
+        const edit = document.createElement('button');
+        edit.type = 'button';
+        edit.className = 'steer-queue-promote';
+        edit.textContent = 'Edit';
+        edit.setAttribute('aria-label', 'Add the message that wasn’t sent to the message box');
+        const discard = document.createElement('button');
+        discard.type = 'button';
+        discard.className = 'steer-queue-remove';
+        discard.textContent = '×';
+        discard.title = 'Discard the message that wasn’t sent';
+        discard.setAttribute('aria-label', discard.title);
+        actions.append(edit, discard);
+        item.append(copy, actions);
+        const close = () => {
+            item.remove();
+            this._syncComposerQueue();
+            this.userInput.focus();
+        };
+        edit.addEventListener('click', () => {
+            const typed = this.userInput.value.replace(/\s+$/, '');
+            this.userInput.value = typed && text ? `${typed}\n\n${text}` : (typed || text || '');
+            if (images.length) {
+                this.attachedImages = [...(this.attachedImages || []), ...images.map(image => ({...image}))];
+                this.renderAttachedImages();
+            }
+            this._markDraftEdited();
+            this._saveDraft();
+            this.userInput.style.height = 'auto';
+            this.userInput.style.height = Math.min(this.userInput.scrollHeight, 200) + 'px';
+            close();
+        });
+        discard.addEventListener('click', close);
+        (this.composerQueue || this.chatMessages).appendChild(item);
+        if (this.composerQueue) this.composerQueue.hidden = false;
+        this._syncComposerGutter?.();
+    }
+
     handleError(event) {
+        // A message still waiting to start doesn't come back after an ordinary
+        // error, so no later refusal can put stale text in the message box.
+        this._pendingTurnText = '';
+        this._pendingTurnImages = [];
         this.removeThinking();
         this._finalizeLiveCollapsedGroup();
         this.ensureStepRendered();
@@ -11207,8 +11364,11 @@ class LumiApp {
 
         const git = this._gitMissingCopy();
         const gitNote = git ? git.text : '';
+        // settings.json couldn't be read (gui/settings.py): Lumi runs on
+        // defaults and saves no change, so the file keeps what it holds.
+        const settingsNote = String((event?.settings || this.settings)?._meta?.load_error || '');
 
-        if (!reason && !mcpNote && !packNote && !trustNote && !gitNote) {
+        if (!reason && !mcpNote && !packNote && !trustNote && !gitNote && !settingsNote) {
             el.hidden = true;
             el.textContent = '';
             this._dismissedRuntimeNotice = '';
@@ -11219,13 +11379,19 @@ class LumiApp {
         // with no way to close it is just noise once the user has read it —
         // but silencing it forever would hide a *different*, later problem, so
         // a changed message brings it back.
-        const signature = `${reason}||${mcpNote}||${packNote}||${trustNote}||${gitNote}`;
+        const signature = `${reason}||${mcpNote}||${packNote}||${trustNote}||${gitNote}||${settingsNote}`;
         if (this._dismissedRuntimeNotice === signature) {
             el.hidden = true;
             return;
         }
 
         el.replaceChildren();
+        if (settingsNote) {
+            const line = document.createElement('div');
+            line.className = 'runtime-banner-settings';
+            line.textContent = settingsNote;
+            el.appendChild(line);
+        }
         if (reason) {
             const line = document.createElement('div');
             line.className = 'runtime-banner-reason';
@@ -11666,8 +11832,9 @@ class LumiApp {
 
     /**
      * v0.3.4 — confirmation toast after Help → Save Diagnostics. Shows
-     * the on-disk path + size, with a "copy path" button so the user
-     * can paste straight into a GitHub issue.
+     * the on-disk path + size, what the ZIP holds, and where to send it:
+     * Luminary Analytics support by email (SUPPORT_EMAIL; Help > Send
+     * Feedback, #101, isn't merged yet), with Copy path and Copy address.
      */
     _showDiagnosticsToast(zipPath, sizeBytes, canReveal = false) {
         if (!zipPath) {
@@ -11682,13 +11849,14 @@ class LumiApp {
                 <span class="diagnostics-toast-icon" aria-hidden="true">📦</span>
                 <span class="diagnostics-toast-text">
                     Diagnostics ZIP saved
-                    <span class="diagnostics-toast-meta">${sizeKB} KB · Lumi’s logs and recent session logs, with API keys removed. Look it over, then send it to Luminary Analytics support with your report.</span>
+                    <span class="diagnostics-toast-meta">${sizeKB} KB · Lumi’s logs and recent session logs, with API keys removed. Look it over, then email it with your report to Luminary Analytics support at <span class="diagnostics-toast-support">${this.escapeHtml(SUPPORT_EMAIL)}</span>.</span>
                 </span>
             </div>
             <code class="diagnostics-toast-path">${this.escapeHtml(zipPath)}</code>
             <div class="diagnostics-toast-actions">
                 ${canReveal ? '<button type="button" class="diagnostics-toast-reveal">Show in folder</button>' : ''}
                 <button type="button" class="diagnostics-toast-copy">Copy path</button>
+                <button type="button" class="diagnostics-toast-copy-email">Copy address</button>
                 <button type="button" class="diagnostics-toast-dismiss">Dismiss</button>
             </div>
         `;
@@ -11699,6 +11867,14 @@ class LumiApp {
                 this.showStatusMessage('Path copied to clipboard.');
             } catch {
                 this.showStatusMessage('Copy failed — select the path manually.');
+            }
+        });
+        wrap.querySelector('.diagnostics-toast-copy-email').addEventListener('click', async () => {
+            try {
+                await navigator.clipboard.writeText(SUPPORT_EMAIL);
+                this.showStatusMessage('Support address copied to clipboard.');
+            } catch {
+                this.showStatusMessage(`Copy failed — the address is ${SUPPORT_EMAIL}.`);
             }
         });
         wrap.querySelector('.diagnostics-toast-dismiss').addEventListener('click', () => wrap.remove());

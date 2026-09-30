@@ -118,7 +118,7 @@ window.LumiSwarmView = class LumiSwarmView {
             <div class="swarm-fields"><label>Coordinator request allowance<input data-swarm="coordinator-requests" type="number" min="1" max="1000" step="1" value="3" required></label>
             <label>Allowance per worker<input data-swarm="worker-requests" type="number" min="1" max="1000" step="1" value="4" required></label></div>
             <label class="swarm-switch"><input type="checkbox" data-swarm="autonomous"> Let the orchestrator run the team</label>
-            <p class="swarm-help" data-swarm="autonomy-mode" hidden>The orchestrator decides for you, so it needs Full-auto. This conversation isn’t in Full-auto: starting offers to switch it.</p>
+            <p class="swarm-help" data-swarm="autonomy-mode" hidden>The orchestrator decides for you, so it needs Full-auto. This conversation isn’t in Full-auto: starting asks first, and offers to run just this team in Full-auto. The conversation keeps its mode.</p>
             <div class="swarm-fields" data-swarm="autonomy-fields" hidden><label>Orchestrator rounds<input data-swarm="rounds" type="number" min="1" max="8" step="1" value="3" required></label></div>
             <label class="swarm-switch" data-swarm="auto-apply-label" hidden><input type="checkbox" data-swarm="auto-apply"> Apply changes that pass every check</label>
             <p class="swarm-help" data-swarm="autonomy-help" hidden>The orchestrator plans, starts workers, reads their findings and plans again for up to this many rounds, then writes a final report. It doesn’t wait for you at each step: findings it uses are marked accepted by the orchestrator, not reviewed by you. <span data-swarm="apply-help-manual">File changes still wait for you.</span><span data-swarm="apply-help-auto" hidden>Writers’ changes are combined and applied to your checkout once every declared check passes, without your review; a failing check sends the writers back once with its output. Every check runs on each round’s combined change, so declare checks the project should pass after every round. Keep the checkout clean and on its branch while the team runs.</span> You can pause or stop the team at any time.</p></div>
@@ -521,6 +521,12 @@ window.LumiSwarmView = class LumiSwarmView {
         const request = {command: 'swarm', action, execution_mode: this._swarmExecutionMode || 'personal',
             ...this._collaborationReadFields?.(action), ...this._managedSharingReadFields?.(action), ...extra, ...scope, request_id};
         if (!scope.run_id) delete request.run_id;
+        // The owner chose "Run this team in Full-auto" (or Continue) for this request only (_swarmOfferFullAuto).
+        if (this._swarmFullAutoGrant && this._swarmFullAutoGrant === action) {
+            request.full_auto = true;
+            this._swarmFullAutoGrant = null;
+            this._swarmFullAutoGranted = true;
+        }
         if (['view', 'events'].includes(action)) request.after = this._swarmCursor;
         const revision = this._swarmState?.run?.run?.revision;
         if (Number.isInteger(revision) && !['view', 'events', 'configure', 'history', 'read_artifact'].includes(action)) request.expected_revision = revision;
@@ -534,20 +540,35 @@ window.LumiSwarmView = class LumiSwarmView {
         this.send(request);
     }
 
-    /** Switch this conversation to Full-auto and send the refused Start or Continue again. */
+    /**
+     * Offer to send the refused Start or Continue again with the owner's
+     * Full-auto grant for this one team (gui/swarming.py): the conversation
+     * keeps its mode. The grant rides only on the request that button sends
+     * (requestSwarm reads it while the form submits), never on a later one.
+     * Focus never moves onto the button, so a second Enter can't press it;
+     * the notice is a status, and takes focus itself only if focus was lost.
+     */
     _swarmOfferFullAuto(action) {
         const nodes = this._swarmNodes;
         const button = document.createElement('button');
         button.type = 'button';
-        button.className = 'swarm-full-auto-switch';
-        button.textContent = action === 'start' ? 'Switch to Full-auto and start the team' : 'Switch to Full-auto and continue the team';
+        button.className = 'swarm-full-auto-grant';
+        button.textContent = action === 'start' ? 'Run this team in Full-auto' : 'Continue this team in Full-auto';
         button.addEventListener('click', () => {
             button.disabled = true;
-            this.setPermissionMode?.('bypass');
-            (action === 'start' ? nodes.form : nodes['continue-form']).requestSubmit();
+            this._swarmFullAutoGrant = action;
+            this._swarmFullAutoGranted = false;
+            try {
+                (action === 'start' ? nodes.form : nodes['continue-form']).requestSubmit();
+            } finally {
+                this._swarmFullAutoGrant = null;
+            }
+            // Nothing was sent (the form needs a fix first): the offer stays.
+            if (!this._swarmFullAutoGranted) button.disabled = false;
         });
         nodes.notice.append(' ', button);
-        button.focus({preventScroll: true});
+        nodes.notice.tabIndex = -1;
+        if (this._focusNotice) this._focusNotice(nodes.notice);
     }
 
     _swarmStopRefreshVisible() {
@@ -617,8 +638,8 @@ window.LumiSwarmView = class LumiSwarmView {
             this._swarmNodes.notice.dataset.error = 'true';
             // Start and Continue are far below the notice; bring it into view.
             if (!quiet) this._swarmNodes.notice.scrollIntoView?.({block: 'nearest'});
-            // A team the orchestrator runs needs Full-auto (gui/swarming.py): one click switches and asks again.
-            if (event.code === 'needs_full_auto' && event.can_switch && ['start', 'continue_recovered'].includes(action)) {
+            // A team the orchestrator runs needs Full-auto (gui/swarming.py): one click runs this team in it.
+            if (event.code === 'needs_full_auto' && event.can_grant && ['start', 'continue_recovered'].includes(action)) {
                 this._swarmOfferFullAuto(action);
             }
             this._swarmNodes.enabled.checked = Boolean(this._swarmState?.enabled);

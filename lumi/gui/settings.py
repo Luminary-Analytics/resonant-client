@@ -5,13 +5,25 @@ Reads/writes ~/.lumi/settings.json with section-based access.
 
 import json
 import logging
+import os
+import shutil
+import stat
+import sys
 import threading
+import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from ..paths import LEGACY_HOME_DIR_NAME, state_home
 from ..secrets_store import PLACEHOLDER, SecretStore, credential_store_name
 
 logger = logging.getLogger(__name__)
+
+# Another program can hold settings.json for a moment (an antivirus scan, a
+# sync client, another Lumi writing it): reading or replacing it is tried
+# again, waiting 0.05 s and twice as long each time, about 1.5 s in all,
+# before Lumi gives up.
+_FILE_ATTEMPTS = 6
+_FILE_RETRY_SECONDS = 0.05
 
 # The permission mode a new install starts in: Auto-edit, where file edits
 # inside the project apply without asking and commands and everything else ask
@@ -254,7 +266,16 @@ class SettingsManager:
         # Client may share it, and that version would read the placeholder as its key.
         self._secrets = secrets if secrets is not None else SecretStore()
         self._keychain = self._secrets.available and self._path.parent.name != LEGACY_HOME_DIR_NAME
+        # Why settings.json couldn't be read, or "". While it's set, Lumi runs
+        # on defaults and never writes over the file (_save_locked); the app,
+        # the terminal UI and `lumi run` say so.
+        self.load_error = ""
         self._load()
+
+    @property
+    def backup_path(self) -> Path:
+        """The copy of settings.json as it was before Lumi last wrote it."""
+        return self._path.with_name(self._path.name + ".bak")
 
     @staticmethod
     def _policy():
@@ -343,6 +364,8 @@ class SettingsManager:
                 data["api_keys"][key] = ""
             meta["api_keys_present"] = present
         meta["secret_storage"] = self.secret_storage()
+        # A settings file Lumi couldn't read: it runs on defaults and saves nothing (_load).
+        meta["load_error"] = self.load_error
         # What an organization policy manages, for Settings to show and disable.
         from ..policy import load as load_policy
 
@@ -398,22 +421,63 @@ class SettingsManager:
                 keys[key] = self._store_secret_locked(key, value)
 
     def _load(self) -> None:
-        """Load from disk, merging with defaults for any missing keys."""
+        """Load from disk, merging with defaults for any missing keys.
+
+        Only a missing file is a new install. A file that exists but can't be
+        read or parsed, after the retries a moment's lock needs, is kept as
+        it is: Lumi runs on defaults, says why (``load_error``) and saves
+        nothing over it, since writing defaults there would lose every
+        setting and key it holds.
+        """
         with self._lock:
-            if self._path.exists():
-                try:
-                    self._data = json.loads(self._path.read_text(encoding="utf-8"))
-                except (json.JSONDecodeError, OSError) as exc:
-                    logger.warning(f"Failed to read settings: {exc}")
-                    self._data = {}
-                else:
-                    self._keep_earlier_permission_mode()
-            else:
+            data, error = self._read_locked()
+            if error:
+                self.load_error = error
+                logger.error(error)
                 self._data = {}
+            else:
+                self._data = data if data is not None else {}
+                if data is not None:
+                    self._keep_earlier_permission_mode()
             self._apply_defaults()
             self._migrate()
             self._secure_api_keys_locked()
             self._save_locked()
+
+    def _read_locked(self) -> tuple[dict | None, str]:
+        """The saved settings: (data, ""), (None, "") without a file, or (None, why) when unreadable."""
+        problem = ""
+        wait = _FILE_RETRY_SECONDS
+        for attempt in range(_FILE_ATTEMPTS):
+            if attempt:
+                time.sleep(wait)
+                wait *= 2
+            try:
+                # utf-8-sig: Notepad and Windows PowerShell 5.1 can save a byte-order mark.
+                text = self._path.read_text(encoding="utf-8-sig")
+            except FileNotFoundError:
+                return None, ""
+            except UnicodeDecodeError:
+                problem = "it isn't UTF-8 text"
+                continue
+            except OSError as exc:  # held by another program, or not readable at all
+                problem = exc.strerror or str(exc)
+                continue
+            try:
+                data = json.loads(text)
+            except (ValueError, RecursionError) as exc:
+                # Maybe half written by a program that writes in place: try again.
+                problem = f"it isn't valid JSON ({exc})"
+                continue
+            if isinstance(data, dict):
+                return data, ""
+            problem = "it doesn't hold a JSON object"
+            break
+        backup = (f" The settings as Lumi last saved them before that are in {self.backup_path}."
+                  if self.backup_path.is_file() else "")
+        return None, (f"Lumi couldn't read its settings file, {self._path}: {problem}. It's using default "
+                      f"settings for now and won't save any change over that file.{backup} Fix or replace "
+                      "the file, then restart Lumi.")
 
     def _keep_earlier_permission_mode(self) -> None:
         """Give a settings file that names no permission mode the earlier default.
@@ -421,8 +485,8 @@ class SettingsManager:
         Only a new install starts in Auto-edit. Earlier versions wrote their
         Full-auto default into settings.json on first launch, so a file without
         the key, or with an empty one, was written by hand or by another tool,
-        and ran in Full-auto until now. An unreadable file is read as empty, as
-        before, and gets the new default with the rest.
+        and ran in Full-auto until now. A file that can't be read gets the
+        new default in memory while it's kept as it is (_load).
         """
         if not isinstance(self._data, dict):
             return
@@ -470,12 +534,62 @@ class SettingsManager:
                         self._data[section][key] = value
 
     def _save_locked(self) -> None:
-        """Write to disk (caller must hold lock)."""
+        """Write to disk (caller must hold lock).
+
+        Never over a file that couldn't be read (``load_error``). The file as
+        it was is copied to settings.json.bak first, and the new one takes
+        its place in one step, so a crash or a full disk mid-write leaves the
+        old file whole. A file another program holds for a moment is tried
+        again.
+        """
+        if self.load_error:
+            logger.warning("Settings weren't saved: settings.json couldn't be read, so it is kept as it is.")
+            return
+        # A settings.json that is a link (a dotfiles folder, say) stays one: its target is written.
+        target = Path(os.path.realpath(self._path))
+        temporary = target.with_name(f"{target.name}.{os.getpid()}-{threading.get_ident()}.tmp")
         try:
-            self._path.parent.mkdir(parents=True, exist_ok=True)
-            self._path.write_text(
-                json.dumps(self._data, indent=2, ensure_ascii=False),
-                encoding="utf-8",
-            )
+            target.parent.mkdir(parents=True, exist_ok=True)
+            temporary.write_text(json.dumps(self._data, indent=2, ensure_ascii=False), encoding="utf-8")
+            if target.is_file():
+                if sys.platform != "win32":  # keep who may read it (it can hold API keys)
+                    os.chmod(temporary, stat.S_IMODE(target.stat().st_mode))
+                self._back_up(target)
+            _retry(lambda: os.replace(temporary, target))
         except OSError as exc:
             logger.error(f"Failed to save settings: {exc}")
+        finally:
+            temporary.unlink(missing_ok=True)
+
+    @staticmethod
+    def _back_up(target: Path) -> None:
+        """Keep ``target`` as it is now in ``<name>.bak``, replacing the last backup.
+
+        A backup that can't be written doesn't stop the save: the new file
+        still replaces the old one in one step, and the older backup stays.
+        """
+        backup = target.with_name(target.name + ".bak")
+        partial = backup.with_name(f"{backup.name}.{os.getpid()}-{threading.get_ident()}.tmp")
+        try:
+            _retry(lambda: shutil.copy2(target, partial))
+            _retry(lambda: os.replace(partial, backup))
+        except OSError as exc:
+            logger.warning(f"Couldn't keep a backup of the settings before saving: {exc}")
+        finally:
+            partial.unlink(missing_ok=True)
+
+
+def _retry(action: Callable[[], Any]) -> Any:
+    """``action()``, tried again while another program holds the file for a moment."""
+    wait = _FILE_RETRY_SECONDS
+    for attempt in range(_FILE_ATTEMPTS):
+        try:
+            return action()
+        except FileNotFoundError:
+            raise
+        except OSError:
+            if attempt == _FILE_ATTEMPTS - 1:
+                raise
+            time.sleep(wait)
+            wait *= 2
+    return None

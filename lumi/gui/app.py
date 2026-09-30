@@ -78,7 +78,9 @@ from .ws_commands import (  # noqa: F401  (re-exported public surface)
     _save_resonant_md,
     _skill_list_payload,
     _skill_view_payload,
+    full_auto_granted,
     needs_full_auto,
+    ollama_address_in_use,
     refused_turn,
 )
 from .sessions import ProjectManager
@@ -600,56 +602,63 @@ class AppState:
             return policy.allowed_modes[0]
         return normalized
 
-    # Work that runs with nobody there to approve its steps, what it does, and
-    # what the one-click switch continues with (full_auto_needed).
+    # Work that runs with nobody there to approve its steps: what it does, and
+    # what the person grants by running just this one in Full-auto
+    # (full_auto_needed; the page's "Run this plan in Full-auto" and the like).
     _FULL_AUTO_WORK = {
         "plan": ("A plan runs its steps in Full-auto: they change files and run commands without asking, "
-                 "because nobody is there to approve each one.", "start the plan"),
+                 "because nobody is there to approve each one.", "run this plan"),
         "roadmap": ("A roadmap is built in Full-auto: its steps change files and run commands without asking, "
-                    "because nobody is there to approve each one.", "build it"),
+                    "because nobody is there to approve each one.", "build this roadmap"),
         "autonomous": ("An autonomous session runs in Full-auto: its steps change files and run commands, its "
                        "acceptance checks included, without asking, because nobody is there to approve them.",
-                       "start it"),
+                       "run this session"),
         "autonomous_resume": ("An autonomous session runs in Full-auto: its steps change files and run commands, "
                               "its acceptance checks included, without asking, because nobody is there to "
-                              "approve them.", "resume it"),
+                              "approve them.", "resume this session"),
         "team": ("A team the orchestrator runs needs Full-auto: the orchestrator approves its plans and accepts "
-                 "its results for you, without asking.", "start the team"),
+                 "its results for you, without asking.", "run this team"),
         "team_continue": ("A team the orchestrator runs needs Full-auto: the orchestrator approves its plans and "
-                          "accepts its results for you, without asking.", "continue the team"),
+                          "accepts its results for you, without asking.", "continue this team"),
     }
     _MODE_NAMES = {"ask": "Ask", "auto-edit": "Auto-edit", "plan": "Plan", "bypass": "Full-auto"}
 
-    def full_auto_needed(self, work: str) -> Optional[dict[str, Any]]:
-        """Why unattended ``work`` can't start in this conversation's mode, or None.
+    def full_auto_needed(self, work: str, *, granted: bool = False) -> Optional[dict[str, Any]]:
+        """Why unattended ``work`` can't start from this conversation's mode, or None.
 
         Plans, missions, autonomous sessions and a team the orchestrator runs
         take their steps with nobody there to answer an approval, so they run
         in Full-auto whatever mode the conversation is in. Starting one from
-        Auto-edit, Ask or Plan would quietly give it more than the person
-        chose, so it's refused with ``code: "needs_full_auto"`` and the page
-        offers one click that switches to Full-auto and asks again. Pausing
-        and resuming work that is still running doesn't ask again; resuming
-        an interrupted autonomous session or continuing an interrupted
-        orchestrated team starts it again, and does.
+        Auto-edit, Ask or Plan without asking would quietly give it more than
+        the person chose, so it's refused with ``code: "needs_full_auto"``,
+        and the page offers to run just that one in Full-auto. Choosing that
+        sends the same request again with ``granted`` (``full_auto: true``,
+        ws_commands.full_auto_granted): that run goes ahead in Full-auto, as
+        such work always has, and the conversation keeps its mode, so nothing
+        else runs in Full-auto because of it. Pausing and resuming work that
+        is still running doesn't ask again; resuming an interrupted
+        autonomous session or continuing an interrupted orchestrated team
+        starts it again, and does.
 
-        None when the conversation is in Full-auto, or when the organization
-        doesn't allow Full-auto: policy.full_auto_refusal (and, for a team,
-        swarming.organization.mode_refusal) refuses that with its own words.
+        None when the conversation is in Full-auto, when ``granted``, or when
+        the organization doesn't allow Full-auto: then no grant can apply,
+        and policy.full_auto_refusal (for a team the orchestrator runs,
+        swarming.organization.mode_refusal) refuses the work in the
+        organization's words wherever it starts, granted or not.
         """
-        if self.permission_mode == "bypass":
+        if self.permission_mode == "bypass" or granted:
             return None
         from ..policy import current
 
         policy = current()
         if policy and not policy.mode_allowed("bypass"):
             return None
-        what, action = self._FULL_AUTO_WORK[work]
+        what, grant = self._FULL_AUTO_WORK[work]
         mode = self._MODE_NAMES.get(self.permission_mode, self.permission_mode)
         return {
-            "message": f"{what} This conversation is in {mode}. Switch to Full-auto to {action}.",
+            "message": f"{what} This conversation is in {mode}, and stays in {mode} if you {grant} in Full-auto.",
             "code": "needs_full_auto",
-            "can_switch": True,
+            "can_grant": True,
             "permission_mode": self.permission_mode,
         }
 
@@ -2579,6 +2588,10 @@ class AppState:
             # chosen provider, which can be set while no usable runtime exists.
             "runtime_ready": self.session is not None,
             "runtime_error": self.runtime_unavailable_reason(),
+            # Settings > Connections' Ollama card: the address in use, the one
+            # saved, and OLLAMA_HOST when it takes the saved one's place.
+            "ollama_address": ollama_address_in_use(
+                self, lambda: resolve_ollama_url(settings_data=self.settings.get_all())),
             "mcp_load_error": self.mcp_load_error,
             "mcp_unavailable": self.mcp_unavailable_servers(),
             # Repository packs that stay off until the user reviews them.
@@ -3260,8 +3273,9 @@ async def websocket_endpoint(ws: WebSocket):
                     await ws.send_json({"event": "error", "source": "mission_dispatch",
                                         "message": "spec_markdown required for autonomous dispatch"})
                     continue
-                # It runs in Full-auto; outside it, say so and offer the switch.
-                needed = state.full_auto_needed("autonomous")
+                # It runs in Full-auto; outside it, say so and offer to run
+                # this one session in Full-auto (sent again with the grant).
+                needed = state.full_auto_needed("autonomous", granted=full_auto_granted(msg))
                 if needed:
                     await ws.send_json(needs_full_auto(needed, source="mission_dispatch"))
                     continue
@@ -3371,7 +3385,7 @@ async def websocket_endpoint(ws: WebSocket):
                     continue
                 # Resuming starts its daemon again, in Full-auto: before the
                 # conversation switch below, so a refusal changes nothing.
-                needed = state.full_auto_needed("autonomous_resume")
+                needed = state.full_auto_needed("autonomous_resume", granted=full_auto_granted(msg))
                 if needed:
                     await ws.send_json(needs_full_auto(needed, source="autonomous_resume", intent_id=target_intent,
                                                        session_id=str(msg.get("session_id") or "")))

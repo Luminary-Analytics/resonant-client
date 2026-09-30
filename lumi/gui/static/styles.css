@@ -13836,14 +13836,21 @@ body.is-window-dragging * {
 #resonant-md-editor { font-family: monospace; font-size: 12px; resize: vertical; min-height: 120px; }
 .resonant-md-popover-actions { display: flex; gap: 8px; justify-content: flex-end; }
 
-/* Unattended work needs Full-auto (app.js _fullAutoNotice): why, and a one-click switch. */
+/* Unattended work needs Full-auto (app.js _fullAutoNotice): why, and running just this request in it. */
 .full-auto-notice { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin: 8px 0 0; padding: 10px 12px; border: 1px solid color-mix(in srgb, var(--warn) 45%, var(--border)); border-radius: 8px; background: color-mix(in srgb, var(--warn) 8%, transparent); color: var(--text); font-size: 12.5px; line-height: 1.45; }
 .full-auto-notice.full-auto-notice-chat { width: min(720px, calc(100% - 24px)); margin: 10px auto 10px 0; }
 .full-auto-notice-text { flex: 1 1 260px; min-width: 0; margin: 0; overflow-wrap: anywhere; }
-.full-auto-notice .full-auto-switch { flex: 0 0 auto; padding: 5px 10px; border: 1px solid color-mix(in srgb, var(--warn) 60%, var(--border)); border-radius: 6px; background: transparent; color: var(--text); font: inherit; cursor: pointer; }
-.full-auto-notice .full-auto-switch:hover:enabled { background: color-mix(in srgb, var(--warn) 16%, transparent); }
-.full-auto-notice .full-auto-switch:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-.full-auto-notice .full-auto-switch:disabled { opacity: .6; cursor: default; }
+.full-auto-notice .full-auto-grant { flex: 0 0 auto; padding: 5px 10px; border: 1px solid color-mix(in srgb, var(--warn) 60%, var(--border)); border-radius: 6px; background: transparent; color: var(--text); font: inherit; cursor: pointer; }
+.full-auto-notice .full-auto-grant:hover:enabled { background: color-mix(in srgb, var(--warn) 16%, transparent); }
+.full-auto-notice .full-auto-grant:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.full-auto-notice .full-auto-grant:disabled { opacity: .6; cursor: default; }
+/* Focused itself (never its button) when the control that asked lost focus (app.js _focusNotice). */
+.full-auto-notice:focus { outline: 2px solid var(--accent); outline-offset: 2px; }
+/* A refused message kept under a message box that had text or images since (app.js _keepUnsentMessage). */
+.steer-queue-item.is-unsent { grid-template-columns: minmax(0, 1fr) auto; border-color: color-mix(in srgb, var(--warn) 45%, var(--border)); }
+.steer-queue-item.is-unsent .steer-queue-copy strong { color: var(--text); }
+.steer-queue-item.is-unsent .steer-queue-promote:focus-visible,
+.steer-queue-item.is-unsent .steer-queue-remove:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .onboarding-mode-note { margin: 12px 0 0; font-size: 12px; color: var(--muted); line-height: 1.45; }
 /* Settings > Connections: the Ollama card's address (settings_view.js _renderOllamaCard). */
 .provider-field { display: grid; gap: 4px; margin: 4px 0 10px; max-width: 420px; font-size: 12px; color: var(--muted); }

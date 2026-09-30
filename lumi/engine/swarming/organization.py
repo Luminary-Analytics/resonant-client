@@ -18,9 +18,11 @@ conversation and organization-managed teams stay refused (``unsupported_refusal`
 - **Modes** (``permissions.allowed_modes``). A read-only team only reads and
   reports, which every mode allows. Writers change files in their worktrees
   without asking, as Auto-edit does, so a team with writers needs ``auto-edit``
-  or ``bypass``. An orchestrator allowed to apply checked changes changes the
-  checkout and runs checks with nobody asked, as a mission does, so it needs
-  ``bypass`` (Full-auto; see ``policy.full_auto_refusal``).
+  or ``bypass``. A team the orchestrator runs has it approve plans and accept
+  results for the owner with nobody asked, as a mission does, so it needs
+  ``bypass`` (Full-auto; see ``policy.full_auto_refusal``), and so does an
+  orchestrator allowed to apply checked changes, which also changes the
+  checkout and runs checks.
 - **Checks.** The owner's declared checks are commands: they pass the
   guardrails and the irreversibility floor as the agent's commands do, and the
   organization's shell rules (a ``deny``, or a ``prompt`` nobody is there to
@@ -115,8 +117,14 @@ def model_refusal(provider: str, model: str) -> str:
             "so the team can't use it. Choose another model.")
 
 
-def mode_refusal(*, writers: bool, applies: bool) -> str:
-    """Why the policy's permission modes refuse this kind of team, or ''."""
+def mode_refusal(*, writers: bool, applies: bool, orchestrated: bool = False) -> str:
+    """Why the policy's permission modes refuse this kind of team, or ''.
+
+    ``orchestrated``: the owner let the orchestrator run the team, so it
+    approves plans and accepts results for them, which needs Full-auto as a
+    mission does (the desktop asks for it too, AppState.full_auto_needed).
+    ``applies``: that orchestrator also applies checked changes.
+    """
     from ...policy import current
 
     policy = current()
@@ -126,6 +134,10 @@ def mode_refusal(*, writers: bool, applies: bool) -> str:
         return (f"{policy.organization}'s policy doesn't allow Full-auto, which an orchestrator that applies "
                 "checked changes needs: it changes your checkout and runs checks without asking. Start the team "
                 "without applying changes.")
+    if orchestrated and not policy.mode_allowed("bypass"):
+        return (f"{policy.organization}'s policy doesn't allow Full-auto, which a team the orchestrator runs "
+                "needs: the orchestrator approves its plans and accepts its results for you, without asking. "
+                "Start a team you review yourself.")
     if writers and not (policy.mode_allowed("auto-edit") or policy.mode_allowed("bypass")):
         return (f"{policy.organization}'s policy allows neither Auto-edit nor Full-auto, which a team with "
                 "writers needs: its writers change files without asking. Start a read-only team.")
@@ -238,7 +250,7 @@ class TeamGovernance:
 
     def __init__(self, settings: Any, *, run_id: str, project: str, session: str = "",
                  models: Iterable[tuple[str, str]], kind: str = PERSONAL, writers: bool = False,
-                 applies: bool = False, checks: Iterable[dict] = ()) -> None:
+                 applies: bool = False, checks: Iterable[dict] = (), orchestrated: bool = False) -> None:
         if kind not in {PERSONAL, SHARING, MANAGED}:
             raise ValueError("Unknown team execution kind")
         pairs: list[tuple[str, str]] = []
@@ -255,6 +267,7 @@ class TeamGovernance:
         self.models = tuple(pairs)
         self.kind = kind
         self.writers, self.applies = writers is True, applies is True
+        self.orchestrated = orchestrated is True or self.applies
         self.checks = tuple(copy.deepcopy(dict(check)) for check in checks if isinstance(check, dict))
 
     @classmethod
@@ -274,7 +287,7 @@ class TeamGovernance:
                 else SHARING if str(setup.get("mode", "")).endswith("_collaboration") else PERSONAL)
         return cls(settings, run_id=run_id, project=project, session=session, models=models, kind=kind,
                    writers=bool(setup.get("write_roots")), applies=autonomy.get("apply") is True,
-                   checks=setup.get("checks") or ())
+                   checks=setup.get("checks") or (), orchestrated=bool(autonomy))
 
     # ── Rules ────────────────────────────────────────────────────────────
 
@@ -306,7 +319,7 @@ class TeamGovernance:
             reason = model_refusal(provider, model)
             if reason:
                 return reason
-        return (mode_refusal(writers=self.writers, applies=self.applies)
+        return (mode_refusal(writers=self.writers, applies=self.applies, orchestrated=self.orchestrated)
                 or check_refusal(self.checks, project=self.project, settings=self.settings)
                 or (sandbox_refusal(self.settings) if self.writers else ""))
 

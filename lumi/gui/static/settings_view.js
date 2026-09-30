@@ -1559,32 +1559,100 @@ class LumiSettingsView {
 
     /**
      * Ollama on this computer or another one: its address, Test (checks the
-     * typed address, saves nothing), Save (stores and checks it) and what the
-     * last check found (ws_commands._ollama_connection).
+     * typed address, saves nothing), Save (stores it, then checks the address
+     * Lumi uses) and what the last check found (ws_commands._ollama_connection).
+     * OLLAMA_HOST in Lumi's environment comes before the saved address, so
+     * while it's set the card says so and what to do, and never names its
+     * address as the one saved. A check's result updates only this card
+     * (_updateOllamaCard): fields being edited and focus stay where they are.
      */
     _renderOllamaCard() {
         const esc = value => this.escapeHtml(String(value ?? ''));
-        const check = (this.providerConnections || {}).ollama || null;
         const saved = String(this.settings?.network?.ollama_url || '');
         const draft = this._ollamaUrlDraft ?? saved;
-        const found = this.backends?.ollama;
-        const count = n => `${n} chat model${n === 1 ? '' : 's'}`;
-        let status;
-        if (check?.error) status = check.saved ? `Saved ${check.url || 'the address'}. ${check.error}` : `${check.error} Nothing was saved.`;
-        else if (check?.status === 'ready') status = check.saved
-            ? `Connected to ${check.url} · ${count(check.model_count)}. Choose one in the model menu.`
-            : `Ollama answered at ${check.url} with ${count(check.model_count)}. Save to use this address.`;
-        else if (found?.models?.length) status = `Connected to ${found.url || saved} · ${count(found.models.length)}.`;
-        else status = `No Ollama answered at ${saved || 'this computer'}. Start Ollama, or enter the address of the computer that runs it, then Test.`;
+        const pending = this._ollamaPending || '';
+        const override = this._ollamaOverrideNote();
+        const button = (action, idle, busy) => `<button class="btn-sm" id="ollama-${action}" data-ollama-action="${action}"${pending ? ' aria-disabled="true"' : ''}>${pending === action ? busy : idle}</button>`;
         return `<div class="provider-connection provider-ollama" data-ollama-card>
             <strong>Ollama: models on this computer or your network</strong>
-            <p role="status" data-ollama-status>${esc(status)}</p>
+            <p role="status" data-ollama-status>${esc(this._ollamaCardStatus())}</p>
+            <p class="provider-note" data-ollama-override${override ? '' : ' hidden'}>${esc(override)}</p>
             <label class="provider-field"><span>Address</span><input type="text" inputmode="url" id="ollama-url" data-ollama-url value="${esc(draft)}"
                 placeholder="http://127.0.0.1:11434" spellcheck="false" autocomplete="off" aria-describedby="ollama-url-help"></label>
-            <div class="provider-actions"><button class="btn-sm" id="ollama-test" data-ollama-action="test">Test</button>
-            <button class="btn-sm" id="ollama-save" data-ollama-action="save">Save</button></div>
-            <p class="provider-note" id="ollama-url-help">Test checks the address without saving it; Save uses it from now on. Leave it empty for this computer.
+            <div class="provider-actions">${button('test', 'Test', 'Testing…')}
+            ${button('save', 'Save', 'Saving…')}</div>
+            <p class="provider-note" id="ollama-url-help">Test checks the address you typed and saves nothing. Save stores it, then checks the address Lumi uses. Leave it empty for this computer.
             <a href="https://ollama.com/download" target="_blank" rel="noopener noreferrer">Get Ollama</a>, then pull a model in a terminal, for example: ollama pull qwen3-coder:30b</p></div>`;
+    }
+
+    /** OLLAMA_HOST taking the saved address's place, and what to do about it; "" when it isn't set. */
+    _ollamaOverrideNote() {
+        const address = this._ollamaAddress || {};
+        if (!address.environment) return '';
+        const saved = String(this.settings?.network?.ollama_url || '') || 'this computer';
+        return `${address.environment} is set to ${address.in_use || 'an address'} in Lumi’s environment, so Lumi uses that `
+            + `address instead of the one saved here (${saved}). To use the saved address, remove `
+            + `${address.environment} from your environment variables, or change it, then restart Lumi.`;
+    }
+
+    /** What the Ollama card says: the check running, or what the last one found. */
+    _ollamaCardStatus() {
+        if (this._ollamaPending === 'test') return 'Testing the address…';
+        if (this._ollamaPending === 'save') return 'Saving the address and checking it…';
+        const check = (this.providerConnections || {}).ollama || null;
+        const address = check?.address || this._ollamaAddress || {};
+        const saved = String(this.settings?.network?.ollama_url || '');
+        const overridden = Boolean(address.environment);
+        const found = this.backends?.ollama;
+        const count = n => `${n} chat model${n === 1 ? '' : 's'}`;
+        if (check && check.saved === false) {
+            // Test: the typed address only.
+            if (check.error) return `${check.error} Nothing was saved.`;
+            if (check.status !== 'ready') return `Ollama answered at ${check.url}. Nothing was saved.`;
+            return overridden
+                ? `Ollama answered at ${check.url} with ${count(check.model_count)}. Nothing was saved; while ${address.environment} is set, Lumi uses its address instead.`
+                : `Ollama answered at ${check.url} with ${count(check.model_count)}. Nothing was saved: choose Save to use this address.`;
+        }
+        if (check) {
+            // Save or a status check: the address Lumi uses (the saved one, or OLLAMA_HOST's).
+            const where = overridden ? `${check.url} from ${address.environment}` : check.url;
+            const result = check.error ? check.error
+                : check.status === 'ready' ? `Connected to ${where} · ${count(check.model_count)}. Choose one in the model menu.`
+                : `Ollama answered at ${where}.`;
+            if (check.action !== 'save') return result;
+            if (overridden) return `Saved ${saved || 'this computer'}, but Lumi uses ${where}. ${result}`;
+            return check.error ? `Saved ${saved || 'this computer'}. ${result}` : result;
+        }
+        const inUse = address.in_use || saved || 'this computer';
+        if (found?.models?.length) return `Connected to ${found.url || inUse} · ${count(found.models.length)}.`;
+        return `No Ollama answered at ${inUse}. Start Ollama, or enter the address of the computer that runs it, then Test.`;
+    }
+
+    /** Update the Ollama card in place: its status, buttons and saved address, nothing else on the page. */
+    _updateOllamaCard() {
+        const card = this.settingsBody?.querySelector('[data-ollama-card]');
+        if (!card) return;
+        const pending = this._ollamaPending || '';
+        const status = card.querySelector('[data-ollama-status]');
+        if (status) status.textContent = this._ollamaCardStatus();
+        const override = card.querySelector('[data-ollama-override]');
+        if (override) {
+            const note = this._ollamaOverrideNote();
+            override.textContent = note;
+            override.hidden = !note;
+        }
+        for (const [action, idle, busy] of [['test', 'Test', 'Testing…'], ['save', 'Save', 'Saving…']]) {
+            const button = card.querySelector(`[data-ollama-action="${action}"]`);
+            if (!button) continue;
+            button.textContent = pending === action ? busy : idle;
+            if (pending) button.setAttribute('aria-disabled', 'true');
+            else button.removeAttribute('aria-disabled');
+        }
+        // After a save the field shows the saved address, unless the person is editing it again.
+        const input = card.querySelector('[data-ollama-url]');
+        if (input && this._ollamaUrlDraft == null && document.activeElement !== input) {
+            input.value = String(this.settings?.network?.ollama_url || '');
+        }
     }
 
     openProviderPicker() {
@@ -2274,7 +2342,7 @@ class LumiSettingsView {
                               ? 'Full-auto (sandboxed: commands write only in the project)'
                               : 'Full-auto (nothing asks; shell commands run without a sandbox)' },
                       ],
-                      hint: 'New installs start in Auto-edit. Plans, missions, autonomous sessions and a team the orchestrator runs need Full-auto, and offer to switch when you start one.' },
+                      hint: 'New installs start in Auto-edit. Plans, missions, autonomous sessions and a team the orchestrator runs need Full-auto: from another mode, each asks first and runs in Full-auto only when you choose that for it. The conversation keeps its mode.' },
                     { key: 'auto_lint_after_edits', label: 'Auto-lint after edits', type: 'toggle',
                       hint: 'After every file_edit/file_write, run the project linter (ruff/eslint/flake8) on the changed file. Errors are injected back as a follow-up turn.' },
                     { key: 'auto_test_after_edits', label: 'Auto-test after edits', type: 'toggle',
@@ -2603,6 +2671,15 @@ class LumiSettingsView {
             {heading:'Workflow', keys:['auto_lint_after_edits','auto_test_after_edits','auto_test_command','max_model_requests','harness_enabled','autonomous_sessions']},
         ].map(group => ({...section, heading:group.heading, fields:section.fields.filter(field => group.keys.includes(field.key))})) : [section]) : [];
         this.settingsBody.innerHTML = '';
+        // settings.json couldn't be read: Lumi runs on defaults and saves no change (gui/settings.py).
+        const loadError = String(this.settings?._meta?.load_error || '');
+        if (loadError) {
+            const banner = document.createElement('div');
+            banner.className = 'settings-error-banner';
+            banner.setAttribute('role', 'alert');
+            banner.textContent = `${loadError} Changes you make here last until Lumi closes.`;
+            this.settingsBody.appendChild(banner);
+        }
         if (this.settingsError) {
             const alert = document.createElement('div');
             alert.className = 'settings-error-banner';
@@ -2913,14 +2990,15 @@ class LumiSettingsView {
         });
         this.settingsBody.querySelectorAll('[data-ollama-action]').forEach(button => {
             button.addEventListener('click', () => {
+                // One check at a time. The buttons say so (aria-disabled) but
+                // stay focusable, so focus stays on the one pressed.
+                if (this._ollamaPending) return;
                 const action = button.dataset.ollamaAction;
                 const url = (ollamaUrl?.value || '').trim();
-                button.disabled = true;
-                button.textContent = action === 'save' ? 'Saving…' : 'Testing…';
+                this._ollamaPending = action;
                 // A saved address becomes the setting; the field then shows it.
                 if (action === 'save') this._ollamaUrlDraft = null;
-                // Disabling the button drops its focus; the result gives it back (app.js).
-                this._ollamaFocus = action;
+                this._updateOllamaCard();
                 this.send({command: 'provider_connection', provider: 'ollama', action, url});
             });
         });

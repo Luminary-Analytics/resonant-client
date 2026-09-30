@@ -89,20 +89,32 @@ def refused_turn(msg: dict[str, Any], message: str, **fields: Any) -> dict[str, 
     return event
 
 
-def full_auto_needed(state: Any, work: str) -> Optional[dict[str, Any]]:
-    """``AppState.full_auto_needed`` for unattended ``work``, or None."""
+def full_auto_granted(msg: Any) -> bool:
+    """Whether the command carries the person's Full-auto grant for this one run.
+
+    The page adds ``full_auto: true`` only when the person chose "Run this plan
+    in Full-auto" (or its roadmap, session or team counterpart) on the notice
+    that refused the same request. It covers that run alone: the
+    conversation's mode doesn't change (AppState.full_auto_needed).
+    """
+    return isinstance(msg, dict) and msg.get("full_auto") is True
+
+
+def full_auto_needed(state: Any, work: str, msg: Any = None) -> Optional[dict[str, Any]]:
+    """``AppState.full_auto_needed`` for unattended ``work`` asked for by ``msg``, or None."""
     check = getattr(state, "full_auto_needed", None)
-    return check(work) if callable(check) else None
+    return check(work, granted=full_auto_granted(msg)) if callable(check) else None
 
 
 def needs_full_auto(needed: dict[str, Any], message: str = "", **fields: Any) -> dict[str, Any]:
     """The error that refuses unattended work outside Full-auto (see full_auto_needed).
 
     ``detail`` is the explanation alone, for a page that shows ``message``
-    with a prefix it matches on; ``can_switch`` offers the one-click switch.
+    with a prefix it matches on; ``can_grant`` offers to run this one request
+    in Full-auto (the page sends it again with ``full_auto: true``).
     """
     return {"event": "error", "message": message or needed["message"], "detail": needed["message"],
-            "code": needed["code"], "can_switch": needed["can_switch"], **fields}
+            "code": needed["code"], "can_grant": needed["can_grant"], **fields}
 
 
 def _is_connection_closed(exc: BaseException) -> bool:
@@ -2600,8 +2612,9 @@ async def _cmd_mission_dispatch_roadmap(ctx: CommandContext) -> None:
     # criteria, not just one paragraph. Refined intent stays
     # in mission_state for display.
     intent_text = spec_md or refined
-    # Its steps run in Full-auto; outside it, say so and offer the switch.
-    needed = full_auto_needed(ctx.state, "roadmap")
+    # Its steps run in Full-auto; outside it, say so and offer to build this
+    # one roadmap in Full-auto (the page sends it again with the grant).
+    needed = full_auto_needed(ctx.state, "roadmap", ctx.msg)
     if needed:
         await ctx.send(needs_full_auto(needed, source="mission_dispatch"))
         return
@@ -3488,8 +3501,9 @@ async def _cmd_intent(ctx: CommandContext) -> None:
                                     "message": "intent text is required"})
             elif refusal:
                 await ctx.send({"event": "error", "message": refusal, "code": "oversight_notice"})
-            elif needed := full_auto_needed(ctx.state, "plan"):
-                # The page's /plan card matches the prefix (app.js _failStartingPlan).
+            elif needed := full_auto_needed(ctx.state, "plan", ctx.msg):
+                # The page's /plan card matches the prefix (app.js _failStartingPlan)
+                # and offers to run this one plan in Full-auto.
                 await ctx.send(needs_full_auto(needed, f"intent_start failed: {needed['message']}"))
             else:
                 try:
@@ -4050,6 +4064,45 @@ async def _cmd_save_diagnostics(ctx: CommandContext) -> None:
 
 
 
+def _windows_folder() -> str:
+    """The Windows folder as GetWindowsDirectoryW reports it; never from the environment."""
+    import ctypes
+    from ctypes import wintypes
+
+    function = ctypes.WinDLL("kernel32", use_last_error=True).GetWindowsDirectoryW
+    function.argtypes = [wintypes.LPWSTR, wintypes.UINT]
+    function.restype = wintypes.UINT
+    buffer = ctypes.create_unicode_buffer(32768)
+    length = function(buffer, len(buffer))
+    if not length or length >= len(buffer):
+        raise ctypes.WinError(ctypes.get_last_error())
+    return buffer.value
+
+
+def show_in_folder_command(path: str) -> list[str]:
+    """The absolute program and the arguments that show ``path`` selected in its folder.
+
+    Never a bare program name: the app's working folder is the open project,
+    and Windows looks for ``explorer`` there before its own folder, so a
+    repository's ``explorer.exe`` or ``explorer.bat`` would run. Explorer
+    comes from the Windows folder, the Finder's ``open`` from /usr/bin, and
+    ``xdg-open`` only from the system folders.
+    TODO(#110): use ``executables.show_in_folder`` once it lands.
+    """
+    target = os.fspath(path)
+    if not os.path.isabs(target):
+        raise ValueError("Give the full path of the file to show.")
+    if sys.platform == "win32":
+        return [os.path.join(_windows_folder(), "explorer.exe"), "/select,", target]
+    if sys.platform == "darwin":
+        return ["/usr/bin/open", "-R", target]
+    for folder in ("/usr/bin", "/bin", "/usr/local/bin"):
+        opener = os.path.join(folder, "xdg-open")
+        if os.path.isfile(opener) and os.access(opener, os.X_OK):
+            return [opener, os.path.dirname(target)]
+    raise FileNotFoundError("xdg-open isn't installed, so Lumi can't open the folder.")
+
+
 @command("reveal_diagnostics")
 async def _cmd_reveal_diagnostics(ctx: CommandContext) -> None:
     """Show the diagnostics ZIP the last save made, selected in its folder.
@@ -4060,15 +4113,15 @@ async def _cmd_reveal_diagnostics(ctx: CommandContext) -> None:
     if not target or not os.path.isfile(target):
         await ctx.send({"event": "status_msg", "message": "That diagnostics file isn't there anymore. Save diagnostics again."})
         return
+    # No console window flashes, but the file manager's own window must show:
+    # the hidden start-up that background_process_kwargs gives console tools
+    # (SW_HIDE) stays away from it.
+    kwargs = background_process_kwargs()
+    kwargs.pop("startupinfo", None)
     try:
-        if sys.platform == "win32":
-            # Explorer takes the file after /select, in one argument.
-            subprocess.Popen(f'explorer /select,"{target}"', **background_process_kwargs())
-        elif sys.platform == "darwin":
-            subprocess.Popen(["open", "-R", target], **background_process_kwargs())
-        else:
-            subprocess.Popen(["xdg-open", os.path.dirname(target)], **background_process_kwargs())
-    except OSError as exc:
+        subprocess.Popen(show_in_folder_command(target), stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL, **kwargs)
+    except (OSError, ValueError) as exc:
         await ctx.send({"event": "status_msg", "message": f"Could not show the folder: {exc}"})
         return
     await ctx.send({"event": "status_msg", "message": f"Showing {os.path.basename(target)} in its folder"})
@@ -4649,14 +4702,31 @@ async def _cmd_sonn_account(ctx: CommandContext) -> None:
         await ctx.send({"event": "sonn_account", "data": data})
 
 
+def ollama_address_in_use(state: Any, resolve_ollama_url: Callable[[], str]) -> dict[str, str]:
+    """Which Ollama address the app uses, the one Settings saved, and what overrides it.
+
+    ``OLLAMA_HOST`` in Lumi's environment comes before the saved address
+    (network_defaults.resolve_ollama_url), so while it is set, saving an
+    address changes nothing until it's removed and Lumi restarts. The card
+    says so instead of naming the environment's address as the one saved.
+    """
+    return {
+        "in_use": str(getattr(state, "ollama_url", "") or "") or resolve_ollama_url(),
+        "saved": str(state.settings.get("network", "ollama_url", "") or ""),
+        "environment": "OLLAMA_HOST" if str(os.environ.get("OLLAMA_HOST") or "").strip() else "",
+    }
+
+
 async def _ollama_connection(ctx: CommandContext, action: str, resolve_ollama_url: Callable[[], str]) -> dict[str, Any]:
-    """Settings > Connections' Ollama card: Test an address, Save it, or check the saved one.
+    """Settings > Connections' Ollama card: Test an address, Save it, or check the one in use.
 
     Test probes the address typed in the card and saves nothing. Save checks
     and stores it as ``network.ollama_url`` (a policy can lock it; the audit
-    log records the change), then checks it as status does: the model picker
-    offers its models, and one starts when no model runs yet, so the first-run
-    checklist's "Connect a model" is done only once Ollama answered.
+    log records the change), then checks the address the app uses, as status
+    does: the model picker offers its models, and one starts when no model
+    runs yet, so the first-run checklist's "Connect a model" is done only
+    once Ollama answered there. ``address`` says which address that is: the
+    saved one, or ``OLLAMA_HOST`` while it's set (ollama_address_in_use).
     """
     from .. import audit, offline
     from ..policy import current as current_policy
@@ -4671,12 +4741,18 @@ async def _ollama_connection(ctx: CommandContext, action: str, resolve_ollama_ur
         if before != url:
             audit.record("settings.change", section="network", keys=["ollama_url"])
         await ctx.send({"event": "settings", "data": settings_data})
-    url = (ollama_address(ctx.msg.get("url")) if action == "test" else ctx.state.ollama_url) or resolve_ollama_url()
+    address = ollama_address_in_use(ctx.state, resolve_ollama_url)
+    # Test checks the typed address; an empty one means this computer, as saving it would.
+    from ..network_defaults import DEFAULT_OLLAMA_URL
+
+    url = (ollama_address(ctx.msg.get("url")) or DEFAULT_OLLAMA_URL) if action == "test" else address["in_use"]
     reason = offline.provider_refusal("ollama", url, label="Ollama")
     if reason:
-        return {"status": "unreachable", "url": url, "error": reason, "saved": action != "test"}
+        return {"status": "unreachable", "url": url, "error": reason, "saved": action != "test", "action": action,
+                "address": address}
     data = await asyncio.to_thread(probe_ollama, url)
-    data["saved"] = action != "test"
+    # `saved`: this checked the address Lumi uses (Save, status), not a typed one (Test).
+    data.update(saved=action != "test", action=action, address=address)
     if action != "test":
         # The saved address: offer its models, and start one if no model runs yet.
         await asyncio.to_thread(ctx.state.detect_backends, force=True)

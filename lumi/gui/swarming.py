@@ -79,11 +79,16 @@ def _capture(state, message, manager) -> CapturedSession:
 
 
 def _full_auto_needed(state, manager, capture, message):
-    """Why a team the orchestrator runs can't start in this conversation's mode, or None.
+    """Why a team the orchestrator runs can't start from this conversation's mode, or None.
 
     The orchestrator approves plans and accepts results for the owner, so
     starting one, or continuing one after a recovery, needs Full-auto
-    (AppState.full_auto_needed). A team the owner reviews needs nothing more.
+    (AppState.full_auto_needed): the conversation's, or the owner's grant
+    for this one run (``full_auto: true``, the panel's "Run this team in
+    Full-auto"), which leaves the conversation's mode as it is. A team the
+    owner reviews needs nothing more. Where the organization doesn't allow
+    Full-auto, the team's own rules refuse an orchestrated team
+    (organization.mode_refusal), grant or not.
     """
     action = message.get("action")
     if action == "start" and message.get("autonomy"):
@@ -93,7 +98,7 @@ def _full_auto_needed(state, manager, capture, message):
     else:
         return None
     check = getattr(state, "full_auto_needed", None)
-    return check(work) if callable(check) else None
+    return check(work, granted=message.get("full_auto") is True) if callable(check) else None
 
 
 async def command(state, send, message, *, chat_busy=False):
@@ -115,13 +120,15 @@ async def command(state, send, message, *, chat_busy=False):
         capture = _capture(state, message, manager)
         needed = await asyncio.to_thread(_full_auto_needed, state, manager, capture, message)
         if needed:
-            # The page offers one click that switches to Full-auto and asks again.
-            reply.update(error=needed["message"], code=needed["code"], can_switch=needed["can_switch"])
+            # The panel offers to run (or continue) this one team in Full-auto.
+            reply.update(error=needed["message"], code=needed["code"], can_grant=needed["can_grant"])
             await send(reply)
             return
         if message.get("action") in {"start", "request_plan", "collaboration_prepare", "collaboration_accept_work", "managed_sharing_prepare", "managed_sharing_accept_work"}:
             state._swarm_starting = starting = True
-        reply.update(await asyncio.to_thread(manager.operate, capture, copy.deepcopy(message)))
+        # The grant was the desktop's to check; the team's own command fields don't carry it.
+        forwarded = {key: value for key, value in message.items() if key != "full_auto"}
+        reply.update(await asyncio.to_thread(manager.operate, capture, copy.deepcopy(forwarded)))
     except (ValueError, SwarmError) as exc:
         reply["error"] = str(exc)
     except Exception:

@@ -78,6 +78,8 @@ function page({clipboard = 'ok', confirm = true} = {}) {
         inside(form, 'feedback-copy', {hidden: true}),
         inside(form, 'feedback-cancel'),
         inside(form, 'feedback-send', {textContent: 'Send'}),
+        inside(done, 'feedback-done-copy-text', {type: 'textarea', hidden: true}),
+        inside(done, 'feedback-done-copy', {hidden: true}),
         inside(done, 'feedback-another'),
         inside(done, 'feedback-done-close'),
     ];
@@ -88,6 +90,8 @@ function page({clipboard = 'ok', confirm = true} = {}) {
         inside(form, id, {hidden: true});
     }
     inside(queue, 'feedback-held', {hidden: true});
+    inside(done, 'feedback-done-email', {hidden: true});
+    inside(done, 'feedback-done-progress');
     for (const id of ['feedback-message-count', 'feedback-destination', 'feedback-always', 'feedback-progress',
         'feedback-queue-text', 'feedback-preview-meta', 'feedback-preview-notices', 'feedback-done-text',
         'feedback-done-notices']) make(id);
@@ -213,6 +217,11 @@ test('each waiting report says what it waits for', () => {
     const say = report => api.heldText({kind: 'bug', written: 0, ...report}, status);
     assert.match(say({reason: 'no_destination', state: 'held'}), /^Bug report: written before a feedback address was set\. It goes only if you send it to cloud\.example\.com\.$/);
     assert.match(api.heldText({kind: 'idea', reason: 'no_destination', state: 'held'}, {}), /stays here until one is/);
+    // Beside its Copy: where to email it instead (lumi/feedback.py SUPPORT_EMAIL, in the dialog's status).
+    assert.equal(api.heldText({kind: 'idea', reason: 'no_destination', state: 'held'}, {support_email: 'help@example.test'}),
+        'Idea report: written before a feedback address was set. It stays here until one is. Or copy it and email it to help@example.test.');
+    assert.match(api.heldText({kind: 'bug', reason: 'no_destination', state: 'held'}, {...status, support_email: 'help@example.test'}),
+        /send it to cloud\.example\.com\. Or copy it and email it to help@example\.test\.$/);
     // Written with an account, it goes only with it: it waits for its writer, or goes without an account by choice.
     assert.equal(say({state: 'sign_in', reason: 'sign_in', destination: 'cloud.example.com', writer: 'ada@example.com', without_account: true}),
         'Bug report: cloud.example.com didn’t accept the sign-in it went with. It goes when ada@example.com signs in there again (Settings > Lumi account), or without an account if you choose.');
@@ -567,6 +576,47 @@ test('reports waiting on this computer: sent now, copied, sent where shown, or d
     q.app.handleFeedbackStatus({data: {...STATUS, waiting: 1, sendable: 1, reports: reports.slice(0, 1)}});
     q.$('feedback-discard').dispatch('click');
     assert.equal(q.sent.filter(m => m.command === 'feedback_discard').length, 0);
+});
+
+test('a report kept for lack of an address offers Copy and where to email it', async () => {
+    const p = page();
+    p.app.openFeedbackDialog();
+    p.type('feedback-message', 'No address here.');
+    p.$('feedback-form').dispatch('submit');
+    p.app.handleFeedbackResult({ok: true, status: 'queued', reason: 'no_destination', notices: [],
+        message: 'Saved on this computer. No feedback address is set yet, so it isn’t sent.',
+        copy_text: 'Lumi feedback: Bug\n\nNo address here.\n', support_email: 'help@example.test'});
+    assert.equal(p.$('feedback-done').hidden, false);
+    assert.equal(p.$('feedback-done-copy').hidden, false);
+    assert.equal(p.$('feedback-done-email').hidden, false);
+    assert.equal(p.$('feedback-done-email').textContent, 'Or copy it and email it to help@example.test.');
+    assert.equal(p.document.activeElement, p.$('feedback-done-close'));
+    p.$('feedback-done-copy').dispatch('click');
+    await new Promise(resolve => setImmediate(resolve));
+    assert.deepEqual(p.copied, ['Lumi feedback: Bug\n\nNo address here.\n']);
+    assert.equal(p.$('feedback-done-progress').textContent, 'Copied. Paste it into an email to help@example.test.');
+
+    // A report that went has nothing to copy or email.
+    p.$('feedback-another').dispatch('click');
+    p.type('feedback-message', 'Second one.');
+    p.$('feedback-form').dispatch('submit');
+    p.app.handleFeedbackResult({ok: true, status: 'sent', message: 'Thanks.', notices: [], copy_text: '', support_email: ''});
+    assert.equal(p.$('feedback-done-copy').hidden, true);
+    assert.equal(p.$('feedback-done-email').hidden, true);
+    assert.equal(p.$('feedback-done-progress').textContent, '');
+
+    // Without a clipboard, the report is shown selected, there, to copy by hand.
+    const q = page({clipboard: 'refused'});
+    q.app.openFeedbackDialog();
+    q.app.handleFeedbackResult({ok: true, status: 'queued', reason: 'no_destination', message: 'Saved.',
+        copy_text: 'report text', support_email: 'help@example.test'});
+    q.$('feedback-done-copy').dispatch('click');
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(q.$('feedback-done-copy-text').hidden, false);
+    assert.equal(q.$('feedback-done-copy-text').value, 'report text');
+    assert.ok(q.$('feedback-done-copy-text').selected);
+    assert.equal(q.document.activeElement, q.$('feedback-done-copy-text'));
+    assert.equal(q.$('feedback-done-progress').textContent, 'Select the text below and copy it.');
 });
 
 test('a report goes as the account its button names, and without its writer’s account only by choice', () => {

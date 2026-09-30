@@ -18,7 +18,9 @@
  * Copy, Discard or (written before an address was set) Send to the address
  * shown, as the account its button names. A report written with an account
  * goes only with it: one waiting for its writer to sign in goes without the
- * account only when the person chooses Send without your account. An
+ * account only when the person chooses Send without your account. A report
+ * kept because no address is set says, beside its Copy, where to email it
+ * instead (Luminary Analytics support), as the dialog does when it's sent. An
  * outcome that arrives after the dialog closed is announced.
  *
  * window.LumiFeedback holds the checks and wording, so tests can run them
@@ -134,8 +136,10 @@
         const what = `${KIND_LABELS[r.kind] || 'Other'} report${when ? `, written ${when}` : ''}`;
         let why;
         if (r.reason === 'no_destination') {
-            why = s.destination ? `written before a feedback address was set. It goes only if you send it to ${s.destination}.`
-                : 'written before a feedback address was set. It stays here until one is.';
+            // Nowhere to send it (yet): Copy beside it, and where to email it (lumi/feedback.py SUPPORT_EMAIL).
+            const email = s.support_email ? ` Or copy it and email it to ${s.support_email}.` : '';
+            why = s.destination ? `written before a feedback address was set. It goes only if you send it to ${s.destination}.${email}`
+                : `written before a feedback address was set. It stays here until one is.${email}`;
         } else if (r.state === 'sign_in' || r.without_account) {
             // Written with an account, it goes only with that account (lumi/feedback.py), unless the person chooses.
             const who = r.writer || 'you';
@@ -228,6 +232,10 @@
                 if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) { event.preventDefault(); this._sendFeedback(); }
             });
             on('feedback-copy', 'click', () => this._copyFeedback());
+            on('feedback-done-copy', 'click', () => this._copyText(this._feedbackDoneCopyText, {
+                note: 'feedback-done-progress', area: 'feedback-done-copy-text',
+                copied: this._feedbackDoneEmail ? `Copied. Paste it into an email to ${this._feedbackDoneEmail}.` : '',
+            }));
             on('feedback-flush', 'click', () => {
                 // Not disabled while it works: a disabled button would drop the focus out of the dialog.
                 if (this._feedbackFlushing) return;
@@ -535,6 +543,7 @@
                         notices.appendChild(item);
                     }
                 }
+                this._showFeedbackDoneCopy(event);
                 if (this._feedbackOpen()) byId('feedback-done-close')?.focus();
                 else this._announceFeedback([event.message || 'Sent.', ...(event.notices || [])].join(' '));
                 return;
@@ -585,18 +594,48 @@
             this._showFeedbackFieldErrors({});
         }
 
-        async _copyText(text) {
+        /**
+         * Copy ``text``, or show it selected when there's no clipboard. ``where`` names the line that
+         * says what happened and the box for the text (the form's by default), and what "copied" says.
+         */
+        async _copyText(text, where = {}) {
             if (!text) return;
-            const area = byId('feedback-copy-text');
+            const area = byId(where.area || 'feedback-copy-text');
+            const say = line => {
+                if (!where.note) { this._feedbackNote(line); return; }
+                const note = byId(where.note);
+                if (note) note.textContent = line;
+            };
             try {
                 await navigator.clipboard.writeText(text);
                 if (area) area.hidden = true;
-                this._feedbackNote('Copied. Paste it wherever you report problems.');
+                say(where.copied || 'Copied. Paste it wherever you report problems.');
             } catch (_err) {
                 // No clipboard here (or it was refused): the text, selected, for Ctrl+C.
                 if (area) { area.value = text; area.hidden = false; area.focus(); area.select(); }
-                this._feedbackNote('Select the text below and copy it.');
+                say('Select the text below and copy it.');
             }
+        }
+
+        /**
+         * A report kept because no feedback address is set (lumi/feedback.py): Copy, and where to
+         * email it instead. Any other outcome hides them.
+         */
+        _showFeedbackDoneCopy(event) {
+            const text = event?.reason === 'no_destination' ? String(event.copy_text || '') : '';
+            this._feedbackDoneCopyText = text;
+            this._feedbackDoneEmail = text ? String(event.support_email || '') : '';
+            const copy = byId('feedback-done-copy');
+            if (copy) copy.hidden = !text;
+            const email = byId('feedback-done-email');
+            if (email) {
+                email.textContent = this._feedbackDoneEmail ? `Or copy it and email it to ${this._feedbackDoneEmail}.` : '';
+                email.hidden = !email.textContent;
+            }
+            const area = byId('feedback-done-copy-text');
+            if (area) { area.value = ''; area.hidden = true; }
+            const note = byId('feedback-done-progress');
+            if (note) note.textContent = '';
         }
 
         _copyFeedback() {

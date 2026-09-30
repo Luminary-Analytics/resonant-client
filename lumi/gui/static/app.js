@@ -764,7 +764,7 @@ class LumiApp {
                 dot: active ? 'ok' : 'muted',
                 title: label,
                 detail,
-                meta: this._statusPill(`${models.length} models`),
+                meta: this._statusPill(`${models.length} model${models.length === 1 ? '' : 's'}`),
             }));
         }
         if (!rows.length) {
@@ -792,7 +792,7 @@ class LumiApp {
             dot: server.connected ? 'ok' : server.error ? 'bad' : server.enabled === false ? 'muted' : 'warn',
             title: server.name || 'MCP server',
             detail: server.error || server.endpoint || server.url || server.command || '',
-            meta: this._statusPill(server.connected ? `${server.tools || 0} tools` : (server.error ? 'error' : server.enabled === false ? 'disabled' : 'disconnected')),
+            meta: this._statusPill(server.connected ? `${server.tools || 0} tool${server.tools === 1 ? '' : 's'}` : (server.error ? 'error' : server.enabled === false ? 'disabled' : 'disconnected')),
             action: !server.connected && server.enabled !== false
                 ? `<button class="status-row-action" type="button" data-status-mcp="${this.escapeHtml(server.name || '')}">Connect</button>`
                 : '',
@@ -3173,8 +3173,10 @@ class LumiApp {
             task.stateEl.className = 'task-card-state is-stopped';
             task.stateEl.textContent = 'Stopped';
             this._completeLiveRun(true);
-            // A stopped turn's session.end still names its trace.
-            this._collapseTaskActivity({ trace: event.trace });
+            // A stopped turn's session.end still names its trace, and how long it ran.
+            this._collapseTaskActivity({
+                trace: event.trace, stopped: true, total_elapsed: event.total_elapsed, total_steps: event.total_steps,
+            });
             this._setActiveTask(null);
         }
         this.removeThinking();
@@ -5977,9 +5979,9 @@ class LumiApp {
 
         let metaText = '';
         if (denied) metaText = output ? 'not run' : 'denied';
-        else if (name === 'file_read' && meta.lines) metaText = `${meta.lines} lines`;
-        else if (name === 'glob' && meta.count != null) metaText = `${meta.count} files`;
-        else if (name === 'grep' && meta.count != null) metaText = `${meta.count} matches`;
+        else if (name === 'file_read' && meta.lines) metaText = `${meta.lines} line${meta.lines === 1 ? '' : 's'}`;
+        else if (name === 'glob' && meta.count != null) metaText = `${meta.count} file${meta.count === 1 ? '' : 's'}`;
+        else if (name === 'grep' && meta.count != null) metaText = `${meta.count} match${meta.count === 1 ? '' : 'es'}`;
         else if (name === 'code_intel' && meta.code_intel) {
             const intel = meta.code_intel;
             if (intel.counts) {
@@ -6752,13 +6754,13 @@ class LumiApp {
 
         switch (name) {
             case 'file_read':
-                statusText = isError ? '✗' : (meta.lines ? `${meta.lines} lines` : '✓');
+                statusText = isError ? '✗' : (meta.lines ? `${meta.lines} line${meta.lines === 1 ? '' : 's'}` : '✓');
                 break;
             case 'glob':
-                statusText = `${meta.count || 0} files`;
+                statusText = `${meta.count || 0} file${meta.count === 1 ? '' : 's'}`;
                 break;
             case 'grep':
-                statusText = `${meta.count || 0} matches`;
+                statusText = `${meta.count || 0} match${meta.count === 1 ? '' : 'es'}`;
                 break;
             case 'browser_navigate':
                 statusText = isError ? '✗' : (meta.title || '✓');
@@ -8058,7 +8060,9 @@ class LumiApp {
         let detail = '';
         const renderKind = event.presentation?.kind || '';
         if (name === 'file_write' || renderKind === 'write') {
-            const lines = String(args.content || '').split('\n').length;
+            // A final newline ends the last line; it doesn't start another (tools._line_count).
+            const content = String(args.content || '');
+            const lines = content ? content.split('\n').length - (content.endsWith('\n') ? 1 : 0) : 0;
             detail = lines ? `Wrote ${lines} line${lines === 1 ? '' : 's'}` : 'Wrote file';
         } else if (name === 'file_edit' || renderKind === 'edit') {
             const dl = event.diff_lines || [];
@@ -8188,9 +8192,11 @@ class LumiApp {
         const actions = tools || steps;
         if (actions > 0) pieces.push(`${actions} action${actions === 1 ? '' : 's'}`);
         const elapsed = Number(event.total_elapsed || t.totalElapsed || 0);
-        const activityTitle = elapsed > 0
-            ? `Worked for ${this._formatRunDuration(elapsed)}`
-            : 'Work details';
+        // A turn someone stopped says so where it collapses, live and replayed
+        // (its card's own "Stopped" label isn't shown in this layout).
+        const activityTitle = event.stopped
+            ? (elapsed > 0 ? `Stopped after ${this._formatRunDuration(elapsed)}` : 'Stopped')
+            : elapsed > 0 ? `Worked for ${this._formatRunDuration(elapsed)}` : 'Work details';
 
         const details = document.createElement('details');
         details.className = 'task-activity-details';
@@ -10339,6 +10345,9 @@ class LumiApp {
         this._finishActiveTask({
             total_elapsed: (this._currentTurn && this._currentTurn.totalElapsed) || 0,
             total_steps: (this._currentTurn && this._currentTurn.stepCount) || 0,
+            // The engine says "Interrupted" only for a stop (Session._cancelled_events):
+            // a saved stopped turn replays through here.
+            stopped: event.message === 'Interrupted',
         });
 
         // If it was a fatal-ish error, stop running and clean up terminals.

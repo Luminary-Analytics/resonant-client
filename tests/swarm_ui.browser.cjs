@@ -560,7 +560,7 @@ test('Team panel: real controls, scoped races, keyboard, reconnect and compact l
         const downloadPromise=page.waitForEvent('download');
         await page.getByRole('button',{name:'Export run report',exact:true}).click();
         const download=await downloadPromise;
-        assert.equal(download.suggestedFilename(),'SONN-swarm-run-fixture-3.json');
+        assert.equal(download.suggestedFilename(),'lumi-team-run-fixture-3.json');
         const reportPath=path.join(output,download.suggestedFilename());
         await download.saveAs(reportPath);
         assert.deepEqual(JSON.parse(fs.readFileSync(reportPath,'utf8')),{kind:'simulated-run-report',run_id:'run-fixture-3',requests:{known:2,uncertain:1}});

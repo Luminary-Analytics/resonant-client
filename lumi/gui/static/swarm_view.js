@@ -704,7 +704,7 @@ window.LumiSwarmView = class LumiSwarmView {
             const url = URL.createObjectURL(new Blob([contents], {type: 'application/json;charset=utf-8'}));
             const link = document.createElement('a');
             link.href = url;
-            link.download = `SONN-swarm-${String(scope.run_id).replace(/[^A-Za-z0-9._-]/g, '_').slice(0, 100)}.json`;
+            link.download = `lumi-team-${String(scope.run_id).replace(/[^A-Za-z0-9._-]/g, '_').slice(0, 100)}.json`;
             link.hidden = true;
             this._swarmDialog.appendChild(link);
             link.click();

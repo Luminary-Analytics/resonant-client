@@ -528,6 +528,23 @@ test('a !command turn counts only its own actions', () => {
     assert.deepEqual(app.cards().map(card => card.worked), ['Worked for 1s · 4 actions', 'Worked for 1s · 2 actions']);
 });
 
+test('a stopped turn says Stopped where it collapses, live and replayed', () => {
+    // Saved, a stop is the engine's "Interrupted" and then the turn's end (Session._cancelled_events).
+    const app = turnSummaryApp();
+    app.replayDisplayEvents([...savedTurn('stopped', 2, 0, {ended: false}), {event: 'step.end', step: 1, elapsed: 2.5},
+        {event: 'error', message: 'Interrupted'}, {event: 'session.end', total_elapsed: 2.5, total_steps: 1},
+        ...savedTurn('next', 1, 1.5)]);
+    assert.deepEqual(app.cards().map(card => card.worked), ['Stopped after 2s · 2 actions', 'Worked for 1s · 1 action']);
+
+    // Live: the person pressed Stop, then the same two events arrive.
+    const live = turnSummaryApp();
+    live.replayDisplayEvents(savedTurn('running', 2, 0, {ended: false}), {activeRun: true});
+    live._cancelInFlight = 'cancel-1';
+    live.handleEvent({event: 'error', message: 'Interrupted'});
+    live.handleEvent({event: 'session.end', total_elapsed: 3.2, total_steps: 1});
+    assert.deepEqual(live.cards().map(card => card.worked), ['Stopped after 3s · 2 actions']);
+});
+
 // The application account must never inherit another provider's identity.
 function accountView(settings = {}, sonnAccount, document = {}) {
     const context = vm.createContext({window: {}, document});
@@ -563,6 +580,17 @@ test('the profile shows SONN only to someone who uses it', () => {
     assert.equal(summary.sonn, false);
     app.settings = {network: {sonn_url: 'https://sonn.example.test/v1/projects/p'}};
     assert.equal(app._accountSummary().sonn, true);
+});
+
+test('Settings lists SONN’s account page, and Lumi’s own evaluations, only for those who use them', () => {
+    const app = accountView();
+    const page = id => app._settingsPages().find(item => item.id === id);
+    assert.equal(page('sonn_account'), undefined);
+    // The GLM / DeepSeek evaluations are a developer tool (gui/settings.py developer_tools).
+    assert.deepEqual(Array.from(page('model_evaluations').sections), ['model_comparisons']);
+    app.settings = {...SONN, _meta: {...SONN._meta, developer_tools: true}};
+    assert.equal(page('sonn_account').title, 'SONN account & credits');
+    assert.deepEqual(Array.from(page('model_evaluations').sections), ['model_comparisons', 'model_evaluations']);
 });
 
 test('local display name preserves the authenticated SONN identifier and prepaid status', () => {
@@ -1752,7 +1780,7 @@ test('a step\'s prose stays above its calls, and a finished step stays open whil
     assert.ok(prose.classList.contains('plan-step-text'));
     assert.equal(prose.querySelector('.message-content').textContent, 'Reading the styles first.');
     assert.equal(readRow.getAttribute('data-tool'), 'file_read');
-    assert.equal(readRow.querySelector('.tool-status').textContent, '1 lines');
+    assert.equal(readRow.querySelector('.tool-status').textContent, '1 line');
 
     // Someone tabbed into the step's rows before it finished: it stays open.
     Object.getPrototypeOf(body).contains = function (node) {
@@ -2285,7 +2313,7 @@ test('a closed group\'s waiting item answers only results drawn in its own turn'
         answer(again, 'a.py:1: TODO', {metadata: {count: 1}}));
 
     const row = nextActivity.children.find(el => el.getAttribute('data-call-id') === 'call_5f2a9c01');
-    assert.equal(row.querySelector('.tool-status').textContent, '1 matches');
+    assert.equal(row.querySelector('.tool-status').textContent, '1 match');
     assert.ok(staleItem.classList.contains('pending'));
     assert.equal(staleItem.querySelector('.tool-status').textContent, '…');
 });

@@ -152,7 +152,7 @@ test('Source Team UI reviews two isolated writers, verifies, applies and accepts
         assert.equal(report.checks[0].state,'passed');
         assert.equal(report.writer_acceptances.length,2);
         assert.equal(fs.readFileSync(reportPath,'utf8').includes('Reviewed the complete backend/frontend'),false);
-        assert.equal(download.suggestedFilename(),`SONN-swarm-${initial.run.id}.json`);
+        assert.equal(download.suggestedFilename(),`lumi-team-${initial.run.id}.json`);
         const evidence=await (await fetch(info.url+'/__fixture__/evidence')).json();
         const result=evidence.runs[0].run;
         assert.equal(evidence.backend_requests,4);

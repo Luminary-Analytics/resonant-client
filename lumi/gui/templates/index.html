@@ -242,7 +242,7 @@
                 </div>
                 <div id="account-popover" class="account-popover" role="dialog" aria-label="Your profile and account" hidden>
                     <div class="account-summary"><strong id="account-menu-name">Profile</strong><span id="account-menu-detail">Settings and connections</span><small id="account-menu-status" hidden></small></div>
-                    <button type="button" id="account-usage">SONN account &amp; credits</button>
+                    <button type="button" id="account-usage" hidden>SONN account &amp; credits</button>
                     <button type="button" id="account-connections">Provider connections <span aria-hidden="true">↗</span></button>
                     <button type="button" id="account-pet" aria-pressed="false">Show Echo <span aria-hidden="true">✧</span></button>
                     <button type="button" id="account-feedback" aria-haspopup="dialog">Send feedback&hellip;</button>
@@ -896,7 +896,12 @@
             <div id="feedback-done" class="dialog-body feedback-done" hidden>
                 <p id="feedback-done-text" class="feedback-done-text" role="status"></p>
                 <ul id="feedback-done-notices" class="feedback-notices"></ul>
+                <!-- A report kept for lack of an address: where to email it instead, with Copy. -->
+                <p id="feedback-done-email" class="share-note feedback-done-email" hidden></p>
+                <textarea id="feedback-done-copy-text" class="handoff-note feedback-copy-text" readonly hidden aria-label="Your report as text"></textarea>
+                <p id="feedback-done-progress" class="share-note feedback-progress" role="status"></p>
                 <div class="dialog-actions">
+                    <button type="button" id="feedback-done-copy" class="dialog-btn deny" aria-describedby="feedback-done-email" hidden>Copy</button>
                     <button type="button" id="feedback-another" class="dialog-btn deny">Send another</button>
                     <button type="button" id="feedback-done-close" class="dialog-btn allow" aria-describedby="feedback-done-text">Done</button>
                 </div>

@@ -139,7 +139,7 @@ class LumiSettingsView {
             this._renderAccountMenu();
             popover.hidden = false;
             trigger.setAttribute('aria-expanded', 'true');
-            popover.querySelector('button')?.focus();
+            popover.querySelector('button:not([hidden])')?.focus();
             // Account reads never enter the startup or generation path, and
             // none is made for someone who doesn't use SONN.
             if (!this.sonnAccount && this._sonnConfigured()) this._requestSonnAccount();
@@ -154,7 +154,8 @@ class LumiSettingsView {
             if (event.key === 'Escape') {
                 event.preventDefault(); event.stopPropagation(); this._closeAccountMenu(true);
             } else if (['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) {
-                const buttons = [...popover.querySelectorAll('button')];
+                // Hidden items (SONN's, without SONN) can't take focus: the arrows skip them.
+                const buttons = [...popover.querySelectorAll('button:not([hidden])')];
                 let index = buttons.indexOf(document.activeElement);
                 index = event.key === 'Home' ? 0 : event.key === 'End' ? buttons.length - 1
                     : (index + (event.key === 'ArrowDown' ? 1 : -1) + buttons.length) % buttons.length;
@@ -191,7 +192,7 @@ class LumiSettingsView {
             <div class="editor-grid">${editors.map(editor => {
                 const escape = value => this.escapeHtml(String(value ?? ''));
                 const busy = this._editorBusy === editor.id;
-                const status = editor.connected ? `Bridge connected · ${editor.tools} tools` : editor.enabled ? 'Configured · not connected' : editor.configured ? 'Disabled' : 'Not configured';
+                const status = editor.connected ? `Bridge connected · ${editor.tools} tool${editor.tools === 1 ? '' : 's'}` : editor.enabled ? 'Configured · not connected' : editor.configured ? 'Disabled' : 'Not configured';
                 const value = this._editorDrafts?.[editor.id] ?? editor.value;
                 return `<article class="editor-card" aria-label="${escape(editor.title)} integration">
                     <div><h3>${escape(editor.title)}</h3><p class="editor-help">${escape(editor.summary)}</p></div>
@@ -379,10 +380,10 @@ class LumiSettingsView {
         return [
             row(`Lumi ${esc(info.version)}`, `The coding agent by Luminary Analytics. ${managed}`),
             row('Free for individuals', 'The whole agent, every tool, provider and feature in this app, works without an account: with your own API keys, your ChatGPT sign-in, or models on your own computer.'),
-            row('What leaves this computer', `${oversight} Feedback you choose to send goes to the Lumi Cloud you use. The privacy notice below lists exactly what.`),
+            row('What leaves this computer', `${oversight} Feedback you choose to send goes to the address its dialog shows before you send it. The privacy notice below lists exactly what.`),
             `<div class="settings-row"><div class="settings-row-copy"><span class="settings-row-label">Feedback</span><div class="settings-row-hint">Report a problem or suggest an idea. You see what’s sent before it goes, and your keys never are.</div></div>
                 <div class="settings-row-value"><button type="button" class="btn-sm" id="about-send-feedback" aria-haspopup="dialog">Send feedback…</button></div></div>`,
-            row('For teams and organizations', 'Lumi Cloud adds central policy, members, devices and usage reporting; if your organization uses it, sign in from Lumi account. Without it, organizations set policy on each computer (see docs/enterprise-policy.md).'),
+            row('For teams and organizations', 'Lumi Cloud adds central policy, members, devices and usage reporting; if your organization uses it, sign in from Lumi account. Without it, an administrator sets policy on each computer: with Group Policy or a policy file on Windows, a configuration profile on macOS, or a policy file on Linux.'),
             row('License', `© Luminary Analytics, LLC. All rights reserved. Licensed under the ${esc(info.license)}.${info.notices ? ` Third-party components and their licenses: <code>${esc(info.notices)}</code>` : ''}`),
             `<div class="settings-row"><div class="settings-row-copy"><span class="settings-row-label">Terms and notices</span><div class="settings-row-hint" id="about-terms-status">${this._termsAcceptanceText?.(terms) || ''}</div><div class="about-legal-documents">${documents}</div></div></div>`,
         ].join('');
@@ -578,7 +579,10 @@ class LumiSettingsView {
             ...(status.problems || []),
         ].filter(Boolean).map(text => `<div class="settings-row-hint">${esc(text)}</div>`).join('');
         const lastCheck = status.last_check ? new Date(status.last_check * 1000).toLocaleString() : 'Not yet';
-        return `<div class="settings-row"><div class="settings-row-copy"><span class="settings-row-label">Lumi ${esc(status.version)}</span><div class="settings-row-hint">${describe(status)}${managed}</div>${hints}</div>
+        // Nobody chose a channel: a pre-release copy follows beta (update_channels.default_channel).
+        const byDefault = status.mode !== 'off' && !status.pin && status.channel_chosen === false && status.channel === 'beta'
+            ? ', which a pre-release copy follows until you choose a channel' : '';
+        return `<div class="settings-row"><div class="settings-row-copy"><span class="settings-row-label">Lumi ${esc(status.version)}</span><div class="settings-row-hint">${describe(status)}${byDefault}${managed}</div>${hints}</div>
                 <div class="settings-row-value"><button type="button" class="btn-sm" id="update-check"${checking ? '' : ' disabled'}>Check for updates</button></div></div>
             ${checking ? `<div class="settings-row"><div class="settings-row-copy"><span class="settings-row-label">Last checked</span><div class="settings-row-hint">${esc(lastCheck)}</div></div></div>` : ''}
             ${status.pending ? `<div class="settings-row"><div class="settings-row-copy"><span class="settings-row-label">After Lumi restarts</span><div class="settings-row-hint" role="status">${describe(status.pending)}</div></div></div>` : ''}`;
@@ -696,7 +700,7 @@ class LumiSettingsView {
         }
         const policy = meta.summary;
         if (!policy) {
-            return ignored + '<p class="editor-help">No organization policy is installed on this computer. An administrator can set one with Group Policy, a configuration profile or a policy file; see docs/enterprise-policy.md.</p>';
+            return ignored + '<p class="editor-help">No organization policy is installed on this computer. An administrator can install one with Group Policy or a policy file on Windows, a configuration profile on macOS, or a policy file on Linux, in a place only administrators can change; Settings then shows what it manages here.</p>';
         }
         const list = (items, none) => items === null || items === undefined ? none
             : items.length ? items.map(item => `<code>${esc(item)}</code>`).join(', ') : 'none';
@@ -1319,8 +1323,9 @@ class LumiSettingsView {
 
     _renderApiProviderCard(provider, label, keyHint) {
         const info = (this.providerConnections || {})[provider] || {};
+        const count = info.model_count ?? (info.models || []).length;
         const text = info.error || (info.status === 'ready'
-            ? `Connected · ${info.model_count ?? (info.models || []).length} models available · billed to your ${label} account`
+            ? `Connected · ${count} model${count === 1 ? '' : 's'} available · billed to your ${label} account`
             : `Add your ${label} key in API keys below, then check the connection. ${keyHint}`);
         return `<div class="provider-connection"><strong>${this.escapeHtml(label)}</strong>
             <p>${this.escapeHtml(text)}</p>
@@ -1635,8 +1640,11 @@ class LumiSettingsView {
             ${typeof router.usage === 'number' ? `<p class="provider-note">Key usage: $${router.usage.toFixed(4)}${typeof router.limit_remaining === 'number' ? ` · key allowance remaining: $${router.limit_remaining.toFixed(2)}` : ''}</p>` : ''}
             <button class="btn-sm" data-provider="openrouter" data-provider-action="status">Check connection & refresh models</button></div>
             <div class="provider-connection"><strong>SONN</strong>
-            <p>${this.escapeHtml(sonn.error || (sonn.status === 'ready' ? `Connected · ${sonn.model_count} models available` : 'Set your project API base URL in Network and your SONN key in API keys below.'))}</p>
-            <button class="btn-sm" data-provider="sonn" data-provider-action="status">Check SONN connection & refresh models</button></div>`
+            ${this._sonnConfigured()
+                ? `<p>${this.escapeHtml(sonn.error || (sonn.status === 'ready' ? `Connected · ${sonn.model_count} model${sonn.model_count === 1 ? '' : 's'} available` : 'Set your project API base URL in Network and your SONN key in API keys below.'))}</p>
+            <button class="btn-sm" data-provider="sonn" data-provider-action="status">Check SONN connection & refresh models</button>`
+                // Only for people with a SONN invitation: nothing to check until its URL or key is set.
+                : '<p>A separate service you join by private invitation. With one, add its project URL in Network and its key in API keys below. You don’t need SONN to use Lumi.</p>'}</div>`
             + this._renderCustomConnections();
     }
 
@@ -1793,7 +1801,7 @@ class LumiSettingsView {
                 list.appendChild(item);
             }
             if (!models.length) list.textContent = 'No matching models. Connect a provider or refresh its models in Settings.';
-            dialog.querySelector('[data-results]').textContent = models.length > 80 ? `Showing 80 of ${models.length} · narrow your search` : `${models.length} models`;
+            dialog.querySelector('[data-results]').textContent = models.length > 80 ? `Showing 80 of ${models.length} · narrow your search` : `${models.length} model${models.length === 1 ? '' : 's'}`;
         };
         search.addEventListener('input', render);
         dialog.querySelector('[data-close]').onclick = () => dialog.close();
@@ -2238,6 +2246,15 @@ class LumiSettingsView {
         return choice.reason;
     }
 
+    /** Settings › Privacy & security's feedback address: what it's for, and where reports go while it's empty. */
+    _feedbackAddressHint() {
+        const build = String(this.settings?._meta?.feedback?.build_destination || '');
+        const empty = build
+            ? `Empty sends them to ${build}, the address this build of Lumi came with.`
+            : 'Empty sends them to the Lumi Cloud you sign in to, if any; otherwise they wait on this computer.';
+        return `Where Send feedback sends reports: a Lumi Cloud address, such as your organization’s, using https and without a user name or password. ${empty} A report goes only to the address it was written for.`;
+    }
+
     _secretStorageNote() {
         const storage = this.settings?._meta?.secret_storage;
         if (!storage) return '';
@@ -2245,7 +2262,17 @@ class LumiSettingsView {
         return `Keys you save here are kept in ~/.lumi/settings.json. ${storage.reason || ''}`.trim();
     }
 
+    /**
+     * Lumi's own model evaluations (GLM / DeepSeek smoke runs against fixed
+     * internal specs) are a developer tool: shown only with
+     * general.developer_tools or LUMI_DEVELOPER_TOOLS (gui/settings.py).
+     */
+    _developerTools() {
+        return this.settings?._meta?.developer_tools === true;
+    }
+
     _settingsPages() {
+        const developer = this._developerTools();
         return [
             {id:'general', title:'General', group:'Personal', icon:'settings', description:'Choose how the agent works and which models new sessions use.', sections:['general'], fields:['default_permission_mode','default_backend','default_model','fallback_models','role_models','auto_lint_after_edits','auto_test_after_edits','auto_test_command','max_model_requests','big_context_profile','harness_enabled','autonomous_sessions'], keywords:'permissions approval workflow fallback failover roles summarize autonomous mission unattended'},
             {id:'profile', title:'Profile', group:'Personal', icon:'person', description:'Personalize your local workspace identity.', sections:['general'], fields:['display_name']},
@@ -2255,7 +2282,7 @@ class LumiSettingsView {
             {id:'sonn_account', title:'SONN account & credits', group:'Personal', icon:'person', description:'Your authenticated SONN identity and prepaid credit balance.', sections:['sonn_account'], keywords:'billing invitation balance'},
             {id:'cost_tracking', title:'Usage & cost', group:'Personal', icon:'chart', description:'Review tracked model usage and local spending alerts.', sections:['cost_tracking'], keywords:'tokens budget'},
             {id:'issue_trackers', title:'Issue trackers', group:'Integrations', icon:'book', description:'Read Jira, Linear, GitHub and GitLab issues, and comment on them, from a conversation.', sections:['issue_trackers', 'code_hosts', 'issue_tracker_keys'], keywords:'jira linear atlassian issue ticket story bug github gitlab enterprise server self-managed hosts token'},
-            {id:'provider_connections', title:'Connections', group:'Integrations', icon:'globe', description:'Connect model providers and manage their endpoints and API keys.', sections:['provider_connections','network','api_keys'], keywords:'ChatGPT Codex OpenRouter SONN login authentication proxy certificates TLS keychain'},
+            {id:'provider_connections', title:'Connections', group:'Integrations', icon:'globe', description:'Connect model providers and manage their endpoints and API keys.', sections:['provider_connections','network','api_keys'], keywords:'Ollama address URL host OLLAMA_HOST local models ChatGPT Codex OpenRouter SONN login authentication proxy certificates TLS keychain'},
             {id:'code_editors', title:'Code editors', group:'Integrations', icon:'plug', description:'Use Lumi from VS Code and JetBrains IDEs: send the selection, see Lumi’s changes.', sections:['code_editors'], keywords:'vs code vscode cursor windsurf vscodium jetbrains intellij pycharm webstorm rider goland ide extension plugin selection diff'},
             {id:'creative_editors', title:'Creative editors', group:'Integrations', icon:'cube', description:'Work with Blender, Unity, and Unreal Engine 5.', sections:['creative_editors']},
             {id:'mcp_servers', title:'MCP servers', group:'Integrations', icon:'plug', description:'Connect tools supplied by external servers.', sections:['mcp_servers']},
@@ -2266,15 +2293,16 @@ class LumiSettingsView {
             {id:'code_review', title:'Code review', group:'Coding', icon:'shield', description:'Have named people review the agent’s pull requests before they merge.', sections:['review'], keywords:'review reviewer approve approval pull request merge request push main master protected branch queue'},
             {id:'scheduled_tasks', title:'Scheduled tasks', group:'Coding', icon:'clock', description:'Run a saved task at set times, even when Lumi is closed.', sections:['scheduled_tasks'], keywords:'schedule cron nightly recurring automation task scheduler launchd unattended'},
             {id:'offline', title:'Offline mode', group:'Security', icon:'globe', description:'Work without the internet: Lumi reaches only this computer and the hosts you allow.', sections:['offline','offline_status'], keywords:'offline air-gapped airgapped air gap disconnected no internet network egress outbound firewall allowlist allowed hosts local models on-premises inference server license seats'},
-            {id:'privacy', title:'Privacy & security', group:'Security', icon:'shield', description:'Control what Lumi reads, keeps and sends, and which tools it may use.', sections:['org_policy','org_oversight','privacy','file_exclusions','transcripts','audit_log','audit','audit_status','security','shell_sandbox','project_trust'], keywords:'audit log opentelemetry otlp tamper evidence secrets redact scan credentials DLP exclude ignore lumiignore env retention delete trust AGENTS.md policy codex claude computer gateway organization managed group policy MDM sandbox seatbelt bubblewrap bwrap shell commands oversight monitoring shared messages activity security flags prompt injection'},
-            {id:'local_backends', title:'Ollama runtime', group:'Advanced', icon:'cube', description:'Tune your local model runtime.', sections:['local_backends']},
+            {id:'privacy', title:'Privacy & security', group:'Security', icon:'shield', description:'Control what Lumi reads, keeps and sends, and which tools it may use.', sections:['org_policy','org_oversight','privacy','file_exclusions','transcripts','feedback','audit_log','audit','audit_status','security','shell_sandbox','project_trust'], keywords:'audit log opentelemetry otlp tamper evidence secrets redact scan credentials DLP exclude ignore lumiignore env retention delete trust AGENTS.md policy codex claude computer gateway organization managed group policy MDM sandbox seatbelt bubblewrap bwrap shell commands oversight monitoring shared messages activity security flags prompt injection feedback report bug idea inbox'},
+            {id:'local_backends', title:'Ollama runtime', group:'Advanced', icon:'cube', description:'How much context Ollama models get, and how long they stay loaded. Ollama’s address is under Connections.', sections:['local_backends'], keywords:'num_ctx context window keep-alive keep alive memory unload local models'},
             {id:'prompt_inspector', title:'Prompt inspector', group:'Advanced', icon:'book', description:'Inspect the instructions used by the active model.', sections:['prompt_inspector']},
-            {id:'model_evaluations', title:'Model evaluations', group:'Advanced', icon:'chart', description:'Compare models on your own tasks, and review model quality and runtime diagnostics.', sections:['model_comparisons', 'model_evaluations'], keywords:'compare comparison benchmark evaluate models tasks switch pass rate'},
+            {id:'model_evaluations', title:'Model evaluations', group:'Advanced', icon:'chart', description: developer ? 'Compare models on your own tasks, and review model quality and runtime diagnostics.' : 'Compare models on your own tasks.', sections: developer ? ['model_comparisons', 'model_evaluations'] : ['model_comparisons'], keywords:'compare comparison benchmark evaluate models tasks switch pass rate'},
             {id:'iteration_checkpoints', title:'Checkpoints & recovery', group:'Advanced', icon:'history', description:'Inspect saved iterations and recovery options.', sections:['iteration_checkpoints']},
             {id:'lumi_account', title:'Lumi account', group:'Personal', icon:'person', description:'Sign in to Lumi Cloud and use your organization’s policy on this computer.', sections:['lumi_account'], keywords:'lumi cloud organization team company sign in enroll device computer managed policy seat slack teams microsoft chat tasks remote requests'},
             {id:'about', title:'About Lumi', group:'Personal', icon:'book', description:'What Lumi is, what it costs and what it sends where.', sections:['about'], keywords:'version license EULA terms agreement alpha beta test accept accepted copyright free plan pricing account privacy notice telemetry notices third-party feedback bug report idea'},
             {id:'updates', title:'Updates', group:'Advanced', icon:'history', description:'Choose how Lumi updates itself and which releases it takes.', sections:['updates','update_status','update_file'], keywords:'update upgrade version release beta channel pin stable automatic manual off file offline installer bundle air-gapped'},
-        ];
+        // SONN's account and credits only for someone who uses SONN (a private invitation), as in the profile menu.
+        ].filter(page => page.id !== 'sonn_account' || this._sonnConfigured());
     }
 
     _matchingSettingsPages(pages, sections, query) {
@@ -2393,7 +2421,9 @@ class LumiSettingsView {
         if (page === 'scheduled_tasks') this.send({command: 'schedules_list'});
         if (page === 'code_editors') this.send({command: 'code_editors_list'});
         if (page === 'model_evaluations') this.send({command: 'model_evals_list'});
-        const command = {creative_editors:'editor_list', capability_packs:'capability_pack_list', cost_tracking:'get_costs', model_evaluations:'evaluation_list', iteration_checkpoints:'checkpoint_list', updates:'update_status', about:'about_info', lumi_account:'cloud_status', offline:'offline_status'}[page];
+        // Lumi's own evaluations are asked for only where they're shown (_developerTools).
+        const evaluations = this._developerTools() ? 'evaluation_list' : '';
+        const command = {creative_editors:'editor_list', capability_packs:'capability_pack_list', cost_tracking:'get_costs', model_evaluations:evaluations, iteration_checkpoints:'checkpoint_list', updates:'update_status', about:'about_info', lumi_account:'cloud_status', offline:'offline_status'}[page];
         if (command) this.send({command});
     }
 
@@ -2515,11 +2545,14 @@ class LumiSettingsView {
                 ]
             },
             {
+                // Read when each Ollama backend is made (backends.ollama_runtime); the address is the
+                // Ollama card's (Connections), never set here.
                 id: 'local_backends', title: 'Ollama Runtime', open: false,
                 fields: [
-                    { key: 'ollama_host', label: 'Ollama host (OLLAMA_HOST)', type: 'text' },
-                    { key: 'ollama_num_ctx', label: 'Ollama context window (num_ctx)', type: 'number' },
-                    { key: 'ollama_keep_alive', label: 'Ollama keep-alive duration', type: 'text' },
+                    { key: 'ollama_num_ctx', label: 'Context window (tokens)', type: 'number',
+                      hint: 'How much of the conversation each request gives the model, from 4,096 to 1,048,576 tokens, never more than the model supports. Empty uses the model’s own window, or the Large-context profile. A new size reloads the model on the next request.' },
+                    { key: 'ollama_keep_alive', label: 'Keep the model loaded for', type: 'text', placeholder: '120m',
+                      hint: 'How long Ollama keeps the model in memory after a request, such as 30m or 2h. 0 unloads it at once; -1m keeps it loaded. Empty uses 120m.' },
                 ]
             },
             {
@@ -2535,10 +2568,7 @@ class LumiSettingsView {
             {
                 id: 'network', title: 'Network',
                 fields: [
-                    // v0.4.0 — Ollama is the only backend. Default Mac Studio
-                    // location is 10.0.0.133:11434; leave blank to use the
-                    // OLLAMA_HOST env var or auto-detect.
-                    { key: 'ollama_url', label: 'Ollama URL (e.g. http://127.0.0.1:11434)', type: 'text' },
+                    // Ollama's address (network.ollama_url) is the Ollama card's above, its one field.
                     { key: 'exo_url', label: 'EXO OpenAI API URL', type: 'text',
                       hint: 'Default: http://127.0.0.1:52415/v1. EXO_API_URL and EXO_BASE_URL are also supported.' },
                     { key: 'sonn_url', label: 'SONN API base URL', type: 'text',
@@ -2596,6 +2626,14 @@ class LumiSettingsView {
                 fields: [
                     { key: 'transcript_retention_days', label: 'Delete transcripts after (days)', type: 'number',
                       hint: 'Empty or 0 keeps them. Lumi deletes saved sessions and session logs this many days after their last activity, at startup and daily. The open session is never deleted.' },
+                ]
+            },
+            {
+                // privacy.feedback_url (lumi/feedback.py): the one address a policy can also lock.
+                id: 'feedback', title: 'Feedback', store: 'privacy',
+                fields: [
+                    { key: 'feedback_url', label: 'Feedback address', type: 'text', placeholder: 'https://cloud.example.com',
+                      hint: this._feedbackAddressHint() },
                 ]
             },
             {
@@ -2704,12 +2742,14 @@ class LumiSettingsView {
                           { value: 'off', label: 'Never' },
                       ],
                       hint: 'Automatically checks once a day. Never is for organizations that deploy Lumi themselves.' },
-                    { key: 'channel', label: 'Channel', type: 'select', default: 'stable',
+                    // "" until someone chooses: this build's default (update_channels.default_channel).
+                    { key: 'channel', label: 'Channel', type: 'select', emptyIsDefault: true,
+                      default: this.settings?._meta?.updates?.default_channel || 'stable',
                       options: [
                           { value: 'stable', label: 'Stable' },
                           { value: 'beta', label: 'Beta' },
                       ],
-                      hint: 'Beta releases arrive first and may have rough edges. The beta channel also gets every stable release.' },
+                      hint: 'Beta releases arrive first and may have rough edges. The beta channel also gets every stable release. An alpha, beta or release-candidate copy of Lumi follows Beta until you choose, since its next release comes only there.' },
                     { key: 'pin', label: 'Stay on release line', type: 'text', placeholder: 'e.g. 0.20',
                       hint: 'Take only fixes for this line (0.20.x, say) and nothing newer. A pin wins over the channel. Empty follows the channel.' },
                 ]
@@ -2974,7 +3014,7 @@ class LumiSettingsView {
                             <div class="settings-row mcp-settings-row">
                                 <span class="settings-row-label"><strong>${this.escapeHtml(name)}</strong><small class="mcp-transport tone-dim">${this.escapeHtml(transport)}</small></span>
                                 <div class="settings-row-value mcp-settings-value">${endpoint}${error ? `<small class="tone-err">${this.escapeHtml(error)}</small>` : ''}</div>
-                                <button class="btn-sm mcp-connect-btn text-11" data-server="${this.escapeHtml(name)}" ${connected ? 'disabled' : ''}>${connected ? `${runtime.tools || 0} tools` : 'Connect'}</button>
+                                <button class="btn-sm mcp-connect-btn text-11" data-server="${this.escapeHtml(name)}" ${connected ? 'disabled' : ''}>${connected ? `${runtime.tools || 0} tool${runtime.tools === 1 ? '' : 's'}` : 'Connect'}</button>
                             </div>`;
                     }).join('');
                 }
@@ -2988,7 +3028,9 @@ class LumiSettingsView {
             } else if (section.fields) {
                 if (section.note) bodyHtml += `<div class="settings-row settings-section-note"><div class="settings-row-copy"><span class="settings-row-hint">${this.escapeHtml(section.note)}</span></div></div>`;
                 for (const field of section.fields) {
-                    const val = data[field.key] ?? field.default ?? '';
+                    // A field whose "" means "not chosen" (the update channel) shows what applies.
+                    const stored = data[field.key];
+                    const val = field.emptyIsDefault && (stored === '' || stored == null) ? field.default : (stored ?? field.default ?? '');
                     // An organization policy can lock a field (lumi/policy.py); it
                     // then shows the managed value and can't be changed here.
                     const lockedBy = this.settings?._meta?.locked?.[`${store}.${field.key}`] || '';

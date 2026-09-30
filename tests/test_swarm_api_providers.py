@@ -351,6 +351,55 @@ def test_a_participants_last_request_keeps_its_tools_and_lets_none_run(tmp_path,
     assert "rejects empty names" in submission["handoff"]
 
 
+@pytest.mark.parametrize(("model", "level", "effort"), [("claude-sonnet-5", "high", "high"),
+                                                         ("claude-opus-5-5", "max", "max")])
+def test_a_team_on_claude_thinks_at_its_conversations_level(tmp_path, providers, records, model, level, effort):
+    # Participants inherit the conversation's thinking level. Claude Sonnet 5
+    # and Opus 5.5 refuse the fixed thinking budget Lumi once sent for it (the
+    # scripted server answers it with the API's 400); they take adaptive
+    # thinking at that effort. Opus 5.5 also refuses thinking sent back once
+    # the conversation before it changed, as for accounts created on or after
+    # 2026-08-31.
+    providers.enforce_prefix = True
+    root = project(tmp_path)
+    providers.script = lambda turn: (Reply(tool=("file_read", {"path": "src/api.py"})) if turn.step == 0
+                                     else Reply(text="src/api.py rejects empty names."))
+    settings = keyed_settings(tmp_path, providers, anthropic=True)
+    service = runtime(tmp_path, settings)
+    capture = CapturedSession(Scope.personal("fixture-owner", "project", "session"), str(root),
+                              BackendSpec("anthropic", model, base_url=providers.url, api_key_source="settings",
+                                          api_key_setting="anthropic", thinking_mode=level))
+
+    def settled():
+        view = service.operate(capture, {"request_id": f"view-{uuid.uuid4().hex}", "run_id": run_id})
+        workers = view["run"]["workers"]
+        # A worker shows as stopped a moment before its submission does.
+        done = workers and all(row["termination_recorded"] for row in workers) and view["run"]["submissions"]
+        return view if done else None
+    try:
+        service.operate(capture, {"action": "configure", "request_id": "enable", "enabled": True})
+        run_id = service.operate(capture, {"request_id": "manual", "action": "start", "objective": "Inspect",
+                                           "tasks": [{"objective": "Inspect src/api.py", "read_roots": ["src"]}],
+                                           "request_limit": 2, "max_workers": 1})["run"]["run"]["id"]
+        view = until(settled, timeout=60, describe=lambda: json.dumps(providers.refused + providers.errors))
+    finally:
+        service.close()
+    assert providers.errors == [] and providers.refused == []
+    first, last = providers.of("anthropic")
+    for call in (first, last):
+        assert call["body"]["model"] == model
+        assert call["body"]["thinking"] == {"type": "adaptive"}
+        assert call["body"]["output_config"] == {"effort": effort}
+    # The participant's last request resends its tools with tool_choice none,
+    # and the signed thinking behind its call, where the response had it.
+    assert last["body"]["tools"] == first["body"]["tools"] and last["body"]["tool_choice"] == {"type": "none"}
+    assistant = next(message for message in last["body"]["messages"] if message["role"] == "assistant")
+    assert assistant["content"][0] == {"type": "thinking", "thinking": "Weighing the request.", "signature": "sig-1"}
+    assert [row["state"] for row in view["run"]["model_requests"]] == ["completed", "completed"]
+    submission, = view["run"]["submissions"]
+    assert "rejects empty names" in submission["handoff"]
+
+
 def test_every_participant_runs_in_its_own_process_on_the_anthropic_api(tmp_path, providers, records):
     # The app's own path: no backend built in the app. Each participant's
     # process rebuilds the native Anthropic backend from its captured spec.

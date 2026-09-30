@@ -179,8 +179,29 @@ Python 3.11 or newer is required.
 
 Add an Anthropic key under **Settings > API keys**, or set `ANTHROPIC_API_KEY`,
 then use **Settings > Connections > Check connection & refresh models**. Lumi
-lists the models the key can use. The thinking selector sets an extended-thinking
-budget (off, low, med, high, max). Usage is billed to your Anthropic account.
+lists the models the key can use. Usage is billed to your Anthropic account.
+
+A thinking level (off, low, med, high or max, such as a role's under Models for
+roles, or the one a team takes from its conversation) goes to Claude in the
+shape the model takes (`lumi/claude_models.py`), on Bedrock and Vertex AI too:
+
+- **Current models** (Opus 4.6 and later, Sonnet 4.6 and later, Fable, Mythos)
+  get adaptive thinking at that effort ("med" is medium). Off turns thinking
+  off on Opus 4.6 to 5 and Sonnet 4.6 and 5; Sonnet 5.5 turns off only the
+  thinking before its answer (`between_tools`); Opus 5.5, Fable and Mythos
+  always think, so off is their lowest effort.
+- **Claude Haiku 4.5, Sonnet 4.5, Opus 4.5 and older** get a thinking budget
+  (2,048 to 24,576 tokens), the only form they take.
+- **A model id Lumi doesn't recognize** gets the newest models' form; if Claude
+  refuses it, the error says what Lumi sent and to use the provider default.
+
+The provider default sends nothing; Opus 5 and later, Sonnet 5 and later, Fable
+and Mythos think anyway. Thinking counts toward the output limit, so a request that
+may think asks for room (up to 64,000 tokens at max). Claude's signed thinking
+goes back exactly as it came, and only while the conversation it was made in is
+unchanged: Opus 5.5, Fable 5.1 and Sonnet 5.5 refuse it after the system prompt,
+the tools or an earlier message changed, for accounts created on or after
+August 31, 2026.
 
 ### OpenAI
 

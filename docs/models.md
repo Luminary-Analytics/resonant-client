@@ -45,6 +45,12 @@ provider and model.
 
 A role without a line uses the chat model.
 
+A role with its own model thinks at its level: `max` for `plan` and `review`,
+`high` for `implement` and `vision`, unless `model_roles` says otherwise. On
+Claude the level goes out in the shape the model takes, adaptive thinking at
+that effort on current models and a thinking budget on older ones (see the
+Anthropic provider notes in the README).
+
 ## Images for models that can't see them
 
 Some chat models only read text. If yours is one of them and **Models for

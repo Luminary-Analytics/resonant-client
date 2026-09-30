@@ -159,6 +159,11 @@ turn) runs on one of these, with the same rules whichever it is:
   - Claude on Amazon Bedrock with a Bedrock API key: the connection's key, or
     `AWS_BEARER_TOKEN_BEDROCK`.
 
+Participants think at their conversation's thinking level. On Claude it goes
+out in the shape each model takes: adaptive thinking at that effort on current
+models, a thinking budget on the older ones that take only that (see the
+Anthropic provider notes in the README).
+
 A team can't run on these, and the Team panel says so, naming the models above:
 
 - **Codex (ChatGPT sign-in) and Claude Code.** Each runs its own tool loop: one

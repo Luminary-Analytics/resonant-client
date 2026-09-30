@@ -4,19 +4,6 @@ Living catalog of known bugs surfaced during real usage. Each entry has reproduc
 
 > **Convention:** issues are numbered chronologically across all sources (dogfood passes, release pipeline, post-release reports). Numbers are stable — even after a fix lands, the issue number stays in this doc as a historical record.
 
-## Claude thinking levels on current models (2026-09-30, open)
-
-A thinking level (low, med, high or max) chosen for a conversation on Claude
-sends a fixed thinking budget (`thinking: {"type": "enabled", "budget_tokens":
-N}`, `lumi/anthropic_api.py`). Anthropic's API reference says Claude Opus 4.7
-and later, Sonnet 5 and later and Fable 5 and later refuse that with HTTP 400:
-they take adaptive thinking with an effort level, and think by default. Only
-Claude Haiku 4.5 among Lumi's listed Claude models still takes a budget. Leave
-the thinking level at its default on the others. A team inherits its
-conversation's level, so its participants would be refused the same way. Found
-while adding Team on Anthropic keys, from the API reference: not seen live, as
-no Anthropic key was used.
-
 ## Windows code pages: search results and batch files (2026-09-30, by design)
 
 Lumi decodes what Windows programs print without changing how they run, so

@@ -8,6 +8,84 @@ The heartbeat remains paused. Documentation maintenance does not resume work,
 spending or grants, and changes no native implementation or installed bundle.
 The dated September 15/18 records below are historical.
 
+## September 30 Claude thinking levels in the form each model takes (source only, not released)
+
+A thinking level other than the default failed on current Claude models. Lumi
+sent every level as a fixed thinking budget (`thinking: {"type": "enabled",
+"budget_tokens": N}`), which Claude Opus 4.7 and later, Sonnet 5 and later and
+Fable refuse with HTTP 400. Levels reach Claude from Models for roles (plan and
+review think at max, implement and vision at high, so `vision
+anthropic:claude-sonnet-5`, the example in the docs, failed every image
+description), from director workers, and from a team, whose participants take
+their conversation's level.
+
+- **Each family's form** (`lumi/claude_models.py`, from Anthropic's Thinking
+  and Effort documentation, read on September 30): adaptive thinking with
+  `output_config.effort` (low, medium, high or max) on Opus 4.6 and later,
+  Sonnet 4.6 and later, Fable and Mythos; a budget (2,048 to 24,576 tokens)
+  only on Haiku 4.5, Sonnet 4.5, Opus 4.5 and older, which take nothing else;
+  nothing on Claude 3.5 and older. Off sends nothing where thinking is off by
+  default, `disabled` on Opus 5 and Sonnet 5 (which think by default),
+  `between_tools` on Sonnet 5.5 (which refuses `disabled`), and the lowest
+  effort on Opus 5.5, Fable and Mythos, which can't stop thinking. The
+  default level still sends nothing. Lumi sends no temperature, top_p or
+  top_k, and no forced tool choice (a team's last request uses `none`, which
+  every family takes).
+- **Ids on every platform.** Bedrock model ids, inference profiles
+  (`us.anthropic.claude-sonnet-4-5-20250929-v1:0`) and their ARNs, and Vertex
+  AI versions (`claude-opus-4-5@20251101`) find their family, and those
+  request bodies carry the same fields. An id Lumi doesn't recognize (a newer
+  model, a gateway's own name, an application inference profile ARN) gets the
+  newest family's form and counts as Claude (vision, tools, thinking levels),
+  its output still capped at 32,000 tokens. If Claude refuses the thinking
+  settings, the error says what Lumi sent and to use the provider default or a
+  model Lumi knows. An organization's capability override with
+  `"reasoning": false` stops Lumi sending thinking settings to that model.
+- **Room to think.** Thinking counts toward max_tokens and adaptive thinking
+  has no budget of its own, so a request that may think asks for at least
+  16,384 tokens at low and medium effort, 32,000 at high and 64,000 at max,
+  within the model's limit (128,000 on current models, 64,000 on the 4.5
+  models). That includes the default level on models that think by default,
+  where a session title (32 tokens) or a summary (1,024) could end inside the
+  thinking. Budget models keep their budget plus 4,096.
+- **Thinking goes back as it came.** A response's thinking blocks go back
+  where they sat among its text and tool calls (a progress note before each of
+  several calls, text before a thinking block), empty ones (the default display
+  returns no text) and redacted ones included. Before, every thinking block
+  went first, and the API refuses a turn rebuilt that way. Each response keeps its
+  order and a digest of the request that produced it in its
+  `reasoning_details` (a `replay` entry).
+- **Preserved thinking.** Claude Opus 5.5, Fable 5.1 and Sonnet 5.5 bind each
+  thinking block to the system prompt, the tools and the messages before it,
+  and refuse it once they changed, with a 400, for accounts created on or
+  after August 31, 2026. Lumi's system prompt carries each turn's recalled
+  notes, memory, code and skills, `search_tools` adds tools mid-turn and a
+  nudge is sent once, so a conversation's second turn could fail that way.
+  Lumi now leaves out the blocks whose conversation changed
+  (`anthropic_api.bound_thinking`), and the model continues without that
+  reasoning; blocks made since stay. On those models, thinking kept before
+  this change (no digest) is left out.
+- **CI:** `team-tests.yml` also runs on changes to `lumi/claude_models.py`.
+- **Checked** with the scripted Messages API server (`tests/api_provider_stub.py`),
+  which now refuses what the API refuses for each current model, with its
+  wording: a thinking budget, adaptive thinking on a budget model, `disabled`
+  or `between_tools` where a model doesn't take them, an effort it doesn't
+  take, sampling parameters, forced tool choice, a thinking block not sent back
+  unchanged in its place, and, with `enforce_prefix`, one bound to a changed
+  conversation. `tests/test_claude_thinking.py`: the request for 13 models at 6
+  levels, each accepted by those rules; the budget Lumi used to send, refused
+  with the API's message and Lumi's error for it; an unrecognized model's
+  refusal; Bedrock and Vertex bodies; streamed thinking (empty, progress notes,
+  redacted) and its replay; a chat on Opus 5.5 over two turns whose system
+  prompt changed, and without the new check, the API's refusal; tools added
+  mid-turn; and the vision role. `tests/test_swarm_api_providers.py`: a team
+  on Sonnet 5 and on Opus 5.5 at its conversation's level, which fails on the
+  old adapter with the API's 400. No Anthropic key was used: live checks are
+  still to do.
+- **Unchanged:** the chat's reasoning selector still appears only for Ollama
+  and Kimi, and a Claude chat keeps no level of its own; levels reach Claude
+  through roles, director workers and teams.
+
 ## September 30 Team runs on Anthropic and OpenAI keys, Azure OpenAI and Claude on Bedrock; Codex and Claude Code are refused plainly (source only, not released)
 
 Team ran only on OpenRouter, Ollama, EXO, Kimi, SONN and OpenAI-compatible

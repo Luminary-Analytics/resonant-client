@@ -481,6 +481,12 @@ host enrollment and actual packaged/learned-benefit qualification remain open.
   must not mask a later CLI failure.
 - OpenRouter uses its own tool/message format, capability catalog, and reported
   costs. Preserve reasoning continuation only for the originating model.
+- Claude thinking levels go out in the shape each family takes
+  (`lumi/claude_models.py`): adaptive thinking with an effort, a budget only
+  where that is all a model takes, never a parameter it refuses; an unknown id
+  gets the newest family's shape. Signed thinking goes back exactly as it came
+  and only while its conversation (system prompt, tools, earlier messages) is
+  unchanged (`anthropic_api.bound_thinking`); keep histories append-only.
 - Never silently use a system/install directory as the project. Respect the
   sandbox and permission modes; writer worktrees must not reset, stash, or merge
   over a dirty user checkout. `working_subdir` may narrow, never broaden, scope.

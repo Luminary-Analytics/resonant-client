@@ -98,7 +98,9 @@ def _full_auto_needed(state, manager, capture, message):
     else:
         return None
     check = getattr(state, "full_auto_needed", None)
-    return check(work, granted=message.get("full_auto") is True) if callable(check) else None
+    if not callable(check):
+        return None
+    return check(work, granted=message.get("full_auto") is True, session_id=str(message.get("session_id") or ""))
 
 
 async def command(state, send, message, *, chat_busy=False):

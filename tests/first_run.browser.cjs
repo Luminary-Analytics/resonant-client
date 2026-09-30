@@ -9,6 +9,10 @@
  *    "Not sent";
  *  - Settings > Connections' Ollama card: a Test leaves fields being edited and
  *    focus alone and ticks nothing; Save does; OLLAMA_HOST is named when it overrides;
+ *  - (Windows) a setting saved while another process holds settings.json open
+ *    (tests/fixtures/hold_open.py) is written in place, or Settings and the banner
+ *    above the message box say it wasn't saved, for a page's save and a
+ *    background one alike, leaving the field being edited alone;
  *  - 375 px in both themes.
  *
  * Not run by CI (no browser there): node tests/first_run.browser.cjs [absolute-path-to-playwright-module]
@@ -324,3 +328,126 @@ test('with OLLAMA_HOST set, the Ollama card says it overrides the saved address,
         assert.equal(await modelStepDone(page), false);
     });
 });
+
+// Another process holding a file open, as an antivirus scan, a sync client or an editor
+// does (tests/fixtures/hold_open.py), with a share mode: 3 lets others read and write it,
+// 1 only read it. `release()` closes it; a test that fails releases what it still holds
+// (releaseHeld), or this process would wait for the holder forever.
+const holding = new Set();
+
+async function hold(file, share) {
+    const holder = spawn(process.env.FIRST_RUN_PYTHON || 'python', [path.join(__dirname, 'fixtures/hold_open.py'), file, String(share)],
+        {windowsHide: true, stdio: ['pipe', 'pipe', 'pipe']});
+    const exited = new Promise(resolve => holder.once('exit', resolve));
+    const held = {release: async () => { holding.delete(held); holder.stdin.end(); await exited; }};
+    holding.add(held);
+    let output = '';
+    holder.stdout.on('data', chunk => { output += chunk; });
+    for (let i = 0; i < 100 && !output.trim() && holder.exitCode === null; i++) await sleep(100);
+    assert.equal(output.trim(), 'open');
+    return held;
+}
+
+const releaseHeld = () => Promise.all([...holding].map(held => held.release()));
+
+test('a setting saved while another program has settings.json open is written in place, or Lumi says it was not saved',
+    {skip: process.platform !== 'win32' && 'Windows sharing rules', timeout: 180000}, async () => {
+    try {
+        await settingsFileHeld();
+    } finally {
+        await releaseHeld();
+    }
+});
+
+async function settingsFileHeld() {
+    await withApp('chat', async ({run, page, record}) => {
+        await page.waitForFunction(() => app._modelRunning === true, null, {timeout: 30000});
+        const file = run.info.settings_path;
+        const savedName = async () => (await run.evidence()).settings_file.general.display_name;
+        const notSaved = /^Lumi couldn't save its settings to .+settings\.json: .+\. Another program may have the file open\. Changes made now last until Lumi closes; close that program, then change the setting again\.$/;
+        const inSettings = page.locator('#settings-body .settings-file-banner');
+        const aboveMessageBox = () => page.evaluate(() => document.querySelector('#runtime-banner .runtime-banner-settings')?.textContent || '');
+
+        // Settings > Profile, from the profile menu by keyboard.
+        await page.locator('#sidebar-account').focus();
+        await page.keyboard.press('Enter');
+        await page.locator('#account-settings').focus();
+        await page.keyboard.press('Enter');
+        await page.locator('#settings-nav-profile').click();
+        const name = page.locator('input[data-section="general"][data-key="display_name"]');
+        await name.waitFor();
+
+        // Shared for writing (a sync client): Windows won't replace it, so it's written in place.
+        let holder = await hold(file, 3);
+        await name.fill('Alex Morgan');
+        await name.press('Tab');
+        await page.waitForFunction(() => app.settings?.general?.display_name === 'Alex Morgan');
+        await holder.release();
+        assert.equal(await savedName(), 'Alex Morgan');
+        assert.equal(await inSettings.count(), 0);
+
+        // Shared for reading only (an editor): the save can't land, and both places say so.
+        holder = await hold(file, 1);
+        await name.fill('Alex M.');
+        await name.press('Tab');
+        await inSettings.waitFor();
+        const refusal = await inSettings.textContent();
+        assert.match(refusal, notSaved);
+        assert.equal(await inSettings.getAttribute('role'), 'alert');
+        assert.equal(await aboveMessageBox(), refusal);
+        // The notice doesn't take focus from where Tab went.
+        assert.equal(await page.evaluate(() => Boolean(document.activeElement?.closest?.('.settings-file-banner, #runtime-banner'))), false);
+        assert.equal(await savedName(), 'Alex Morgan');  // the file as it was
+        await holder.release();
+
+        // The next save that lands clears both.
+        await name.fill('Alex Morgan-Reyes');
+        await name.press('Tab');
+        await page.waitForFunction(() => !document.querySelector('#settings-body .settings-file-banner'));
+        assert.equal(await aboveMessageBox(), '');
+        assert.equal(await savedName(), 'Alex Morgan-Reyes');
+        // The app's own event can clear the notices before the command's reply arrives: wait for that too.
+        const replied = () => record.received.some(event => event.event === 'settings'
+            && event.data?.general?.display_name === 'Alex Morgan-Reyes' && event.data?._meta?.save_error === '');
+        for (let i = 0; i < 100 && !replied(); i++) await sleep(100);
+        assert.ok(replied(), 'the save was answered');
+
+        // A save no page command asked for (a background task), while the person types: the
+        // notices appear at once from the app's own event, and the typing stays where it is.
+        holder = await hold(file, 1);
+        await name.click();
+        await page.keyboard.press('End');
+        await page.keyboard.type(' (draft', {delay: 20});
+        const received = record.received.length;
+        const failed = await (await fetch(run.info.url + '/__fixture__/save', {method: 'POST',
+            body: JSON.stringify({key: 'fixture_marker', value: 'held'})})).json();
+        assert.match(failed.save_error, notSaved);
+        await inSettings.waitFor();
+        assert.equal(await inSettings.textContent(), failed.save_error);
+        assert.equal(await aboveMessageBox(), failed.save_error);
+        const events = record.received.slice(received).map(event => event.event);
+        assert.ok(events.includes('settings_file'), events.join());
+        assert.ok(!events.includes('settings'), events.join());
+        await page.keyboard.type(')', {delay: 20});
+        assert.equal(await name.inputValue(), 'Alex Morgan-Reyes (draft)');
+        assert.equal(await page.evaluate(() => document.activeElement?.dataset?.key), 'display_name');
+
+        // 375 px, both themes: the notice wraps inside the screen.
+        await page.setViewportSize({width: 375, height: 812});
+        await eachTheme(page, async theme => {
+            assert.deepEqual(await fits(page, '#settings-body .settings-file-banner'), {sideways: false, inside: true}, theme);
+            await page.screenshot({path: path.join(run.output, `settings-not-saved-375-${theme}.png`)});
+        });
+        await page.setViewportSize({width: 1280, height: 860});
+
+        // Released, a background save lands, and the notices go.
+        await holder.release();
+        const landed = await (await fetch(run.info.url + '/__fixture__/save', {method: 'POST',
+            body: JSON.stringify({key: 'fixture_marker', value: 'free'})})).json();
+        assert.equal(landed.save_error, '');
+        await page.waitForFunction(() => !document.querySelector('#settings-body .settings-file-banner'));
+        assert.equal(await aboveMessageBox(), '');
+        assert.equal((await run.evidence()).settings_file.general.fixture_marker, 'free');
+        assert.equal(await name.inputValue(), 'Alex Morgan-Reyes (draft)');
+    });
+}

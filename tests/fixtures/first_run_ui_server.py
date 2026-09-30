@@ -15,10 +15,13 @@ Scenarios:
 * ``card-env``: like ``card``, with OLLAMA_HOST set to an address that answers nothing.
 
 ``/__fixture__/evidence`` returns the conversation's mode, the settings file and
-what the stub received.
+what the stub received. ``/__fixture__/save`` (POST ``{"key", "value"}``) saves
+``general.<key>`` from another thread, as a background task (a sign-in
+refreshing its token) does, and returns the save's ``save_error``.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import socket
@@ -128,6 +131,13 @@ def main() -> None:
             "current_session": getattr(state.project.current_session, "id", None),
         })
 
+    async def background_save(request):
+        # A save no page command asked for, off the event loop: the page hears
+        # of a failure only through the app (AppState._settings_file_changed).
+        body = await request.json()
+        await asyncio.to_thread(state.settings.set, "general", str(body["key"]), body["value"])
+        return JSONResponse({"save_error": state.settings.save_error})
+
     async def shutdown(request):
         server.should_exit = True
         return JSONResponse({"stopping": True})
@@ -139,12 +149,13 @@ def main() -> None:
         return JSONResponse({"url": access.launch_url(str(request.base_url))})
 
     gui.app.routes.extend([Route("/__fixture__/launch", fixture_launch), Route("/__fixture__/evidence", evidence),
+                           Route("/__fixture__/save", background_save, methods=["POST"]),
                            Route("/__fixture__/shutdown", shutdown, methods=["POST"])])
     listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     listener.bind(("127.0.0.1", 0))
     server = uvicorn.Server(uvicorn.Config(gui.app, host="127.0.0.1", log_level="warning"))
     print(json.dumps({"url": f"http://127.0.0.1:{listener.getsockname()[1]}", "stub": stub_url,
-                      "home": str(home), "first_mode": first_mode}), flush=True)
+                      "home": str(home), "first_mode": first_mode, "settings_path": str(settings_path)}), flush=True)
     server.run(sockets=[listener])
     stub_server.shutdown()
 

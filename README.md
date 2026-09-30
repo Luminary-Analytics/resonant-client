@@ -445,10 +445,15 @@ now that browsing works out of the box.
 
 Persistent configuration lives in `~/.lumi/settings.json` and is managed
 through the desktop Settings view. Each save keeps the file as it was in
-`settings.json.bak` and replaces it in one step. A file Lumi can't read or
-parse (after a moment's retry, for a file another program holds) is never
-written over: Lumi runs on defaults, saves no change, and the app, the
-terminal UI and `lumi run` say so, so you can fix or restore the file.
+`settings.json.bak`, without API keys or other credentials (after restoring
+it, enter again any the OS credential store doesn't hold), then replaces it
+in one step; on Windows, when another program has the file open, it's written
+in place instead. A save that still can't reach the file is shown in Settings
+and above the message box, and the change lasts until Lumi closes. A file
+Lumi can't read or parse (after a moment's retry, for a file another program
+holds) is never written over: Lumi runs on defaults, saves no change, and the
+app, the terminal UI and `lumi run` say so, so you can fix or restore the
+file.
 
 ## Run
 

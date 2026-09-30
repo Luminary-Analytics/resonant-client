@@ -2358,6 +2358,27 @@ class LumiSettingsView {
         }));
     }
 
+    /**
+     * settings.json couldn't be read (Lumi runs on defaults and saves no
+     * change), or the last save didn't reach it (gui/settings.py): said at
+     * the top of Settings. Redrawn by every settings event, even while the
+     * rest of the page waits for a field being edited.
+     */
+    _renderSettingsFileBanners() {
+        if (!this.settingsBody) return;
+        this.settingsBody.querySelectorAll('.settings-file-banner').forEach(node => node.remove());
+        const meta = this.settings?._meta || {};
+        const messages = [meta.load_error && `${meta.load_error} Changes you make here last until Lumi closes.`,
+            meta.save_error].filter(Boolean).map(String);
+        for (const message of messages.reverse()) {
+            const banner = document.createElement('div');
+            banner.className = 'settings-error-banner settings-file-banner';
+            banner.setAttribute('role', 'alert');
+            banner.textContent = message;
+            this.settingsBody.prepend(banner);
+        }
+    }
+
     _loadSettingsPage(page) {
         if (this._settingsLoadedPage === page) return;
         this._settingsLoadedPage = page;
@@ -2754,15 +2775,7 @@ class LumiSettingsView {
             {heading:'Workflow', keys:['auto_lint_after_edits','auto_test_after_edits','auto_test_command','max_model_requests','harness_enabled','autonomous_sessions']},
         ].map(group => ({...section, heading:group.heading, fields:section.fields.filter(field => group.keys.includes(field.key))})) : [section]) : [];
         this.settingsBody.innerHTML = '';
-        // settings.json couldn't be read: Lumi runs on defaults and saves no change (gui/settings.py).
-        const loadError = String(this.settings?._meta?.load_error || '');
-        if (loadError) {
-            const banner = document.createElement('div');
-            banner.className = 'settings-error-banner';
-            banner.setAttribute('role', 'alert');
-            banner.textContent = `${loadError} Changes you make here last until Lumi closes.`;
-            this.settingsBody.appendChild(banner);
-        }
+        this._renderSettingsFileBanners();
         if (this.settingsError) {
             const alert = document.createElement('div');
             alert.className = 'settings-error-banner';

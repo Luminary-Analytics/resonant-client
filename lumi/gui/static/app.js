@@ -4273,8 +4273,12 @@ class LumiApp {
                 this.settingsError = '';
                 this._settingsDrafts = {};
                 // A save succeeded: an earlier refusal no longer applies, even
-                // while the re-render waits for the field being edited.
-                document.querySelector('.settings-error-banner')?.remove();
+                // while the re-render waits for the field being edited. Whether
+                // settings.json itself was read and saved is redrawn from the
+                // data (settings_view.js _renderSettingsFileBanners).
+                document.querySelector('.settings-error-banner:not(.settings-file-banner)')?.remove();
+                this._renderSettingsFileBanners?.();
+                this._applyRuntimeError?.({...(this._runtimeBannerState || {}), settings: this.settings});
                 if (this._pricePending) {
                     this._pricePending = false;
                     this._priceDraft = null;
@@ -4296,6 +4300,17 @@ class LumiApp {
                     this._renderPermissionCopy();
                 }
                 this.renderSettingsView();
+                break;
+            }
+            case 'settings_file': {
+                // A save stopped reaching settings.json, or reached it again,
+                // whatever saved (app.py _settings_file_changed). Only the
+                // notices follow: fields being edited and drafts stay.
+                if (!this.settings || !Object.keys(this.settings).length) break;  // init brings it
+                this.settings = {...this.settings, _meta: {...(this.settings._meta || {}),
+                    load_error: String(event.load_error || ''), save_error: String(event.save_error || '')}};
+                this._renderSettingsFileBanners?.();
+                this._applyRuntimeError?.({...(this._runtimeBannerState || {}), settings: this.settings});
                 break;
             }
             case 'prompt_inspector':
@@ -4859,12 +4874,10 @@ class LumiApp {
 
                 // The queue is owned by the server-side run loop. Recreate its
                 // controls after reconnect so the user can still promote or
-                // remove a follow-up they queued before refreshing. A message
-                // that wasn't sent stays while its conversation is the one shown.
+                // remove a follow-up they queued before refreshing. Messages
+                // that weren't sent follow their conversation (_unsentMessagesFor).
                 if (this.composerQueue) {
-                    const unsent = [...this.composerQueue.querySelectorAll('.is-unsent')]
-                        .filter(item => item.dataset.sessionId === (this.currentSessionId || ''));
-                    this.composerQueue.replaceChildren(...unsent);
+                    this.composerQueue.replaceChildren(...this._unsentMessagesFor(this.currentSessionId));
                 }
                 this._queuedMessages.clear();
                 for (const queued of (queued_messages || [])) {
@@ -10184,10 +10197,32 @@ class LumiApp {
     }
 
     /**
+     * "Not sent" messages belong to the conversation they were written in
+     * (_keepUnsentMessage): those under the message box are set aside for
+     * their own conversations, and the ones of `sessionId`, the conversation
+     * now shown, are returned to go back under it. They last while the page
+     * is open.
+     */
+    _unsentMessagesFor(sessionId) {
+        const aside = this._unsentMessages ||= new Map();
+        for (const item of [...(this.composerQueue?.querySelectorAll('.is-unsent') || [])]) {
+            const owner = item.dataset.sessionId || '';
+            const kept = aside.get(owner) || [];
+            if (!kept.includes(item)) kept.push(item);
+            aside.set(owner, kept);
+            item.remove();
+        }
+        const mine = aside.get(sessionId || '') || [];
+        aside.delete(sessionId || '');
+        return mine;
+    }
+
+    /**
      * A refused message that can't go back into the message box, because the
      * person typed or attached something since, waits under it as "Not
      * sent": Edit adds it to the message box after what's there, and ×
-     * discards it. It stays with its conversation while the page does.
+     * discards it. It stays with its conversation while the page is open
+     * (_unsentMessagesFor).
      */
     _keepUnsentMessage(text, images = []) {
         const item = document.createElement('section');
@@ -11451,8 +11486,10 @@ class LumiApp {
         const git = this._gitMissingCopy();
         const gitMissingNote = git ? git.text : '';
         // settings.json couldn't be read (gui/settings.py): Lumi runs on
-        // defaults and saves no change, so the file keeps what it holds.
-        const settingsNote = String((event?.settings || this.settings)?._meta?.load_error || '');
+        // defaults and saves no change, so the file keeps what it holds. Or
+        // the last save didn't reach it: changes last until Lumi closes.
+        const settingsMeta = (event?.settings || this.settings)?._meta || {};
+        const settingsNote = String(settingsMeta.load_error || settingsMeta.save_error || '');
 
         if (!reason && !mcpNote && !packNote && !trustNote && !gitNote && !gitMissingNote && !settingsNote) {
             el.hidden = true;
@@ -11936,8 +11973,10 @@ class LumiApp {
     /**
      * v0.3.4 — confirmation toast after Help → Save Diagnostics. Shows
      * the on-disk path + size, what the ZIP holds, and where to send it:
-     * Luminary Analytics support by email (SUPPORT_EMAIL; Help > Send
-     * Feedback, #101, isn't merged yet), with Copy path and Copy address.
+     * Luminary Analytics support by email (SUPPORT_EMAIL), with Copy path
+     * and Copy address. Help > Send Feedback (feedback_view.js) can't carry
+     * the ZIP: it sends its own report, with its own diagnostics, only to a
+     * Lumi Cloud or feedback address, and this build names none.
      */
     _showDiagnosticsToast(zipPath, sizeBytes, canReveal = false) {
         if (!zipPath) {

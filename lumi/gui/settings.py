@@ -3,10 +3,10 @@ Persistent settings manager for Lumi.
 Reads/writes ~/.lumi/settings.json with section-based access.
 """
 
+import asyncio
 import json
 import logging
 import os
-import shutil
 import stat
 import sys
 import threading
@@ -14,14 +14,16 @@ import time
 from pathlib import Path
 from typing import Any, Callable
 from ..paths import LEGACY_HOME_DIR_NAME, state_home
+from ..secret_scan import SENSITIVE_NAME
 from ..secrets_store import PLACEHOLDER, SecretStore, credential_store_name
 
 logger = logging.getLogger(__name__)
 
 # Another program can hold settings.json for a moment (an antivirus scan, a
-# sync client, another Lumi writing it): reading or replacing it is tried
+# sync client, another Lumi writing it): reading or writing it is tried
 # again, waiting 0.05 s and twice as long each time, about 1.5 s in all,
-# before Lumi gives up.
+# before Lumi gives up. Never on the event loop, which must not stall: there
+# each step is tried once (_patient).
 _FILE_ATTEMPTS = 6
 _FILE_RETRY_SECONDS = 0.05
 
@@ -277,6 +279,13 @@ class SettingsManager:
         # on defaults and never writes over the file (_save_locked); the app,
         # the terminal UI and `lumi run` say so.
         self.load_error = ""
+        # Why the last save didn't reach settings.json, or "" once one does.
+        # Settings and the banner above the message box show it (get_masked).
+        self.save_error = ""
+        # Called with no arguments, without the lock and on the thread that
+        # saved, whenever save_error changes: the app tells the page at once,
+        # whatever saved (AppState._settings_file_changed).
+        self.on_save_error_changed: Callable[[], None] | None = None
         self._load()
 
     @property
@@ -345,7 +354,9 @@ class SettingsManager:
                 if section == "api_keys":
                     value = self._store_secret_locked(key, value)
                 self._data[section][key] = value
-            self._save_locked()
+            changed = self._save_locked()
+        if changed:
+            self._save_error_changed()
 
     def get_all(self) -> dict:
         """Return the full settings dict (deep copy), with policy-locked values applied."""
@@ -369,7 +380,19 @@ class SettingsManager:
                 self._data[section].update(updates)
             else:
                 self._data[section] = updates
-            self._save_locked()
+            changed = self._save_locked()
+        if changed:
+            self._save_error_changed()
+
+    def _save_error_changed(self) -> None:
+        """Tell ``on_save_error_changed`` that a save stopped, or started again, reaching the file."""
+        listener = self.on_save_error_changed
+        if listener is None:
+            return
+        try:
+            listener()
+        except Exception:
+            logger.debug("Couldn't pass on the settings file's state", exc_info=True)
 
     def get_masked(self) -> dict:
         """Return frontend-safe settings data with secret presence metadata."""
@@ -384,6 +407,8 @@ class SettingsManager:
         meta["secret_storage"] = self.secret_storage()
         # A settings file Lumi couldn't read: it runs on defaults and saves nothing (_load).
         meta["load_error"] = self.load_error
+        # A save that didn't reach the file (_save_locked): changes last until Lumi closes.
+        meta["save_error"] = self.save_error
         # What an organization policy manages, for Settings to show and disable.
         from ..policy import load as load_policy
 
@@ -468,7 +493,7 @@ class SettingsManager:
         """The saved settings: (data, ""), (None, "") without a file, or (None, why) when unreadable."""
         problem = ""
         wait = _FILE_RETRY_SECONDS
-        for attempt in range(_FILE_ATTEMPTS):
+        for attempt in range(_FILE_ATTEMPTS if _patient() else 1):
             if attempt:
                 time.sleep(wait)
                 wait *= 2
@@ -553,62 +578,115 @@ class SettingsManager:
                     if key not in self._data[section]:
                         self._data[section][key] = value
 
-    def _save_locked(self) -> None:
-        """Write to disk (caller must hold lock).
+    def _save_locked(self) -> bool:
+        """Write to disk (caller must hold lock); True when ``save_error`` changed.
 
         Never over a file that couldn't be read (``load_error``). The file as
-        it was is copied to settings.json.bak first, and the new one takes
-        its place in one step, so a crash or a full disk mid-write leaves the
-        old file whole. A file another program holds for a moment is tried
-        again.
+        it was goes to settings.json.bak first, without its API keys or any
+        other credential (_back_up). Then the new file takes the old one's
+        place in one step, so a crash or a full disk mid-write leaves the old
+        file whole. Windows won't replace a file another program has open
+        (an antivirus scan, a sync client, an editor), whatever it shares, so
+        then, with the backup made, the file is written in place, as Lumi did
+        before. A save that still fails is kept in ``save_error`` for the
+        page to show, never dropped silently.
         """
         if self.load_error:
             logger.warning("Settings weren't saved: settings.json couldn't be read, so it is kept as it is.")
-            return
+            return False
+        before = self.save_error
         # A settings.json that is a link (a dotfiles folder, say) stays one: its target is written.
         target = Path(os.path.realpath(self._path))
         temporary = target.with_name(f"{target.name}.{os.getpid()}-{threading.get_ident()}.tmp")
+        content = json.dumps(self._data, indent=2, ensure_ascii=False)
+        patient = _patient()
         try:
             target.parent.mkdir(parents=True, exist_ok=True)
-            temporary.write_text(json.dumps(self._data, indent=2, ensure_ascii=False), encoding="utf-8")
+            temporary.write_text(content, encoding="utf-8")
+            backed_up = False
             if target.is_file():
                 if sys.platform != "win32":  # keep who may read it (it can hold API keys)
                     os.chmod(temporary, stat.S_IMODE(target.stat().st_mode))
-                self._back_up(target)
-            _retry(lambda: os.replace(temporary, target))
+                backed_up = self._back_up(target, patient=patient)
+            try:
+                _retry(lambda: os.replace(temporary, target), patient=patient)
+            except OSError:
+                if not backed_up:
+                    raise
+                _retry(lambda: target.write_text(content, encoding="utf-8"), patient=patient)
+            self.save_error = ""
         except OSError as exc:
-            logger.error(f"Failed to save settings: {exc}")
+            reason = exc.strerror or str(exc)
+            self.save_error = (f"Lumi couldn't save its settings to {target}: {reason}. Another program may have "
+                               "the file open. Changes made now last until Lumi closes; close that program, "
+                               "then change the setting again.")
+            logger.error(self.save_error)
         finally:
             temporary.unlink(missing_ok=True)
+        return self.save_error != before
 
     @staticmethod
-    def _back_up(target: Path) -> None:
-        """Keep ``target`` as it is now in ``<name>.bak``, replacing the last backup.
+    def _back_up(target: Path, *, patient: bool = True) -> bool:
+        """Keep ``target`` as it is now in ``<name>.bak``, without its credentials; True once it's there.
 
-        A backup that can't be written doesn't stop the save: the new file
-        still replaces the old one in one step, and the older backup stays.
+        The copy leaves out every API key and any field named like a
+        credential (``_without_secrets``): the credential store may have just
+        taken them out of settings.json, and a backup must not keep them in
+        plain text. A backup that can't be made doesn't stop the save, which
+        then only replaces the file in one step.
         """
         backup = target.with_name(target.name + ".bak")
         partial = backup.with_name(f"{backup.name}.{os.getpid()}-{threading.get_ident()}.tmp")
         try:
-            _retry(lambda: shutil.copy2(target, partial))
-            _retry(lambda: os.replace(partial, backup))
-        except OSError as exc:
+            data = json.loads(_retry(lambda: target.read_text(encoding="utf-8-sig"), patient=patient))
+            partial.write_text(json.dumps(_without_secrets(data), indent=2, ensure_ascii=False), encoding="utf-8")
+            if sys.platform != "win32":
+                os.chmod(partial, stat.S_IMODE(target.stat().st_mode))
+            _retry(lambda: os.replace(partial, backup), patient=patient)
+            return True
+        except (OSError, ValueError, RecursionError) as exc:
             logger.warning(f"Couldn't keep a backup of the settings before saving: {exc}")
+            return False
         finally:
             partial.unlink(missing_ok=True)
 
 
-def _retry(action: Callable[[], Any]) -> Any:
-    """``action()``, tried again while another program holds the file for a moment."""
+def _without_secrets(data: Any, *, secret: bool = False) -> Any:
+    """``data`` with every credential emptied: API keys and fields named like one (a token, a password).
+
+    A key the OS credential store keeps stays as its placeholder, which
+    holds no secret.
+    """
+    if isinstance(data, dict):
+        return {key: _without_secrets(value, secret=secret or key == "api_keys" or bool(SENSITIVE_NAME.search(str(key))))
+                for key, value in data.items()}
+    if isinstance(data, list):
+        return [_without_secrets(item, secret=secret) for item in data]
+    if secret and isinstance(data, str) and data and data != PLACEHOLDER:
+        return ""
+    return data
+
+
+def _patient() -> bool:
+    """Whether to wait for a file another program holds: not on a thread running an event loop."""
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return True
+    return False
+
+
+def _retry(action: Callable[[], Any], *, patient: bool = True) -> Any:
+    """``action()``, tried again while another program holds the file for a moment; once if not ``patient``."""
     wait = _FILE_RETRY_SECONDS
-    for attempt in range(_FILE_ATTEMPTS):
+    attempts = _FILE_ATTEMPTS if patient else 1
+    for attempt in range(attempts):
         try:
             return action()
         except FileNotFoundError:
             raise
         except OSError:
-            if attempt == _FILE_ATTEMPTS - 1:
+            if attempt == attempts - 1:
                 raise
             time.sleep(wait)
             wait *= 2

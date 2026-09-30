@@ -275,6 +275,10 @@ class AppState:
         self._project_instructions: str | None = None
         self._ws_ref = None
         self._ws_loop = None
+        # A save that stops reaching settings.json, or the next that does, is
+        # shown at once, whatever saved it (a background task too). Until a
+        # page connects, init brings it.
+        self.settings.on_save_error_changed = self._settings_file_changed
         self.evaluations = EvaluationManager(on_event=self._push_ws_event)
         # Extension systems. The shared hook runner holds settings hooks only;
         # capability-pack hooks ride on per-session scoped runners.
@@ -328,6 +332,18 @@ class AppState:
             asyncio.run_coroutine_threadsafe(ws.send_json(payload), loop)
         except Exception:
             logger.debug("background websocket event failed", exc_info=True)
+
+    def _settings_file_changed(self) -> None:
+        """Tell the page whether settings.json was read and the last save reached it.
+
+        SettingsManager calls this when a save stops reaching the file, or
+        starts again. Only the file's state goes (``settings_file``): the
+        page redraws its notices from it and leaves what's being edited
+        alone, which a whole ``settings`` event wouldn't.
+        """
+        settings = self.settings
+        self._push_ws_event({"event": "settings_file", "load_error": settings.load_error,
+                             "save_error": settings.save_error})
 
     def _migrate_stale_defaults(self) -> None:
         """
@@ -629,7 +645,7 @@ class AppState:
     }
     _MODE_NAMES = {"ask": "Ask", "auto-edit": "Auto-edit", "plan": "Plan", "bypass": "Full-auto"}
 
-    def full_auto_needed(self, work: str, *, granted: bool = False) -> Optional[dict[str, Any]]:
+    def full_auto_needed(self, work: str, *, granted: bool = False, session_id: str = "") -> Optional[dict[str, Any]]:
         """Why unattended ``work`` can't start from this conversation's mode, or None.
 
         Plans, missions, autonomous sessions and a team the orchestrator runs
@@ -651,13 +667,28 @@ class AppState:
         and policy.full_auto_refusal (for a team the orchestrator runs,
         swarming.organization.mode_refusal) refuses the work in the
         organization's words wherever it starts, granted or not.
+
+        Each grant it lets through is recorded in the audit log
+        (``permission.full_auto_grant``: the work, the conversation's mode,
+        the conversation, ``session_id`` when the work belongs to one that
+        isn't open yet, and the project), so work run in Full-auto stays on
+        record although the conversation's mode didn't change.
         """
-        if self.permission_mode == "bypass" or granted:
+        if self.permission_mode == "bypass":
             return None
         from ..policy import current
 
         policy = current()
         if policy and not policy.mode_allowed("bypass"):
+            return None
+        if granted:
+            from .. import audit
+
+            project = getattr(self, "project", None)
+            session = getattr(project, "current_session", None)
+            audit.record("permission.full_auto_grant", work=work, mode=self.permission_mode,
+                         session=str(session_id or getattr(session, "id", "") or ""),
+                         project=audit.name(str(getattr(project, "project_path", "") or "")))
             return None
         what, grant = self._FULL_AUTO_WORK[work]
         mode = self._MODE_NAMES.get(self.permission_mode, self.permission_mode)
@@ -3427,7 +3458,8 @@ async def websocket_endpoint(ws: WebSocket):
                     continue
                 # Resuming starts its daemon again, in Full-auto: before the
                 # conversation switch below, so a refusal changes nothing.
-                needed = state.full_auto_needed("autonomous_resume", granted=full_auto_granted(msg))
+                needed = state.full_auto_needed("autonomous_resume", granted=full_auto_granted(msg),
+                                                session_id=str(msg.get("session_id") or ""))
                 if needed:
                     await ws.send_json(needs_full_auto(needed, source="autonomous_resume", intent_id=target_intent,
                                                        session_id=str(msg.get("session_id") or "")))

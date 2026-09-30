@@ -15,7 +15,10 @@ Windows computer. The engine and runtime fixes are in the clean-machine pull
 request (#102); these are the page's. An independent review then found the
 problems fixed below (a keystroke could switch the app to Full-auto, the
 switch applied to every conversation, the Ollama card wiped fields, and
-more), and a settings file with a byte-order mark lost every setting.
+more), and a settings file with a byte-order mark lost every setting. The
+final review found a settings save lost without a word while another program
+had the file open, and API keys kept in plain text in the new backup; both
+are fixed below too.
 
 - **New installs start in Auto-edit** (the owner's decision): file edits in
   the project apply without asking; shell commands and everything else ask
@@ -48,6 +51,10 @@ more), and a settings file with a byte-order mark lost every setting.
     goes ahead as before; the conversation keeps its mode, so its own turns, a
     new conversation and the next plan still ask. (The first version switched
     the whole app to Full-auto.)
+  - Each grant is recorded in the audit log as `permission.full_auto_grant`
+    (the work, the conversation's mode, the conversation and the project), so
+    work run in Full-auto from another mode stays on record although the mode
+    didn't change.
   - The notice is a `role="status"`, and focus never moves onto its button:
     in the review, a space typed after `/plan` pressed the button the notice
     had focused and started the plan. Someone typing keeps their place. Only
@@ -80,7 +87,10 @@ more), and a settings file with a byte-order mark lost every setting.
   - Its text and attached images go back into an empty message box. When
     something was typed or attached since, it waits under the message box as
     **Not sent**, with **Edit** (add it after what's there) and **×**; a
-    refused queued follow-up was dropped there before.
+    refused queued follow-up was dropped there before. It stays with its
+    conversation: opening another one puts it aside, and it's back under the
+    message box when its own conversation opens again (`_unsentMessagesFor`;
+    the first version dropped it).
   - A message waits to be given back only while the page shows it running:
     an ordinary error or the end of the running state forgets it. #102's team
     refusal (`code: "team_active"`, which names no message) counts only while
@@ -118,8 +128,27 @@ more), and a settings file with a byte-order mark lost every setting.
     over: Lumi runs on defaults and saves nothing (`SettingsManager.load_error`).
     Settings and the banner above the message box say so, and so do the
     terminal UI and `lumi run` when they start.
-  - Each save keeps the file as it was in `settings.json.bak` and replaces
-    it in one step, keeping its permissions (POSIX) and a linked file's link.
+  - Each save first keeps the file as it was in `settings.json.bak`, without
+    its API keys or any other credential: the first version copied the file
+    whole, and the credential store may just have taken the keys out of it.
+    Fields named like a credential (a token, a password) are emptied; a
+    stored key's placeholder stays (`settings._without_secrets`). The new file
+    then replaces the old one in one step, keeping its permissions (POSIX)
+    and a linked file's link.
+  - Windows won't replace a file another program has open (an antivirus
+    scan, a sync client, an editor), whatever that program shares: in the
+    review a setting changed then was lost without a word ("Access is
+    denied"). With the backup made, the file is then written in place, as
+    Lumi did before. A save that still can't reach the file is reported:
+    Settings and the banner above the message box say the change lasts until
+    Lumi closes, until a save lands (`SettingsManager.save_error`,
+    `_meta.save_error`). Whatever saved, a background task too, the app tells
+    the page when saves stop or start reaching the file
+    (`on_save_error_changed`, event `settings_file`), which redraws only
+    those notices and leaves a field being edited alone.
+  - Waiting for a held file (about 1.5 s) happens only off the event loop. A
+    save from a page command tries each step once, so it no longer stalls the
+    page (`settings._patient`).
   - The policy's joined-device read, the network defaults and the
     diagnostics ZIP read it as `utf-8-sig` too.
 - **Without Git** (#102's `init.git`), the banner above the message box names
@@ -155,8 +184,9 @@ more), and a settings file with a byte-order mark lost every setting.
 - **Diagnostics.** The saved ZIP's note says what's in it (Lumi's logs and
   recent session logs, keys removed) and to email it with the report to
   Luminary Analytics support at rich.bellantoni@luminaryanalytics.com, with
-  **Copy address** beside **Copy path**; Help > Send Feedback (#101) isn't
-  merged yet. **Show in folder** selects it (`reveal_diagnostics`, only the
+  **Copy address** beside **Copy path**. Help > Send Feedback (#101) can't
+  carry the ZIP: it sends its own report only to a Lumi Cloud or a feedback
+  address, and this build names none. **Show in folder** selects it (`reveal_diagnostics`, only the
   file the last save made). It starts the file manager through #110's
   `executables.show_in_folder`: Explorer by its full path in the Windows
   folder, with its arguments as a list. (By bare name, which the first version
@@ -169,9 +199,14 @@ more), and a settings file with a byte-order mark lost every setting.
 - **Tests:**
   - `tests/test_first_run_polish.py`: the default mode for new and existing
     settings; settings files with a byte-order mark, held for a moment, still
-    locked, unparseable, backed up, and a save that fails; refused turns; each
-    Full-auto gate refused, granted for one run with the mode unchanged, and
-    refused by a policy grant or not; the team engine never seeing the grant;
+    locked, unparseable, backed up; no credential in the backup, with the
+    credential store and without it; a save Windows won't replace, one that
+    fails and is reported (the app told once when saves stop, once when they
+    start again), one on the event loop that doesn't wait, and (on Windows)
+    saves while another process holds the file open with each sharing mode
+    (`tests/fixtures/hold_open.py`); refused turns; each Full-auto gate refused, granted for one
+    run with the mode unchanged and recorded in the audit log, and refused by
+    a policy grant or not; the team engine never seeing the grant;
     Ollama's address, probe, Test (empty means this computer), Save and the
     `OLLAMA_HOST` override; the Codex CLI message; Show in folder by absolute
     path, never a project's `explorer.exe`.
@@ -181,18 +216,27 @@ more), and a settings file with a byte-order mark lost every setting.
     team under a policy without Full-auto.
   - `tests/ui_recovery.test.cjs`: the notice's focus and grant for /plan, a
     roadmap, a resume (the banner only) and a team; refused turns with images,
-    Not sent, stale text; the Ollama card in place and its override; the
-    diagnostics note.
+    Not sent (kept with its conversation), stale text; the Ollama card in
+    place and its override; the settings file banners while a field is being
+    edited, from a `settings` reply and from `settings_file` (drafts kept);
+    the diagnostics note.
   - Browser (Playwright, headless Edge; **CI runs none of `tests/*.browser.cjs`**):
     the new `tests/first_run.browser.cjs` (a /plan granted once by keyboard
     while typing goes on, the mode staying Auto-edit in that and a new
     conversation, a model's look-alike, a refused message with its image, the
-    Ollama card by keyboard with Test, Save and `OLLAMA_HOST`, 375 px in both
-    themes), and `tests/swarm_autonomous.browser.cjs` (Run this team in
+    Ollama card by keyboard with Test, Save and `OLLAMA_HOST`, on Windows a
+    Profile setting saved while another process holds `settings.json` open,
+    written in place or reported in Settings and above the message box, and
+    a failing background save shown while the name field keeps its typing,
+    375 px in both themes), and `tests/swarm_autonomous.browser.cjs` (Run this team in
     Full-auto by keyboard) and `swarm_autonomous_writers.browser.cjs` (a
     conversation in Full-auto, `--mode bypass` in
     `tests/fixtures/swarming_ui_server.py`), which stopped at the new notice
-    before.
+    before. `swarm_autonomous.browser.cjs` waits for the Team form's
+    objective and focus before it types, instead of racing the form (it
+    failed now and then). The first-run and open-files fixtures accept Lumi's
+    terms (#104) in their throwaway home, so `first_run`, `open_files` and
+    `git_trust` reach the app again.
 
 ## September 27 Lumi Cloud: device requests stay with their enrollment, and a sign-in's tokens with their issuer (security fix, source only, not released)
 

@@ -3348,6 +3348,84 @@ test('the diagnostics note names Luminary Analytics support and its address', ()
     assert.doesNotMatch(toast.textContent, /GitHub/);
 });
 
+test('a "Not sent" message stays with its conversation when another one loads', () => {
+    const app = grantApp();
+    Object.assign(app, {
+        userInput: {value: 'typing', style: {}, scrollHeight: 40, focus: () => {}},
+        attachedImages: [], renderAttachedImages: () => {}, _markDraftEdited: () => {}, _saveDraft: () => {},
+        _syncComposerQueue: () => {}, composerQueue: app.el('div', 'composer-queue'), currentSessionId: 's1',
+    });
+    app._restoreRefusedText('the refused message', []);
+    const [item] = app.composerQueue.children;
+    // Another conversation loads (init rebuilds the queue): the message waits aside.
+    app.currentSessionId = 's2';
+    app.composerQueue.replaceChildren = (...nodes) => {
+        app.composerQueue.textContent = '';
+        nodes.forEach(node => app.composerQueue.appendChild(node));
+    };
+    app.composerQueue.replaceChildren(...app._unsentMessagesFor('s2'));
+    assert.equal(app.composerQueue.children.length, 0);
+    // Back to the first conversation: the same message, under its message box again.
+    app.currentSessionId = 's1';
+    app.composerQueue.replaceChildren(...app._unsentMessagesFor('s1'));
+    assert.deepEqual(app.composerQueue.children, [item]);
+    assert.equal(item.querySelector('small').textContent, 'the refused message');
+});
+
+test('Settings says when settings.json was not read or not saved, even while a field is being edited', () => {
+    const app = grantApp();
+    const body = app.el('div');
+    const field = app.el('input');
+    body.appendChild(field);
+    app.dom.body.appendChild(body);
+    field.focus();
+    Object.assign(app, {settingsBody: body, currentView: 'settings', _renderAccountMenu: () => {},
+        _syncAutonomousSwitch: () => {}, _syncDictationButton: () => {}, renderSettingsView: () => {},
+        _renderPermissionCopy: () => {}, _applyRuntimeError: () => {}});
+    Object.getPrototypeOf(body).prepend = function (node) { this.insertBefore(node, this.childNodes[0] || null); };
+    const save = 'Lumi couldn\u2019t save its settings to C:/Users/x/.lumi/settings.json: Access is denied.';
+    app.handleEvent({event: 'settings', data: {general: {}, _meta: {load_error: '', save_error: save}}});
+    const banners = body.querySelectorAll('.settings-file-banner');
+    assert.deepEqual(banners.map(node => node.textContent), [save]);
+    assert.equal(banners[0].getAttribute('role'), 'alert');
+    assert.equal(app.dom.document.activeElement, field);
+    // A save that lands clears it.
+    app.handleEvent({event: 'settings', data: {general: {}, _meta: {load_error: '', save_error: ''}}});
+    assert.equal(body.querySelectorAll('.settings-file-banner').length, 0);
+});
+
+test('a save that fails elsewhere is shown at once, and drafts and the field being edited stay', () => {
+    const app = grantApp();
+    const body = app.el('div');
+    const field = app.el('input');
+    body.appendChild(field);
+    app.dom.body.appendChild(body);
+    field.focus();
+    const drafts = {general: {display_name: 'Alex'}};
+    const above = [];
+    Object.assign(app, {settingsBody: body, currentView: 'settings', _settingsDrafts: drafts,
+        settings: {general: {theme: 'dark'}, _meta: {load_error: '', save_error: '', locked: {}}},
+        renderSettingsView: () => { throw new Error('the page was redrawn'); },
+        _applyRuntimeError: event => above.push(event.settings._meta.save_error)});
+    Object.getPrototypeOf(body).prepend = function (node) { this.insertBefore(node, this.childNodes[0] || null); };
+    const save = 'Lumi couldn\u2019t save its settings to C:/Users/x/.lumi/settings.json: Access is denied.';
+    app.handleEvent({event: 'settings_file', load_error: '', save_error: save});
+    assert.deepEqual(body.querySelectorAll('.settings-file-banner').map(node => node.textContent), [save]);
+    assert.deepEqual(above, [save]);  // the banner above the message box says it too
+    assert.equal(app._settingsDrafts, drafts);
+    assert.equal(app.settings.general.theme, 'dark');
+    assert.deepEqual(Object.keys(app.settings._meta).sort(), ['load_error', 'locked', 'save_error']);
+    assert.equal(app.dom.document.activeElement, field);
+    app.handleEvent({event: 'settings_file', load_error: '', save_error: ''});
+    assert.equal(body.querySelectorAll('.settings-file-banner').length, 0);
+    assert.deepEqual(above, [save, '']);
+    // Before init brings the settings (with the file's state), there's nothing to update.
+    const early = grantApp();
+    Object.assign(early, {settings: {}, _applyRuntimeError: () => { throw new Error('not yet'); }});
+    early.handleEvent({event: 'settings_file', load_error: '', save_error: save});
+    assert.deepEqual(Object.keys(early.settings), []);
+});
+
 // Lumi's terms (terms_view.js, settings_view.js): at first launch the dialog shows
 // them and the message box stays locked until the dialog's own Accept button, on
 // a click the browser reports as the person's, accepts the versions it showed.

@@ -23,6 +23,8 @@ from lumi import policy as lumi_policy
 from lumi.gui import swarming, ws_commands
 from lumi.gui.app import AppState
 from lumi.gui.settings import DEFAULT_PERMISSION_MODE, SettingsManager
+from lumi.secrets_store import PLACEHOLDER
+from tests.test_secret_hygiene import memory_keyring  # noqa: F401  (a fixture: an in-memory credential store)
 from tests.test_ws_command_registry import _run, _StubWS
 
 
@@ -166,10 +168,13 @@ def test_each_save_keeps_the_file_as_it_was_in_a_backup(tmp_path):
     path = tmp_path / "settings.json"
     path.write_text(json.dumps(_SAVED), encoding="utf-8")
     settings = SettingsManager(path)
-    before = path.read_text(encoding="utf-8")
+    before = json.loads(path.read_text(encoding="utf-8"))
     settings.set("general", "theme", "dark")
     assert settings.backup_path == tmp_path / "settings.json.bak"
-    assert settings.backup_path.read_text(encoding="utf-8") == before
+    # The file as it was, without its API key (the store is off here, so it's plain text in the file).
+    assert json.loads(settings.backup_path.read_text(encoding="utf-8")) == {
+        **before, "api_keys": {name: "" for name in before["api_keys"]}}
+    assert before["api_keys"]["openrouter"] == "sk-or-kept"
     assert json.loads(path.read_text(encoding="utf-8"))["general"]["theme"] == "dark"
     # One backup: the next save replaces it with the file before that save.
     settings.set("general", "theme", "light")
@@ -180,14 +185,56 @@ def test_each_save_keeps_the_file_as_it_was_in_a_backup(tmp_path):
     assert fresh.load_error == "" and not fresh.backup_path.exists()
 
 
-def test_a_save_that_fails_leaves_the_file_whole(tmp_path, monkeypatch):
+_CREDENTIALS = {"api_keys": {"openai": "sk-plain-openai-key-7f3a", "lumi_cloud_device_key": "ZGV2aWNlLWtleS1ieXRlcw=="},
+                "mcp_servers": {"github": {"command": "gh-mcp", "env": {"GITHUB_TOKEN": "ghp_tokenvalue0123456789"},
+                                           "headers": {"Authorization": "Bearer mcp-bearer-value-42"}}},
+                "network": {"proxy_password": "proxy-secret-99"},
+                "general": {"theme": "light", "default_permission_mode": "ask"}}
+_CREDENTIAL_VALUES = ["sk-plain-openai-key-7f3a", "ZGV2aWNlLWtleS1ieXRlcw==", "ghp_tokenvalue0123456789",
+                      "mcp-bearer-value-42", "proxy-secret-99"]
+
+
+@pytest.mark.usefixtures("memory_keyring")
+def test_the_backup_keeps_no_credential_the_store_just_took(tmp_path):
+    # The credential store takes the keys out of settings.json on load; the
+    # file as it was (plain-text keys) must not survive in the backup.
+    path = tmp_path / ".lumi" / "settings.json"
+    path.parent.mkdir()
+    path.write_text(json.dumps(_CREDENTIALS), encoding="utf-8")
+    settings = SettingsManager(path)
+    assert settings.get("api_keys", "openai") == "sk-plain-openai-key-7f3a"  # from the store
+    backup = settings.backup_path.read_text(encoding="utf-8")
+    assert [value for value in _CREDENTIAL_VALUES if value in backup] == []
+    kept = json.loads(backup)
+    assert kept["general"] == _CREDENTIALS["general"] and kept["mcp_servers"]["github"]["command"] == "gh-mcp"
+    # The next backup is of the file the store left: its placeholders say where the keys are.
+    settings.set("general", "theme", "dark")
+    backup = settings.backup_path.read_text(encoding="utf-8")
+    assert [value for value in _CREDENTIAL_VALUES if value in backup] == []
+    assert json.loads(backup)["api_keys"]["openai"] == PLACEHOLDER
+
+
+def test_the_backup_keeps_no_credential_without_a_store(tmp_path):
+    # LUMI_KEYCHAIN=off (conftest): keys stay in settings.json itself, never in the backup.
+    path = tmp_path / "settings.json"
+    path.write_text(json.dumps(_CREDENTIALS), encoding="utf-8")
+    settings = SettingsManager(path)
+    settings.set("api_keys", "anthropic", "sk-ant-saved-later-5521")
+    settings.set("general", "theme", "dark")
+    backup = settings.backup_path.read_text(encoding="utf-8")
+    assert [value for value in [*_CREDENTIAL_VALUES, "sk-ant-saved-later-5521"] if value in backup] == []
+    assert "sk-ant-saved-later-5521" in path.read_text(encoding="utf-8")
+
+
+def test_a_save_windows_wont_replace_in_one_step_is_written_in_place(tmp_path, monkeypatch):
+    # Windows won't replace a file another program has open; the file is then
+    # written in place, as before this change, once the backup is made.
     from lumi.gui import settings as settings_module
 
     monkeypatch.setattr(settings_module, "_FILE_RETRY_SECONDS", 0)
     path = tmp_path / "settings.json"
     path.write_text(json.dumps(_SAVED), encoding="utf-8")
     settings = SettingsManager(path)
-    before = path.read_text(encoding="utf-8")
     real_replace = settings_module.os.replace
 
     def refuse(source, target):
@@ -197,9 +244,203 @@ def test_a_save_that_fails_leaves_the_file_whole(tmp_path, monkeypatch):
 
     monkeypatch.setattr(settings_module.os, "replace", refuse)
     settings.set("general", "theme", "dark")
-    assert path.read_text(encoding="utf-8") == before
+    assert json.loads(path.read_text(encoding="utf-8"))["general"]["theme"] == "dark"
+    assert settings.save_error == "" and settings.get_masked()["_meta"]["save_error"] == ""
+    assert json.loads(settings.backup_path.read_text(encoding="utf-8"))["general"]["theme"] == "light"
     # No half-written copy is left beside it.
     assert sorted(item.name for item in tmp_path.iterdir()) == ["settings.json", "settings.json.bak"]
+
+
+def test_a_save_that_fails_is_reported_and_leaves_the_file_whole(tmp_path, monkeypatch):
+    from pathlib import Path
+
+    from lumi.gui import settings as settings_module
+
+    monkeypatch.setattr(settings_module, "_FILE_RETRY_SECONDS", 0)
+    path = tmp_path / "settings.json"
+    path.write_text(json.dumps(_SAVED), encoding="utf-8")
+    settings = SettingsManager(path)
+    before = path.read_text(encoding="utf-8")
+    real_replace, real_write = settings_module.os.replace, Path.write_text
+
+    def refuse(source, target):
+        if str(target) == str(path):
+            raise PermissionError(13, "Access is denied")
+        return real_replace(source, target)
+
+    def refuse_write(self, *args, **kwargs):
+        if self == path:
+            raise PermissionError(13, "The process cannot access the file because another process has locked it")
+        return real_write(self, *args, **kwargs)
+
+    monkeypatch.setattr(settings_module.os, "replace", refuse)
+    monkeypatch.setattr(Path, "write_text", refuse_write)
+    settings.set("general", "theme", "dark")
+    assert path.read_text(encoding="utf-8") == before
+    assert "couldn't save its settings" in settings.save_error and str(path) in settings.save_error
+    # The page shows it (Settings and the banner above the message box).
+    assert settings.get_masked()["_meta"]["save_error"] == settings.save_error
+    assert settings.get("general", "theme") == "dark"  # for this run
+    # The next save that reaches the file clears it.
+    monkeypatch.setattr(settings_module.os, "replace", real_replace)
+    monkeypatch.setattr(Path, "write_text", real_write)
+    settings.set("general", "theme", "light")
+    assert settings.save_error == "" and json.loads(path.read_text(encoding="utf-8"))["general"]["theme"] == "light"
+    assert sorted(item.name for item in tmp_path.iterdir()) == ["settings.json", "settings.json.bak"]
+
+
+def test_a_save_on_the_event_loop_never_waits_for_a_held_file(tmp_path, monkeypatch):
+    from lumi.gui import settings as settings_module
+
+    monkeypatch.setattr(settings_module, "_FILE_RETRY_SECONDS", 0)
+    path = tmp_path / "settings.json"
+    path.write_text(json.dumps(_SAVED), encoding="utf-8")
+    settings = SettingsManager(path)
+    real_replace = settings_module.os.replace
+    tries = []
+
+    def refuse(source, target):
+        if str(target) == str(path):
+            tries.append(target)
+            raise PermissionError(13, "Access is denied")
+        return real_replace(source, target)
+
+    monkeypatch.setattr(settings_module.os, "replace", refuse)
+
+    async def switch_model():  # as a WebSocket handler saves on the event loop
+        settings.set("general", "default_model", "qwen3-coder:30b")
+
+    asyncio.run(switch_model())
+    assert len(tries) == 1  # one try, then written in place: the loop never sleeps on it
+    assert json.loads(path.read_text(encoding="utf-8"))["general"]["default_model"] == "qwen3-coder:30b"
+    tries.clear()
+    settings.set("general", "default_model", "stub-model")  # off the loop it waits, as a moment's lock needs
+    assert len(tries) == settings_module._FILE_ATTEMPTS
+
+
+def test_the_app_is_told_when_saves_stop_or_start_reaching_the_file(tmp_path, monkeypatch):
+    from pathlib import Path
+
+    from lumi.gui import settings as settings_module
+
+    monkeypatch.setattr(settings_module, "_FILE_RETRY_SECONDS", 0)
+    path = tmp_path / "settings.json"
+    path.write_text(json.dumps(_SAVED), encoding="utf-8")
+    settings = SettingsManager(path)
+    told = []
+
+    def listener():
+        assert not settings._lock.locked()  # told after the save: reading the settings here doesn't wait
+        told.append(settings.get_masked()["_meta"]["save_error"])
+
+    settings.on_save_error_changed = listener
+    settings.set("general", "theme", "dark")
+    assert told == []  # saved as before: nothing to tell
+    real_replace, real_write = settings_module.os.replace, Path.write_text
+
+    def refuse(source, target):
+        if str(target) == str(path):
+            raise PermissionError(13, "Access is denied")
+        return real_replace(source, target)
+
+    def refuse_write(self, *args, **kwargs):
+        if self == path:
+            raise PermissionError(13, "The process cannot access the file because another process has locked it")
+        return real_write(self, *args, **kwargs)
+
+    monkeypatch.setattr(settings_module.os, "replace", refuse)
+    monkeypatch.setattr(Path, "write_text", refuse_write)
+    settings.set("general", "theme", "light")
+    settings.update_section("general", {"display_name": "Alex Morgan"})  # still failing: told once
+    assert len(told) == 1 and "couldn't save its settings" in told[0]
+    monkeypatch.setattr(settings_module.os, "replace", real_replace)
+    monkeypatch.setattr(Path, "write_text", real_write)
+    settings.set("general", "theme", "light")
+    assert told[1:] == [""]
+    # A listener that fails doesn't fail the save.
+    settings.on_save_error_changed = lambda: 1 / 0
+    monkeypatch.setattr(settings_module.os, "replace", refuse)
+    monkeypatch.setattr(Path, "write_text", refuse_write)
+    settings.set("general", "theme", "dark")
+    assert "couldn't save its settings" in settings.save_error
+
+
+def test_the_page_is_sent_the_settings_files_state_whatever_saved():
+    from lumi.gui import app as gui_app
+
+    # The app's settings tell it (a background save too) ...
+    assert gui_app.state.settings.on_save_error_changed == gui_app.state._settings_file_changed
+    # ... and it sends only the file's state, which leaves fields being edited alone.
+    state = AppState.__new__(AppState)
+    state.settings = SimpleNamespace(load_error="", save_error="Lumi couldn't save its settings to settings.json.")
+    sent = []
+    state._push_ws_event = sent.append
+    state._settings_file_changed()
+    assert sent == [{"event": "settings_file", "load_error": "",
+                     "save_error": "Lumi couldn't save its settings to settings.json."}]
+
+
+@pytest.fixture
+def held(tmp_path):
+    """Hold ``path`` open from another process with a share mode: ``held(path, share)``.
+
+    As an antivirus scan, a sync client or an editor does (tests/fixtures/hold_open.py).
+    """
+    import subprocess
+    from pathlib import Path
+
+    holders = []
+    script = Path(__file__).parent / "fixtures" / "hold_open.py"
+
+    def hold(path, share):
+        process = subprocess.Popen([sys.executable, str(script), str(path), str(share)], stdin=subprocess.PIPE,
+                                   stdout=subprocess.PIPE, text=True)
+        holders.append(process)
+        assert process.stdout.readline().strip() == "open"
+        return process
+
+    yield hold
+    for process in holders:
+        process.stdin.close()
+        process.wait(timeout=10)
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows' sharing rules for open files")
+@pytest.mark.parametrize("share", [7, 3], ids=["shared for reading, writing and deleting", "shared for reading and writing"])
+def test_a_save_while_another_program_has_the_file_open_is_not_lost(tmp_path, monkeypatch, held, share):
+    from lumi.gui import settings as settings_module
+
+    monkeypatch.setattr(settings_module, "_FILE_RETRY_SECONDS", 0.001)
+    path = tmp_path / "settings.json"
+    path.write_text(json.dumps(_SAVED), encoding="utf-8")
+    settings = SettingsManager(path)
+    held(path, share)
+    settings.set("general", "theme", "dark")
+    assert settings.save_error == ""
+    assert json.loads(path.read_text(encoding="utf-8"))["general"]["theme"] == "dark"
+    assert json.loads(settings.backup_path.read_text(encoding="utf-8"))["general"]["theme"] == "light"
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows' sharing rules for open files")
+@pytest.mark.parametrize("share", [1, 0], ids=["shared for reading only", "not shared"])
+def test_a_save_another_program_keeps_out_is_reported_until_one_lands(tmp_path, monkeypatch, held, share):
+    from lumi.gui import settings as settings_module
+
+    monkeypatch.setattr(settings_module, "_FILE_RETRY_SECONDS", 0.001)
+    path = tmp_path / "settings.json"
+    path.write_text(json.dumps(_SAVED), encoding="utf-8")
+    settings = SettingsManager(path)
+    before = path.read_bytes()
+    holder = held(path, share)
+    settings.set("general", "theme", "dark")
+    assert "couldn't save its settings" in settings.get_masked()["_meta"]["save_error"]
+    holder.stdin.close()
+    holder.wait(timeout=10)
+    assert path.read_bytes() == before
+    settings.set("general", "display_name", "Alex Morgan")
+    assert settings.save_error == ""
+    saved = json.loads(path.read_text(encoding="utf-8"))["general"]
+    assert (saved["theme"], saved["display_name"]) == ("dark", "Alex Morgan")
 
 
 def test_an_empty_mode_means_a_new_installs_default():
@@ -262,6 +503,40 @@ def test_where_the_organization_doesnt_allow_full_auto_its_own_refusal_applies()
     assert _app_state("auto-edit").full_auto_needed("plan") is None
     assert _app_state("auto-edit").full_auto_needed("team", granted=True) is None
     assert "doesn't allow Full-auto" in lumi_policy.full_auto_refusal()
+
+
+def test_each_full_auto_grant_is_recorded_in_the_audit_log(tmp_path):
+    from lumi import audit
+    from lumi.audit import AuditLog
+
+    log = AuditLog(tmp_path / "audit")
+    audit.set_for_tests(log)  # conftest puts the default back afterwards
+
+    def grants():
+        rows = [json.loads(line) for path in log._files() for line in path.read_text(encoding="utf-8").splitlines()]
+        return [(row["session"], row["project"], row["data"]) for row in rows if row["type"] == "permission.full_auto_grant"]
+
+    state = _app_state("auto-edit")
+    state.project = SimpleNamespace(current_session=SimpleNamespace(id="s1"), project_path=str(tmp_path / "shop"))
+    assert state.full_auto_needed("plan") is not None  # offering the grant records nothing
+    assert grants() == []
+    assert state.full_auto_needed("plan", granted=True) is None
+    # A resumed session and a team are recorded under the conversation they belong to.
+    assert state.full_auto_needed("autonomous_resume", granted=True, session_id="s2") is None
+    team = {"action": "start", "autonomy": {"rounds": 2}, "session_id": "s3", "full_auto": True}
+    assert swarming._full_auto_needed(state, _Manager(False), object(), team) is None
+    shop = str(tmp_path / "shop")
+    assert grants() == [
+        ("s1", shop, {"work": "plan", "mode": "auto-edit"}),
+        ("s2", shop, {"work": "autonomous_resume", "mode": "auto-edit"}),
+        ("s3", shop, {"work": "team", "mode": "auto-edit"}),
+    ]
+    assert state.permission_mode == "auto-edit" and log.verify()[0] is True
+    # No grant to record in Full-auto, or where the organization doesn't allow Full-auto.
+    assert _app_state("bypass").full_auto_needed("plan", granted=True) is None
+    _without_full_auto()
+    assert state.full_auto_needed("plan", granted=True) is None
+    assert len(grants()) == 3
 
 
 @pytest.mark.parametrize("apply", [False, True], ids=["reads and reports", "applies changes"])

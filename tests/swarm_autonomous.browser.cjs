@@ -62,6 +62,11 @@ test('The orchestrator runs a team from the panel and reports back', {timeout: 9
         await page.locator('#user-input').fill('/team Check how the CSV export handles delimiters');
         await page.locator('#user-input').press('Enter');
         await page.getByRole('dialog',{name:'Work together'}).waitFor();
+        // The objective is applied once the panel's view of this conversation's
+        // latest team arrives (swarm_view.js openSwarmWithObjective), which then
+        // focuses the rounds: wait for that, not only for the dialog.
+        await page.waitForFunction(()=>document.querySelector('[data-swarm="objective"]')?.value==='Check how the CSV export handles delimiters'
+            &&document.activeElement?.dataset.swarm==='rounds');
         assert.equal(await page.getByLabel('Team objective').inputValue(),'Check how the CSV export handles delimiters');
         assert.equal(await page.getByLabel('Planning approach').inputValue(),'coordinator');
         assert.equal(await page.getByLabel('Let the orchestrator run the team').isChecked(),true);

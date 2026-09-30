@@ -192,8 +192,8 @@ def test_the_template_ships_passing_tests(tmp_path):
     assert "5 passed" in result.stdout
     manifest = json.loads((pack / "lumi-pack.json").read_text(encoding="utf-8"))
     assert (manifest["id"], manifest["name"], manifest["providers"][0]["id"]) == ("my-pack", "Acme models", "my-pack")
-    # The SDK is MIT-licensed, unlike Lumi; its license travels with the copy.
-    assert (pack / "lumi_extension" / "LICENSE").read_text(encoding="utf-8").startswith("MIT License")
+    # The SDK's license (the Lumi Extension SDK License, which lets packs ship it) travels with the copy.
+    assert (pack / "lumi_extension" / "LICENSE").read_text(encoding="utf-8").startswith("Lumi Extension SDK License")
     with pytest.raises(ValueError, match="isn't empty"):
         _new_pack_module().create(pack)
 

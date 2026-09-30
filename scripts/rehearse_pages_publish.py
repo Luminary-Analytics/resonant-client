@@ -36,6 +36,7 @@ setting (core.autocrlf=false) without touching your own configuration.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -163,15 +164,21 @@ def main(argv: list[str] | None = None) -> int:
         for version in VERSIONS:
             # The Windows job.
             windows = checkout(f"windows-{version}")
-            installer = work / f"lumi-setup-{version}.exe"
+            installer = work / "installer" / f"lumi-setup-{version}.exe"
+            installer.parent.mkdir(exist_ok=True)
             installer.write_bytes(b"MZ" + os.urandom(4096))
+            # As sign_windows.ps1 records it in the release job (with no signer configured).
+            record = work / "lumi-authenticode.jsonl"
+            record.write_text(json.dumps({"path": str(installer), "signed": False,
+                                          "sha256": hashlib.sha256(installer.read_bytes()).hexdigest()}) + "\n",
+                              encoding="utf-8")
             run(python, PACKAGING / "publish_pages.py", "--site", windows, "--installer", installer,
                 "--version", version, env=env)
             run(python, PACKAGING / "update_appcast.py", "--version", version, "--installer", installer,
                 "--signature", sign(installer), "--notes", f"<p>Lumi {version} for Windows</p>",
                 "--site", windows, "--download-base", f"{PAGES_URL}/downloads", env=env)
             run(*push_pages, windows, "--message", f"rehearsal: Lumi {version} installer and appcast", *verify,
-                env=env)
+                "--signed", record, env=env)
             run(*push_pages, origin, "--check", "--rev", "gh-pages", *verify, env=env)
             before = windows_feeds(origin, env)
 

@@ -78,6 +78,33 @@ jobs:
       - name: Build Lumi.app, the DMG and the PKG
         run: bash packaging/build_macos.sh --sbom dist/lumi-macos-sbom.cdx.json
 
+      # Lumi's terms (packaging/legal_texts.py): beside the app in the DMG, and on
+      # the PKG's license page. This is a development build, so the Alpha and
+      # Beta Test Terms come too.
+      - name: Check the DMG's and the PKG's terms
+        run: |
+          set -euo pipefail
+          dmg=$(ls dist/installer/lumi-*.dmg)
+          pkg=$(ls dist/installer/lumi-*.pkg)
+          mount="$RUNNER_TEMP/lumi-dmg"
+          hdiutil attach -nobrowse -readonly -mountpoint "$mount" "$dmg" >/dev/null
+          trap 'hdiutil detach "$mount" >/dev/null 2>&1 || true' EXIT
+          ls "$mount"
+          grep -q "Lumi End User License Agreement" "$mount/License Agreement.rtf"
+          grep -q "Lumi Alpha and Beta Test Terms" "$mount/Alpha and Beta Test Terms.rtf"
+          hdiutil detach "$mount" >/dev/null
+          trap - EXIT
+          echo "✓ The DMG carries the License Agreement and the Alpha and Beta Test Terms"
+          expanded="$RUNNER_TEMP/lumi-pkg"
+          rm -rf "$expanded"
+          pkgutil --expand "$pkg" "$expanded"
+          grep -q 'license file="license.rtf"' "$expanded/Distribution"
+          license=$(find "$expanded/Resources" -name license.rtf | head -1)
+          test -n "$license"
+          grep -q "Lumi End User License Agreement" "$license"
+          grep -q "Lumi Alpha and Beta Test Terms" "$license"
+          echo "✓ The PKG's license page shows Lumi's terms: $license"
+
       - name: Check what Sparkle reads from the bundle
         run: |
           set -euo pipefail
@@ -295,7 +322,7 @@ jobs:
           # What a configuration profile delivers: the app's managed preferences.
           prefs="/Library/Managed Preferences/com.luminaryanalytics.lumi.plist"
           trap 'sudo rm -f "$prefs"' EXIT
-          printf '%s' '{"schema": "lumi.policy/v1", "organization": "CI Org", "settings": {"updates.channel": "beta"}}' > ci-policy.json
+          printf '%s' '{"schema": "lumi.policy/v1", "organization": "CI Org", "settings": {"updates.channel": "beta"}, "legal": {"accepted_by_organization": "CI Org"}}' > ci-policy.json
           python3 packaging/policy/make_mobileconfig.py ci-policy.json --plist --out managed.plist
           python3 packaging/policy/make_mobileconfig.py ci-policy.json --out lumi-policy.mobileconfig
           plutil -lint managed.plist lumi-policy.mobileconfig
@@ -304,6 +331,10 @@ jobs:
           "$app" updates | tee managed.json
           python3 -c 'import json; s = json.load(open("managed.json")); assert (s["managed_by"], s["channel"], s["locked"]) == ("CI Org", "beta", ["channel"]), s'
           echo "✓ A policy in managed preferences applies"
+          # A configuration profile is a machine policy: it accepts Lumi's terms for the Mac's people.
+          "$app" terms | tee terms.json
+          python3 -c 'import json; s = json.load(open("terms.json")); assert (s["pending"], s["organization"]) == (False, "CI Org"), s'
+          echo "✓ The profile's legal.accepted_by_organization accepts Lumi's terms"
 
           # A profile whose Policy isn't usable must stop Lumi, not vanish.
           printf '%s' '<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict><key>Policy</key><string></string></dict></plist>' > broken.plist

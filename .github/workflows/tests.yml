@@ -25,6 +25,9 @@ concurrency:
   group: tests-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
 jobs:
   pytest:
     # windows-latest matches the platform Lumi mostly ships on, and the
@@ -60,6 +63,13 @@ jobs:
         # pyproject.toml rather than being excluded outright.
         run: python -m ruff check .
 
+      - name: Legal texts (facts still to be provided are a warning here)
+        # lumi/legal/terms.json holds the facts Lumi's terms need; a release
+        # build fails while any is still [[TO BE PROVIDED: ...]]
+        # (release.yml). A pull request only warns. That the texts are what
+        # packaging/legal_texts.py renders is a test (tests/test_legal_texts.py).
+        run: python packaging/legal_texts.py release-check
+
       - name: Test
         # -q overrides the `-v` in pyproject addopts (CLI args win) to keep the
         # CI log readable; failures still print with --tb=short.
@@ -73,7 +83,7 @@ jobs:
           node-version: '22'
 
       - name: Test draft recovery and appearance
-        run: node --test tests/ui_recovery.test.cjs tests/appearance.test.cjs tests/autonomous_view.test.cjs tests/vscode_extension.test.cjs tests/voice_input.test.cjs tests/extension_panels.test.cjs
+        run: node --test tests/ui_recovery.test.cjs tests/appearance.test.cjs tests/autonomous_view.test.cjs tests/vscode_extension.test.cjs tests/voice_input.test.cjs tests/extension_panels.test.cjs tests/feedback_view.test.cjs
 
   pytest-macos:
     # The updater's macOS paths on the platform they're for (lumi/sparkle.py,

@@ -218,6 +218,11 @@ const PLAN_STATE_LABELS = {
 const PLAN_FINAL_STATES = new Set(['stopped', 'complete', 'failed', 'ended']);
 
 
+// Error codes that end a turn when the engine refuses it (Session.run): Lumi's
+// terms, the organization's notice or policy, offline mode and budgets.
+const TURN_ENDING_CODES = new Set(['terms_not_accepted', 'oversight_notice', 'policy_blocked', 'offline',
+    'budget_exceeded']);
+
 class LumiApp {
     constructor() {
         this.ws = null;
@@ -1360,6 +1365,7 @@ class LumiApp {
         });
         this._initAccountMenu();
         this._initOversightNotice?.();
+        this._initTermsView?.();
         document.getElementById('settings-back')?.addEventListener('click', () => {
             this.switchView('agents');
             if (this.userInput?.getClientRects().length) this.userInput.focus();
@@ -1939,10 +1945,12 @@ class LumiApp {
 
     sendMessage(options = {}) {
         if (this._oversightLocked) {
-            // Nothing goes to a model before the organization's notice is
-            // confirmed; the server refuses too (lumi/oversight.py).
-            this.showToastMessage('Confirm your organization’s oversight notice above the message box first.');
-            document.getElementById('oversight-notice')?.focus();
+            // Nothing goes to a model before Lumi's terms are accepted and the
+            // organization's notice is confirmed; the server refuses too
+            // (lumi/terms.py, lumi/oversight.py).
+            this.showToastMessage(this._composerLockMessage?.() || 'Confirm your organization’s oversight notice above the message box first.');
+            if (this._focusComposerLock) this._focusComposerLock();
+            else document.getElementById('oversight-notice')?.focus();
             return;
         }
         if (this._newSessionInflight || this._pendingProjectSwitchId) {
@@ -3216,11 +3224,12 @@ class LumiApp {
         this._setSessionActivity(running ? 'working' : 'idle');
         this.sendBtn.style.display = 'flex';
         this.stopBtn.style.display = running ? 'flex' : 'none';
-        // An organization's oversight notice that isn't confirmed yet keeps
-        // the message box locked (settings_view.js _setOversightLock).
+        // Lumi's terms waiting to be accepted, or an organization's oversight
+        // notice that isn't confirmed yet, keep the message box locked
+        // (settings_view.js _applyComposerLock).
         this.userInput.disabled = Boolean(this._oversightLocked);
         this.userInput.placeholder = this._oversightLocked
-            ? 'Confirm the notice above to start'
+            ? (this._composerLockPlaceholder?.() || 'Confirm the notice above to start')
             : running
             ? 'Write a follow-up for the running agent...'
             : 'Message Lumi';
@@ -3690,16 +3699,19 @@ class LumiApp {
                     this._autonomousResumeNeedsFullAuto(event);
                     break;
                 }
-                // The server started no turn for a message (`refused`). A team this
+                // The server started no turn for a message (`refused`: Lumi's terms,
+                // the organization's notice or policy, no model). A team this
                 // conversation owns refuses one with `team_active` (#102), which
                 // names no message: only a message still waiting to start counts,
                 // never text left from an earlier one (setRunning clears it).
                 if ((event.refused || (event.code === 'team_active' && this.isRunning && this._pendingTurnText))
                     && this._endRefusedTurn(event)) break;
-                // Organization oversight refused work before any turn started: the
-                // notice above the message box says why (settings_view.js), so this
-                // is no failed turn with retries.
-                if (event.code === 'oversight_notice' && !this.isRunning && !this._activeTask) {
+                // Lumi's terms or organization oversight refused work before any
+                // turn started: the notice above the message box says why
+                // (terms_view.js, settings_view.js), so this is no failed turn
+                // with retries.
+                if ((event.code === 'oversight_notice' || event.code === 'terms_not_accepted')
+                    && !this.isRunning && !this._activeTask) {
                     this.showToastMessage(event.message || 'Confirm your organization’s oversight notice first.');
                     break;
                 }
@@ -4416,6 +4428,14 @@ class LumiApp {
                 // The organization's oversight: the notice and Settings (settings_view.js).
                 this._applyOversight?.(event.data);
                 break;
+            case 'terms_status':
+                // Lumi's terms: the dialog, the notice and About (terms_view.js).
+                this._applyTerms?.(event.data);
+                break;
+            case 'legal_document':
+                // A text the terms dialog asked for (terms_view.js).
+                this._receiveLegalDocument?.(event.data);
+                break;
             case 'cloud_status':
                 this.cloudStatus = event.data;
                 if (event.data && !event.data.signing_in && event.data.signed_in) this._cloudUrlDraft = undefined;
@@ -4468,6 +4488,21 @@ class LumiApp {
                 break;
             case 'session_share':
                 this._renderShareDialog(event);
+                break;
+            case 'feedback_status':
+                this.handleFeedbackStatus?.(event);
+                break;
+            case 'feedback_preview':
+                this.handleFeedbackPreview?.(event);
+                break;
+            case 'feedback_result':
+                this.handleFeedbackResult?.(event);
+                break;
+            case 'feedback_info':
+                this.handleFeedbackInfo?.(event);
+                break;
+            case 'feedback_copy':
+                this.handleFeedbackCopy?.(event);
                 break;
             case 'team_library':
                 this.teamLibrary = event;
@@ -4858,6 +4893,8 @@ class LumiApp {
         // What the organization's oversight receives: the notice beside the
         // message box, shown before anything is recorded (settings_view.js).
         if (event.oversight) this._applyOversight?.(event.oversight);
+        // Lumi's terms: asked for at first launch and when their version changes (terms_view.js).
+        if (event.terms) this._applyTerms?.(event.terms);
 
         // Plans still running when this page connected; only the socket's
         // own init lists them. Before the returns below: a plan runs on the
@@ -5609,10 +5646,10 @@ class LumiApp {
             if (event.code === 'Space' && event.ctrlKey && event.shiftKey && !event.altKey && !event.metaKey) {
                 if (this.currentView === 'settings') return;
                 event.preventDefault();
-                // Nothing listens while the organization's oversight notice waits: the
-                // webview's recognizer sends audio to its vendor like a model request.
+                // Nothing listens while Lumi's terms or the organization's oversight notice
+                // wait: the webview's recognizer sends audio to its vendor like a model request.
                 if (this._oversightLocked) {
-                    if (!event.repeat) this.showToastMessage('Confirm your organization’s oversight notice above the message box first.');
+                    if (!event.repeat) this.showToastMessage(this._composerLockMessage?.() || 'Confirm your organization’s oversight notice above the message box first.');
                     return;
                 }
                 if (!event.repeat && !shortcutHeld) {
@@ -5639,12 +5676,13 @@ class LumiApp {
 
     /**
      * Which ways of dictating may listen (lumi/voice.py, settings._meta.voice),
-     * and none while the organization's oversight notice locks the message box.
+     * and none while Lumi's terms or the organization's oversight notice lock
+     * the message box.
      */
     _dictationStatus() {
         const voice = this.settings?._meta?.voice;
         if (!this._oversightLocked) return voice;
-        const reason = 'Confirm your organization’s oversight notice above the message box first.';
+        const reason = this._composerLockMessage?.() || 'Confirm your organization’s oversight notice above the message box first.';
         return {...(voice || {}), browser: false, service_ready: false, browser_reason: reason, reason};
     }
 
@@ -7635,6 +7673,8 @@ class LumiApp {
                         this.send({ command: 'save_diagnostics' });
                         break;
                     case 'about': this._settingsActivePage = 'about'; this.switchView('settings'); break;
+                    // The menu item can't take focus, so focus returns to the Menu button.
+                    case 'send-feedback': this.openFeedbackDialog?.(menuButton); break;
                 }
                 closeAppMenu();
             });
@@ -7772,6 +7812,7 @@ class LumiApp {
             { id: 'preview',    icon: '\u25A1', label: 'Toggle preview panel',     hint: '',        action: () => document.getElementById('preview-toggle')?.click() },
             { id: 'sidebar',    icon: '\u2261', label: 'Toggle sidebar',           hint: 'Ctrl+Shift+D', action: () => document.getElementById('sidebar-toggle')?.click() },
             { id: 'shortcuts',  icon: '\u2328', label: 'Keyboard shortcuts',       hint: 'Ctrl+/', action: () => this.toggleShortcutsOverlay() },
+            { id: 'send-feedback', icon: '\u2709', label: 'Send feedback',          hint: '',       action: () => this.openFeedbackDialog?.() },
             ...(this._canOpenInBrowser()
                 ? [{ id: 'open-in-browser', icon: '\u2197', label: 'Open in browser', hint: '', action: () => this._openInBrowser() }]
                 : []),
@@ -10265,8 +10306,11 @@ class LumiApp {
             total_steps: (this._currentTurn && this._currentTurn.stepCount) || 0,
         });
 
-        // If it was a fatal-ish error, stop running and clean up terminals
-        if (event.message && (
+        // If it was a fatal-ish error, stop running and clean up terminals.
+        // A refusal of Lumi's terms, the organization's notice or policy, offline
+        // mode or a budget ends the turn, and the engine may send no session.end
+        // after it (Session.run returns at once when it refuses a turn).
+        if (TURN_ENDING_CODES.has(event.code) || event.message && (
             event.message.includes('step limit') ||
             event.message.includes('No backend') ||
             event.message.includes('Cancelled')
@@ -14397,9 +14441,11 @@ function applyMixin(target, MixinClass, label) {
 
 applyMixin(LumiApp.prototype, window.LumiAutonomousView, 'autonomous-view');
 applyMixin(LumiApp.prototype, window.LumiSettingsView, 'settings-view');
+applyMixin(LumiApp.prototype, window.LumiTermsView, 'terms-view');
 applyMixin(LumiApp.prototype, window.LumiRunCards, 'run-cards');
 applyMixin(LumiApp.prototype, window.LumiEmployeeTasks, 'employee-tasks');
 applyMixin(LumiApp.prototype, window.LumiPanelsView, 'panels-view');
+applyMixin(LumiApp.prototype, window.LumiFeedbackView, 'feedback-view');
     applyMixin(LumiApp.prototype, window.LumiSwarmView, 'swarm-view');
     applyMixin(LumiApp.prototype, window.LumiCollaborationView, 'collaboration-view');
     applyMixin(LumiApp.prototype, window.LumiManagedCollaborationView, 'managed-collaboration-view');

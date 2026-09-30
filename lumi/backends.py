@@ -792,6 +792,10 @@ class OllamaBackend:
             # Metadata and the explicit model catalog above remain usable.
             raise ValueError("Supervised Ollama workers require declared tool capability; generation probes are disabled")
 
+        # The probe below is a model request: nothing is sent until Lumi's terms
+        # are accepted (lumi/terms.py). Only a guarded stream reaches here, which
+        # refused already; this keeps the plain HTTP request from ever skipping it.
+        dlp.refuse_until_terms_accepted()
         # Probe: send a minimal request with a simple tool and check response format
         try:
             opts = dict(self._ollama_options)
@@ -879,7 +883,14 @@ class OllamaBackend:
         return False
 
     def warm_up(self):
-        """Pre-load the model into Ollama's memory so the first request is fast."""
+        """Pre-load the model into Ollama's memory so the first request is fast.
+
+        It's a model request ("hi") like any other: nothing is sent until Lumi's
+        terms are accepted (lumi/terms.py), whoever asks for the warm-up.
+        """
+        if dlp.terms_refusal():
+            logger.info("Didn't warm up %s: Lumi's terms aren't accepted yet", self.model)
+            return
         try:
             # Use EXACT same options as stream() to prevent Ollama from reloading
             opts = dict(self._ollama_options)
@@ -3093,7 +3104,13 @@ class ExoBackend(KimiBackend):
         chat-completions path as coding work while keeping generation short.
         If the user submits real work first, ``stream`` cancels this optional
         request immediately so warmup never competes with the task.
+
+        Nothing is sent, and no instance placed, until Lumi's terms are
+        accepted (lumi/terms.py); the guarded stream refuses too.
         """
+        if dlp.terms_refusal():
+            logger.info("Didn't warm up EXO: Lumi's terms aren't accepted yet")
+            return
         with self._warmup_lock:
             if self._warmup_started or self._warmup_cancel_event.is_set():
                 return

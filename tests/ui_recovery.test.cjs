@@ -3347,3 +3347,248 @@ test('the diagnostics note names Luminary Analytics support and its address', ()
     assert.ok(toast.querySelector('.diagnostics-toast-copy-email'));
     assert.doesNotMatch(toast.textContent, /GitHub/);
 });
+
+// Lumi's terms (terms_view.js, settings_view.js): at first launch the dialog shows
+// them and the message box stays locked until the dialog's own Accept button, on
+// a click the browser reports as the person's, accepts the versions it showed.
+// Decline leaves a notice whose Review terms opens the dialog again.
+function termsView() {
+    const element = (id, extra = {}) => {
+        const listeners = {};
+        const classes = new Set();
+        return {
+            id, hidden: false, disabled: false, textContent: '', innerHTML: '', placeholder: 'Message Lumi', listeners,
+            style: {}, dataset: {}, scrollTop: 0,
+            classList: {toggle: (name, on) => (on ? classes.add(name) : classes.delete(name)), has: name => classes.has(name),
+                add: name => classes.add(name), remove: name => classes.delete(name)},
+            addEventListener: (type, fn) => { listeners[type] = fn; },
+            setAttribute() {},
+            focus() { if (!this.disabled) document.activeElement = this; },
+            ...extra,
+        };
+    };
+    const wrapper = element('input-wrapper');
+    const ids = ['terms-notice', 'terms-notice-text', 'terms-notice-review', 'terms-dialog', 'terms-dialog-title',
+        'terms-dialog-intro', 'terms-dialog-body', 'terms-dialog-error', 'terms-dialog-consent', 'terms-dialog-back',
+        'terms-dialog-privacy', 'terms-dialog-decline', 'terms-dialog-accept', 'terms-dialog-done', 'terms-dialog-close',
+        'oversight-notice', 'send-btn', 'add-context-btn', 'mic-btn', 'composer-autonomous-btn', 'composer-prompts-btn'];
+    const elements = Object.fromEntries(ids.map(id => [id, element(id)]));
+    elements['terms-notice'].hidden = true;
+    elements['user-input'] = element('user-input', {value: 'a draft', closest: selector => (selector === '.input-wrapper' ? wrapper : null)});
+    const document = {activeElement: null, getElementById: id => elements[id] || null, contains: () => true};
+    const context = vm.createContext({console, window: {}, document, WebSocket: {OPEN: 1}, setTimeout: () => {}, clearTimeout: () => {}});
+    vm.runInContext(source + '\nthis.App = LumiApp;', context);
+    for (const [file, name] of [['settings_view.js', 'LumiSettingsView'], ['terms_view.js', 'LumiTermsView']]) {
+        vm.runInContext(fs.readFileSync(path.join(__dirname, '../lumi/gui/static/' + file), 'utf8') + `\nthis.View = ${name};`, context);
+        for (const key of Object.getOwnPropertyNames(context.View.prototype)) {
+            if (key !== 'constructor') Object.defineProperty(context.App.prototype, key, Object.getOwnPropertyDescriptor(context.View.prototype, key));
+        }
+    }
+    const app = Object.create(context.App.prototype);
+    const toasts = [];
+    Object.assign(app, {
+        sent: [], userInput: elements['user-input'], sendBtn: elements['send-btn'], stopBtn: element('stop-btn'),
+        currentView: 'agents', isRunning: false, ws: {readyState: 1}, _queuedMessages: new Map(),
+        showToastMessage: message => toasts.push(message), toasts,
+        _renderAccountMenu() {}, _clearPromptSuggestion() {}, _setSessionActivity() {}, _startLiveRun() {}, _stopLiveRun() {},
+    });
+    app.send = message => app.sent.push({...message});
+    return {app, elements, wrapper, document};
+}
+
+const TERMS = {pending: true, prerelease: true, organization: '', acceptance_value: 'eula-1.0,alpha-terms-1.0',
+    required: [
+        {id: 'eula', title: 'Lumi End User License Agreement', version: '1.0', published: '2026-09-29', published_text: 'September 29, 2026', accepted: false, previous_version: ''},
+        {id: 'alpha_terms', title: 'Lumi Alpha and Beta Test Terms', version: '1.0', published: '2026-09-29', published_text: 'September 29, 2026', accepted: false, previous_version: ''}],
+    documents: {}};
+
+test('Lumi’s terms open at first launch and lock the message box until Accept', () => {
+    const {app, elements, wrapper, document} = termsView();
+    document.activeElement = elements['user-input'];
+    app._applyTerms(TERMS);
+    assert.equal(elements['terms-dialog'].style.display, 'flex');
+    assert.equal(elements['terms-notice'].hidden, false);
+    assert.equal(elements['user-input'].disabled, true);
+    assert.equal(wrapper.classList.has('is-oversight-locked'), true);
+    assert.equal(elements['user-input'].placeholder, 'Accept Lumi’s terms to start');
+    // Reading starts in the text; focus never lands on Accept by itself.
+    assert.equal(document.activeElement, elements['terms-dialog-body']);
+    assert.deepEqual(app.sent.map(message => message.command + ':' + message.id), ['legal_document:eula', 'legal_document:alpha_terms']);
+    app._receiveLegalDocument({id: 'eula', format: 'text', text: 'The agreement'});
+    app._receiveLegalDocument({id: 'alpha_terms', format: 'text', text: 'The test terms'});
+    assert.match(elements['terms-dialog-body'].innerHTML, /The agreement[\s\S]*The test terms/);
+    assert.match(elements['terms-dialog-consent'].innerHTML, /version 1\.0, published September 29, 2026\) and the Lumi Alpha/);
+    assert.equal(elements['terms-dialog-accept'].hidden, false);
+    // Nothing is sent: not the page's own send, not a script's click on Accept.
+    app.sent.length = 0;
+    app.sendMessage();
+    assert.deepEqual(app.sent, []);
+    assert.match(app.toasts[0], /Accept Lumi’s terms first/);
+    elements['terms-dialog-accept'].listeners.click({isTrusted: false});
+    elements['terms-dialog-accept'].listeners.click();
+    assert.deepEqual(app.sent, []);
+    elements['terms-dialog-accept'].listeners.click({isTrusted: true});
+    assert.deepEqual(Array.from(app.sent, message => JSON.stringify(message)),
+        [JSON.stringify({command: 'terms_accept', documents: {eula: '1.0', alpha_terms: '1.0'}})]);
+    // The server's answer closes the dialog and unlocks the message box, which takes the focus.
+    app._applyTerms({...TERMS, pending: false, required: TERMS.required.map(doc => ({...doc, accepted: true}))});
+    assert.equal(elements['terms-dialog'].style.display, 'none');
+    assert.equal(elements['terms-notice'].hidden, true);
+    assert.equal(elements['user-input'].disabled, false);
+    assert.equal(elements['user-input'].placeholder, 'Message Lumi');
+    assert.equal(document.activeElement, elements['user-input']);
+    assert.equal(elements['user-input'].value, 'a draft');
+});
+
+test('Decline or Escape leaves the notice, and Review terms opens the dialog again', () => {
+    const {app, elements, document} = termsView();
+    app._applyTerms(TERMS);
+    elements['terms-dialog'].listeners.keydown({key: 'Escape', preventDefault() {}, stopPropagation() {}});
+    assert.equal(elements['terms-dialog'].style.display, 'none');
+    assert.equal(document.activeElement, elements['terms-notice-review']);
+    assert.equal(elements['user-input'].disabled, true);
+    // A status push about the same terms doesn't reopen it; the notice's button does.
+    app._applyTerms(TERMS);
+    assert.equal(elements['terms-dialog'].style.display, 'none');
+    elements['terms-notice-review'].listeners.click({currentTarget: elements['terms-notice-review']});
+    assert.equal(elements['terms-dialog'].style.display, 'flex');
+    elements['terms-dialog-decline'].listeners.click({isTrusted: true});
+    assert.equal(elements['terms-dialog'].style.display, 'none');
+    assert.equal(app.sent.filter(message => message.command === 'terms_accept').length, 0);
+    // New terms (another version) ask again.
+    app._applyTerms({...TERMS, acceptance_value: 'eula-2.0,alpha-terms-1.0'});
+    assert.equal(elements['terms-dialog'].style.display, 'flex');
+});
+
+test('the terms come before the organization’s notice, which keeps the box locked once they’re accepted', () => {
+    const {app, elements} = termsView();
+    app._setOversightLock(true);
+    app._applyTerms(TERMS);
+    assert.equal(elements['user-input'].placeholder, 'Accept Lumi’s terms to start');
+    app._applyTerms({...TERMS, pending: false});
+    assert.equal(elements['user-input'].disabled, true);
+    assert.equal(elements['user-input'].placeholder, 'Confirm the notice above to start');
+    assert.match(app._composerLockMessage(), /oversight notice/);
+});
+
+test('About Lumi says who accepted the terms and opens every text', () => {
+    const {app} = termsView();
+    const about = terms => { app.aboutInfo = {version: '0.20.0', license: 'Lumi End User License Agreement', terms}; return app._renderAbout(); };
+    const pending = about(TERMS);
+    assert.match(pending, /Not accepted yet/);
+    for (const id of ['terms', 'eula', 'alpha_terms', 'privacy', 'notices']) assert.match(pending, new RegExp(`data-legal-doc="${id}"`));
+    const accepted = about({...TERMS, pending: false, required: TERMS.required.map(doc => ({...doc, accepted: true, accepted_at: '2026-09-28T12:00:00Z'}))});
+    assert.match(accepted, /You accepted the Lumi End User License Agreement 1\.0 on .*2026 and the Lumi Alpha and Beta Test Terms 1\.0/);
+    assert.doesNotMatch(accepted, /data-legal-doc="terms"/);
+    const organization = about({...TERMS, pending: false, organization: 'Acme <Corp>'});
+    assert.match(organization, /Accepted for everyone who uses Lumi on this computer by Acme &lt;Corp&gt;, through its machine policy\./);
+});
+
+// A message the server refused before any turn started (`refused`: Lumi's terms,
+// the organization's notice or policy) ends the running state sendMessage set,
+// gives the text back to the message box and marks its card "Not sent", with no
+// Retry (the PR #104 review; PR #105's contract). The real turn handlers and
+// run_cards.js, as turnSummaryApp mixes them in.
+function refusedTurnApp() {
+    const app = turnSummaryApp();
+    const calls = [];
+    Object.assign(app, {
+        userInput: {value: '', style: {}, scrollHeight: 40},
+        isRunning: false, _queuedMessages: new Map(), toasts: [],
+        _removeLiveAgentTodoStrip() {}, _syncComposerQueue() {},
+        setRunning(running) { calls.push(`running:${running}`); app.isRunning = running; },
+        clearTerminals() { calls.push('clearTerminals'); },
+        _markDraftEdited() { calls.push('draftEdited'); },
+        _saveDraft() { calls.push(`draftSaved:${app.userInput.value}`); },
+        showToastMessage(message) { app.toasts.push(message); },
+    });
+    app.calls = calls;
+    // What sendMessage does before the message leaves: the optimistic turn, running.
+    app.sendTurn = text => {
+        app._prepareTurnUI(text, []);
+        app._pendingTurnText = text;
+        app.setRunning(true);
+        app.userInput.value = '';
+    };
+    app.card = () => {
+        const card = app.chatMessages.children.filter(node => node.classList.contains('task-card')).at(-1);
+        const footer = card.children[3];
+        const summary = footer.children.find(child => child.classList.contains('task-run-summary'));
+        return {
+            state: card.dataset.outcome, label: /task-run-label">([^<]*)/.exec(summary?.innerHTML)?.[1] || '',
+            actions: summary.children.filter(child => child.className === 'task-recovery-actions').length,
+            classes: card.className,
+        };
+    };
+    return app;
+}
+
+const TERMS_REFUSAL = 'Lumi won’t send anything to a model until you accept its terms: the Lumi End User License Agreement (version 1.0). Choose Review terms above the message box.';
+
+test('a refused message ends the running state, comes back to the message box and reads Not sent', () => {
+    for (const code of ['terms_not_accepted', 'oversight_notice', 'policy_blocked']) {
+        const app = refusedTurnApp();
+        app.sendTurn('fix the login bug');
+        assert.equal(app.isRunning, true);
+        app.handleEvent({event: 'error', refused: true, code, message: TERMS_REFUSAL});
+        assert.equal(app.isRunning, false, code);
+        assert.equal(app.userInput.value, 'fix the login bug', code);
+        assert.ok(app.calls.includes('clearTerminals') && app.calls.includes('draftSaved:fix the login bug'), code);
+        assert.equal(app._pendingTurnText, '', code);
+        const card = app.card();
+        assert.equal(card.label, 'Not sent', code);
+        assert.equal(card.actions, 0, code);  // nothing to retry: the text is in the message box
+        assert.match(card.classes, /task-card-warning/, code);
+    }
+});
+
+test('a refusal never overwrites what the person typed meanwhile, and a refused follow-up leaves the queue', () => {
+    const app = refusedTurnApp();
+    app.sendTurn('first message');
+    app.userInput.value = 'typed since';
+    app.handleEvent({event: 'error', refused: true, code: 'terms_not_accepted', message: TERMS_REFUSAL});
+    assert.equal(app.userInput.value, 'typed since');
+    // A follow-up queued behind a running turn: that turn keeps running, the follow-up comes back.
+    const queued = refusedTurnApp();
+    queued.sendTurn('running turn');
+    const removed = [];
+    queued._queuedMessages.set('m2', {text: 'the follow-up', el: {remove: () => removed.push('m2')}});
+    queued.handleEvent({event: 'error', refused: true, code: 'terms_not_accepted', message: TERMS_REFUSAL,
+        message_id: 'm2'});
+    assert.equal(queued.isRunning, true);
+    assert.deepEqual(removed, ['m2']);
+    assert.equal(queued._queuedMessages.size, 0);
+    assert.equal(queued.userInput.value, 'the follow-up');
+    assert.deepEqual(queued.toasts, [TERMS_REFUSAL]);
+});
+
+test('a refusal the engine gives after a turn started ends the running state too', () => {
+    // Session.run returns at once when the gate or the policy refuses, with no session.end.
+    for (const code of ['terms_not_accepted', 'oversight_notice', 'policy_blocked', 'offline', 'budget_exceeded']) {
+        const app = refusedTurnApp();
+        app.sendTurn('hello');
+        app.handleEvent({event: 'error', code, message: 'Refused.'});
+        assert.equal(app.isRunning, false, code);
+        assert.equal(app.userInput.value, '', code);  // the message was saved with the turn
+        assert.equal(app.card().label, 'Failed', code);
+    }
+    const other = refusedTurnApp();
+    other.sendTurn('hello');
+    other.handleEvent({event: 'error', code: 'model_error', message: 'The model stopped responding.'});
+    assert.equal(other.isRunning, true);  // an error mid-turn waits for its session.end, as before
+});
+
+test('About Lumi on a stable build offers no test terms, and says what leaves the computer', () => {
+    const {app} = termsView();
+    const about = terms => { app.aboutInfo = {version: '0.20.0', license: 'Lumi End User License Agreement', terms}; return app._renderAbout(); };
+    const stable = about({...TERMS, prerelease: false, pending: false, readable: ['eula', 'privacy'],
+        required: [{...TERMS.required[0], accepted: true, accepted_at: '2026-09-29T12:00:00Z'}]});
+    assert.doesNotMatch(stable, /data-legal-doc="alpha_terms"/);
+    for (const id of ['eula', 'privacy', 'notices']) assert.match(stable, new RegExp(`data-legal-doc="${id}"`));
+    const beta = about({...TERMS, readable: ['eula', 'alpha_terms', 'privacy']});
+    assert.match(beta, /data-legal-doc="alpha_terms"/);
+    // The review: About said Luminary receives only the update check.
+    assert.doesNotMatch(stable, /receives only the update check/);
+    assert.match(stable, /Lumi Cloud receives more only when you sign in or this computer is enrolled/);
+    assert.match(stable, /usage and crash counts/);
+});

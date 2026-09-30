@@ -11,6 +11,7 @@ jobs. It uses the same engine as the desktop app. These all apply:
 - the path checks, command guardrails and, when it's on, the
   [shell sandbox](shell-sandbox.md);
 - your own [hooks](#hooks);
+- [Lumi's terms](#lumis-terms): nothing runs until they're accepted;
 - [organization oversight](organization-oversight.md): when your organization's
   policy turns it on, `lumi run` prints its notice first. At an interactive
   terminal (standard input and standard error both terminals) it asks you to
@@ -42,6 +43,7 @@ lumi run "Fix the failing test in tests/test_api.py" --provider anthropic --mode
 | `--max-requests N` | Stop after N model requests |
 | `--timeout SECONDS` | Stop after this long |
 | `--output` | `json` (the default), `text` (the answer as it streams; a summary on stderr) or `jsonl` (every engine event, then the result) |
+| `--accept-terms VALUE` | Accept [Lumi's terms](#lumis-terms), naming each document's version: `eula-1.0` for a stable release, `eula-1.0,alpha-terms-1.0` for a pre-release or development build (`lumi terms` prints the value). `LUMI_ACCEPT_TERMS` does the same |
 
 Nobody is asked anything during a run:
 
@@ -52,6 +54,31 @@ Nobody is asked anything during a run:
 Keys come from Settings or the environment: `ANTHROPIC_API_KEY`,
 `OPENAI_API_KEY`, `OPENROUTER_API_KEY`, `SONN_API_KEY`, `MOONSHOT_API_KEY` or
 `EXO_API_KEY`. A connection's key must be saved in Settings.
+
+## Lumi's terms
+
+Nothing reaches a model until Lumi's terms are accepted on the computer: the
+[End User License Agreement](../lumi/legal/EULA.md) and, for a pre-release
+build, the [Alpha and Beta Test Terms](../lumi/legal/ALPHA-TERMS.md). A run
+goes ahead when:
+
+- this computer user accepted them already, in the app, at a terminal or
+  with `lumi terms accept <value>`;
+- the organization's machine policy accepted them
+  ([Lumi's terms for your organization](enterprise-policy.md#lumis-terms-for-your-organization));
+- the command names them: `--accept-terms <value>` or `LUMI_ACCEPT_TERMS=<value>`,
+  where the value names each document and its version: `eula-1.0` for a
+  stable release, or `eula-1.0,alpha-terms-1.0` for a pre-release or a
+  development build, such as one installed from `main` (its version, like
+  `0.20.0.dev0`, carries a pre-release label). `lumi terms` prints the value
+  for the Lumi you have, and `lumi terms show` prints the texts. The
+  acceptance is recorded in `~/.lumi/legal/acceptance.json`;
+- someone at an interactive terminal types `yes` when the run shows them.
+
+Otherwise the run stops before anything is set up (exit code 2) and says what
+to pass. A value naming another version is refused too: when an update brings
+new terms, read them and update the value. A scheduled task never asks; it
+runs once the terms are accepted.
 
 ## Hooks
 
@@ -141,6 +168,9 @@ jobs:
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           LUMI_KEYCHAIN: "off"
+          # Lumi's terms, accepted for this run: `lumi terms` prints the value.
+          # A build from main is a development build, so the test terms count too.
+          LUMI_ACCEPT_TERMS: "eula-1.0,alpha-terms-1.0"
         run: |
           lumi run "The test suite fails. Find the cause, fix it and run the tests." \
             --provider anthropic --model claude-sonnet-5 --mode bypass --trust-project \
@@ -168,9 +198,13 @@ It includes git and ripgrep, and has no desktop app, browser or computer use.
 
 ```bash
 docker build -f packaging/docker/Dockerfile -t lumi .
-docker run --rm -v "$PWD:/work" -e ANTHROPIC_API_KEY lumi \
+docker run --rm -v "$PWD:/work" -e ANTHROPIC_API_KEY -e LUMI_ACCEPT_TERMS=eula-1.0,alpha-terms-1.0 lumi \
   run "Update the changelog for the last release" --provider anthropic --model claude-sonnet-5
 ```
+
+An image built from a stable release takes `LUMI_ACCEPT_TERMS=eula-1.0`;
+one built from `main` or a pre-release also needs the test terms, as above
+(`docker run --rm lumi terms` prints the value).
 
 The image runs as user `lumi` (uid 1000) with `LUMI_KEYCHAIN=off`. Usage
 records and the audit log are in `/home/lumi/.lumi`; mount a volume there to

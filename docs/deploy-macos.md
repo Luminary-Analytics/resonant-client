@@ -47,6 +47,23 @@ sudo installer -pkg lumi-X.Y.Z.pkg -target /
   `sudo rm -rf /Applications/Lumi.app && sudo pkgutil --forget com.luminaryanalytics.lumi`.
   Each person's settings and sessions in `~/.lumi` stay.
 
+## Lumi's terms
+
+Opened in the Installer app, the PKG shows Lumi's terms on its license page
+(the [End User License Agreement](../lumi/legal/EULA.md), and for a
+pre-release the [Alpha and Beta Test Terms](../lumi/legal/ALPHA-TERMS.md)
+after it) and installs only once the person agrees. `installer -pkg` from the
+command line, as Jamf Pro, Intune and other device management run it, shows
+no license: deploying Lumi to your organization's Macs accepts the agreement
+for the organization, under its agreement with Luminary Analytics.
+
+Lumi still asks each person at first launch unless the policy accepts for
+them: add `"legal": {"accepted_by_organization": "Example Corp"}` to the policy
+in the configuration profile below
+([Lumi's terms for your organization](enterprise-policy.md#lumis-terms-for-your-organization)).
+A configuration profile is a machine policy, so it counts. `lumi terms` on
+the Mac shows the result.
+
 ## Policy through a configuration profile
 
 Lumi reads the organization policy from the `com.luminaryanalytics.lumi`

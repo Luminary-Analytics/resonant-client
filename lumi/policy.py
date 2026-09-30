@@ -71,7 +71,8 @@ What a policy can do (every section is optional)::
                     "retention_days": 90, "notice": "Questions: security@acme.example",
                     "unattended": "record"},
       "dlp": {"version": 1, "detectors": {"credit_card": "block", "secrets": "redact"},
-              "rules": [{"name": "falcon", "keywords": ["Project Falcon"], "action": "block"}]}
+              "rules": [{"name": "falcon", "keywords": ["Project Falcon"], "action": "block"}]},
+      "legal": {"accepted_by_organization": "Acme"}
     }
 
 ``approvals`` lists commands (``fnmatch`` patterns over the whole command)
@@ -100,6 +101,20 @@ text they block isn't shared.
 (lumi/dlp.py, docs/dlp.md). A ``dlp`` section that can't be used doesn't make
 the policy vanish: the rest still applies, and model requests are refused
 (``blocked_reason``) until it's fixed.
+
+``legal`` accepts Lumi's terms for the organization's people:
+``{"accepted_by_organization": "Acme Corp"}`` (the organization's name) means
+the organization accepted the End User License Agreement, and the Alpha and
+Beta Test Terms for pre-release builds, for everyone who uses Lumi on the
+computer, under its agreement with Luminary Analytics, so Lumi doesn't ask
+each person (lumi/terms.py) and About says who accepted. Only a machine policy
+counts (``terms_accepted_by``), from the sources above that only an
+administrator can write: the Group Policy key in HKLM (its ``Policy`` value,
+or the file its ``PolicyFile`` names, which must pass the same check), a
+configuration profile, or the machine policy file where only administrators
+can change it. Never ``LUMI_POLICY_FILE`` (even naming the machine file), a
+Lumi Cloud policy, Settings or a project, which a person can bring
+themselves, and nothing while the policy can't be used.
 
 Locked settings override the user's value and can't be changed in Settings,
 which shows who manages them. Lists match ``fnmatch`` patterns.
@@ -341,6 +356,10 @@ class Policy:
     # section can't be used, which refuses model requests (blocked_reason).
     dlp: Any = None
     dlp_error: str = ""
+    # The organization that accepted Lumi's terms for this computer's people
+    # (legal.accepted_by_organization); it counts only in a machine policy
+    # (terms_accepted_by, lumi/terms.py).
+    terms_accepted_by: str = ""
     raw: dict = field(default_factory=dict)
 
     # ── Queries ────────────────────────────────────────────────────────────
@@ -426,6 +445,7 @@ class Policy:
             # Rule names and actions only: keywords and patterns can name what they protect.
             "dlp": self.dlp.summary() if self.dlp is not None else None,
             "dlp_error": self.dlp_error,
+            "terms_accepted_by": self.terms_accepted_by,
         }
 
 
@@ -564,6 +584,22 @@ def _dlp_section(document: dict) -> tuple[Any, str]:
         return None, f"The dlp section couldn't be read ({type(exc).__name__})."
 
 
+def _terms_accepted_by(section: dict) -> str:
+    """``legal.accepted_by_organization``: the name of the organization that accepted Lumi's terms, or ''.
+
+    A value that isn't a name makes the policy invalid (model requests stop until it's fixed), like a
+    mistake in any section: read loosely, it could accept the terms for people nobody asked.
+    """
+    value = section.get("accepted_by_organization")
+    if value is None:
+        return ""
+    name = " ".join(value.split()) if isinstance(value, str) else ""
+    if not name or len(name) > 200:
+        raise PolicyError("legal.accepted_by_organization must be the name of the organization that accepts "
+                          "Lumi's terms for its people (at most 200 characters).")
+    return name
+
+
 def _grace_days(value: Any) -> int:
     """``grace_days`` as a whole number of days; null means none."""
     if value is None:
@@ -602,6 +638,22 @@ def parse(data: Any, *, source: str, trusted_keys: dict[str, str] | None = None,
     settings = _section(document, "settings")
     if not all(isinstance(k, str) and "." in k for k in settings):
         raise PolicyError("'settings' must map 'section.key' names to values.")
+    # Which Lumi Cloud this computer uses, and the sign-in recorded for it, come only from the machine
+    # policy's own 'cloud' section (lumi/cloud.py): a lock that moved the address would take the
+    # person's account tokens to another Lumi Cloud. Tasks from chat may still be turned off.
+    cloud_locks = sorted(name for name in settings if name.startswith("cloud.") and name != "cloud.remote_tasks")
+    if cloud_locks:
+        raise PolicyError(f"'settings' can't lock '{cloud_locks[0]}': the Lumi Cloud address comes only from a "
+                          "machine policy's 'cloud' section (only 'cloud.remote_tasks' may be locked).")
+    if "cloud.remote_tasks" in settings and not isinstance(settings["cloud.remote_tasks"], bool):
+        raise PolicyError("'cloud.remote_tasks' must be true or false.")
+    from .feedback import validate_policy_settings as validate_feedback_settings
+
+    try:
+        # privacy.feedback, privacy.feedback_diagnostics and privacy.feedback_url (lumi/feedback.py)
+        validate_feedback_settings(settings)
+    except ValueError as exc:
+        raise PolicyError(str(exc)) from exc
     from .offline_rules import validate_policy_settings as validate_offline_settings
     from .update_channels import validate_policy_settings
 
@@ -651,7 +703,14 @@ def parse(data: Any, *, source: str, trusted_keys: dict[str, str] | None = None,
         raise PolicyError("mcp.allow_stdio must be true or false.")
     extensions = _section(document, "extensions")
     files = _section(document, "files")
-    _section(document, "cloud")  # read by load(); another type would silently skip enrollment
+    cloud_section = _section(document, "cloud")  # read by load(); another type would silently skip enrollment
+    if cloud_section.get("url") is not None:
+        from .cloud import CloudError, normalize_url
+
+        try:
+            normalize_url(str(cloud_section.get("url") or ""))
+        except CloudError as exc:
+            raise PolicyError(f"cloud.url: {exc}") from exc
     shell = _section(document, "shell")
     shell_rules = shell.get("rules") or []
     if not isinstance(shell_rules, list) or not all(isinstance(rule, dict) for rule in shell_rules):
@@ -705,6 +764,7 @@ def parse(data: Any, *, source: str, trusted_keys: dict[str, str] | None = None,
         raise PolicyError("approvals.wait_minutes must be a whole number from 1 to 240.")
     oversight = _oversight(document.get("oversight"))
     dlp, dlp_error = _dlp_section(document)
+    terms_accepted_by = _terms_accepted_by(_section(document, "legal"))
 
     return Policy(
         organization=str(document.get("organization") or "your organization"),
@@ -745,6 +805,7 @@ def parse(data: Any, *, source: str, trusted_keys: dict[str, str] | None = None,
         oversight=oversight,
         dlp=dlp,
         dlp_error=dlp_error,
+        terms_accepted_by=terms_accepted_by,
         raw=document,
     )
 
@@ -1017,21 +1078,42 @@ def _machine_file_policy() -> tuple[str, str] | None:
     return None
 
 
+class _Found(tuple):
+    """What ``_load_text`` found: ``(text, source)``, which unpacks like any pair.
+
+    ``machine`` says a machine source gave it: the Group Policy key in HKLM
+    (``Policy``, or the file its ``PolicyFile`` names), a configuration
+    profile, or the machine policy file, each only where an administrator can
+    have written it. ``LUMI_POLICY_FILE``, which a person can set, never is,
+    even when it names the same file. Only a machine policy may accept Lumi's
+    terms for an organization (``terms_accepted_by``).
+    """
+
+    machine: bool = False
+
+    def __new__(cls, text: str, source: str, *, machine: bool) -> "_Found":
+        found = super().__new__(cls, (text, source))
+        found.machine = machine
+        return found
+
+
 def _load_text() -> tuple[str, str] | None:
     """The policy text and where it came from. Machine sources always win.
 
     A machine source that can't be used as it is raises PolicyUnavailable
     (fail closed); one that only someone other than an administrator can have
-    written is skipped as if absent (``_usable``).
+    written is skipped as if absent (``_usable``). The result is a ``_Found``,
+    which says whether a machine source gave it.
     """
     for finder in (_registry_policy, _macos_managed_policy, _machine_file_policy):
         found = finder()
         if found:
-            return found
+            text, source = found
+            return _Found(text, source, machine=True)
     override = os.environ.get("LUMI_POLICY_FILE", "").strip()
     if override:
         path = Path(override)
-        return path.read_text(encoding=ADMIN_TEXT), str(path)
+        return _Found(path.read_text(encoding=ADMIN_TEXT), str(path), machine=False)
     return None
 
 
@@ -1111,6 +1193,12 @@ class PolicyState:
     machine: Policy | None = None
     # Why a downloaded Lumi Cloud policy isn't in force, if one exists.
     cloud_error: str = ""
+    # The machine policy (``machine``, or ``policy`` when it isn't Lumi
+    # Cloud's) came from a machine source only an administrator can write
+    # (``_Found.machine``: the HKLM Group Policy key or the PolicyFile it
+    # names, a configuration profile, the machine policy file), not
+    # LUMI_POLICY_FILE. Only then may it accept Lumi's terms (terms_accepted_by).
+    from_machine: bool = False
     # Machine files found but not used (see IgnoredFile), for Settings to show.
     ignored: tuple[IgnoredFile, ...] = ()
 
@@ -1218,8 +1306,10 @@ def _with_cloud_policy(state: PolicyState, keys: dict[str, str]) -> PolicyState:
     except Exception as exc:  # any unusable download, not only the failures parse() names
         note = f"{machine.organization}'s machine policy applies instead." if machine else ""
         return PolicyState(policy=machine, source=state.source, machine=None,
-                           cloud_error=f"The Lumi Cloud policy can't be used: {exc} {note}".strip())
-    return PolicyState(policy=cloud, source=cloud.source, cloud=True, machine=machine)
+                           cloud_error=f"The Lumi Cloud policy can't be used: {exc} {note}".strip(),
+                           from_machine=state.from_machine)
+    return PolicyState(policy=cloud, source=cloud.source, cloud=True, machine=machine,
+                       from_machine=state.from_machine)
 
 
 _lock = threading.Lock()
@@ -1279,6 +1369,8 @@ def _state_from_sources() -> PolicyState:
         keys = joined.get("trusted_keys") if isinstance(joined.get("trusted_keys"), dict) else {}
         return _with_cloud_policy(PolicyState(), {str(k): str(v) for k, v in keys.items()})
     text, source = found
+    # Anything but a machine source (LUMI_POLICY_FILE, or a stand-in that says nothing) never accepts terms.
+    from_machine = getattr(found, "machine", False) is True
     try:
         data = json.loads(text)
         keys = machine_keys()
@@ -1293,7 +1385,7 @@ def _state_from_sources() -> PolicyState:
         # requests are refused until IT fixes it (see blocked_reason). That
         # holds for any failure, not only the mistakes parse() names.
         return PolicyState(error=f"The organization policy at {source} is invalid: {exc}", source=source)
-    state = PolicyState(policy=policy, source=source)
+    state = PolicyState(policy=policy, source=source, from_machine=from_machine)
     if isinstance(policy.raw.get("cloud"), dict):
         state = _with_cloud_policy(state, keys)
     return state
@@ -1333,6 +1425,23 @@ def oversight_settings() -> Oversight:
 def enrolled_device() -> dict:
     """This computer's Lumi Cloud enrollment from settings.json ({} when it isn't enrolled)."""
     return dict(_joined_device())
+
+
+def terms_accepted_by() -> tuple[str, str]:
+    """(organization, source) when the machine policy accepts Lumi's terms for this computer's people.
+
+    Only a machine policy from a source only an administrator can write counts
+    (``PolicyState.from_machine``): the HKLM Group Policy key or the file its ``PolicyFile`` names, a
+    configuration profile, or the machine policy file (lumi/admin_files.py checks the files). Its
+    ``legal.accepted_by_organization`` holds while a Lumi Cloud policy it set up is in force. A Lumi Cloud
+    policy, ``LUMI_POLICY_FILE``, Settings and projects can't accept for anyone. ('', '') otherwise, and
+    while the policy can't be used (a PolicyFile that can't be read fails closed, so it accepts nothing).
+    """
+    state = load()
+    machine = state.machine if state.cloud else state.policy
+    if state.error or not state.from_machine or machine is None or not machine.terms_accepted_by:
+        return "", ""
+    return machine.terms_accepted_by, machine.source
 
 
 def blocked_reason() -> str:
@@ -1403,11 +1512,12 @@ def main(argv: list[str] | None = None) -> int:
     return 1 if info["blocked"] else 0
 
 
-def set_for_tests(policy: Policy | None, error: str = "") -> None:
-    """Install a policy directly (tests and fixtures only)."""
+def set_for_tests(policy: Policy | None, error: str = "", *, machine: bool = False) -> None:
+    """Install a policy directly (tests and fixtures only); ``machine`` as if an administrator set it."""
     global _state, _loaded
     with _lock:
-        _state = PolicyState(policy=policy, error=error, source=policy.source if policy else "")
+        _state = PolicyState(policy=policy, error=error, source=policy.source if policy else "",
+                             from_machine=machine)
         _loaded = True
     with _recorded_lock:
         _recorded.clear()

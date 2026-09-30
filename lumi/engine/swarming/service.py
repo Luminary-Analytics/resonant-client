@@ -115,6 +115,15 @@ def policy_refusal(action: str, *, personal: bool = False, team: Callable[[], st
         # Workers and their child processes don't take offline mode yet (lumi/offline.py).
         return ("Offline mode is on, and the Team preview doesn't follow it yet, so it can't start or "
                 "change team work here. Turn offline mode off to use it.")
+    if action not in _POLICY_PERSONAL_ACTIONS:
+        # Lumi's terms (lumi/terms.py), with or without a policy: no team work
+        # that can reach a model starts, and no orchestrator step runs, before
+        # this person accepted them. Reviews and bookkeeping reach no model.
+        from ... import terms
+
+        reason = terms.refusal("app")
+        if reason:
+            return reason
     if current_policy() is None:
         return ""
     if personal and action in _POLICY_PERSONAL_ACTIONS:

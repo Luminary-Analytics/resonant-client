@@ -38,6 +38,7 @@ guide belongs in that navigation; historical records stay out of it.
 - [Install, configure providers, and run](../README.md)
 - [Plans: free for individuals, and what's planned for organizations](plans.md)
 - [Lumi account and Lumi Cloud: signing in, enrolling this computer, sharing a conversation, managed enrollment](lumi-cloud.md)
+- [Sending feedback: what a report holds, what never leaves, and the contract with Lumi Cloud](feedback.md)
 - [Projects, sessions, search, and provider selection](desktop-workflow.md)
 - [The terminal UI: permission modes, project trust and commands](terminal-ui.md)
 - [Previews, project notes, skills, and named acceptance checks](priority-improvements.md)
@@ -67,6 +68,11 @@ guide belongs in that navigation; historical records stay out of it.
 - [Shared agent/contributor instructions](../AGENTS.md)
 - [Architecture and module ownership](../ARCHITECTURE.md)
 - [Organization policy for administrators](enterprise-policy.md)
+- Lumi's terms: the [End User License Agreement](../lumi/legal/EULA.md), the
+  [Alpha and Beta Test Terms](../lumi/legal/ALPHA-TERMS.md), the
+  [privacy notice](../lumi/legal/PRIVACY.md) and the
+  [Extension SDK License](../sdk/LICENSE) (rendered from
+  `lumi/legal/terms.json`; see [RELEASING.md](../RELEASING.md#lumis-terms))
 - [Organization oversight: activity, messages and security flags](organization-oversight.md)
 - [Data loss prevention: the organization's rules for what's sent to model providers](dlp.md)
 - [Shell sandbox and command guardrails](shell-sandbox.md)

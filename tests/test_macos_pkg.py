@@ -118,6 +118,12 @@ def test_the_distribution_installs_system_wide_on_the_apps_minimum_macos():
         macos_pkg.distribution_xml("0.20.1", arch="ppc")
     with pytest.raises(SystemExit, match="Not a version"):
         macos_pkg.distribution_xml("0.20.1\"/><evil", arch="arm64")
+    # Without --license there's no license page; with it, the Installer app shows Lumi's terms.
+    assert root.find("license") is None
+    licensed = ET.fromstring(macos_pkg.distribution_xml("0.20.1", arch="arm64", license="license.rtf"))
+    assert licensed.find("license").attrib == {"file": "license.rtf", "mime-type": "text/rtf"}
+    with pytest.raises(SystemExit, match=r"\.rtf file"):
+        macos_pkg.distribution_xml("0.20.1", arch="arm64", license="../license.rtf")
 
 
 def test_the_command_line_writes_the_pieces(tmp_path):

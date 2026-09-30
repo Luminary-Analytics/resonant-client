@@ -16,6 +16,12 @@ budget that needs approval stops the run. The person's ``permission_request``
 hook may approve a call the mode would ask about, but nothing in ``--mode
 ask`` and no call the organization's policy asks a person about.
 
+Lumi's terms (lumi/terms.py) come first: accepted in the app, at a terminal,
+with ``lumi terms accept`` or by the organization's machine policy, or for
+this run with ``--accept-terms`` or ``LUMI_ACCEPT_TERMS`` naming each
+document's version (``eula-1.0``; ``lumi terms`` shows the value). Someone at
+an interactive terminal can type yes instead.
+
 A repository's own instructions, notes and ``lumi-policy.json`` allow rules
 apply only to trusted projects: ones trusted in the desktop app, or this run
 with ``--trust-project``. Only pass it for repositories you trust, since the
@@ -27,7 +33,8 @@ result (``--output jsonl``). Exit codes:
 
 * 0: the task completed (answered, changed files, or no change was needed);
 * 1: the run failed;
-* 2: the command or its configuration is wrong (no model, no key …);
+* 2: the command or its configuration is wrong (no model, no key, Lumi's
+  terms not accepted …);
 * 3: it stopped for a person: it needs input, is incomplete, was refused an
   action it tried (``denied_calls``), hit a budget, the request limit or
   ``--timeout``.
@@ -440,6 +447,46 @@ def _windows_console() -> bool:
         return False
 
 
+def _accept_terms(value: str, *, can_ask: bool, stdin: TextIO, stderr: TextIO) -> int | None:
+    """Lumi's terms before anything is set up to reach a model (lumi/terms.py); None to go on, else an exit code.
+
+    Accepted already (in the app, at a terminal, with ``lumi terms accept``, or by the machine policy),
+    or now: ``--accept-terms`` or ``LUMI_ACCEPT_TERMS`` naming each document's current version, both
+    recorded like any acceptance, or a typed yes from someone at an interactive terminal. Nobody there
+    and nothing named: a usage error that says how to accept them. A wrong value raises TermsError.
+    """
+    from . import terms
+
+    if not terms.pending(use_environment=False):
+        return None
+    environment = os.environ.get(terms.ENVIRONMENT, "").strip()
+    if value or environment:
+        terms.accept_value(value or environment, "flag" if value else "environment")
+        return None
+    if not can_ask:
+        stderr.write(f"lumi run: {terms.refusal('headless')}\n")
+        return EXIT_USAGE
+    waiting = terms.pending()
+    stderr.write("lumi run: before Lumi sends anything to a model, accept its terms:\n")
+    for line in terms.terminal_summary(waiting):
+        stderr.write(f"{line}\n")
+    stderr.write("lumi run: type yes to accept them and start, anything else to stop: ")
+    stderr.flush()
+    try:
+        answer = stdin.readline()
+    except (OSError, ValueError):
+        answer = ""
+    from .oversight import is_yes
+
+    if not is_yes(answer):
+        stderr.write("lumi run: nothing was sent; Lumi's terms weren't accepted.\n")
+        return EXIT_ATTENTION
+    if not terms.accept({doc.id: doc.version for doc in waiting}, "terminal"):
+        stderr.write("lumi run: Lumi's terms changed while you read them; nothing was sent. Run the command again.\n")
+        return EXIT_ATTENTION
+    return None
+
+
 def _confirm_oversight(gate: Any, settings: Any, stdin: TextIO, stderr: TextIO) -> bool:
     """Ask the person at this terminal to confirm the organization's notice; True once they typed yes."""
     from . import oversight
@@ -503,6 +550,9 @@ def main(argv: list[str] | None = None, *, stdin: TextIO | None = None, stdout: 
     parser.add_argument("--max-requests", type=int, default=0, help="stop after this many model requests")
     parser.add_argument("--timeout", type=float, default=0, help="stop after this many seconds")
     parser.add_argument("--output", choices=("json", "text", "jsonl"), default="json")
+    parser.add_argument("--accept-terms", default="", metavar="VALUE",
+                        help="accept Lumi's terms for this computer user, naming each document's version as "
+                             "`lumi terms` shows it (for example eula-1.0); LUMI_ACCEPT_TERMS does the same")
     args = parser.parse_args(argv)
 
     started = time.time()
@@ -526,6 +576,11 @@ def main(argv: list[str] | None = None, *, stdin: TextIO | None = None, stdout: 
         refusal = blocked_reason()
         if refusal:
             raise UsageError(refusal)
+        # Lumi's terms (lumi/terms.py): accepted before anything that could reach a model is set up.
+        stopped = _accept_terms(args.accept_terms, can_ask=trigger != "schedule" and _interactive(stdin, stderr),
+                                stdin=stdin, stderr=stderr)
+        if stopped is not None:
+            return stopped
         provider = (args.provider or str(settings.get("general", "default_backend", "") or "")).strip().lower()
         if not provider:
             raise UsageError("Choose a provider with --provider (or set LUMI_PROVIDER).")

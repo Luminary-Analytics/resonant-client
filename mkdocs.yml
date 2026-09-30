@@ -82,6 +82,7 @@ nav:
       - macOS: macos.md
       - Plans: plans.md
       - Lumi account and Lumi Cloud: lumi-cloud.md
+      - Sending feedback: feedback.md
   - For organizations:
       - Organization policy: enterprise-policy.md
       - Organization oversight: organization-oversight.md

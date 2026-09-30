@@ -68,15 +68,17 @@ try {
 
     python -m venv $tempRoot
     $python = Join-Path $tempRoot "Scripts/python.exe"
-    & $python -m pip install --disable-pip-version-check --no-cache-dir --upgrade pip
-    if ($LASTEXITCODE -ne 0) { throw "pip upgrade failed with exit code $LASTEXITCODE" }
-    # Exact, hash-checked versions of everything the bundle is built from
-    # (packaging/requirements-release.txt, made by scripts/lock_release.py), then
-    # Lumi itself without resolving anything again.
+    # Only hash-pinned packages go into the build (release.yml's build job
+    # relies on it): the pip that comes with this Python, not the newest, then
+    # exact, hash-checked versions of everything the bundle is built from
+    # (packaging/requirements-release.txt, made by scripts/lock_release.py),
+    # then Lumi itself from this checkout, built with the pinned setuptools
+    # and without an index, so nothing is resolved or downloaded again.
     & $python -m pip install --disable-pip-version-check --no-cache-dir --require-hashes `
         -r (Join-Path $repo "packaging/requirements-release.txt")
     if ($LASTEXITCODE -ne 0) { throw "Locked dependency install failed with exit code $LASTEXITCODE" }
-    & $python -m pip install --disable-pip-version-check --no-cache-dir --no-deps $repo
+    & $python -m pip install --disable-pip-version-check --no-cache-dir --no-index --no-deps `
+        --no-build-isolation $repo
     if ($LASTEXITCODE -ne 0) { throw "Lumi install failed with exit code $LASTEXITCODE" }
 
     # License texts of every third-party part, from this environment's metadata.

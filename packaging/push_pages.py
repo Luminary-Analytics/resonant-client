@@ -4,7 +4,7 @@ release.yml runs this last in both jobs that write the gh-pages branch, and
 build-macos.yml's rehearsal (scripts/rehearse_pages_publish.py) runs it the
 same way against a copy of the branch on the runner:
 
-    python packaging/push_pages.py SITE --message MESSAGE [--tool winsparkle-tool.exe]
+    python packaging/push_pages.py SITE --message MESSAGE [--tool winsparkle-tool.exe] [--signed RECORD]
     python packaging/push_pages.py SITE --check [--tool ...]              # stage and check, nothing more
     python packaging/push_pages.py REPO --check --rev gh-pages [--tool ...]  # a commit: what Pages serves
 
@@ -22,7 +22,11 @@ commit's), never the working copy, and commits nothing unless:
 * every macOS feed (``appcast-macos*.xml``) ends with a signing block that
   verifies with the app's key (``EDDSA_PUBLIC_KEY`` in lumi/updater.py);
 * every disk image a macOS feed lists, and the site holds, has the length
-  and signature that feed gives it.
+  and signature that feed gives it;
+* with ``--signed``, the Windows release job's signing record
+  (``lumi-authenticode.jsonl``, which packaging/sign_windows.ps1 writes), each
+  installer it recorded (the files in ``dist/installer``) is on the site once,
+  with the SHA-256 it had when it was signed.
 
 Then it commits the index as one fresh commit (no parent, so removed
 installers don't pile up in the branch's history) and pushes it with a lease
@@ -35,7 +39,9 @@ from __future__ import annotations
 
 import argparse
 import base64
+import hashlib
 import importlib.util
+import json
 import re
 import subprocess
 import sys
@@ -157,8 +163,31 @@ def _site_path(url: str) -> str | None:
     return match.group(1) if match else None
 
 
-def check(repo: Path, verify: Verifier, rev: str | None = None) -> tuple[list[str], list[str]]:
-    """(problems, what verified) for the files staged in ``repo``, or the commit ``rev``."""
+def signed_installers(record: Path) -> dict[str, str]:
+    """{name: SHA-256} of each installer packaging/sign_windows.ps1 recorded: the files in an ``installer`` folder."""
+    found: dict[str, str] = {}
+    for number, line in enumerate(Path(record).read_text(encoding="utf-8").splitlines(), 1):
+        if not line.strip():
+            continue
+        entry = json.loads(line)
+        if not isinstance(entry, dict) or not isinstance(entry.get("path"), str) \
+                or not re.fullmatch(r"[0-9a-fA-F]{64}", str(entry.get("sha256", ""))):
+            raise ValueError(f"{record}, line {number}, isn't a signing record")
+        parts = re.split(r"[\\/]", entry["path"])
+        if len(parts) >= 2 and parts[-2] == "installer":
+            found[parts[-1]] = entry["sha256"].lower()
+    if not found:
+        raise ValueError(f"{record} records no installer")
+    return found
+
+
+def check(repo: Path, verify: Verifier, rev: str | None = None,
+          installers: dict[str, str] | None = None) -> tuple[list[str], list[str]]:
+    """(problems, what verified) for the files staged in ``repo``, or the commit ``rev``.
+
+    ``installers`` ({name: SHA-256}, from :func:`signed_installers`) must each be
+    on the site once, byte for byte.
+    """
     signing = _feed_signature()
     site = files(repo, rev)
     problems: list[str] = []
@@ -201,6 +230,18 @@ def check(repo: Path, verify: Verifier, rev: str | None = None) -> tuple[list[st
                 problems.append(f"{path} doesn't match the signature {name} gives it")
             else:
                 verified.append(f"{path}: {size} bytes and signature, as {name} lists it")
+    for name, digest in sorted((installers or {}).items()):
+        places = [path for path in site if re.fullmatch(r"downloads/[^/]+/" + re.escape(name), path)]
+        if len(places) != 1:
+            where = "isn't on the site" if not places else f"is on the site {len(places)} times"
+            problems.append(f"{name}, which this release signed, {where}")
+            continue
+        actual = hashlib.sha256(blob(repo, site[places[0]])).hexdigest()
+        if actual != digest:
+            problems.append(f"{places[0]} isn't the file sign_windows.ps1 recorded (SHA-256 {actual}, "
+                            f"recorded {digest})")
+        else:
+            verified.append(f"{places[0]}: SHA-256 as sign_windows.ps1 recorded it")
     return problems, verified
 
 
@@ -225,6 +266,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--rev", help="With --check: check this commit's files instead of staging any")
     parser.add_argument("--public-key", help="The key to verify with (default: EDDSA_PUBLIC_KEY in lumi/updater.py)")
     parser.add_argument("--tool", type=Path, help="winsparkle-tool to verify with (default: the cryptography package)")
+    parser.add_argument("--signed", type=Path,
+                        help="The Windows release job's signing record: its installers must be on the site as signed")
     parser.add_argument("--remote", default="origin")
     parser.add_argument("--branch", default="gh-pages")
     args = parser.parse_args(argv)
@@ -239,7 +282,8 @@ def main(argv: list[str] | None = None) -> int:
             # The bytes as they are, whatever this computer's Git would convert
             # (the site's .gitattributes says the same to every checkout).
             git(args.site, "add", "-A", config=("core.autocrlf=false", "core.safecrlf=false"))
-        problems, verified = check(args.site, verify, args.rev)
+        installers = signed_installers(args.signed) if args.signed else None
+        problems, verified = check(args.site, verify, args.rev, installers)
         for line in verified:
             print(f"  ok: {line}")
         if problems:

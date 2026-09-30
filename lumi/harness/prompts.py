@@ -33,7 +33,9 @@ from typing import TYPE_CHECKING, Any, Optional
 
 from ..engine import AGENT_TOOLS
 from ..events import EngineEvent
+from ..executables import find_program, project_tool
 from ..processes import background_process_kwargs, decode_output, run_command, utf8_env
+from ..secrets_store import child_env
 from .service import HarnessService
 from .state import EvaluatorReport, HarnessWorkspace
 
@@ -1780,18 +1782,22 @@ class HarnessPrompts:
 
     def _preferred_harness_python(self, project_path: Optional[str] = None) -> str:
         target_path = os.path.normpath(project_path or self._app.project.project_path or os.getcwd())
-        candidates = [
-            Path(target_path) / ".venv" / "bin" / "python",
-            Path(target_path) / ".venv" / "Scripts" / "python.exe",
-            Path(sys.executable).resolve(),
-        ]
-        for candidate in candidates:
-            try:
-                if candidate.exists():
-                    return str(candidate)
-            except OSError:
-                continue
-        return "python3"
+        # A trusted project's own environment (.venv, venv) first, as for
+        # automatic lint and tests (lumi/executables.py project_tool).
+        try:
+            trusted = bool(self._app.project_trust(target_path).trusted)
+        except Exception:  # no decision can be read: not trusted
+            trusted = False
+        found, source, _notice = project_tool("python", target_path, trusted=trusted)
+        if found and source.startswith("from the project"):
+            return found
+        try:
+            if Path(sys.executable).resolve().exists():
+                return str(Path(sys.executable).resolve())
+        except OSError:
+            pass
+        # Never a `python3` program in the project or Lumi's working folder.
+        return find_program("python3", exclude=[target_path]) or "python3"
 
     def _sanitize_harness_validation_command(
         self,
@@ -2151,9 +2157,11 @@ class HarnessPrompts:
                 )
                 continue
             try:
-                # A timeout ends every process the command started, not only
-                # the shell; output is decoded per line (lumi/processes.py).
-                completed = run_command(command, shell=True, cwd=target_path, env=utf8_env(),
+                # A validation command the model wrote: by design it runs in the
+                # project as the person's own shell would (lumi/executables.py). A
+                # timeout ends every process it started, not only the shell, and
+                # its output is decoded per line (lumi/processes.py).
+                completed = run_command(command, shell=True, cwd=target_path, env=utf8_env(child_env()),
                                         timeout=VALIDATION_PROBE_SECONDS)
             except subprocess.TimeoutExpired:
                 validation_artifacts.append(self._truncate_text(

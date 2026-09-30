@@ -11,6 +11,7 @@ import threading
 import time
 from typing import BinaryIO, Iterator
 
+from ...executables import find_program
 from ...processes import background_process_kwargs, close_windows_job, popen_in_kill_job
 from .models import Conflict
 
@@ -109,53 +110,47 @@ _WRAPPED_GIT = (("cmd", "git.exe"), ("bin", "git.exe"), ("mingw64", "bin", "git.
 def trusted_git_executable(project: Path, runtime_root: Path) -> str:
     """Pin an absolute host binary without cwd or repository PATH shadowing.
 
-    On Windows a ``git.cmd`` launcher counts as installed Git, as it does for
+    The shared resolver (lumi/executables.py) skips the working folder,
+    relative PATH entries and both folders. The pinned binary is checked
+    again here, where a home-folder project counts too. On Windows a
+    ``git.cmd`` launcher counts as installed Git, as it does for
     git_support.git_available(); Lumi runs the git.exe it launches, since a
     command script would pass every argument through cmd.exe's parser. A
     launcher whose git.exe isn't where Git for Windows puts it is named in the
     refusal rather than reported as no Git at all.
     """
-    names = ("git.exe", "git.cmd") if os.name == "nt" else ("git",)
-    shadowed = False
-    launchers: list[Path] = []
-
     def usable(candidate: Path) -> bool:
-        nonlocal shadowed
-        if (candidate.is_relative_to(project) or candidate.is_relative_to(runtime_root)
-                or not candidate.is_file() or not os.access(candidate, os.X_OK)):
-            shadowed = True
-            return False
-        return True
+        return (not candidate.is_relative_to(project) and not candidate.is_relative_to(runtime_root)
+                and candidate.is_file() and os.access(candidate, os.X_OK))
 
-    for entry in os.get_exec_path():
-        folder = Path(entry)
-        if not folder.is_absolute():
-            continue
-        for name in names:
+    def pinned(found: str | None) -> Path | None:
+        if not found:
+            return None
+        try:
+            candidate = Path(found).resolve(strict=True)
+        except OSError:
+            return None
+        return candidate if usable(candidate) else None
+
+    candidate = pinned(find_program("git", exclude=[project, runtime_root]))
+    if candidate is not None:
+        return str(candidate)
+    launcher = pinned(find_program("git", exclude=[project, runtime_root], scripts=True)) if os.name == "nt" else None
+    if launcher is not None and launcher.suffix.lower() == ".cmd":
+        for parts in _WRAPPED_GIT:
             try:
-                candidate = (folder / name).resolve(strict=True)
+                wrapped = launcher.parent.parent.joinpath(*parts).resolve(strict=True)
             except OSError:
                 continue
-            if not usable(candidate):
-                continue
-            if candidate.suffix.lower() != ".cmd":
-                return str(candidate)
-            for parts in _WRAPPED_GIT:
-                try:
-                    wrapped = candidate.parent.parent.joinpath(*parts).resolve(strict=True)
-                except OSError:
-                    continue
-                if usable(wrapped):
-                    return str(wrapped)
-            launchers.append(candidate)
-    if launchers:
+            if usable(wrapped):
+                return str(wrapped)
         from ...git_support import download_url, product_name
 
         raise Conflict(f"Writer teams run Git without a command shell, and the Git on this computer's PATH is a "
-                       f"command script ({launchers[0]}) whose git.exe Lumi can't find. Install {product_name()} "
+                       f"command script ({launcher}) whose git.exe Lumi can't find. Install {product_name()} "
                        f"from {download_url()}, or put its git.exe on PATH, and restart Lumi. "
                        "Read-only teams work without it.")
-    if not shadowed:
+    if find_program("git", scripts=True) is None:
         # The usual case on a new computer: no Git at all. Read-only teams
         # never get here; only writers work in Git worktrees.
         from ...git_support import missing_message

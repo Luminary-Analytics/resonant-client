@@ -39,9 +39,11 @@ unlinks junctions and links without following them and removes only that
 worktree's own entry. Each branch goes right after its own worktree: whether
 it is checked out, rebased or bisected anywhere is read again just before
 ``git update-ref -d`` deletes it against its recorded tip, so a checkout or a
-commit that happened while its worktree went keeps it. Git runs with
-hooks disabled, and the whole cleanup holds the repository lock every team
-step takes (git_boundary.repository_lock).
+commit that happened while its worktree went keeps it. Git runs through
+lumi/safe_git.py (the installed Git, hooks and the other programs a
+repository's settings name off; none in an untrusted project whose settings
+name some), and the whole cleanup holds the repository lock every team step
+takes (git_boundary.repository_lock).
 
 This doesn't go through the integration's owned-effect protocol
 (integration.py) on purpose: it runs only for runs whose supervisor can start
@@ -64,11 +66,12 @@ import threading
 import time
 from typing import Any, Callable, Iterable
 
-from ...processes import background_process_kwargs
+from ... import safe_git
+from ...git_support import missing_message
 from ...worktree_removal import (folder_size, remove_tree, remove_worktree, repository_common_dir, same_path,
                                  worktree_common_dir)
 from ..artifacts import project_state_dir
-from .git_boundary import REPOSITORY_LOCK_NAME, git_error_line, is_team_branch, repository_lock, trusted_git_executable
+from .git_boundary import REPOSITORY_LOCK_NAME, git_error_line, is_team_branch, repository_lock
 from .models import Conflict, Scope
 from .store import SwarmStore
 
@@ -359,17 +362,21 @@ def describe(kept: dict[str, Any] | None) -> str:
             "Once the team has stopped, Review file changes offers Discard kept work.")
 
 
-def _git(git: str, project: Path, hooks: Path, *args: str) -> subprocess.CompletedProcess:
-    """Run Git in the user's repository with hooks, fsmonitor and inherited redirection off."""
+def _git(project: Path, *args: str) -> subprocess.CompletedProcess:
+    """Git in the user's repository for cleanup; a failure, never an exception, when it can't run.
+
+    lumi/safe_git.py: the installed Git with the repository's hooks, its
+    fsmonitor and the other programs its settings name turned off, and none
+    at all in an untrusted project whose settings name some (GitRefused).
+    Git variables this process inherited (GIT_DIR, GIT_INDEX_FILE) don't
+    redirect it, and it never prompts.
+    """
     environment = {key: value for key, value in os.environ.items() if not key.upper().startswith("GIT_")}
     environment.update(GIT_TERMINAL_PROMPT="0", GIT_OPTIONAL_LOCKS="0")
     try:
-        return subprocess.run([git, "--no-pager", "-c", f"core.hooksPath={hooks}", "-c", "core.fsmonitor=false", *args],
-                              cwd=project, env=environment, stdin=subprocess.DEVNULL, capture_output=True, text=True,
-                              encoding="utf-8", errors="replace", timeout=60, check=False,
-                              **background_process_kwargs())
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        return subprocess.CompletedProcess([git, *args], 1, "", f"error: {exc}")
+        return safe_git.run(project, *args, env=environment, timeout=60)
+    except (safe_git.GitRefused, OSError, subprocess.TimeoutExpired) as exc:
+        return subprocess.CompletedProcess(["git", *args], 1, "", f"error: {exc}")
 
 
 def _checked_out(worktree_list: str) -> dict[str, list[str]]:
@@ -436,20 +443,13 @@ def clean_finished_teams(store: SwarmStore, workspace: str | Path, *, run_ids: I
         return report
     project = Path(workspace).resolve()
     runtime_root = Path(root or project_state_dir(project) / "swarm" / "worktrees").resolve()
-    try:
-        git = trusted_git_executable(project, runtime_root)
-    except Conflict as exc:
-        report["skipped"] = str(exc)  # No Git now: the next start tries again.
-        return report
-    hooks = runtime_root / "disabled-hooks"
-    try:
-        hooks.mkdir(parents=True, exist_ok=True)
-    except OSError as exc:
-        report["skipped"] = f"Lumi couldn't prepare Git's settings for cleanup: {exc}"
+    if safe_git.executable(project) is None:
+        # No Git now: the next start tries again.
+        report["skipped"] = missing_message("Removing what ended teams left needs")
         return report
 
     def run(*args: str) -> subprocess.CompletedProcess:
-        return _git(git, project, hooks, *args)
+        return _git(project, *args)
 
     found = run("rev-parse", "--git-common-dir")
     if found.returncode != 0 or not found.stdout.strip():

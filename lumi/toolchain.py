@@ -13,8 +13,9 @@ running one opens the Microsoft Store. Those count as unverified, not installed.
 from __future__ import annotations
 
 import os
-import shutil
 import sys
+
+from .executables import find_program
 
 PROGRAMS = ("python", "python3", "py", "node", "npm", "git")
 
@@ -33,7 +34,8 @@ def programs() -> dict[str, str]:
         return dict(cached)
     found: dict[str, str] = {}
     for name in PROGRAMS:
-        path = shutil.which(name)
+        # As the agent's shell finds them: npm and a Git launcher are .cmd files.
+        path = find_program(name, scripts=True)
         found[name] = "" if not path else ("store-alias" if _store_alias(path) else "yes")
     _cache.clear()
     _cache[key] = found

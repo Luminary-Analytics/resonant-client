@@ -81,7 +81,9 @@ host enrollment and actual packaged/learned-benefit qualification remain open.
   `secrets_store.child_env()`; the CLI backends keep their environment.
   `secret_scan` removes saved key values from tool output before each request.
   Tests and fixtures use `LUMI_KEYCHAIN=off` or an in-memory keyring, never the
-  real credential store.
+  real credential store. They also never register real OS scheduled tasks:
+  `tests/conftest.py` sets `LUMI_OS_SCHEDULER=off`, which subprocesses inherit.
+  A fixture that builds a child environment from scratch must keep it.
 - File exclusions (`engine/exclusions.py`) are enforced at
   `Session._prepare_workspace_tool_args` and inside the listing tools. Any new
   path that reads project files for the model must check `session.exclusions`.
@@ -91,8 +93,30 @@ host enrollment and actual packaged/learned-benefit qualification remain open.
   `security.shell_sandbox` is `"project"`, run through `engine/os_sandbox.py`
   or not at all. A new tool that starts processes for the model must do both.
   See [shell sandbox](docs/shell-sandbox.md).
+- Lumi's own subprocesses never run programs by bare name from the project
+  folder; use the resolver (`lumi/executables.py`): `system_program` for the
+  system's tools, `program`/`find_program` for the rest, `configured_program`
+  for a program the person names in Settings. Never `shutil.which`,
+  `shell=True`, `os.startfile` or `webbrowser` for Lumi's own launches;
+  `tests/test_launch_scan.py` fails on a new one, and a by-design exception
+  needs a reviewed `BY_DESIGN` entry there. Importing `lumi` sets
+  `NoDefaultCurrentDirectoryInExePath` on Windows, and the app never makes a
+  project its working folder: give each command its `cwd`. Commands the
+  model or the person asked for (the agent's shell, checks, jobs, previews,
+  hooks) run in the project by design, with the person's own environment
+  (`secrets_store.child_env`, `executables.person_environment`); servers Lumi
+  starts for itself (MCP, language servers, provider extensions, automatic
+  lint and tests, the CLI agents) get `secrets_store.server_env`, which keeps
+  the hardening. Lumi's own Git goes through `lumi/safe_git.py` (`run`/`argv`),
+  never `program("git")` elsewhere: it switches off repository-configured
+  programs and runs no Git in an untrusted project whose settings name some.
+  A project's own tools (`.venv`, `node_modules/.bin`) only through
+  `executables.project_tool` and only when trusted. Open files with
+  `executables.open_path`, which refuses files that would run
+  (`opens_as_program`); show those with `show_in_folder`.
 - Repository-provided instructions, notes, index summaries, policy `allow`
-  rules, automatic lint/test runs and language servers require project trust
+  rules, automatic lint/test runs, language servers, a project's own tools and
+  Lumi's Git in a repository whose settings name programs require project trust
   (`gui/workspace_trust.py`). Repository content must never grant itself trust.
   Only the app, which knows Recent projects, records trust's first run; other
   surfaces read decisions without creating `trusted_projects.json`.
@@ -106,6 +130,15 @@ host enrollment and actual packaged/learned-benefit qualification remain open.
   values), and check `policy.current()` where a new model, mode, MCP server,
   pack or shell path is chosen. User-writable locations must never replace a
   machine policy, and an invalid policy blocks requests instead of vanishing.
+  Machine policy comes only from admin-writable sources: the HKLM policy key,
+  a configuration profile, and files `admin_files.check` passes (owner and
+  access control list on Windows, root and mode elsewhere, for the file and
+  every folder up to a protected root). Anything else read from the machine
+  folder (`license.json`, `policy-keys.json` off Windows) passes the same
+  check; on Windows signing keys come only from `PolicyKeys`. A file that
+  fails is ignored visibly (`IgnoredFile`, `policy.file_ignored`); an
+  administrator's file in an unsafe place and a `PolicyFile` that can't be
+  read or used fail closed, never falling back to a lower source.
   Build a session's execution policy with
   `engine/policies.project_execution_policy`, or `with_organization_rules`
   for a fallback: a broken `lumi-policy.json` must never cost the
@@ -542,15 +575,17 @@ for publishing and update-feed verification.
 Git, Python and Node.js are optional on a user's computer. Code that runs
 `git` treats a program that can't start like a failed command and never lets
 it end a session, and says Git isn't installed only when `git_available()`
-says so (`lumi/git_support.py`). Shell commands run in one `cmd.exe /c`
-(`shell=True`) exactly as in the person's own terminal: never switch its code
-page or wrap it in another cmd.exe, which changes what batch files, long
-commands and quoted paths do. Python children get `PYTHONIOENCODING=utf-8`
-(`processes.utf8_env`), never `PYTHONUTF8`, which changes what `open()` reads
-and writes. Output read as text is decoded with `processes.decode_output` (per
-line: UTF-8, else the OEM or ANSI code page; OEM wins a tie for commands) or
-`OutputDecoder` when read in pieces. A command with a timeout runs through
-`processes.run_command`, whose timeout ends every process it started.
+says so (`lumi/git_support.py`, through `safe_git.executable`). Shell
+commands the model or the person asked for run in one `cmd.exe /c`
+(`shell=True`, a reviewed `BY_DESIGN` launch) exactly as in their own
+terminal: never switch its code page or wrap it in another cmd.exe, which
+changes what batch files, long commands and quoted paths do. Python children
+get `PYTHONIOENCODING=utf-8` (`processes.utf8_env`), never `PYTHONUTF8`, which
+changes what `open()` reads and writes. Output read as text is decoded with
+`processes.decode_output` (per line: UTF-8, else the OEM or ANSI code page;
+OEM wins a tie for commands) or `OutputDecoder` when read in pieces. A command
+with a timeout runs through `processes.run_command`, whose timeout ends every
+process it started and which resolves a program named without a path.
 
 ## Documentation and releases
 

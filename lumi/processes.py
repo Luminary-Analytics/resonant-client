@@ -515,10 +515,18 @@ def run_command(args, *, shell: bool = False, timeout: float | None = None, inpu
     command leaves running ends when it does. Output is bytes (decode it with
     decode_output); stdin is empty unless ``input`` is given. A shell command
     longer than cmd.exe takes gets cmd.exe's own answer, exit status 1 and
-    CMD_TOO_LONG, and nothing starts.
+    CMD_TOO_LONG, and nothing starts. A program named without a path is the
+    installed one, never one in the working folder or ``cwd``
+    (lumi/executables.py; ``ProgramNotFound`` when there's none); a shell is
+    the person's own (``shell=True``: ``COMSPEC``, or ``/bin/sh``).
     """
     if shell and isinstance(args, str) and cmd_too_long(args):
         return subprocess.CompletedProcess(args, 1, b"", (CMD_TOO_LONG + "\r\n").encode("ascii"))
+    if not shell and isinstance(args, (list, tuple)) and args:
+        from .executables import is_absolute, program
+
+        if not is_absolute(os.fspath(args[0])):
+            args = [program(args[0], exclude=[cwd] if cwd else ()), *args[1:]]
     kwargs = {"shell": shell, "cwd": cwd, "env": env, "stdout": subprocess.PIPE, "stderr": subprocess.PIPE,
               "stdin": subprocess.DEVNULL if input is None else subprocess.PIPE,
               **background_process_kwargs(new_process_group=sys.platform != "win32")}

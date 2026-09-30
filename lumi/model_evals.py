@@ -120,18 +120,24 @@ def load_all() -> list[Comparison]:
     return found
 
 
-def _git(project: str, *args: str, timeout: float = 60) -> subprocess.CompletedProcess:
-    from .processes import background_process_kwargs
+def _git(folder: str, *args: str, timeout: float = 60, project: str | None = None) -> subprocess.CompletedProcess:
+    """Git in ``folder`` (a checkout of ``project``, the folder itself by default).
+
+    lumi/safe_git.py: the installed Git without the programs a repository's
+    settings name. In an untrusted project whose settings name some, no Git
+    runs and the result is a failure that says so; so is it without Git, or
+    when Git can't start in ``folder`` (git_support.start_failure_result).
+    """
+    from .safe_git import GitRefused, run
 
     try:
-        return subprocess.run(["git", "-C", project, *args], capture_output=True, text=True, timeout=timeout,
-                              encoding="utf-8", errors="replace", **background_process_kwargs())
+        return run(folder, *args, project=project, timeout=timeout)
+    except GitRefused as exc:
+        return subprocess.CompletedProcess(list(args), 128, "", str(exc))
     except OSError as exc:
         from .git_support import start_failure_result
 
-        # -C names the folder, and the process starts in Lumi's own, so an
-        # OSError here is Git itself (missing, or unable to start).
-        return start_failure_result(["git", "-C", project, *args], exc, "Model comparisons need")
+        return start_failure_result(["git", *args], exc, "Model comparisons need", cwd=folder)
 
 
 def clean(raw: dict[str, Any]) -> Comparison:
@@ -145,10 +151,15 @@ def clean(raw: dict[str, Any]) -> Comparison:
     project = os.path.abspath(str(raw.get("project") or "").strip() or ".")
     if not os.path.isdir(project):
         raise EvalError(f"{project} isn't a folder.")
+    from .safe_git import refusal
+
     try:
+        refused = refusal(project)
         head = _git(project, "rev-parse", "--verify", "HEAD^{commit}")
     except (OSError, subprocess.TimeoutExpired):
         raise EvalError("Git isn't available, and each run needs its own copy of the project.") from None
+    if refused:
+        raise EvalError(refused)
     if head.returncode != 0:
         raise EvalError(f"{project} needs to be a git repository with a commit: each run starts from HEAD.")
     tasks = []
@@ -337,7 +348,9 @@ class Runner:
             _save(comparison)
             with self._lock:
                 self.running_id, self._process = "", None
-            _git(comparison.project, "worktree", "prune")
+            # Each run's worktree went with its own Git record (_remove_worktree);
+            # no `git worktree prune`, which would also forget the person's own
+            # worktrees whose folders are away (an unplugged drive, a move).
             _notify(on_update)
 
     def _one(self, comparison: Comparison, task_index: int, task: dict, model: str, work: Path,
@@ -443,7 +456,10 @@ def _end(process: subprocess.Popen) -> None:
     """End a run and whatever it started."""
     try:
         if os.name == "nt":
-            subprocess.run(["taskkill", "/T", "/F", "/PID", str(process.pid)], capture_output=True, timeout=30)
+            from .executables import system_program
+
+            subprocess.run([system_program("taskkill"), "/T", "/F", "/PID", str(process.pid)], capture_output=True,
+                           timeout=30)
         else:
             import signal
 
@@ -479,11 +495,12 @@ def _keep_diff(comparison: Comparison, worktree: Path, start: str) -> dict:
     """The run's changes since ``start``, the commit it started from, whether
     it committed them or not: how many files, and the diff saved next to the
     comparison."""
-    _git(str(worktree), "add", "-A")
+    _git(str(worktree), "add", "-A", project=comparison.project)
     # "--" because git refuses a revision that is also a file's name.
-    names = _git(str(worktree), "diff", "--cached", "--name-only", start, "--").stdout.split("\n")
+    names = _git(str(worktree), "diff", "--cached", "--name-only", start, "--",
+                 project=comparison.project).stdout.split("\n")
     changed = [name for name in names if name.strip()]
-    diff = _git(str(worktree), "diff", "--cached", start, "--").stdout
+    diff = _git(str(worktree), "diff", "--cached", start, "--", project=comparison.project).stdout
     folder = _folder() / comparison.id
     folder.mkdir(parents=True, exist_ok=True)
     path = folder / f"{worktree.name}.diff"

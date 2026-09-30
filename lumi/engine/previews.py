@@ -15,6 +15,7 @@ from urllib.parse import urlsplit
 import urllib.request
 
 from lumi.engine import os_sandbox
+from lumi.executables import project_command, system_program
 from lumi.processes import OutputDecoder, background_process_kwargs, close_windows_job, utf8_env, windows_kill_job
 from lumi.secrets_store import child_env
 
@@ -41,7 +42,9 @@ class PreviewManager:
                 if probe.connect_ex(('127.0.0.1', parsed.port)) == 0:
                     raise ValueError('Preview port is already in use; choose another port.')
             # Inside the shell sandbox when it's on (engine/os_sandbox.py).
-            launch = os_sandbox.prepare_argv(argv, roots=sandbox_roots or [root], cwd=root)
+            # The model's command runs from the project, as in the person's terminal
+            # (a relative or project program resolves there; lumi/executables.py).
+            launch = os_sandbox.prepare_argv(project_command(argv, root), roots=sandbox_roots or [root], cwd=root)
             process = subprocess.Popen(launch, cwd=root, stdin=subprocess.DEVNULL, env=utf8_env(child_env()),
                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                 **background_process_kwargs(new_process_group=True))
@@ -119,7 +122,7 @@ class PreviewManager:
                 process.wait(timeout=3)
             if process.poll() is None:
                 if os.name == 'nt':
-                    subprocess.run(['taskkill', '/PID', str(process.pid), '/T', '/F'],
+                    subprocess.run([system_program('taskkill'), '/PID', str(process.pid), '/T', '/F'],
                                    capture_output=True, timeout=10, **background_process_kwargs())
                 else:
                     os.killpg(process.pid, signal.SIGTERM)

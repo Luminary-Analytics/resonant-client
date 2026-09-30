@@ -16,7 +16,6 @@ from types import SimpleNamespace
 
 import pytest
 
-from lumi.engine.swarming import git_boundary
 from lumi.engine.swarming import service as service_module
 from lumi.engine.swarming import cleanup
 from lumi.engine.swarming.cleanup import (DISCARDED_EVENT, REMOVED_EVENT, clean_finished_teams, kept_across,
@@ -35,7 +34,9 @@ from tests.test_swarm_workers import until
 
 
 def test_writer_teams_without_git_say_so(monkeypatch, tmp_path):
-    monkeypatch.setattr(git_boundary.os, "get_exec_path", lambda *a: [])
+    empty = tmp_path / "bin"
+    empty.mkdir()
+    monkeypatch.setenv("PATH", str(empty))
     with pytest.raises(Conflict, match="Writer teams need Git") as refused:
         trusted_git_executable(tmp_path / "project", tmp_path / "runtime")
     assert "Read-only teams work without it" in str(refused.value)
@@ -47,7 +48,7 @@ def test_a_git_inside_the_project_is_still_refused_as_before(monkeypatch, tmp_pa
     shadow = project / ("git.exe" if os.name == "nt" else "git")
     shadow.write_bytes(b"not git")
     shadow.chmod(0o755)
-    monkeypatch.setattr(git_boundary.os, "get_exec_path", lambda *a: [str(project)])
+    monkeypatch.setenv("PATH", str(project))
     with pytest.raises(Conflict, match="outside the project"):
         trusted_git_executable(project, tmp_path / "runtime")
 
@@ -60,7 +61,7 @@ def test_a_git_cmd_launcher_counts_as_git_and_its_git_exe_runs(monkeypatch, tmp_
     (install / "bin").mkdir()
     (install / "cmd" / "git.cmd").write_text('@"%~dp0..\\bin\\git.exe" %*\r\n', encoding="ascii")
     (install / "bin" / "git.exe").write_bytes(b"MZ")
-    monkeypatch.setattr(git_boundary.os, "get_exec_path", lambda *a: [str(install / "cmd")])
+    monkeypatch.setenv("PATH", str(install / "cmd"))
     # Run as the git.exe it launches: a script would pass every argument through cmd.exe's parser.
     assert trusted_git_executable(tmp_path / "project", tmp_path / "runtime") == str((install / "bin" / "git.exe").resolve())
     (install / "bin" / "git.exe").unlink()
@@ -545,9 +546,11 @@ def test_cleanup_without_git_leaves_everything_for_the_next_start(writer_repo, m
     (_context, lease), = writers(writer_repo, names=("a",))
     _ready(store, lease["id"], base)
     _end(store, authority.run_id)
-    monkeypatch.setattr(git_boundary.os, "get_exec_path", lambda *a: [])
+    from tests.test_clean_machine import _without_git
+
+    _without_git(monkeypatch, tmp_path)
     report = clean_finished_teams(store, project, root=integration.root)
-    assert "Writer teams need Git" in report["skipped"] and Path(lease["path"]).exists()
+    assert "isn't installed on this computer" in report["skipped"] and Path(lease["path"]).exists()
     monkeypatch.undo()
     assert clean_finished_teams(store, project, root=integration.root)["branches"] == 1
 

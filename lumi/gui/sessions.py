@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Optional
 
 from .session_ledger import SESSION_LEDGER_VERSION, SessionEventLedger
+from ..executables import launch_directory
 from ..paths import state_home
 
 logger = logging.getLogger(__name__)
@@ -220,7 +221,7 @@ def _playground_project_path() -> str:
     source_paths: list[str] = []
     if override:
         source_paths.append(os.path.expandvars(os.path.expanduser(override)))
-    cwd = os.getcwd()
+    cwd = launch_directory()
     if cwd and not _is_unsafe_cwd(cwd):
         source_paths.append(cwd)
     for entry in recent_entries:
@@ -285,8 +286,9 @@ def _safe_default_project_path() -> str:
     # Lumi source repo is excluded HERE only — a dev-server launch
     # from the repo shouldn't make Lumi its own project, but a repo
     # the user explicitly opened (and that recents remembers) must still
-    # restore on the next launch.
-    cwd = os.getcwd()
+    # restore on the next launch. The folder Lumi started in: the app itself
+    # works in a system folder (lumi/executables.py).
+    cwd = launch_directory()
     cwd_is_resonant_source = _looks_like_resonant_source(cwd)
     if not _is_unsafe_cwd(cwd) and not cwd_is_resonant_source:
         try:

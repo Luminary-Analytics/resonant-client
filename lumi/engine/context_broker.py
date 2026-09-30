@@ -10,7 +10,6 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
-from lumi.processes import background_process_kwargs
 from ..paths import project_dirs
 
 
@@ -191,7 +190,9 @@ class ContextBroker:
         return results
 
     def _diff(self, selector: str) -> ContextItem | None:
-        args = ["git", "diff"]
+        from lumi.safe_git import GitRefused, run as git
+
+        args = ["diff"]
         if selector not in {"working", "workspace", "current", "."}:
             # A selector is a revision; one starting with '-' would be read as
             # an option (for example --output=<file>, which writes a file).
@@ -202,24 +203,22 @@ class ContextBroker:
         if self.exclusions:
             # Only exclude pathspecs: git diffs everything else.
             args.extend(self.exclusions.git_pathspecs())
+        # The installed Git without the programs a repository's settings
+        # name, and none at all in an untrusted project whose settings name
+        # some (lumi/safe_git.py): the attachment then says why. Without Git,
+        # or in a folder that is gone, it says that instead of dropping the
+        # mention silently (git_support.start_failure_message).
         try:
-            result = subprocess.run(
-                args,
-                cwd=self.project_path,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                check=False,
-                **background_process_kwargs(),
-            )
+            result = git(self.project_path, *args)
+        except GitRefused as refused:
+            return self._item("diff", selector, str(refused), "git-refused")
         except OSError as exc:
-            # Git isn't installed (or can't start here): say so instead of
-            # dropping the mention silently, as for an excluded file.
             from ..git_support import start_failure_message
 
             return self._item("diff", selector, start_failure_message(exc, "Attaching @diff needs",
                                                                       cwd=self.project_path), "git")
+        except subprocess.SubprocessError:
+            return None
         if result.returncode != 0:
             return None
         return self._item("diff", selector, result.stdout or "(no changes)", "git")

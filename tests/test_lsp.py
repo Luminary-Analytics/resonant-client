@@ -79,11 +79,20 @@ def test_servers_from_settings():
     assert specs["configured:off"][1] is False and "configured:empty" not in specs
 
 
-def test_choosing_a_server(monkeypatch):
-    monkeypatch.setattr(lsp.shutil, "which", lambda program: f"/bin/{program}" if program == "pylsp" else None)
+def _installed(folder: Path, name: str) -> Path:
+    folder.mkdir(parents=True, exist_ok=True)
+    program = folder / (name + (".exe" if os.name == "nt" else ""))
+    program.write_text("#!/bin/sh\n", encoding="utf-8")
+    program.chmod(0o755)
+    return program
+
+
+def test_choosing_a_server(monkeypatch, tmp_path):
+    pylsp = _installed(tmp_path / "bin", "pylsp")
+    monkeypatch.setenv("PATH", str(tmp_path / "bin"))
     spec, argv = lsp.choose("a.py", Settings({}))
     # Pyright isn't installed, so the next known Python server is used.
-    assert (spec.id, argv) == ("python-pylsp", ["/bin/pylsp"])
+    assert (spec.id, argv) == ("python-pylsp", [str(pylsp)])
     spec, _ = lsp.choose("a.py", fake_settings())
     assert spec.id == "configured:fake"  # Settings first
     spec, _ = lsp.choose("a.py", fake_settings(enabled=False))
@@ -243,10 +252,11 @@ def test_stopping_ends_the_process(project):
     assert process.poll() is not None and server.state == "stopped"
 
 
-def test_the_inventory_uses_the_same_servers(project, monkeypatch):
+def test_the_inventory_uses_the_same_servers(project, monkeypatch, tmp_path):
     from lumi.gui.ws_commands import _lsp_list_payload
 
-    monkeypatch.setattr(lsp.shutil, "which", lambda program: None)
+    (tmp_path / "no-servers").mkdir()
+    monkeypatch.setenv("PATH", str(tmp_path / "no-servers"))
     payload = _lsp_list_payload(project_path=project, settings=fake_settings())
     first = payload["servers"][0]
     assert (first["id"], first["source"], first["status"]) == ("configured:fake", "configured", "available")

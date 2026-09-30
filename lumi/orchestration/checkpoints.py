@@ -1,17 +1,22 @@
-"""Git-backed working-tree checkpoints for autonomous iterations."""
+"""Git-backed working-tree checkpoints for autonomous iterations.
+
+Git runs through lumi/safe_git.py: the installed Git without the programs a
+repository's settings name. In an untrusted project whose settings name some,
+no Git runs and ``CheckpointError`` says to trust the project (session
+checkpoints then keep an archive instead: engine/checkpoint_timeline.py).
+"""
 
 from __future__ import annotations
 
 import os
 import re
 import shutil
-import subprocess
 import tempfile
 import time
 from pathlib import Path
 
 from lumi import git_support
-from lumi.processes import background_process_kwargs
+from lumi.safe_git import GitRefused, run as safe_git
 
 
 class CheckpointError(RuntimeError):
@@ -97,15 +102,7 @@ class IterationCheckpointStore:
         ).stdout.split("\0")
         remove_after = []
         for rel in (value for value in changed if value):
-            probe = subprocess.run(
-                ["git", "cat-file", "-e", f"{checkpoint}:{rel}"],
-                cwd=self.project_path,
-                # Only the exit status matters; bytes, so no message in
-                # another code page can fail to decode.
-                capture_output=True,
-                check=False,
-                **background_process_kwargs(),
-            )
+            probe = self._git("cat-file", "-e", f"{checkpoint}:{rel}", check=False)
             if probe.returncode != 0:
                 remove_after.append(rel)
 
@@ -178,17 +175,9 @@ class IterationCheckpointStore:
 
     def _git(self, *args: str, env: dict | None = None, check: bool = True):
         try:
-            result = subprocess.run(
-                ["git", *args],
-                cwd=self.project_path,
-                env=env,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                check=False,
-                **background_process_kwargs(),
-            )
+            result = safe_git(self.project_path, *args, env=env, timeout=None)
+        except GitRefused as exc:
+            raise CheckpointError(str(exc)) from None
         except OSError as exc:
             # No Git on this computer, or a project folder that is gone: a
             # CheckpointError with the reason, which callers already handle

@@ -9,7 +9,6 @@ import json
 import logging
 import os
 import re
-import shutil
 import signal
 import subprocess
 import sys
@@ -20,6 +19,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Optional, Sequence
 
+from lumi.executables import current_project, find_program, system_program
 from lumi.processes import (
     CMD_COMMAND_LIMIT,
     CMD_TOO_LONG,
@@ -904,13 +904,13 @@ AGENT_TOOLS = [
         "type": "function",
         "function": {
             "name": "open_application",
-            "description": "Open a desktop application by name. Cross-platform: uses 'start' on Windows, 'open -a' on macOS, direct exec on Linux.",
+            "description": "Open an installed desktop application by name (the program on PATH or registered with the system, never one in the project). On Windows it also opens a web page (https:), mail (mailto:), a Settings page (ms-settings:) or an app by its id (shell:AppsFolder\\<id>), and a document or folder by its full path; it never opens a file that would run (a program, script, shortcut or installer).",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "name": {
                         "type": "string",
-                        "description": "Application name or path (e.g. 'chrome', 'notepad', 'Firefox', 'code')"
+                        "description": "Application name (e.g. 'chrome', 'notepad', 'Firefox', 'code'), or on Windows one of the addresses or a document path described above"
                     }
                 },
                 "required": ["name"]
@@ -1646,7 +1646,7 @@ def execute_tool(
     try:
         if name in {"job_start", "job_status", "job_cancel"}:
             from .jobs import jobs
-            root = project_path or os.getcwd()
+            root = current_project(project_path)
             if name == "job_start":
                 data = jobs.start(root, arguments.get("command"), timeout=arguments.get("timeout", 1200),
                                   cancel_event=cancel_event, sandbox_roots=sandbox_roots)
@@ -1657,11 +1657,11 @@ def execute_tool(
             return ToolResult(json.dumps(data), elapsed=time.time()-start, metadata={"job": data})
         if name == "memory_save":
             from .project_memory import ProjectMemory
-            data = ProjectMemory(project_path or os.getcwd()).save(arguments.get('text', ''), source=arguments.get('source', ''), kind=arguments.get('kind', 'decision'), sources=arguments.get('sources', []), memory_id=arguments.get('id', ''))
+            data = ProjectMemory(current_project(project_path)).save(arguments.get('text', ''), source=arguments.get('source', ''), kind=arguments.get('kind', 'decision'), sources=arguments.get('sources', []), memory_id=arguments.get('id', ''))
             return ToolResult(json.dumps(data), metadata={"memory": data})
         if name.startswith("preview_"):
             from .previews import previews
-            root = project_path or os.getcwd()
+            root = current_project(project_path)
             if name == "preview_start":
                 data = previews.start(root, arguments.get("command"), arguments.get("url", ""),
                                       timeout=arguments.get("timeout", 15), cancel_event=cancel_event,
@@ -1675,7 +1675,7 @@ def execute_tool(
             requirement = str(arguments.get("requirement", "")).strip()
             if not requirement or not str(arguments.get("command", "")).strip():
                 return ToolResult("A check needs a command and requirement.", is_error=True)
-            result = _exec_bash({**arguments, "cwd": project_path or os.getcwd()}, start, cancel_event=cancel_event,
+            result = _exec_bash({**arguments, "cwd": current_project(project_path)}, start, cancel_event=cancel_event,
                                 sandbox_roots=sandbox_roots)
             result.metadata["check"] = {"command": arguments["command"], "requirement": requirement,
                 "status": "failed" if result.is_error else "passed", "exit_code": result.metadata.get("exit_code"),
@@ -1698,7 +1698,8 @@ def execute_tool(
             return _exec_glob(arguments, start, exclusions=exclusions, project_path=project_path)
         elif name == "grep":
             return _exec_grep(arguments, start, cancel_event=cancel_event, exclusions=exclusions,
-                              owned_process_group=owned_process_group, project_path=project_path)
+                              project_path=project_path,
+                              owned_process_group=owned_process_group)
         elif name == "skill_view":
             if str(arguments.get('skill_id', '')).startswith('team:'):
                 from .. import team_library
@@ -1706,7 +1707,7 @@ def execute_tool(
                 return ToolResult(body, metadata={'skill_id': arguments['skill_id'], 'scope': 'team'})
             if str(arguments.get('skill_id', '')).startswith('pack:'):
                 from .capability_packs import CapabilityPackManager
-                manager = CapabilityPackManager(project_path or os.getcwd(), configured=(settings.get('plugins') or {}) if settings else {})
+                manager = CapabilityPackManager(current_project(project_path), configured=(settings.get('plugins') or {}) if settings else {})
                 body = manager.read_skill(arguments['skill_id'])
                 return ToolResult(body, metadata={'skill_id': arguments['skill_id'], 'scope': 'pack'})
             return _exec_skill_view(arguments, start, project_path=project_path)
@@ -1803,19 +1804,19 @@ def execute_tool(
         # Git tools
         elif name == "git_status":
             from .git_tools import exec_git_status
-            return exec_git_status(arguments, start, exclusions=exclusions)
+            return exec_git_status(arguments, start, exclusions=exclusions, trusted=project_trusted)
         elif name == "git_diff":
             from .git_tools import exec_git_diff
-            return exec_git_diff(arguments, start, exclusions=exclusions)
+            return exec_git_diff(arguments, start, exclusions=exclusions, trusted=project_trusted)
         elif name == "git_commit":
             from .git_tools import exec_git_commit
-            return exec_git_commit(arguments, start)
+            return exec_git_commit(arguments, start, trusted=project_trusted)
         elif name == "git_branch_create":
             from .git_tools import exec_git_branch_create
-            return exec_git_branch_create(arguments, start)
+            return exec_git_branch_create(arguments, start, trusted=project_trusted)
         elif name == "git_log":
             from .git_tools import exec_git_log
-            return exec_git_log(arguments, start)
+            return exec_git_log(arguments, start, trusted=project_trusted)
         elif name in ("issue_view", "issue_comment"):
             from . import issue_trackers
 
@@ -1827,7 +1828,11 @@ def execute_tool(
             handler = getattr(github_tools, f"exec_{name}", None)
             if handler is None:
                 return ToolResult(f"Unknown tool: {name}", is_error=True)
-            return handler(arguments, start)
+            trust = github_tools.project_trusted.set(project_trusted)
+            try:
+                return handler(arguments, start)
+            finally:
+                github_tools.project_trusted.reset(trust)
         # REPL tools
         elif name == "repl_python_start":
             from .repl import exec_repl_python_start
@@ -2007,7 +2012,7 @@ def _run_subprocess_with_cancel(
         try:
             if sys.platform == "win32":
                 subprocess.run(
-                    ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+                    [system_program("taskkill"), "/PID", str(proc.pid), "/T", "/F"],
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                     timeout=5,
@@ -2078,7 +2083,7 @@ def _exec_bash(args: dict, start: float, cancel_event: Optional[threading.Event]
     cmd = args.get("command", "")
     managed_cmd = _normalize_managed_bash_command(cmd)
     timeout = args.get("timeout", 30)
-    cwd = args.get("cwd", os.getcwd())
+    cwd = args.get("cwd") or current_project(None)
 
     # The shell sandbox (engine/os_sandbox.py), when it's on: the command runs
     # inside it, or not at all.
@@ -2420,9 +2425,8 @@ def _exec_glob(args: dict, start: float, *, exclusions=None, project_path: str =
 _VENDORED_RIPGREP_DIR = Path(__file__).resolve().parent.parent.parent / "packaging" / "ripgrep"
 
 
-@lru_cache(maxsize=2)
-def _ripgrep_executable(*, trusted_only: bool = False) -> Optional[str]:
-    """Locate ripgrep once per process. None when it isn't available.
+def _ripgrep_executable(*, trusted_only: bool = False, project: Optional[str] = None) -> Optional[str]:
+    """ripgrep's full path. None when it isn't available.
 
     The bundled copy wins over PATH. A packaged install ships a pinned,
     checksum-verified rg (see packaging/fetch_ripgrep.ps1), and preferring it
@@ -2431,8 +2435,18 @@ def _ripgrep_executable(*, trusted_only: bool = False) -> Optional[str]:
     who previously fell back to `findstr` and its far weaker regex dialect.
 
     `sys._MEIPASS` is set only in a PyInstaller bundle; from a source checkout
-    this falls straight through to PATH.
+    this falls through to PATH, never to an `rg` in the project searched or
+    Lumi's working folder (lumi/executables.py).
     """
+    bundled = _bundled_ripgrep(trusted_only=trusted_only)
+    if bundled or trusted_only:
+        return bundled
+    return find_program("rg", exclude=[project])
+
+
+@lru_cache(maxsize=2)
+def _bundled_ripgrep(*, trusted_only: bool = False) -> Optional[str]:
+    """The ripgrep Lumi ships (or a source checkout fetched), looked for once per process."""
     binary = "rg.exe" if sys.platform == "win32" else "rg"
     bundle_dir = getattr(sys, "_MEIPASS", "")
     if bundle_dir:
@@ -2452,9 +2466,7 @@ def _ripgrep_executable(*, trusted_only: bool = False) -> Optional[str]:
             if trusted_only and (not candidate.is_file() or candidate.resolve() != candidate.absolute()):
                 continue
             return str(candidate)
-    if trusted_only:
-        return None
-    return shutil.which("rg")
+    return None
 
 
 _GREP_LINE_PATH = re.compile(r"^((?:[A-Za-z]:)?[^:]*):\d+:")
@@ -2552,7 +2564,8 @@ def _project_display_path(path: str, project_path: str) -> str:
     return path if relative in (None, ".") else relative
 
 
-def _build_grep_command(pattern: str, path: str, file_glob: str, *, trusted_only: bool = False) -> list[str]:
+def _build_grep_command(pattern: str, path: str, file_glob: str, *, trusted_only: bool = False,
+                        project: Optional[str] = None) -> list[str]:
     """Argv for a recursive content search, best available tool first.
 
     ripgrep is strongly preferred. The fallbacks are correct but weak: Windows
@@ -2566,7 +2579,8 @@ def _build_grep_command(pattern: str, path: str, file_glob: str, *, trusted_only
     security boundary, and a pattern containing a quote would turn this
     read-only tool into arbitrary shell execution.
     """
-    ripgrep = _ripgrep_executable(trusted_only=True) if trusted_only else _ripgrep_executable()
+    ripgrep = (_ripgrep_executable(trusted_only=True) if trusted_only
+               else _ripgrep_executable(project=project or path))
     if trusted_only and not ripgrep:
         raise FileNotFoundError("Managed search requires the bundled ripgrep binary; PATH executables are not permitted")
     if ripgrep:
@@ -2590,13 +2604,14 @@ def _build_grep_command(pattern: str, path: str, file_glob: str, *, trusted_only
         cmd.extend(["-e", pattern, "--", path])
         return cmd
 
+    # The fallbacks are the system's own, never a `findstr` or `grep` in the project.
     if sys.platform == "win32":
         target = os.path.join(path, file_glob or "*") if os.path.isdir(path) else path
-        return ["findstr", "/s", "/n", "/r", f"/c:{pattern}", target]
+        return [system_program("findstr"), "/s", "/n", "/r", f"/c:{pattern}", target]
 
     # Extended syntax, so the alternation, `+` and groups models write mean
     # what they do in ripgrep (basic grep treats them as literal characters).
-    cmd = ["grep", "-rnE"]
+    cmd = [system_program("grep"), "-rnE"]
     if file_glob:
         cmd.extend([f"--include={file_glob}"])
     cmd.extend(["--", pattern, path])
@@ -2619,7 +2634,7 @@ def _exec_grep(
     limit = min(200, max(1, int(args.get("limit", 50) or 50)))
 
     cmd = (_build_grep_command(pattern, path, file_glob, trusted_only=True) if owned_process_group
-           else _build_grep_command(pattern, path, file_glob))
+           else _build_grep_command(pattern, path, file_glob, project=project_path or None))
 
     returncode, stdout, _stderr, timed_out = _run_subprocess_with_cancel(
         cmd,
@@ -2652,7 +2667,9 @@ def _exec_grep(
     # (lumi.processes.decode_output), and findstr's matches as findstr
     # wrote them (_findstr_lines).
     raw = stdout if isinstance(stdout, bytes) else str(stdout or "").encode("utf-8")
-    if cmd[0] == "findstr" and os.path.isdir(path):
+    # rg, findstr or grep, by the full path _build_grep_command resolved.
+    searcher = os.path.splitext(os.path.basename(cmd[0]))[0].lower()
+    if searcher == "findstr" and os.path.isdir(path):
         lines = _findstr_lines(raw, path)
     else:
         decoded = decode_output(raw, prefer="ansi").strip()  # files' own text
@@ -2719,7 +2736,7 @@ def _exec_grep(
 
     if not output:
         output = "(no matches)"
-        if cmd[0] not in ("findstr", "grep"):
+        if searcher not in ("findstr", "grep"):
             # ripgrep honours .gitignore, which is the right default (no
             # node_modules noise) but makes an empty result ambiguous: the
             # agent cannot tell "not in this codebase" from "in a file I
@@ -2727,7 +2744,8 @@ def _exec_grep(
             # conclude. The shell can run rg only when it is on PATH; the
             # copy Lumi ships isn't.
             output += "\nNote: files your .gitignore excludes were not searched."
-            output += (" Re-run with bash `rg --no-ignore ...` to include them." if shutil.which("rg")
+            output += (" Re-run with bash `rg --no-ignore ...` to include them."
+                       if find_program("rg", exclude=[project_path or path])
                        else " Read one you need with file_read, or find it with glob.")
     if hidden:
         output += f"\n[{hidden} match{'es' if hidden != 1 else ''} in excluded files not shown (file exclusion rules)]"

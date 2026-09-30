@@ -1,5 +1,6 @@
 import io
 import json
+import os
 import threading
 from concurrent.futures import ThreadPoolExecutor
 
@@ -42,17 +43,35 @@ def test_codex_models_can_be_overridden_by_env(monkeypatch):
 def test_resolve_codex_cli_path_prefers_configured_bundled_cli(monkeypatch, tmp_path):
     configured = tmp_path / "bundled-codex.exe"
     configured.write_text("", encoding="utf-8")
-    path_cli = tmp_path / "path-codex.exe"
+    on_path = tmp_path / "bin"
+    on_path.mkdir()
+    path_cli = on_path / ("codex.cmd" if os.name == "nt" else "codex")  # npm installs a batch file
     path_cli.write_text("", encoding="utf-8")
+    path_cli.chmod(0o755)
     monkeypatch.delenv("LUMI_CODEX_CLI", raising=False)
     monkeypatch.delenv("CODEX_CLI_PATH", raising=False)
-    monkeypatch.setattr(
-        "lumi.backends._load_codex_config",
-        lambda: {"mcp_servers": {"node_repl": {"env": {"CODEX_CLI_PATH": str(configured)}}}},
-    )
-    monkeypatch.setattr("lumi.backends.shutil.which", lambda _: str(path_cli))
+    monkeypatch.setenv("PATH", str(on_path))
+    config = {"mcp_servers": {"node_repl": {"env": {"CODEX_CLI_PATH": str(configured)}}}}
+    monkeypatch.setattr("lumi.backends._load_codex_config", lambda: config)
 
     assert resolve_codex_cli_path() == str(configured)
+    config.clear()
+    assert resolve_codex_cli_path() == str(path_cli)
+
+
+def test_the_codex_cli_never_comes_from_the_working_folder(monkeypatch, tmp_path):
+    """A repository's own `codex` script is never the CLI (lumi/executables.py)."""
+    project = tmp_path / "project"
+    project.mkdir()
+    for name in ("codex.cmd", "codex.exe", "codex"):
+        (project / name).write_text("", encoding="utf-8")
+    monkeypatch.chdir(project)
+    monkeypatch.setenv("PATH", os.pathsep.join([".", str(project)]))
+    monkeypatch.setenv("LUMI_CODEX_CLI", "codex.cmd")  # a file name, which once meant the working folder's
+    monkeypatch.delenv("CODEX_CLI_PATH", raising=False)
+    monkeypatch.setattr("lumi.backends._load_codex_config", lambda: {})
+
+    assert resolve_codex_cli_path() == ""
 
 
 def test_codex_prompt_uses_native_tools_not_resonant_xml():

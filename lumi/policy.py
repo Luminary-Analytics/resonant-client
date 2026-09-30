@@ -15,14 +15,37 @@ A policy is a ``lumi.policy/v1`` JSON document, supplied machine-wide by IT:
 * only where none of those exists, ``LUMI_POLICY_FILE`` names a file (pilots,
   CI). It can't replace a machine policy, so users can't swap in their own.
 
-Those locations are writable only by administrators, so a policy there is
-trusted as it is. A policy may also be signed: ``{"policy": {...},
+**Machine policy comes only from places only administrators can write.** The
+registry values and a configuration profile's keys are an administrator's by
+construction. A file counts only when it and every folder above it, up to a
+root the operating system protects, can't be changed by anyone else
+(lumi/admin_files.py: the owner and access control list on Windows, owner and
+mode elsewhere). Any user may create ``C:\\ProgramData\\Lumi`` where no
+administrator did, and a folder an administrator makes there inherits a right
+for every user to add files, so neither is enough. A file that fails is
+ignored (``IgnoredFile``: Settings shows it, the audit log records
+``policy.file_ignored``), and:
+
+* a file a person owns, or one in a folder a person owns, as a file they
+  planted would be, reads as absent: the sources below it apply, as if it
+  weren't there;
+* one an administrator put there (it and its folder are an administrator's,
+  ``Trust.admin_owned``) in a place others can change, and the file
+  Group Policy's ``PolicyFile`` names, fail closed (``PolicyUnavailable``):
+  an administrator meant a policy to apply, so Lumi refuses model requests
+  rather than running without it. A ``PolicyFile`` that can't be read (a
+  share out of reach, a missing file, a path that isn't a full one) fails
+  closed the same way, never falling back to a source further down.
+
+A policy may also be signed: ``{"policy": {...},
 "signature": "<base64>", "key_id": "<id>"}`` with an Ed25519 signature over
 the policy's canonical JSON. Signed policies verify against keys only an
-administrator can set: the ``PolicyKeys`` registry value, ``policy-keys.json``
-beside the machine policy file, or a machine policy's ``trusted_keys``. That is
-how Lumi Cloud delivers organization policy (see "Lumi Cloud policy" below
-and lumi/cloud.py).
+administrator can set: on Windows only the ``PolicyKeys`` registry value (a
+``policy-keys.json`` there isn't read), on macOS the configuration profile's
+``PolicyKeys``, on macOS and Linux ``policy-keys.json`` beside the machine
+policy file when it passes the same check, and everywhere a machine policy's
+``trusted_keys``. That is how Lumi Cloud delivers organization policy (see
+"Lumi Cloud policy" below and lumi/cloud.py).
 A signed policy carries ``expires_at``: past it Lumi keeps enforcing it for
 ``grace_days`` so people can work offline, then refuses model requests until
 a fresh policy arrives.
@@ -93,10 +116,12 @@ import re
 import sys
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+from . import admin_files
 
 logger = logging.getLogger(__name__)
 
@@ -113,6 +138,45 @@ PERMISSION_MODES = ("ask", "auto-edit", "plan", "bypass")
 
 class PolicyError(ValueError):
     """A policy that can't be used; the message says why."""
+
+
+class PolicyUnavailable(Exception):
+    """A machine policy an administrator set exists but can't be used as it is, so Lumi fails closed.
+
+    Raised while finding the policy (``_load_text``): the file Group Policy
+    names can't be read or others can change it, or an administrator's policy
+    file sits where others can change it. The state then refuses model
+    requests (``blocked_reason``) and never falls back to a source further
+    down, which a person could supply.
+    """
+
+    def __init__(self, message: str, source: str = ""):
+        super().__init__(message)
+        self.source = source
+
+
+UNSAFE_TITLE = "Policy file ignored: writable by non-administrators"
+PROFILE_TITLE = "Configuration profile ignored: writable by non-administrators"
+
+
+@dataclass(frozen=True)
+class IgnoredFile:
+    """A machine file Lumi didn't use, and why.
+
+    Settings shows it (``lumi policy`` prints it) and the audit log records it
+    (``policy.file_ignored``), so a file that isn't used is never silent.
+    ``kind``: ``policy`` (the machine policy file), ``policy_file`` (the file
+    Group Policy's ``PolicyFile`` names), ``profile`` (a macOS configuration
+    profile), ``policy_keys``, ``license`` or ``license_keys``.
+    """
+
+    kind: str
+    path: str
+    reason: str
+    title: str = UNSAFE_TITLE
+
+    def summary(self) -> dict:
+        return {"kind": self.kind, "path": self.path, "reason": self.reason, "title": self.title}
 
 
 # How much of people's messages an organization's oversight receives (lumi/oversight.py).
@@ -688,39 +752,112 @@ def parse(data: Any, *, source: str, trusted_keys: dict[str, str] | None = None,
 # ── Where machine policy lives ──────────────────────────────────────────────
 
 
-def _registry_policy() -> tuple[str, str] | None:
-    """(json text, source) from the Windows policy registry key, if set."""
+REGISTRY_VALUES = ("Policy", "PolicyFile", "PolicyKeys")
+
+
+def _registry_values() -> dict[str, str]:
+    """The values set under the policy registry key (HKLM), as text; {} where there is no key.
+
+    Only an administrator (Group Policy, Intune, the MSI) can write this key,
+    so it is trusted as it is. A key that exists but can't be read raises
+    OSError: only an administrator could have made it so, and what it says
+    can't be known, so the policy fails closed. REG_MULTI_SZ lines (the ADMX
+    ``multiText`` element stores one line per string) are joined.
+    """
     if sys.platform != "win32":
-        return None
+        return {}
     try:
         import winreg
     except ImportError:
-        return None
+        return {}
     try:
-        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, REGISTRY_KEY) as key:
-            for name in ("Policy", "PolicyFile"):
-                try:
-                    value, _ = winreg.QueryValueEx(key, name)
-                except OSError:
-                    continue
-                if isinstance(value, list):
-                    # The ADMX "multiText" element stores one line per string.
-                    value = "\n".join(str(line) for line in value)
-                if name == "Policy" and str(value).strip():
-                    return str(value), f"Group Policy (HKLM\\{REGISTRY_KEY})"
-                if name == "PolicyFile" and str(value).strip():
-                    path = Path(expand_machine_variables(str(value)))
-                    return path.read_text(encoding=ADMIN_TEXT), f"{path} (set by Group Policy)"
-    except OSError:
-        return None
-    return None
+        key = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, REGISTRY_KEY)
+    except FileNotFoundError:
+        return {}
+    values: dict[str, str] = {}
+    with key:
+        for name in REGISTRY_VALUES:
+            try:
+                value, _ = winreg.QueryValueEx(key, name)
+            except FileNotFoundError:
+                continue
+            values[name] = "\n".join(str(line) for line in value) if isinstance(value, list) else str(value)
+    return values
+
+
+def _registry_policy() -> tuple[str, str] | None:
+    """(json text, source) from the Windows policy registry key, if set.
+
+    ``Policy`` holds the document. ``PolicyFile`` names a file, which must be
+    readable and only administrators may be able to change (``_policy_file``);
+    otherwise this raises PolicyUnavailable and the policy fails closed.
+    """
+    try:
+        values = _registry_values()
+    except OSError as exc:
+        raise PolicyUnavailable(f"The Group Policy key HKLM\\{REGISTRY_KEY} couldn't be read "
+                                f"({exc.strerror or exc}).", source=f"Group Policy (HKLM\\{REGISTRY_KEY})") from exc
+    document = values.get("Policy", "")
+    if document.strip():
+        return document, f"Group Policy (HKLM\\{REGISTRY_KEY})"
+    named = values.get("PolicyFile", "").strip()
+    return _policy_file(named) if named else None
+
+
+def _policy_file(value: str) -> tuple[str, str]:
+    """The policy in the file Group Policy's ``PolicyFile`` names, or PolicyUnavailable.
+
+    Group Policy says this computer has a policy, so every way the file can't
+    be used fails closed rather than falling back to a source further down,
+    which a person could supply: a path that isn't a full one (a variable
+    other than a machine folder stays as written), an alternate data stream
+    (``policy.json:other``), a file that can't be read (a share out of reach,
+    a missing file), and a file that people who aren't administrators can
+    change, or that sits where they can (lumi/admin_files.py).
+
+    The check and the read open the path separately; the check proved the
+    file and the folders above it can be changed only by administrators, so
+    replacing either in between takes administrator rights.
+    """
+    text = expand_machine_variables(value)
+    source = f"{text} (set by Group Policy)"
+    if not os.path.isabs(text):
+        raise PolicyUnavailable(f"The policy file Group Policy names, {text}, isn't a full path.", source)
+    if admin_files.names_stream(text):
+        raise PolicyUnavailable(f"The policy file Group Policy names, {text}, is an alternate data stream, "
+                                "not a file.", source)
+    path = Path(text)
+    try:
+        path.stat()
+    except OSError as exc:
+        raise PolicyUnavailable(f"The policy file Group Policy names couldn't be read: {text} "
+                                f"({exc.strerror or exc}).", source) from exc
+    trust = admin_files.check(path, _protected_root(path))
+    if not trust.trusted:
+        _ignore(IgnoredFile("policy_file", text, trust.reason))
+        raise PolicyUnavailable(f"{UNSAFE_TITLE}. {trust.reason}. Group Policy names {text} as this "
+                                "computer's organization policy, and only administrators may be able to "
+                                "change it and the folders above it.", source)
+    try:
+        return path.read_text(encoding=ADMIN_TEXT), source
+    except OSError as exc:
+        raise PolicyUnavailable(f"The policy file Group Policy names couldn't be read: {text} "
+                                f"({exc.strerror or exc}).", source) from exc
 
 
 def _macos_managed_policy() -> tuple[str, str] | None:
-    """(json text, source) from a configuration profile (Jamf, Intune, any MDM), if one sets it."""
+    """(json text, source) from a configuration profile (Jamf, Intune, any MDM), if one sets it.
+
+    macOS writes managed preferences as root; a plist anyone else could have
+    written is ignored (``_usable``).
+    """
     if sys.platform != "darwin":
         return None
-    return managed_preferences_policy(MAC_MANAGED_PREFERENCES / f"{MAC_DOMAIN}.plist")
+    path = MAC_MANAGED_PREFERENCES / f"{MAC_DOMAIN}.plist"
+    if not path.is_file() or not _usable(path, MAC_MANAGED_PREFERENCES.parent, "profile", fail_closed=True,
+                                         title=PROFILE_TITLE):
+        return None
+    return managed_preferences_policy(path)
 
 
 def managed_preferences_policy(path: Path) -> tuple[str, str] | None:
@@ -817,8 +954,8 @@ def expand_machine_variables(text: str) -> str:
 
     Only machine folders expand (ProgramData, ALLUSERSPROFILE, ProgramFiles,
     SystemRoot, windir, SystemDrive); anything else stays as written, so a
-    path that depends on a person's environment isn't found rather than
-    pointing at a folder they chose.
+    path that depends on a person's environment isn't a full path, and the
+    policy fails closed, rather than pointing at a folder they chose.
     """
     windows = _known_folder("F38BF404-1D43-42F2-9305-67DE0B28FC23", r"C:\Windows")  # FOLDERID_Windows
     values = {"programdata": _program_data(), "allusersprofile": _program_data(),
@@ -835,15 +972,58 @@ def machine_policy_file() -> Path:
     return Path("/etc/lumi/policy.json")
 
 
+def machine_root() -> Path:
+    """The protected folder the machine policy folder sits in: ProgramData, /Library/Application Support or /etc.
+
+    Checks of the files beside the machine policy stop here (lumi/admin_files.py).
+    """
+    return machine_policy_file().parent.parent
+
+
+def _protected_root(path: Path) -> Path | None:
+    """ProgramData, for a file under it that Group Policy names; otherwise the drive's or share's root."""
+    if sys.platform != "win32":
+        return None
+    root = Path(_program_data())
+    inside = os.path.normcase(os.path.abspath(path)).startswith(os.path.normcase(str(root)).rstrip("\\") + "\\")
+    return root if inside else None
+
+
+def _usable(path: Path, root: Path, kind: str, *, fail_closed: bool = False, title: str = UNSAFE_TITLE) -> bool:
+    """Whether a machine file only an administrator can have written may be used (lumi/admin_files.py).
+
+    One that others could have written or can change is ignored, visibly
+    (``_ignore``). With ``fail_closed``, a policy an administrator put there
+    (``Trust.admin_owned``) raises PolicyUnavailable: an administrator meant
+    it to apply, so Lumi refuses model requests until it's moved or its
+    folder is locked down. Any other reads as absent, as a file a person
+    planted must. Callers then read the file by its path: replacing it, or a
+    folder above it, after this check takes administrator rights.
+    """
+    trust = admin_files.check(path, root)
+    if trust.trusted:
+        return True
+    _ignore(IgnoredFile(kind, str(path), trust.reason, title))
+    if fail_closed and trust.admin_owned:
+        raise PolicyUnavailable(f"{title}. {trust.reason}. An administrator put {path} there, and only "
+                                "administrators may be able to change it and the folders above it.", str(path))
+    return False
+
+
 def _machine_file_policy() -> tuple[str, str] | None:
     path = machine_policy_file()
-    if path.is_file():
+    if path.is_file() and _usable(path, machine_root(), "policy", fail_closed=True):
         return path.read_text(encoding=ADMIN_TEXT), str(path)
     return None
 
 
 def _load_text() -> tuple[str, str] | None:
-    """The policy text and where it came from. Machine sources always win."""
+    """The policy text and where it came from. Machine sources always win.
+
+    A machine source that can't be used as it is raises PolicyUnavailable
+    (fail closed); one that only someone other than an administrator can have
+    written is skipped as if absent (``_usable``).
+    """
     for finder in (_registry_policy, _macos_managed_policy, _machine_file_policy):
         found = finder()
         if found:
@@ -855,29 +1035,57 @@ def _load_text() -> tuple[str, str] | None:
     return None
 
 
+WINDOWS_KEYS_FILE_TITLE = "Policy signing keys file ignored: not read on Windows"
+WINDOWS_KEYS_FILE_REASON = ("On Windows, Lumi takes policy signing keys only from Group Policy (the PolicyKeys "
+                            "registry value) and from the machine policy's trusted_keys, which only administrators "
+                            "can set")
+
+
+def _note_unread_files() -> None:
+    """Note machine files this platform's Lumi never reads, so an administrator can see why they don't apply."""
+    if sys.platform == "win32":
+        keys_file = machine_policy_file().with_name("policy-keys.json")
+        if keys_file.is_file():
+            _ignore(IgnoredFile("policy_keys", str(keys_file), WINDOWS_KEYS_FILE_REASON, WINDOWS_KEYS_FILE_TITLE))
+
+
 def machine_keys() -> dict[str, str]:
-    """Signing keys an administrator trusts: ``PolicyKeys`` in the registry or a configuration
-    profile, or policy-keys.json beside the machine policy file."""
+    """Signing keys an administrator trusts, for signed policies and Lumi Cloud's.
+
+    * Windows: only ``PolicyKeys`` in the policy registry key (Group Policy,
+      Intune), which only an administrator can set. ``policy-keys.json`` isn't
+      read there: these keys decide which downloaded policy replaces the
+      machine's, and a file under ProgramData is an administrator's only while
+      its folder stays locked down, which is easy to get wrong.
+    * macOS: ``PolicyKeys`` of the configuration profile.
+    * macOS and Linux: ``policy-keys.json`` beside the machine policy file,
+      when only root can have written it (lumi/admin_files.py).
+
+    Keys that are ignored only leave fewer keys: a downloaded policy they
+    would have verified isn't applied, and the machine policy stays.
+    """
     texts: list[str] = []
     if sys.platform == "win32":
         try:
-            import winreg
-
-            with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, REGISTRY_KEY) as key:
-                value, _ = winreg.QueryValueEx(key, "PolicyKeys")
-                texts.append(str(value))
-        except (ImportError, OSError):
-            pass
-    if sys.platform == "darwin":
-        profile_keys = managed_preferences_keys(MAC_MANAGED_PREFERENCES / f"{MAC_DOMAIN}.plist")
-        if profile_keys:
-            texts.append(profile_keys)
-    keys_file = machine_policy_file().with_name("policy-keys.json")
-    if keys_file.is_file():
-        try:
-            texts.append(keys_file.read_text(encoding=ADMIN_TEXT))
+            value = _registry_values().get("PolicyKeys", "")
         except OSError:
-            pass
+            value = ""  # _registry_policy fails the policy closed
+        if value.strip():
+            texts.append(value)
+    else:
+        if sys.platform == "darwin":
+            profile = MAC_MANAGED_PREFERENCES / f"{MAC_DOMAIN}.plist"
+            if profile.is_file() and _usable(profile, MAC_MANAGED_PREFERENCES.parent, "profile", title=PROFILE_TITLE):
+                profile_keys = managed_preferences_keys(profile)
+                if profile_keys:
+                    texts.append(profile_keys)
+        keys_file = machine_policy_file().with_name("policy-keys.json")
+        if keys_file.is_file() and _usable(keys_file, machine_root(), "policy_keys",
+                                           title="Policy signing keys ignored: writable by non-administrators"):
+            try:
+                texts.append(keys_file.read_text(encoding=ADMIN_TEXT))
+            except OSError:
+                pass
     keys: dict[str, str] = {}
     for text in texts:
         try:
@@ -903,6 +1111,52 @@ class PolicyState:
     machine: Policy | None = None
     # Why a downloaded Lumi Cloud policy isn't in force, if one exists.
     cloud_error: str = ""
+    # Machine files found but not used (see IgnoredFile), for Settings to show.
+    ignored: tuple[IgnoredFile, ...] = ()
+
+
+# ── Files Lumi ignores ──────────────────────────────────────────────────────
+#
+# Every machine file that isn't used is logged, listed in the state Settings
+# shows (while a load collects them) and recorded once per process in the
+# audit log, so an administrator sees why a file doesn't apply and a planted
+# one leaves a trace.
+
+_collecting: list[IgnoredFile] | None = None
+_recorded: set[tuple[str, str, str]] = set()
+_recorded_lock = threading.Lock()
+
+
+def _ignore(item: IgnoredFile) -> None:
+    logger.warning("%s: %s (%s)", item.title, item.path, item.reason)
+    if _collecting is not None and item not in _collecting:
+        _collecting.append(item)
+
+
+def _record_ignored(items: tuple[IgnoredFile, ...] | list[IgnoredFile]) -> None:
+    """``policy.file_ignored`` in the audit log, once per file and reason in this process. Never raises."""
+    fresh = []
+    with _recorded_lock:
+        for item in items:
+            if (item.kind, item.path, item.reason) not in _recorded:
+                _recorded.add((item.kind, item.path, item.reason))
+                fresh.append(item)
+    if not fresh:
+        return
+    try:
+        from . import audit
+
+        for item in fresh:
+            audit.record("policy.file_ignored", kind=item.kind, path=audit.name(item.path),
+                         reason=audit.name(item.reason))
+    except Exception:
+        logger.debug("Couldn't record an ignored machine file", exc_info=True)
+
+
+def note_ignored(item: IgnoredFile) -> None:
+    """Log and audit a machine file another module (lumi/license.py) didn't use; it shows its own status."""
+    logger.warning("%s: %s (%s)", item.title, item.path, item.reason)
+    _record_ignored((item,))
 
 
 # ── Lumi Cloud policy ───────────────────────────────────────────────────────
@@ -978,7 +1232,8 @@ def load(*, force: bool = False) -> PolicyState:
 
     Never raises. A policy that exists but can't be read or used is an error
     state, which refuses model requests (blocked_reason), on this call and
-    every later one: a mistake in it must never read as "no policy".
+    every later one: a mistake in it must never read as "no policy". Machine
+    files that weren't used are in ``ignored`` and the audit log.
     """
     global _state, _loaded
     with _lock:
@@ -990,13 +1245,30 @@ def load(*, force: bool = False) -> PolicyState:
             logger.exception("The organization policy couldn't be loaded")
             _state = PolicyState(error=f"The organization policy couldn't be loaded: {exc}")
         _loaded = True
-        return _state
+        state = _state
+    _record_ignored(state.ignored)
+    return state
 
 
 def _read_state() -> PolicyState:
+    """The policy in force (see load), with the machine files it didn't use."""
+    global _collecting
+    ignored: list[IgnoredFile] = []
+    _collecting = ignored
+    try:
+        _note_unread_files()
+        state = _state_from_sources()
+    finally:
+        _collecting = None
+    return replace(state, ignored=tuple(ignored)) if ignored else state
+
+
+def _state_from_sources() -> PolicyState:
     """The policy in force: the machine policy, Lumi Cloud's, or none (see load)."""
     try:
         found = _load_text()
+    except PolicyUnavailable as exc:  # an administrator's policy Lumi can't use as it is: fail closed
+        return PolicyState(error=str(exc), source=exc.source)
     except (OSError, ValueError) as exc:  # ValueError: a file that isn't UTF-8 text
         return PolicyState(error=f"The policy file couldn't be read: {exc}")
     if not found:
@@ -1099,9 +1371,43 @@ def full_auto_refusal() -> str:
     return ""
 
 
+def status() -> dict:
+    """The policy in force, as ``lumi policy`` prints it and administrators check it.
+
+    Where it came from, why it can't be used (then Lumi refuses model
+    requests: ``blocked``), what it sets (``summary``), and every machine file
+    Lumi ignored and why (``ignored``).
+    """
+    state = load()
+    policy = state.policy
+    return {"active": policy is not None, "organization": policy.organization if policy else "",
+            "source": state.source, "error": state.error, "blocked": blocked_reason(),
+            "cloud": state.cloud, "cloud_error": state.cloud_error,
+            "ignored": [item.summary() for item in state.ignored],
+            "summary": policy.summary() if policy else None}
+
+
+def main(argv: list[str] | None = None) -> int:
+    """``lumi policy``: print the organization policy in force as JSON.
+
+    For administrators and detection scripts checking a deployment: it reads
+    the policy as the app does and changes nothing but the audit log (an
+    ignored file is recorded there). Exits 1 while the policy makes Lumi
+    refuse model requests, else 0.
+    """
+    if argv:
+        print("usage: lumi policy", file=sys.stderr)
+        return 2
+    info = status()
+    print(json.dumps(info, indent=2))
+    return 1 if info["blocked"] else 0
+
+
 def set_for_tests(policy: Policy | None, error: str = "") -> None:
     """Install a policy directly (tests and fixtures only)."""
     global _state, _loaded
     with _lock:
         _state = PolicyState(policy=policy, error=error, source=policy.source if policy else "")
         _loaded = True
+    with _recorded_lock:
+        _recorded.clear()

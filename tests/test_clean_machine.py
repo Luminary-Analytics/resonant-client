@@ -374,11 +374,11 @@ def test_the_gitignore_note_names_what_the_agent_can_run(tmp_path, monkeypatch):
     if not tools._ripgrep_executable():
         pytest.skip("needs ripgrep (packaging/fetch_ripgrep.ps1)")
     project = _project_with_lumi_files(tmp_path)
-    real_which = shutil.which
-    monkeypatch.setattr(tools.shutil, "which", lambda name, *a, **k: None if name == "rg" else real_which(name, *a, **k))
+    real_find = tools.find_program
+    monkeypatch.setattr(tools, "find_program", lambda name, *a, **k: None if name == "rg" else real_find(name, *a, **k))
     note = _grep(project, "nowhere-to-be-found").output
     assert "files your .gitignore excludes were not searched" in note and "rg --no-ignore" not in note
-    monkeypatch.setattr(tools.shutil, "which", lambda name, *a, **k: "/usr/bin/rg" if name == "rg" else None)
+    monkeypatch.setattr(tools, "find_program", lambda name, *a, **k: "/usr/bin/rg" if name == "rg" else None)
     assert "rg --no-ignore" in _grep(project, "nowhere-to-be-found").output
 
 
@@ -394,7 +394,7 @@ def test_grep_without_ripgrep_keeps_every_match_and_no_excluded_one(tmp_path, mo
     from lumi.engine import tools
     from lumi.engine.exclusions import ExclusionRules
 
-    monkeypatch.setattr(tools, "_ripgrep_executable", lambda trusted_only=False: None)
+    monkeypatch.setattr(tools, "_ripgrep_executable", lambda trusted_only=False, project=None: None)
     project = _project_with_lumi_files(tmp_path, final_newline=final_newline)
     (project / "secret.txt").write_text("needle: the excluded password" + ("\n" if final_newline else ""),
                                         encoding="utf-8")
@@ -434,7 +434,7 @@ def test_a_project_under_lumis_own_folder_is_still_searched(tmp_path):
 
 
 def _programs(monkeypatch, found: dict[str, str]):
-    monkeypatch.setattr(shutil, "which", lambda name, *a, **k: found.get(name))
+    monkeypatch.setattr(toolchain, "find_program", lambda name, *a, **k: found.get(name))
     toolchain.clear_cache()
 
 
@@ -605,6 +605,9 @@ class TestDoubleClickingLumiExe:
         monkeypatch.setattr(entry, "_STARTED_WITHOUT_STREAMS", double_click)
         monkeypatch.setattr(entry, "_LAUNCHED_BY_LAUNCHSERVICES", False)
         monkeypatch.setattr(updater, "init_updater", lambda *args, **kwargs: False)
+        # main() leaves its working folder for the app (lumi/executables.py):
+        # for real, it would move this test process into the system folder.
+        monkeypatch.setattr("lumi.executables.leave_working_folder", lambda: "")
         monkeypatch.setitem(sys.modules, "lumi.gui.server",
                             SimpleNamespace(main=lambda: started.append(("gui", sys.argv[1:]))))
         monkeypatch.setitem(sys.modules, "lumi.tui", SimpleNamespace(main=lambda: started.append(("tui", sys.argv[1:]))))

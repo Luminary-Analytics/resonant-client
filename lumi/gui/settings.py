@@ -341,6 +341,8 @@ class SettingsManager:
             "active": state.policy is not None,
             "error": state.error,
             "summary": state.policy.summary() if state.policy else None,
+            # Machine files others could have written, which Lumi didn't use: never silently.
+            "ignored": [item.summary() for item in getattr(state, "ignored", ())],
         }
         meta["locked"] = (
             {name: state.policy.organization for name in state.policy.settings} if state.policy else {}

@@ -17,7 +17,6 @@ import json
 import logging
 import os
 import re
-import shutil
 import stat
 import subprocess
 import threading
@@ -160,6 +159,8 @@ class CodebaseIndex:
         # engine/exclusions.ExclusionRules, set by the app: excluded files are
         # neither indexed nor returned, even from an older cached index.
         self.exclusions = None
+        # Why Git didn't list the files, when Lumi may run none here (lumi/safe_git.py).
+        self.git_refused = ""
 
         # Try loading cached index
         self._load_cache()
@@ -200,6 +201,8 @@ class CodebaseIndex:
 
         try:
             listing, stats["listing"] = self._list_files()
+            if self.git_refused:
+                stats["git_refused"] = self.git_refused
             for rel_path in listing:
                 stats["files_scanned"] += 1
                 if not _indexable(rel_path):
@@ -309,15 +312,21 @@ class CodebaseIndex:
 
         The project can be a folder inside a repository (one part of a
         monorepo); ``git ls-files`` then lists that folder, relative to it.
+        In an untrusted project whose Git settings run programs, Lumi runs no
+        Git (lumi/safe_git.py): the folder is walked instead, and
+        ``git_refused`` says why.
         """
-        if _repository_root(self.project_path) is None or not shutil.which("git"):
+        from ..safe_git import GitRefused, run as git
+
+        self.git_refused = ""
+        if _repository_root(self.project_path) is None:
             return None
         try:
-            result = subprocess.run(
-                ["git", "-c", "core.quotepath=off", "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
-                cwd=self.project_path, capture_output=True, timeout=120,
-                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-            )
+            result = git(self.project_path, "-c", "core.quotepath=off", "ls-files", "-z", "--cached", "--others",
+                         "--exclude-standard", text=False, timeout=120)
+        except GitRefused as refused:
+            self.git_refused = str(refused)
+            return None
         except (OSError, subprocess.SubprocessError):
             return None
         if result.returncode != 0:

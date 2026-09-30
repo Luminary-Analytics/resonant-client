@@ -1,4 +1,9 @@
-"""Git-worktree isolation and serialized integration for writing agents."""
+"""Git-worktree isolation and serialized integration for writing agents.
+
+Git runs through lumi/safe_git.py: the installed Git without the programs a
+repository's settings name (no hooks on these automatic commits and merges),
+and none at all in an untrusted project whose settings name some.
+"""
 
 from __future__ import annotations
 
@@ -13,7 +18,9 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from lumi import git_support
-from lumi.processes import background_process_kwargs, decode_output, run_command, utf8_env
+from lumi.processes import decode_output, run_command, utf8_env
+from lumi.safe_git import GitRefused, run as safe_git, status_entries
+from lumi.secrets_store import child_env
 from lumi.worktree_removal import remove_tree, remove_worktree
 
 from .artifacts import project_state_dir
@@ -51,6 +58,7 @@ class WorktreeManager:
         self.project_path = Path(project_path).expanduser().resolve()
         self.root = Path(root) if root else project_state_dir(self.project_path) / "worktrees"
         self.root.mkdir(parents=True, exist_ok=True)
+        self.refused = ""
         self._git_dir = self._discover_git_dir()
 
     @property
@@ -59,6 +67,8 @@ class WorktreeManager:
 
     def create(self, agent_id: str, *, base_ref: str = "HEAD") -> WorktreeLease:
         if not self.available:
+            if self.refused:
+                raise WorktreeError(self.refused)
             if not git_support.git_available():
                 raise WorktreeError(git_support.missing_message("Agent worktrees need"))
             raise WorktreeError("Worktree isolation requires a git repository")
@@ -86,21 +96,21 @@ class WorktreeManager:
     ) -> WorktreeLease:
         worktree = Path(lease.path).resolve()
         self._assert_under_root(worktree)
-        changed = self._git_at(worktree, "status", "--porcelain=v1", "-z").stdout
+        changed = self._git_at(worktree, "status", "--porcelain=v1", "-z", project=self.project_path).stdout
         paths = self._porcelain_paths(changed)
         lease.changed_files = paths
         if not paths:
             lease.status = "unchanged"
             return lease
-        self._git_at(worktree, "add", "-A", "--", ".")
+        self._git_at(worktree, "add", "-A", "--", ".", project=self.project_path)
         env = os.environ.copy()
         env.setdefault("GIT_AUTHOR_NAME", "Lumi Agent")
         env.setdefault("GIT_AUTHOR_EMAIL", "agent@lumi.local")
         env.setdefault("GIT_COMMITTER_NAME", env["GIT_AUTHOR_NAME"])
         env.setdefault("GIT_COMMITTER_EMAIL", env["GIT_AUTHOR_EMAIL"])
         commit_message = message or f"Lumi agent {lease.agent_id} handoff"
-        self._git_at(worktree, "commit", "-m", commit_message, env=env)
-        lease.commit = self._git_at(worktree, "rev-parse", "HEAD").stdout.strip()
+        self._git_at(worktree, "commit", "-m", commit_message, env=env, project=self.project_path)
+        lease.commit = self._git_at(worktree, "rev-parse", "HEAD", project=self.project_path).stdout.strip()
         lease.status = "ready"
         return lease
 
@@ -132,10 +142,12 @@ class WorktreeManager:
                 lease.status = "conflict"
                 raise WorktreeError(result.stderr.strip() or "Worktree merge conflicted")
             for command in validation_commands:
-                # Output decoded per line, and a timeout ends everything the
-                # command started, not only its shell (lumi/processes.py).
+                # A check the caller names, in the project, as the person's
+                # own shell would run it (by design; lumi/executables.py). Its
+                # output is decoded per line, and a timeout ends everything it
+                # started, not only its shell (lumi/processes.py).
                 try:
-                    completed = run_command(command, shell=True, cwd=self.project_path, env=utf8_env(),
+                    completed = run_command(command, shell=True, cwd=self.project_path, env=utf8_env(child_env()),
                                             timeout=VALIDATION_SECONDS)
                 except subprocess.TimeoutExpired as exc:
                     lease.status = "validation_failed"
@@ -188,6 +200,9 @@ class WorktreeManager:
             result = self._git("rev-parse", "--git-dir", check=False)
         except OSError:
             return None
+        except WorktreeError as refused:  # no Git allowed here yet (lumi/safe_git.py)
+            self.refused = str(refused)
+            return None
         if result.returncode != 0:
             return None
         value = Path(result.stdout.strip())
@@ -209,16 +224,16 @@ class WorktreeManager:
 
     @staticmethod
     def _porcelain_paths(raw: str) -> list[str]:
-        fields = [field for field in raw.split("\0") if field]
+        """Changed paths from ``status --porcelain=v1 -z``: a rename's new and old names."""
         paths: list[str] = []
-        for field in fields:
-            value = field[3:] if len(field) > 3 else field
-            if value and value not in paths:
-                paths.append(value)
+        for entry in status_entries(raw)[1]:
+            for value in (entry["path"], entry.get("from", "")):
+                if value and value not in paths:
+                    paths.append(value)
         return paths
 
     def _git(self, *args: str, check: bool = True):
-        return self._git_at(self.project_path, *args, check=check)
+        return self._git_at(self.project_path, *args, check=check, project=self.project_path)
 
     @staticmethod
     def _git_at(
@@ -226,19 +241,12 @@ class WorktreeManager:
         *args: str,
         check: bool = True,
         env: dict[str, str] | None = None,
+        project: Path | None = None,
     ):
         try:
-            result = subprocess.run(
-                ["git", *args],
-                cwd=cwd,
-                env=env,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                check=False,
-                **background_process_kwargs(),
-            )
+            result = safe_git(cwd, *args, project=project, env=env, timeout=None)
+        except GitRefused as exc:
+            raise WorktreeError(str(exc)) from None
         except OSError as exc:
             # Git isn't installed, or can't start here (a folder that is gone):
             # a failed command with the reason, like any other Git failure.

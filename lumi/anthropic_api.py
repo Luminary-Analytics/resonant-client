@@ -20,7 +20,6 @@ import json
 import logging
 import os
 import re
-import shutil
 import struct
 import subprocess
 import threading
@@ -46,6 +45,7 @@ from .backends import (
     _wait_with_cancel,
 )
 from .capabilities import ModelCapabilities, infer_model_capabilities
+from .executables import find_program
 
 logger = logging.getLogger(__name__)
 
@@ -393,7 +393,9 @@ def google_access_token() -> str:
             credentials.refresh(google.auth.transport.requests.Request())
             token = credentials.token or ""
         except ImportError:
-            gcloud = shutil.which("gcloud")
+            # The installed gcloud (a batch file on Windows; its arguments are
+            # fixed), never one from Lumi's working folder (lumi/executables.py).
+            gcloud = find_program("gcloud", scripts=True)
             if gcloud:
                 from .processes import decode_output
 

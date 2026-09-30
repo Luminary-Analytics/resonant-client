@@ -20,7 +20,6 @@ so; a folder that is gone fails to start Git too, and gets its own message
 from __future__ import annotations
 
 import os
-import shutil
 import subprocess
 import sys
 from typing import Sequence
@@ -34,8 +33,14 @@ MISSING_EXIT_CODE = 127
 
 
 def git_executable() -> str | None:
-    """The ``git`` program on PATH, or None when Git isn't installed."""
-    return shutil.which("git")
+    """The ``git`` program on PATH, or None when Git isn't installed.
+
+    A ``git.cmd`` launcher counts, as it does in a terminal; PATH entries in
+    the working folder and relative ones don't (safe_git.executable).
+    """
+    from .safe_git import executable
+
+    return executable(launchers=True)
 
 
 def git_available() -> bool:

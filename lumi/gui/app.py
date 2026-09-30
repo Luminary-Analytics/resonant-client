@@ -373,6 +373,12 @@ class AppState:
         if not raw:
             raise ValueError("Project path is required.")
         expanded = os.path.expandvars(os.path.expanduser(raw))
+        from ..executables import is_absolute
+
+        if not is_absolute(expanded):
+            # Relative to what? The app's working folder is a system folder,
+            # never a project (lumi/executables.py).
+            raise ValueError("Enter the project folder's full path.")
         try:
             return str(Path(expanded).resolve(strict=False))
         except OSError:
@@ -624,8 +630,16 @@ class AppState:
         return "", "", "", ""
 
     def apply_project_context(self, project_path: str, refresh_index: bool = True) -> str:
-        project_path = self.ensure_project_path(project_path or self.project.project_path or os.getcwd())
-        os.chdir(project_path)
+        from .sessions import _safe_default_project_path
+
+        project_path = self.ensure_project_path(
+            project_path or self.project.project_path or _safe_default_project_path())
+        # The project never becomes the process's working folder: Windows
+        # looks for programs, DLLs and ShellExecute targets there, and every
+        # command names its own folder (lumi/executables.py). MCP servers,
+        # which pack commands expect to run in the project, get it here.
+        if getattr(self, "mcp_manager", None) is not None:
+            self.mcp_manager.working_folder = project_path
 
         if self._normalize_path(project_path) != self._normalize_path(self.project.project_path):
             self.project.set_project(project_path)
@@ -3068,6 +3082,14 @@ async def websocket_endpoint(ws: WebSocket):
                 if requested_path:
                     try:
                         norm_requested = os.path.normpath(requested_path)
+                        # With its drive: a rooted path without one is on the working folder's drive.
+                        from ..executables import is_absolute
+
+                        if not is_absolute(norm_requested):
+                            # The app's working folder is never a project (lumi/executables.py).
+                            await ws.send_json({"event": "error",
+                                                "message": "Enter the project folder's full path."})
+                            continue
                         if not os.path.isdir(norm_requested):
                             try:
                                 os.makedirs(norm_requested, exist_ok=True)
@@ -3462,11 +3484,14 @@ async def websocket_endpoint(ws: WebSocket):
                     })
                     continue
 
-                project_path = (
-                    state.project.project_path
-                    if state.project and state.project.project_path
-                    else os.getcwd()
-                )
+                from ..executables import NoProject, current_project
+
+                try:
+                    project_path = current_project(
+                        state.project.project_path if state.project and state.project.project_path else None)
+                except NoProject as exc:
+                    await ws.send_json({"event": "error", "message": str(exc)})
+                    continue
 
                 # Reuse the bash tool's executor so timeout, cancellation, and
                 # truncation are consistent with what the model's bash tool sees.

@@ -57,6 +57,7 @@ import subprocess
 from dataclasses import dataclass
 from typing import Callable, Optional
 
+from lumi.executables import find_program
 from lumi.processes import decode_output, run_command, utf8_env
 
 from ..gui.roadmap import AcceptanceCriterion
@@ -151,7 +152,7 @@ class BashRunner:
             # a no-op there.
             bash_path = self._bash_path
             if bash_path is None:
-                bash_path = _detect_bash()
+                bash_path = _detect_bash(self.cwd)
 
             if bash_path:
                 # Run `bash -c <command>`. The criterion's command
@@ -162,7 +163,9 @@ class BashRunner:
             else:
                 # Platform default shell. On Linux/macOS this is bash
                 # / zsh anyway; on Windows it's cmd.exe with the
-                # known POSIX-tool gap.
+                # known POSIX-tool gap. The criterion is a command the
+                # plan asked for: by design it runs as the person's own
+                # shell would (child_env; lumi/executables.py).
                 args, shell = command, True
             # Bytes, decoded per line (cmd.exe writes the OEM code page,
             # Python children UTF-8); a timeout ends every process the
@@ -176,16 +179,12 @@ class BashRunner:
             return 127, "", f"subprocess error: {exc}"
 
 
-# Module-level cache for the bash detection — `shutil.which` is
-# cheap but we'd call it on every criterion otherwise.
-_BASH_PATH_CACHE: Optional[str] = None
-_BASH_PATH_CACHED = False
-
-
-def _detect_bash() -> Optional[str]:
+def _detect_bash(project: Optional[str] = None) -> Optional[str]:
     """Return the absolute path to `bash` if it's on PATH, else None.
 
-    Cached per-process. On Windows this typically finds Git Bash's
+    Never a `bash` in the project or Lumi's working folder, nor one found
+    through a relative PATH entry (lumi/executables.py, which remembers
+    what it found). On Windows this typically finds Git Bash's
     `C:\\Program Files\\Git\\bin\\bash.exe`. On macOS / Linux it
     finds the system bash at `/bin/bash` or `/usr/bin/bash`.
 
@@ -193,22 +192,7 @@ def _detect_bash() -> Optional[str]:
     Windows is `cmd.exe` (limited, no POSIX tools) and elsewhere is
     typically a bash-compatible shell.
     """
-    global _BASH_PATH_CACHE, _BASH_PATH_CACHED
-    if _BASH_PATH_CACHED:
-        return _BASH_PATH_CACHE
-    import shutil
-    _BASH_PATH_CACHE = shutil.which("bash")
-    _BASH_PATH_CACHED = True
-    return _BASH_PATH_CACHE
-
-
-def _reset_bash_detection_cache() -> None:
-    """Test helper — forget any cached bash detection. Tests that
-    swap PATH or stub `shutil.which` should call this between
-    runs."""
-    global _BASH_PATH_CACHE, _BASH_PATH_CACHED
-    _BASH_PATH_CACHE = None
-    _BASH_PATH_CACHED = False
+    return find_program("bash", exclude=[project])
 
 
 # ── Bash command extraction ──────────────────────────────────────────

@@ -457,16 +457,20 @@ class Registrar:
 
 
 def _run(args: list[str], *, input: str | None = None) -> subprocess.CompletedProcess:
-    """Run a system scheduler command; its output as text whatever code page it writes.
+    """Run one of the system's scheduler tools (schtasks, launchctl, crontab) by its full path.
 
-    schtasks writes the console's code page (cp437 or cp850 in a German or
-    French Windows), which a text-mode pipe read as cp1252, or failed on.
+    Its output is text whatever code page it writes: schtasks writes the
+    console's code page (cp437 or cp850 in a German or French Windows),
+    which a text-mode pipe read as cp1252, or failed on.
     """
+    from .executables import system_program
     from .processes import decode_output
 
-    done = subprocess.run(args, capture_output=True, timeout=30, input=None if input is None else input.encode("utf-8"),
+    done = subprocess.run([system_program(args[0]), *args[1:]], capture_output=True, timeout=30,
+                          input=None if input is None else input.encode("utf-8"),
                           creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-    return subprocess.CompletedProcess(done.args, done.returncode, decode_output(done.stdout), decode_output(done.stderr))
+    return subprocess.CompletedProcess(done.args, done.returncode, decode_output(done.stdout),
+                                       decode_output(done.stderr))
 
 
 class WindowsTasks(Registrar):
@@ -550,9 +554,29 @@ class Crontab(Registrar):
 _registrar: Registrar | None = None
 
 
+class NullRegistrar(Registrar):
+    """Registers nothing with the OS, for ``LUMI_OS_SCHEDULER=off`` (tests and CI).
+
+    Schedules are still saved and can be run by hand (``lumi schedule run``);
+    nothing starts them automatically.
+    """
+
+    def register(self, schedule: Schedule) -> None:
+        return None
+
+    def unregister(self, schedule_id: str) -> None:
+        return None
+
+
+def os_scheduler_enabled() -> bool:
+    return os.environ.get("LUMI_OS_SCHEDULER", "").strip().lower() not in ("off", "0", "false", "no")
+
+
 def registrar() -> Registrar:
     if _registrar is not None:
         return _registrar
+    if not os_scheduler_enabled():
+        return NullRegistrar()
     if sys.platform == "win32":
         return WindowsTasks()
     if sys.platform == "darwin":

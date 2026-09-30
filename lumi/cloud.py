@@ -44,12 +44,13 @@ import socket
 import threading
 import time
 import uuid
-import webbrowser
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any
 from urllib.parse import parse_qs, urlencode, urlsplit
+
+from .executables import open_url
 
 logger = logging.getLogger(__name__)
 
@@ -183,7 +184,7 @@ class CloudClient:
                  on_change: Callable[[dict], None] | None = None) -> None:
         self.settings = settings
         self._transport = transport
-        self._open_browser = open_browser or webbrowser.open
+        self._open_browser = open_browser or open_url
         self.on_change = on_change
         self._lock = threading.RLock()
         self._pending: _PendingSignIn | None = None

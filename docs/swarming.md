@@ -467,7 +467,9 @@ worktree prune`: it unlinks junctions and symbolic links inside without
 following them (Git for Windows followed one, an npm `file:` dependency, and
 deleted the files it pointed to), and it removes only that worktree's own
 record, so your own worktrees stay registered even while their folders are
-away. Cleanup runs Git with hooks disabled and waits for other team steps on
+away. Cleanup runs Lumi's own Git (`lumi/safe_git.py`: hooks and the other
+programs a repository's settings name switched off, none at all in an
+untrusted project whose settings name some) and waits for other team steps on
 the repository.
 
 1. Select compatible stopped writer results and choose **Prepare selected

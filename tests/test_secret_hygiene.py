@@ -143,6 +143,12 @@ class TestSettingsKeychain:
 
 
 class TestChildEnvironment:
+    @pytest.fixture(autouse=True)
+    def _person_without_the_search_setting(self, monkeypatch):
+        # The person's own NoDefaultCurrentDirectoryInExePath, which child_env
+        # gives back (lumi/executables.py): here, as on most computers, unset.
+        monkeypatch.setenv("LUMI_PERSON_EXE_SEARCH", "unset")
+
     def test_provider_keys_are_removed(self):
         base = {name: "secret" for name in PROVIDER_KEY_ENV}
         base.update(PATH="/bin", GITHUB_TOKEN="kept")
@@ -178,7 +184,7 @@ class TestChildEnvironment:
         monkeypatch.setenv("OPENAI_API_KEY", "sk-parent")
         monkeypatch.setattr(mcp.subprocess, "Popen", fake_popen)
         config = mcp.MCPServerConfig(
-            name="docs", command="docs-server",
+            name="docs", command=sys.executable,
             env={"OPENAI_API_KEY": "sk-configured-for-server", "DOCS_TOKEN": "t"},
         )
         assert mcp.MCPConnection(config).connect() is False

@@ -53,3 +53,21 @@ def test_answer_no_change_and_failure_outcomes():
         assistant_text="",
         terminal_error="empty response",
     ) == "failed"
+
+
+def test_unverified_change_reason_names_the_case():
+    from lumi.engine.turn_outcomes import unverified_change_reason
+    assert unverified_change_reason([]) == 'not_checked'
+    assert unverified_change_reason([{'status': 'passed'}, {'status': 'failed'}]) == 'check_failed'
+    assert unverified_change_reason([{'status': 'not_run'}]) == 'check_failed'
+    assert unverified_change_reason([{'status': 'stale'}, {'status': 'passed'}]) == 'check_stale'
+    assert unverified_change_reason([{'status': 'passed'}]) == ''
+
+
+def test_cli_backend_name_only_for_backends_running_their_own_tools():
+    from types import SimpleNamespace
+    from lumi.engine.turn_outcomes import cli_backend_name
+    assert cli_backend_name(SimpleNamespace(name='codex', handles_tools=True)) == 'codex'
+    assert cli_backend_name(SimpleNamespace(name='claude-code', handles_tools=True)) == 'claude-code'
+    assert cli_backend_name(SimpleNamespace(name='ollama', handles_tools=False)) == ''
+    assert cli_backend_name(SimpleNamespace(name='ollama')) == ''

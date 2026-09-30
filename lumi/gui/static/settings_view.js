@@ -28,14 +28,16 @@ const MANAGED_INSTALLERS = Object.freeze({
 
 class LumiSettingsView {
     /**
-     * Whether this person uses SONN: a SONN key or project URL is set, or its
-     * models were found. SONN needs a private invitation; without one the
-     * profile button is about this computer, and no SONN account is asked for.
+     * Whether this person uses SONN: Lumi found SONN (its key and project URL,
+     * from settings or the environment), or both are set in Settings. SONN
+     * needs a private invitation; without one the profile button is about this
+     * computer, and no SONN account is asked for. A leftover key or URL alone
+     * (an upgrade from SONN Client, say) isn't a SONN setup.
      */
     _sonnConfigured() {
-        return Boolean(this.settings?._meta?.api_keys_present?.sonn)
-            || Boolean(String(this.settings?.network?.sonn_url || '').trim())
-            || Boolean(this.backends?.sonn);
+        return Boolean(this.backends?.sonn)
+            || (Boolean(this.settings?._meta?.api_keys_present?.sonn)
+                && Boolean(String(this.settings?.network?.sonn_url || '').trim()));
     }
 
     _accountSummary() {
@@ -45,13 +47,19 @@ class LumiSettingsView {
         const connected = sonn && !!account?.user && !account.error;
         // The local display name (Settings > Profile) first; never a ChatGPT identity.
         const name = text(this.settings?.general?.display_name) || (connected ? text(account.user) : 'Profile');
-        const detail = !sonn ? 'Settings and connections'
+        // Until the account is read (the menu opens) nothing is known about it.
+        const detail = !sonn ? 'Settings and connections' : !account ? 'SONN'
             : connected ? (account.billing?.enabled ? 'SONN · Prepaid credits' : 'SONN · Billing off') : 'SONN not connected';
         const status = !sonn ? '' : this._sonnAccountPending ? 'Checking SONN account…' : account?.error || (connected
             ? `SONN account: ${text(account.user)}` : 'Connect with your SONN private invitation');
         const initials = name.includes('@') ? Array.from(name)[0].toUpperCase()
             : name.split(/\s+/).slice(0, 2).map(word => Array.from(word)[0]).join('').toUpperCase();
-        return {name, detail, status, initials, sonn};
+        // The sidebar corner names this computer's profile. It speaks of SONN
+        // only once SONN answers for this person: a key and URL left from SONN
+        // Client, or an account that can't be read, never make it a SONN
+        // warning. The menu (detail and status) says what SONN's state is.
+        const cornerDetail = connected ? detail : 'Settings and connections';
+        return {name, detail, cornerDetail, status, initials, sonn};
     }
 
     _requestSonnAccount() {
@@ -91,7 +99,7 @@ class LumiSettingsView {
         const summary = this._accountSummary();
         for (const [id, value] of Object.entries({
             'account-name': summary.name, 'account-menu-name': summary.name,
-            'account-detail': summary.detail, 'account-menu-detail': summary.detail,
+            'account-detail': summary.cornerDetail, 'account-menu-detail': summary.detail,
             'account-menu-status': summary.status, 'account-avatar': summary.initials,
         })) {
             const element = document.getElementById(id);

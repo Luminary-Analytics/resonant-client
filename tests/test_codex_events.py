@@ -92,3 +92,59 @@ def test_sonn_failure_then_cli_handoff_records_real_results(tmp_path, monkeypatc
     assert end['evidence']['checks'][0]['source'] == 'codex'
     assert len([e for e in events if e['event'] == 'tool.result']) == 2
     assert 'SONN credit limit' not in json.dumps(end)
+
+
+def test_earlier_messages_end_as_progress_and_only_the_last_is_the_reply(tmp_path, monkeypatch):
+    """Codex's messages before its last are progress, as they happen (live and saved)."""
+    session = Session(backend=CliFixture(tmp_path), max_steps=2)
+    session.project_path = str(tmp_path)
+    monkeypatch.setattr('lumi.engine.session.execute_tool', lambda *a, **k: pytest.fail('observed only'))
+    events = list(session.run('Explain this project, then make one small improvement'))
+    kinds = [e['event'] for e in events]
+    done = [e for e in events if e['event'] == 'text.done']
+    assert [(e['text'], bool(e.get('interim'))) for e in done] == [
+        ("I'll implement it.", True), ('Implemented and checked.', False)]
+    # The progress message ends before the first tool starts, live.
+    assert kinds.index('text.done') < kinds.index('tool.call')
+    # Deltas still arrive as they stream: live progress stays visible.
+    assert [e['delta'] for e in events if e['event'] == 'text.delta'] == [
+        "I'll implement it.", '\n\nImplemented and checked.']
+    end = next(e for e in events if e['event'] == 'session.end')
+    assert end['outcome'] == 'changed_verified'
+    assert end['evidence']['cli_backend'] == 'codex'
+    assert end['evidence']['unverified_reason'] == ''
+    # The model's history keeps the whole step, as before.
+    assistant = [m for m in session.conversation_history if m.get('role') == 'assistant']
+    assert "I'll implement it." in assistant[-1]['content'] and 'Implemented and checked.' in assistant[-1]['content']
+
+
+def test_stale_codex_check_is_reported_as_stale(tmp_path, monkeypatch):
+    session = Session(backend=CliFixture(tmp_path, stale=True), max_steps=2)
+    session.project_path = str(tmp_path)
+    monkeypatch.setattr('lumi.engine.session.execute_tool', lambda *a, **k: pytest.fail('observed only'))
+    end = [e for e in session.run('implement it') if e['event'] == 'session.end'][-1]
+    assert end['outcome'] == 'changed_unverified'
+    assert end['evidence']['unverified_reason'] == 'check_stale'
+
+
+class FailingCli(CliFixture):
+    def stream(self, **kwargs):
+        parser = CodexEvents(self.model)
+        yield from parser.translate(item('completed', 'agent_message', 'intro', text='Reading the project.'))
+        yield from parser.translate(item('completed', 'command_execution', 'ls', command='ls', status='completed',
+                                         exit_code=0, aggregated_output='app.py'))
+        yield from parser.translate(item('completed', 'agent_message', 'partial', text='It is a small CLI'))
+        yield 'error', {'message': 'Connection lost'}
+
+
+def test_failure_after_partial_text_is_still_the_outcome(tmp_path, monkeypatch):
+    session = Session(backend=FailingCli(tmp_path), max_steps=2)
+    session.project_path = str(tmp_path)
+    monkeypatch.setattr('lumi.engine.session.execute_tool', lambda *a, **k: pytest.fail('observed only'))
+    events = list(session.run('explain this project'))
+    errors = [e['message'] for e in events if e['event'] == 'error']
+    assert errors == ['Connection lost']
+    # The partial last message is never presented as a finished reply.
+    assert [e['text'] for e in events if e['event'] == 'text.done'] == ['Reading the project.']
+    assert all(e.get('interim') for e in events if e['event'] == 'text.done')
+    assert events[-1]['event'] == 'session.end' and events[-1]['outcome'] == 'failed'

@@ -98,7 +98,12 @@ tarball as the account that runs Lumi.
   [the chat gateway](chat-gateway.md) for channels and allowlists.
 - **Organization policy.** `/etc/lumi/policy.json`, with trusted signing keys
   in `/etc/lumi/policy-keys.json`. Make them readable by everyone and writable
-  only by root. See [Organization policy](enterprise-policy.md).
+  only by root (`sudo install -d -m 755 /etc/lumi` and
+  `sudo install -m 644 policy.json /etc/lumi/`). Lumi checks: a file or
+  folder root doesn't own, or that its group or others can write, is ignored
+  and shown in Settings (a policy root owns in a folder others can write
+  stops model requests instead). See
+  [the file rules](enterprise-policy.md#only-files-only-administrators-can-change-count).
 - **Containers.** `packaging/docker/Dockerfile` is the other way to run Lumi
   unattended; see [Headless runs](headless.md).
 
@@ -156,7 +161,9 @@ Ubuntu 22.04):
   - `dpkg-deb --info` reads it, and apt installs it;
   - the installed `lumi` runs `--version` and `run --help`;
   - `lumi updates` reports the deb install with updates off;
-  - `/etc/lumi/policy.json` applies;
+  - `/etc/lumi/policy.json` applies; made writable by everyone, it stops
+    model requests (`lumi policy` exits 1), and owned by the runner's own
+    account, it is ignored and listed;
   - `apt remove` removes `/opt/lumi` and `/usr/bin/lumi`.
 - **The .rpm:** `rpm -qip` reads it. In a Fedora 41 container, dnf installs
   it, and `lumi updates` reports the rpm install.

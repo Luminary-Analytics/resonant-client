@@ -16,16 +16,20 @@ built into Lumi, never against keys from a user-writable place:
 * the ``LicenseKeys`` value of the policy registry key (Windows: Group Policy
   or Intune), the ``LicenseKeys`` key of the configuration profile (macOS), or
   ``license-keys.json`` beside the machine policy file on macOS and Linux
-  (``/Library/Application Support/Lumi``, ``/etc/lumi``, which only
-  administrators can write): ``{"<key id>": "<base64 Ed25519 public key>"}``.
-  On Windows that file isn't read: any user may create folders under
-  ProgramData, so a file there isn't necessarily an administrator's.
+  (``/Library/Application Support/Lumi``, ``/etc/lumi``) when only root can
+  have written it (lumi/admin_files.py):
+  ``{"<key id>": "<base64 Ed25519 public key>"}``. On Windows that file isn't
+  read: any user may create folders under ProgramData, so a file there isn't
+  necessarily an administrator's.
 
 The license file itself can live anywhere, since its signature is what
 counts. Lumi reads the first of: ``license.json`` beside the machine policy
 file (``C:\\ProgramData\\Lumi``, ``/Library/Application Support/Lumi``,
-``/etc/lumi``); ``LUMI_LICENSE_FILE`` when there is none; the copy
-``lumi license install`` keeps in Lumi's own folder (``~/.lumi/license.json``).
+``/etc/lumi``) when only administrators can have written it, as for machine
+policy (one others could have written is ignored, shown in the status and
+recorded in the audit log); ``LUMI_LICENSE_FILE`` when there is none; the
+copy ``lumi license install`` keeps in Lumi's own folder
+(``~/.lumi/license.json``).
 
 First pass: a license labels offline use as licensed, and ``lumi license
 status`` and Settings > Offline mode show it. Nothing needs one: offline mode
@@ -186,9 +190,29 @@ def _key_file_trusted() -> bool:
     Not on Windows: ProgramData lets every user create folders, so where no
     administrator made ``C:\\ProgramData\\Lumi`` anyone can. Keys there come
     from ``LicenseKeys`` in the policy registry key instead, which only an
-    administrator (Group Policy, Intune) can set.
+    administrator (Group Policy, Intune) can set. On macOS and Linux only when
+    root owns it and its folder and nobody else can change them
+    (lumi/admin_files.py); one that fails is ignored, visibly.
     """
-    return sys.platform != "win32"
+    if sys.platform == "win32":
+        return False
+    keys_file = _machine_folder() / KEYS_FILE
+    return keys_file.is_file() and _usable(keys_file, "license_keys",
+                                           "License signing keys ignored: writable by non-administrators")
+
+
+def _usable(path: Path, kind: str, title: str) -> bool:
+    """Whether a file beside the machine policy can only be an administrator's; noted when it isn't."""
+    from . import admin_files, policy
+
+    trust = admin_files.check(path, policy.machine_root())
+    if trust.trusted:
+        return True
+    ignored = policy.IgnoredFile(kind, str(path), trust.reason, title)
+    policy.note_ignored(ignored)
+    if _noting is not None and ignored not in _noting:
+        _noting.append(ignored)
+    return False
 
 
 def machine_keys() -> dict[str, str]:
@@ -197,7 +221,7 @@ def machine_keys() -> dict[str, str]:
 
     texts = _managed_key_texts()
     keys_file = _machine_folder() / KEYS_FILE
-    if _key_file_trusted() and keys_file.is_file():
+    if keys_file.is_file() and _key_file_trusted():
         try:
             texts.append(keys_file.read_text(encoding=policy.ADMIN_TEXT))
         except OSError:
@@ -226,9 +250,14 @@ def user_license_path() -> Path:
 
 
 def _license_file() -> tuple[Path, str] | None:
-    """The license file in use and a description of where it is, or None."""
+    """The license file in use and a description of where it is, or None.
+
+    The machine one counts only when only an administrator can have written
+    it; otherwise it's ignored (shown in the status) and the next one is used,
+    so a file a person put there can't hide their own.
+    """
     machine = _machine_folder() / LICENSE_FILE
-    if machine.is_file():
+    if machine.is_file() and _usable(machine, "license", "License file ignored: writable by non-administrators"):
         return machine, str(machine)
     override = os.environ.get("LUMI_LICENSE_FILE", "").strip()
     if override:
@@ -258,19 +287,24 @@ class LicenseState:
     license: License | None = None
     error: str = ""
     source: str = ""
+    # Machine files others could have written, which weren't used (lumi/policy.IgnoredFile).
+    ignored: tuple = ()
 
 
 _lock = threading.Lock()
 _state: LicenseState | None = None
+# The files a load ignored, while it runs (see _usable).
+_noting: list | None = None
 
 
 def load(*, force: bool = False) -> LicenseState:
     """Read and verify the license once (again with ``force``). Never raises."""
-    global _state
+    global _state, _noting
     with _lock:
         if _state is not None and not force:
             return _state
         found = None
+        _noting = ignored = []
         try:
             found = _license_file()
             if found is None:
@@ -284,6 +318,11 @@ def load(*, force: bool = False) -> LicenseState:
         except Exception as exc:  # anything else is a license Lumi can't use, never a crash
             logger.exception("The license couldn't be checked")
             _state = LicenseState(error=f"The license couldn't be checked: {exc}")
+        finally:
+            _noting = None
+        if ignored:
+            _state = LicenseState(license=_state.license, error=_state.error, source=_state.source,
+                                  ignored=tuple(ignored))
         return _state
 
 
@@ -294,15 +333,16 @@ def reset_for_tests() -> None:
 
 
 def status(now: float | None = None) -> dict[str, Any]:
-    """What ``lumi license status`` and Settings show."""
+    """What ``lumi license status`` and Settings show; ``ignored`` lists machine files that weren't used."""
     state = load()
+    extra = {"ignored": [item.summary() for item in state.ignored]} if state.ignored else {}
     if state.license is None:
         return {"present": bool(state.error), "valid": False, "error": state.error, "source": state.source,
-                "offline_use": "unlicensed", "keys": len(trusted_keys())}
+                "offline_use": "unlicensed", "keys": len(trusted_keys()), **extra}
     info = state.license.summary(now)
     covered = state.license.offline and not info["expired"]
     return {"present": True, "valid": True, "error": "", **info,
-            "offline_use": "licensed" if covered else "unlicensed", "keys": len(trusted_keys())}
+            "offline_use": "licensed" if covered else "unlicensed", "keys": len(trusted_keys()), **extra}
 
 
 def install(path: Path) -> License:
@@ -318,7 +358,12 @@ def install(path: Path) -> License:
 
 
 def describe(info: dict[str, Any]) -> str:
-    """One paragraph for people: what the license says, or why there is none."""
+    """One paragraph for people: what the license says, or why there is none, and files that were ignored."""
+    ignored = "".join(f" {item['title']}. {item['reason']}." for item in info.get("ignored") or ())
+    return _describe(info) + ignored
+
+
+def _describe(info: dict[str, Any]) -> str:
     if not info.get("valid"):
         if info.get("error"):
             return f"The license at {info.get('source') or 'its file'} can't be used: {info['error']}"

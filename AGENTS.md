@@ -81,7 +81,9 @@ host enrollment and actual packaged/learned-benefit qualification remain open.
   `secrets_store.child_env()`; the CLI backends keep their environment.
   `secret_scan` removes saved key values from tool output before each request.
   Tests and fixtures use `LUMI_KEYCHAIN=off` or an in-memory keyring, never the
-  real credential store.
+  real credential store. They also never register real OS scheduled tasks:
+  `tests/conftest.py` sets `LUMI_OS_SCHEDULER=off`, which subprocesses inherit.
+  A fixture that builds a child environment from scratch must keep it.
 - File exclusions (`engine/exclusions.py`) are enforced at
   `Session._prepare_workspace_tool_args` and inside the listing tools. Any new
   path that reads project files for the model must check `session.exclusions`.
@@ -128,6 +130,15 @@ host enrollment and actual packaged/learned-benefit qualification remain open.
   values), and check `policy.current()` where a new model, mode, MCP server,
   pack or shell path is chosen. User-writable locations must never replace a
   machine policy, and an invalid policy blocks requests instead of vanishing.
+  Machine policy comes only from admin-writable sources: the HKLM policy key,
+  a configuration profile, and files `admin_files.check` passes (owner and
+  access control list on Windows, root and mode elsewhere, for the file and
+  every folder up to a protected root). Anything else read from the machine
+  folder (`license.json`, `policy-keys.json` off Windows) passes the same
+  check; on Windows signing keys come only from `PolicyKeys`. A file that
+  fails is ignored visibly (`IgnoredFile`, `policy.file_ignored`); an
+  administrator's file in an unsafe place and a `PolicyFile` that can't be
+  read or used fail closed, never falling back to a lower source.
   Build a session's execution policy with
   `engine/policies.project_execution_policy`, or `with_organization_rules`
   for a fallback: a broken `lumi-policy.json` must never cost the

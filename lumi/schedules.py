@@ -545,9 +545,29 @@ class Crontab(Registrar):
 _registrar: Registrar | None = None
 
 
+class NullRegistrar(Registrar):
+    """Registers nothing with the OS, for ``LUMI_OS_SCHEDULER=off`` (tests and CI).
+
+    Schedules are still saved and can be run by hand (``lumi schedule run``);
+    nothing starts them automatically.
+    """
+
+    def register(self, schedule: Schedule) -> None:
+        return None
+
+    def unregister(self, schedule_id: str) -> None:
+        return None
+
+
+def os_scheduler_enabled() -> bool:
+    return os.environ.get("LUMI_OS_SCHEDULER", "").strip().lower() not in ("off", "0", "false", "no")
+
+
 def registrar() -> Registrar:
     if _registrar is not None:
         return _registrar
+    if not os_scheduler_enabled():
+        return NullRegistrar()
     if sys.platform == "win32":
         return WindowsTasks()
     if sys.platform == "darwin":

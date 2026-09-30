@@ -226,6 +226,9 @@ def main():
     if len(sys.argv) > 1 and sys.argv[1] == "license":
         from lumi.license import main as license_main
         raise SystemExit(license_main(sys.argv[2:]))
+    if len(sys.argv) > 1 and sys.argv[1] == "policy":
+        from lumi.policy import main as policy_main
+        raise SystemExit(policy_main(sys.argv[2:]))
     if len(sys.argv) > 1 and sys.argv[1] == "extension":
         from lumi.extension_check import main as extension_main
         raise SystemExit(extension_main(sys.argv[2:]))

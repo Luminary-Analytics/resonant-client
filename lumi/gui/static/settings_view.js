@@ -614,12 +614,19 @@ class LumiSettingsView {
     _renderOrgPolicy() {
         const meta = this.settings?._meta?.policy || {};
         const esc = value => this.escapeHtml(String(value ?? ''));
+        // Machine files Lumi didn't use because someone other than an administrator
+        // could have written them (lumi/admin_files.py): shown, never silently dropped.
+        // An error that already names the file says it once.
+        const ignored = (meta.ignored || [])
+            .filter(item => !(meta.error && String(meta.error).includes(item.reason)))
+            .map(item => `<p class="editor-error settings-policy-ignored" role="status"><strong>${esc(item.title)}.</strong> <code>${esc(item.path)}</code>: ${esc(item.reason)}.</p>`)
+            .join('');
         if (meta.error) {
-            return `<p class="editor-error" role="alert">${esc(meta.error)} Lumi won’t send model requests until it’s fixed.</p>`;
+            return `<p class="editor-error" role="alert">${esc(meta.error)} Lumi won’t send model requests until it’s fixed.</p>${ignored}`;
         }
         const policy = meta.summary;
         if (!policy) {
-            return '<p class="editor-help">No organization policy is installed on this computer. An administrator can set one with Group Policy, a configuration profile or a policy file; see docs/enterprise-policy.md.</p>';
+            return ignored + '<p class="editor-help">No organization policy is installed on this computer. An administrator can set one with Group Policy, a configuration profile or a policy file; see docs/enterprise-policy.md.</p>';
         }
         const list = (items, none) => items === null || items === undefined ? none
             : items.length ? items.map(item => `<code>${esc(item)}</code>`).join(', ') : 'none';
@@ -644,7 +651,7 @@ class LumiSettingsView {
                 : policy.oversight?.enabled ? 'On; see Organization oversight below' : 'Off'],
             ['Data loss prevention', this._renderDlpRules(policy, esc)],
         ];
-        return rows.map(([label, value]) => `<div class="settings-row"><div class="settings-row-copy"><span class="settings-row-label">${label}</span></div><div class="settings-row-value settings-policy-value">${value}</div></div>`).join('');
+        return ignored + rows.map(([label, value]) => `<div class="settings-row"><div class="settings-row-copy"><span class="settings-row-label">${label}</span></div><div class="settings-row-value settings-policy-value">${value}</div></div>`).join('');
     }
 
     // ── Organization oversight (lumi/oversight.py) ─────────────────────────

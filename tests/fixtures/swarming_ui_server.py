@@ -8,7 +8,7 @@ The conversation starts in a new install's mode (Auto-edit), or in the one
 ``--mode <ask|auto-edit|plan|bypass>`` names; the evidence reports it. Its model
 is Ollama's ``fixture-native`` unless ``--session-model <provider>:<model>``
 names another, and ``--providers`` lists several providers' models, as the model
-menu would (no key is saved and nothing reaches them).
+menu would (only a fixture Bedrock API key is saved, and nothing reaches them).
 """
 from __future__ import annotations
 
@@ -223,7 +223,14 @@ def main() -> None:
             {"id": "nim", "name": "NVIDIA NIM", "type": "openai-compatible",
              "base_url": "https://integrate.api.nvidia.com/v1"},
             {"id": "vertex", "name": "Claude on Vertex", "type": "anthropic-vertex", "region": "us-east5",
-             "project": "acme-ai", "models": ["claude-sonnet-5@20260901"]}])
+             "project": "acme-ai", "models": ["claude-sonnet-5@20260901"]},
+            # Claude on Bedrock with its Bedrock API key saved, and without one:
+            # only the first can run a team participant.
+            {"id": "bedrock-keyed", "name": "Bedrock with its key", "type": "anthropic-bedrock",
+             "region": "us-east-1", "auth": "bearer", "models": ["us.anthropic.claude-haiku-4-5-v1:0"]},
+            {"id": "bedrock", "name": "Claude on Bedrock", "type": "anthropic-bedrock", "region": "us-east-1",
+             "auth": "bearer", "models": ["us.anthropic.claude-sonnet-5-v1:0"]}])
+        state.settings.set("api_keys", "conn_bedrock-keyed", "fixture-bedrock-key")
         state.available_backends = {
             "anthropic": {"label": "Anthropic", "models": ["claude-sonnet-5", "claude-haiku-4-5-20251001"]},
             "openai": {"label": "OpenAI", "models": ["gpt-5", "gpt-5-mini"]},
@@ -232,6 +239,10 @@ def main() -> None:
                          "connection_type": "openai-compatible"},
             "conn-vertex": {"label": "Claude on Vertex", "models": ["claude-sonnet-5@20260901"],
                             "connection_type": "anthropic-vertex"},
+            "conn-bedrock-keyed": {"label": "Bedrock with its key", "models": ["us.anthropic.claude-haiku-4-5-v1:0"],
+                                   "connection_type": "anthropic-bedrock"},
+            "conn-bedrock": {"label": "Claude on Bedrock", "models": ["us.anthropic.claude-sonnet-5-v1:0"],
+                             "connection_type": "anthropic-bedrock"},
             "ollama": {"models": ["fixture-native"]}}
     state.detect_backends = lambda *args, **kwargs: None
     state._swarm_desktop = SwarmRuntime(state.settings, backend_factory=factory, state_root=lambda _: root / "swarm-state")

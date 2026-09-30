@@ -463,13 +463,22 @@ class SwarmRuntime:
         return {spec.backend_type: connection} if connection else {}
 
     @staticmethod
-    def _key_refusal(connections: dict[str, dict[str, Any]], *specs: BackendSpec | None) -> None:
-        """Refuse a captured connection that has no key for its participants (Claude on Bedrock), once keys are read."""
+    def _participant_keys(connections: dict[str, dict[str, Any]], *specs: BackendSpec | None) -> None:
+        """Give each resolved spec the key its participants send; refuse a connection without one.
+
+        Claude on Bedrock without a Bedrock API key would sign in with the
+        person's AWS credentials. Runs once the keys are read, before a team
+        exists or a retained one starts anything, so a refusal leaves nothing
+        to stop or reconcile. A participant's process gets the key in its start
+        message, never from its environment (process_worker.worker_environment).
+        """
         for spec in specs:
             if spec is not None:
-                reason = team_connections.key_refusal(connections.get(spec.backend_type), spec.api_key)
+                connection = connections.get(spec.backend_type)
+                reason = team_connections.key_refusal(connection, spec.api_key)
                 if reason:
                     raise Conflict(reason)
+                spec.api_key = team_connections.participant_key(connection, spec.api_key)
 
     def _worker_spec(self, capture: CapturedSession, choice: Any) -> BackendSpec | None:
         """The workers' model when the owner chose one other than the session's; else None.
@@ -1273,7 +1282,7 @@ class SwarmRuntime:
         # The workers' model gets its key the same way, once per run.
         if worker_spec is not None:
             worker_spec.api_key = worker_spec.resolve_api_key(self.settings)
-        self._key_refusal(connections, capture.backend_spec, worker_spec)
+        self._participant_keys(connections, capture.backend_spec, worker_spec)
         workers_spec = worker_spec or capture.backend_spec
         integration = SwarmIntegration(store, capture.workspace,
             root=Path(self._state_root(capture.workspace)) / "swarm" / "worktrees") if write_roots else None
@@ -1692,6 +1701,9 @@ class SwarmRuntime:
                 retained = self._managed_recoveries.get(run_id)
                 if retained is None:
                     raise Conflict("Fence retained managed permits before continuing this team")
+                # Continuing starts participants: their models and keys first,
+                # before the new epoch attaches (_continue_recovered checks again).
+                self._recovery_participants(capture, setup)
                 effects = retained.prepare_resume().effects(store)
         return SwarmIntegration(store, capture.workspace,
             root=Path(self._state_root(capture.workspace)) / "swarm" / "worktrees", managed_effects=effects)
@@ -1805,6 +1817,23 @@ class SwarmRuntime:
                 self._candidate_details[key] = details
         threading.Thread(target=inspect, daemon=True, name="swarm-candidate-inspection").start()
 
+    def _recovery_participants(self, capture, setup):
+        """A retained team's models, their connections and keys; Conflict says why it can't continue.
+
+        Returns the capture with its key and the workers' spec. Continuing
+        starts participants, so this runs before a managed team's new epoch
+        attaches (ManagedRecovery.prepare_resume) and before any launch.
+        """
+        if setup["model"] != {"provider": capture.backend_spec.backend_type, "model": capture.backend_spec.model}:
+            raise Conflict("Restore this team's saved provider and model before continuing")
+        private_spec = copy.deepcopy(capture.backend_spec)
+        private_spec.api_key = private_spec.resolve_api_key(self.settings)
+        capture = replace(capture, backend_spec=private_spec)
+        workers_spec = self._saved_worker_spec(capture, setup)
+        connections = {**self.team_model(capture.backend_spec), **self.team_model(workers_spec)}
+        self._participant_keys(connections, capture.backend_spec, workers_spec)
+        return capture, workers_spec, connections
+
     def _continue_recovered(self, capture, store, recovery, message, prepared_integration=None):
         """Join an explicitly reconciled run to a fresh, captured local runner."""
         if any(identity != recovery.run_id for identity in self._active):
@@ -1828,6 +1857,8 @@ class SwarmRuntime:
         refusal = governance.dispatch_refusal()
         if refusal:
             raise Conflict(refusal)
+        # Their models and keys, before a managed team attaches a new epoch.
+        capture, workers_spec, connections = self._recovery_participants(capture, setup)
         attachment = None
         if managed:
             retained = self._managed_recoveries.get(recovery.run_id)
@@ -1839,12 +1870,6 @@ class SwarmRuntime:
                 # A previous reconciliation workflow has no fresh dispatch
                 # authority. Do not reuse that observer for new Git effects.
                 raise Conflict("Refresh the captured managed writer integration before continuing")
-        private_spec = copy.deepcopy(capture.backend_spec)
-        private_spec.api_key = private_spec.resolve_api_key(self.settings)
-        capture = replace(capture, backend_spec=private_spec)
-        workers_spec = self._saved_worker_spec(capture, setup)
-        connections = {**self.team_model(capture.backend_spec), **self.team_model(workers_spec)}
-        self._key_refusal(connections, capture.backend_spec, workers_spec)
         authority = recovery.authority
         record_run_host(store, authority)
         integration = prepared_integration if setup.get("write_roots") else None

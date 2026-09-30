@@ -125,6 +125,11 @@ class StreamingBackend:
     - `stream_count`: convenience len(stream_calls)
     """
 
+    # One stream() call is one scripted response and never a retry, so the
+    # stub keeps the supervised request contract Team participants need
+    # (lumi/backends.py, engine/swarming/connections.participant_refusal).
+    supervised_requests = True
+
     def __init__(
         self,
         *,

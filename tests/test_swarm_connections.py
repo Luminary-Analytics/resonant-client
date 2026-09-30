@@ -153,14 +153,16 @@ def test_the_runtime_captures_the_connection_behind_a_team_model():
     for supported in ("Anthropic, OpenAI, OpenRouter, Ollama, EXO, Kimi and SONN", "OpenAI-compatible (such as NVIDIA NIM)",
                       "Azure OpenAI", "Claude on Bedrock with a Bedrock API key", "Switch this conversation"):
         assert supported in refusal
-    # The panel offers workers' models from these only (swarm_view.js).
+    # The panel offers workers' models from these only (swarm_view.js). Claude
+    # on Bedrock needs a Bedrock API key to send (next test).
     from lumi.engine.swarming.connections import team_providers
-    assert team_providers(settings) == sorted({"anthropic", "exo", "kimi", "ollama", "openai", "openrouter", "sonn",
-                                               "conn-nim", "conn-claude", "conn-azure", "conn-bedrock"})
+    offered = {"anthropic", "exo", "kimi", "ollama", "openai", "openrouter", "sonn", "conn-nim", "conn-claude",
+               "conn-azure"}
+    assert team_providers(settings) == sorted(offered)
 
 
 def test_claude_on_bedrock_needs_its_bedrock_api_key_for_a_team(monkeypatch):
-    from lumi.engine.swarming.connections import key_refusal, participant_refusal, team_connection as checked
+    from lumi.engine.swarming.connections import key_refusal, participant_key, participant_refusal, team_connection as checked
     from lumi.anthropic_api import AnthropicBackend
 
     bedrock = checked(BEDROCK)
@@ -169,6 +171,10 @@ def test_claude_on_bedrock_needs_its_bedrock_api_key_for_a_team(monkeypatch):
     assert key_refusal(bedrock, "bedrock-api-key") == "" and key_refusal(checked(_connection()), "") == ""
     monkeypatch.setenv("AWS_BEARER_TOKEN_BEDROCK", "environment-bedrock-key")
     assert key_refusal(bedrock, "") == ""
+    # The app reads it for the participant, whose process gets no credentials in its environment.
+    assert participant_key(bedrock, "") == "environment-bedrock-key"
+    assert participant_key(bedrock, "bedrock-api-key") == "bedrock-api-key"
+    assert participant_key(checked(_connection()), "") == "" and participant_key(None, "") == ""
     monkeypatch.delenv("AWS_BEARER_TOKEN_BEDROCK")
     # A participant's backend that would sign in (the AWS chain, Google, OAuth) is refused where it's built.
     keyless = AnthropicBackend("", "m", platform="bedrock", region="us-east-1")
@@ -176,6 +182,98 @@ def test_claude_on_bedrock_needs_its_bedrock_api_key_for_a_team(monkeypatch):
     assert participant_refusal(AnthropicBackend("bedrock-api-key", "m", platform="bedrock", region="us-east-1")) == ""
     assert participant_refusal(AnthropicBackend("", "m", platform="vertex", region="us-east5", project="p"))
     assert participant_refusal(AnthropicBackend("sk-ant-fixture", "claude-sonnet-5")) == ""
+
+
+def test_an_adapter_that_does_not_declare_the_supervised_contract_is_refused():
+    # A wrapper (lumi/smoke/flaky.py) or a new adapter that says nothing about
+    # the contract may retry inside one counted request: it can't take part.
+    from lumi.engine.swarming.connections import participant_refusal
+
+    class Undeclared:
+        handles_tools = False
+
+    class Declared(Undeclared):
+        supervised_requests = True
+
+    assert "tool calls Lumi runs" in participant_refusal(Undeclared())
+    assert participant_refusal(Declared()) == ""
+    assert participant_refusal(type("Refusing", (Declared,), {"supervised_requests": False})())
+
+
+def test_the_worker_model_list_offers_claude_on_bedrock_only_with_its_key(tmp_path, monkeypatch):
+    from lumi.engine.swarming.connections import team_providers
+    from lumi.gui.settings import SettingsManager
+
+    monkeypatch.delenv("AWS_BEARER_TOKEN_BEDROCK", raising=False)
+    settings = SettingsManager(tmp_path / "settings.json")
+    settings.set("connections", None, [BEDROCK, {**BEDROCK, "id": "bedrock-aws", "auth": "aws"}])
+    assert not {"conn-bedrock", "conn-bedrock-aws"} & set(team_providers(settings))
+    # AWS_BEARER_TOKEN_BEDROCK is a key for the connection that uses a Bedrock API key, never for AWS sign-in.
+    monkeypatch.setenv("AWS_BEARER_TOKEN_BEDROCK", "environment-bedrock-key")
+    assert {"conn-bedrock", "conn-bedrock-aws"} & set(team_providers(settings)) == {"conn-bedrock"}
+    monkeypatch.delenv("AWS_BEARER_TOKEN_BEDROCK")
+    settings.set("api_keys", "conn_bedrock", "saved-bedrock-key")
+    assert {"conn-bedrock", "conn-bedrock-aws"} & set(team_providers(settings)) == {"conn-bedrock"}
+
+
+def _keyless_bedrock_runtime(tmp_path, monkeypatch):
+    from lumi.engine.swarming.service import CapturedSession
+    from lumi.gui.settings import SettingsManager
+
+    monkeypatch.delenv("AWS_BEARER_TOKEN_BEDROCK", raising=False)
+    settings = SettingsManager(tmp_path / "settings.json")
+    settings.set("connections", None, [BEDROCK])
+    settings.set("swarming", None, {"version": 1, "enabled": True})
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "fact.txt").write_text("fact\n", encoding="utf-8")
+    runtime = SwarmRuntime(settings, state_root=lambda _: tmp_path / "state")
+    capture = CapturedSession(Scope.personal("owner", "project", "session"), str(project),
+                              BackendSpec("conn-bedrock", "us.anthropic.claude-sonnet-5-v1:0",
+                                          api_key_source="settings", api_key_setting="conn_bedrock"))
+    return runtime, capture
+
+
+def test_a_shared_work_team_on_claude_on_bedrock_without_its_key_is_refused_before_it_exists(tmp_path, monkeypatch):
+    # Preparing a collaboration team starts no model, but work it accepts
+    # later would: without the key it could only run as a failed worker.
+    runtime, capture = _keyless_bedrock_runtime(tmp_path, monkeypatch)
+    try:
+        with pytest.raises(Conflict, match="Bedrock API key.*never your AWS sign-in"):
+            runtime.operate(capture, {"action": "collaboration_prepare", "request_id": "prepare",
+                                      "objective": "Receive shared work", "request_limit": 4})
+        assert not runtime.busy and not runtime._runners and not runtime._active
+        assert runtime.operate(capture, {"request_id": "view"})["run"] is None
+    finally:
+        runtime.close()
+
+
+def test_continuing_a_managed_team_checks_its_keys_before_a_new_epoch_attaches(tmp_path, monkeypatch):
+    # Continuing starts participants. A managed team attaches a new epoch to
+    # its organization's control plane (ManagedRecovery.prepare_resume), so the
+    # keys are checked first, where Lumi prepares writer integration and again
+    # where it continues.
+    from types import SimpleNamespace
+
+    runtime, capture = _keyless_bedrock_runtime(tmp_path, monkeypatch)
+    attached = []
+    setup = {"model": {"provider": "conn-bedrock", "model": "us.anthropic.claude-sonnet-5-v1:0"},
+             "write_roots": ["src"], "worker_requests": 4}
+    monkeypatch.setattr(runtime, "_setup", lambda *args, **kwargs: (setup, {}))
+    monkeypatch.setattr(runtime, "_execution_mode", lambda _capture: "managed")
+    monkeypatch.setattr(runtime, "_governance", lambda *args: SimpleNamespace(dispatch_refusal=lambda: ""))
+    runtime._managed_recoveries["swarm_run"] = SimpleNamespace(prepare_resume=lambda: attached.append(True))
+    recovery = SimpleNamespace(run_id="swarm_run", authority=SimpleNamespace(run_id="swarm_run"), close=lambda: None)
+    runtime._recoveries["swarm_run"] = (capture, recovery)
+    message = {"action": "continue_recovered", "run_id": "swarm_run", "request_id": "continue"}
+    try:
+        with pytest.raises(Conflict, match="Bedrock API key"):
+            runtime._prepare_recovery_integration(capture, message)
+        with pytest.raises(Conflict, match="Bedrock API key"):
+            runtime._continue_recovered(capture, runtime._store(capture), recovery, message)
+        assert attached == [] and not runtime._runners
+    finally:
+        runtime.close()
 
 
 # ── A real child worker on a loopback Chat Completions endpoint ──────────────
@@ -187,8 +285,7 @@ def _command(supervisor, authority, kind, payload=None):
                                      authority.epoch, kind, payload or {}), authority)
 
 
-@pytest.fixture
-def team(tmp_path):
+def _one_worker(tmp_path, provider="conn-fixture", model="fixture/model"):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     (workspace / "fact.txt").write_text("Actual isolated fact", encoding="utf-8")
@@ -196,14 +293,19 @@ def team(tmp_path):
     tools = frozenset({"file_read", "glob", "grep", "artifact_read"}) | SWARM_TOOL_NAMES
     authority = supervisor.create(Scope.personal("owner", "project", "session"),
         supervisor_id="supervisor", objective="Inspect isolated facts", request_limit=20,
-        policy=PolicyProfile(1, tools, frozenset({"conn-fixture"})), lease_seconds=300)
+        policy=PolicyProfile(1, tools, frozenset({provider})), lease_seconds=300)
     _command(supervisor, authority, "plan", {"work_items": [
         {"id": "first", "objective": "Inspect first facts", "read_roots": ["."], "write_roots": [],
          "tools": sorted(tools), "criteria": ["fact"]}]})
     result = _command(supervisor, authority, "assign", {"work_item_id": "first", "worker_id": "first",
-        "requests": 3, "model": {"provider": "conn-fixture", "model": "fixture/model"}}).result
+        "requests": 3, "model": {"provider": provider, "model": model}}).result
     context = AttemptContext(authority.scope, authority.run_id, result["attempt_id"], "first", authority.epoch)
     return supervisor, authority, workspace, context
+
+
+@pytest.fixture
+def team(tmp_path):
+    return _one_worker(tmp_path)
 
 
 class _ChatCompletions(BaseHTTPRequestHandler):
@@ -290,6 +392,34 @@ def test_a_connection_worker_needs_the_connection_its_run_captured(team, tmp_pat
             runner.start(context, BackendSpec("conn-fixture", "fixture/model", api_key=KEY))
     finally:
         runner.close()
+
+
+def test_a_worker_process_says_why_it_refused_and_holds_no_key_from_the_apps_environment(tmp_path, monkeypatch):
+    # The app gives a participant its key in its start message
+    # (SwarmRuntime._participant_keys); its process inherits no credentials.
+    # So a Bedrock worker whose start message has no key refuses, though the
+    # app's own environment has AWS_BEARER_TOKEN_BEDROCK, and says why in
+    # Lumi's words, not only "Native worker failed (ValueError)".
+    monkeypatch.setenv("AWS_BEARER_TOKEN_BEDROCK", "app-environment-bedrock-key")
+    model = "us.anthropic.claude-sonnet-5-v1:0"
+    supervisor, authority, workspace, context = _one_worker(tmp_path, "conn-bedrock", model)
+    command = child_script(tmp_path, "from lumi.engine.swarming.worker_child import main\nraise SystemExit(main())\n")
+    runner = SwarmWorkerRunner(supervisor, authority, workspace, managed_readers=True,
+        backend_factory=lambda _: pytest.fail("A managed reader builds its backend in its own process"),
+        writer_process_factory=lambda: ManagedWorkerProcess(command=command),
+        process_observations=ProcessObservations(supervisor.store, host_id="fixture-host"),
+        connections={"conn-bedrock": BEDROCK})
+    try:
+        runner.start(context, BackendSpec("conn-bedrock", model))
+        until(lambda: not runner.inspect(context.attempt_id)["alive"], timeout=90)
+        status = runner.inspect(context.attempt_id)
+        assert status["error"] == ("Add Claude on Bedrock's Bedrock API key in Settings > Connections: a team's "
+                                   "participants use a key, never your AWS sign-in."), status
+        assert status["state"] == "failed"
+    finally:
+        runner.close()
+    snapshot = supervisor.store.snapshot(authority.scope, authority.run_id)
+    assert snapshot["model_requests"] == []
 
 
 def test_a_worker_process_never_moves_the_users_state_folder(tmp_path):

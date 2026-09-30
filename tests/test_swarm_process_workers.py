@@ -211,6 +211,11 @@ sys.stdin.readline()
 {payload}
 time.sleep(600)  # outlives the wait below: only the host's termination ends it in time
 ''')
+    # This child needs only the standard library. In a Windows virtual
+    # environment sys.executable is a launcher that starts the real
+    # interpreter and keeps its own copy of the output pipe, so closing the
+    # child's output ("early-eof") would never reach the host as EOF.
+    command[0] = getattr(sys, "_base_executable", None) or sys.executable
     worker, _ = runtime(fixture, command)
     try:
         worker.start(context, BackendSpec("ollama", "chosen"), writer_id=writer["id"])
@@ -293,6 +298,47 @@ def test_default_source_entrypoint_handshakes_without_startup_hook_or_provider(t
     assert process.cleanup_confirmed and process.exit_code == 0
     assert events == [{"event": "error", "message": "Native worker failed (ValueError)"}]
     assert not marker.exists()
+
+
+CREDENTIALS = {"AWS_ACCESS_KEY_ID": "AKIAFIXTURE", "AWS_SECRET_ACCESS_KEY": "fixture-aws-secret",
+               "AWS_PROFILE": "fixture", "AWS_BEARER_TOKEN_BEDROCK": "fixture-bedrock-key",
+               "GOOGLE_APPLICATION_CREDENTIALS": "C:/fixture/adc.json", "GCLOUD_PROJECT": "fixture",
+               "CLOUDSDK_AUTH_ACCESS_TOKEN_FILE": "C:/fixture/token", "AZURE_CLIENT_SECRET": "fixture-azure-secret",
+               "OPENAI_API_KEY": "fixture-openai-key", "GEMINI_API_KEY": "fixture-gemini-key",
+               "LUMI_PROVIDER_API_KEY": "fixture-extension-key", "GITHUB_TOKEN": "fixture-github-token",
+               "HF_TOKEN": "fixture-hf-token", "DATABASE_PASSWORD": "fixture-password",
+               "PYTHONPATH": "C:/fixture/startup"}
+KEPT = {"PATH": "C:/fixture/bin", "SYSTEMROOT": "C:/Windows", "TEMP": "C:/fixture/temp", "LANG": "en_US.UTF-8",
+        "HTTPS_PROXY": "http://proxy.fixture:8080", "NO_PROXY": "localhost", "SSL_CERT_FILE": "C:/fixture/ca.pem",
+        "REQUESTS_CA_BUNDLE": "C:/fixture/ca.pem", "USERPROFILE": "C:/fixture/home", "LUMI_KEYCHAIN": "off",
+        "LUMI_OS_SCHEDULER": "off", "LUMI_ACCEPT_TERMS": "fixture", "LUMI_EXO_CONTEXT_TOKENS": "32768"}
+
+
+def test_a_team_process_environment_carries_no_credentials():
+    from lumi.engine.swarming.process_worker import worker_environment
+
+    environment = worker_environment({**CREDENTIALS, **KEPT, "openai_api_key": "fixture-lowercase-key"})
+    assert environment == KEPT
+
+
+def test_a_team_process_starts_without_the_apps_credentials(tmp_path, monkeypatch):
+    # A participant gets its own model key in its start message; its process
+    # inherits none of the app's cloud or provider credentials (process_worker.worker_environment).
+    for name, value in {**CREDENTIALS, "HTTPS_PROXY": KEPT["HTTPS_PROXY"]}.items():
+        monkeypatch.setenv(name, value)
+    command = child_script(tmp_path, '''
+import json
+print(json.dumps({"version":1,"kind":"ready"}),flush=True)
+sys.stdin.readline()
+print(json.dumps({"version":1,"kind":"event","event":{"event":"text.done","text":json.dumps(sorted(os.environ))}}),flush=True)
+print(json.dumps({"version":1,"kind":"closed"}),flush=True)
+''')
+    process = ManagedWorkerProcess(command=command)
+    events = list(process.run({}, rpc={}, cancel_event=threading.Event(), pause_event=threading.Event()))
+    names = {name.upper() for name in json.loads(events[0]["text"])}
+    assert process.cleanup_confirmed and process.exit_code == 0
+    assert not names & set(CREDENTIALS)
+    assert {"PATH", "HTTPS_PROXY", "LUMI_KEYCHAIN", "LUMI_ACCEPT_TERMS"} <= names
 
 
 def test_transport_full_queue_does_not_leave_shutdown_thread_waiting():

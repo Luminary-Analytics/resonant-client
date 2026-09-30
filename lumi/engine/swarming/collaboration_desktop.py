@@ -84,6 +84,9 @@ def prepare(runtime, capture, store, message, *, managed=False):
         raise Conflict("This conversation already has a retained active team")
     spec = copy.deepcopy(spec)
     spec.api_key = spec.resolve_api_key(runtime.settings)
+    # Accepted work starts a participant on this model: a connection without a
+    # key for it (Claude on Bedrock) is refused now, before any team state.
+    runtime._participant_keys(connections, spec)
     capture = replace(capture, backend_spec=spec)
     supervisor = SwarmSupervisor(store)
     authority = supervisor.create(capture.scope, supervisor_id=uuid.uuid4().hex, objective=objective,

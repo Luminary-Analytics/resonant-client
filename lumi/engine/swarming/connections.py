@@ -29,7 +29,7 @@ import os
 from typing import Any
 
 from ...connections import (connection_backend_class, connection_id_from_backend, create_connection_backend,
-                            find_connection, list_connections, normalize_connection)
+                            find_connection, list_connections, normalize_connection, secret_setting)
 from .policy import NATIVE_PROVIDERS, is_connection_provider
 
 _AUTH = frozenset({"bearer", "header", "none"})
@@ -99,23 +99,38 @@ def provider_refusal(provider: str, model: str = "", *, workers: bool = False) -
     return ""
 
 
+def participant_key(connection: dict[str, Any] | None, api_key: str) -> str:
+    """The key a participant on this captured connection sends.
+
+    Its own key; for Claude on Bedrock without one, the Bedrock API key in
+    ``AWS_BEARER_TOKEN_BEDROCK``, read here in the app: a participant's
+    process gets its key in its private start message, and its environment
+    carries no credentials (process_worker.worker_environment).
+    """
+    if api_key or connection is None or connection["type"] != "anthropic-bedrock":
+        return api_key
+    return os.environ.get("AWS_BEARER_TOKEN_BEDROCK", "")
+
+
 def key_refusal(connection: dict[str, Any] | None, api_key: str) -> str:
     """Why a captured connection has no usable key for a participant, or ''.
 
     Claude on Bedrock without a Bedrock API key (the connection's key or
     ``AWS_BEARER_TOKEN_BEDROCK``) would sign requests with the AWS credential chain.
     """
-    if connection is None or connection["type"] != "anthropic-bedrock":
-        return ""
-    if api_key or os.environ.get("AWS_BEARER_TOKEN_BEDROCK", ""):
+    if connection is None or connection["type"] != "anthropic-bedrock" or participant_key(connection, api_key):
         return ""
     return (f"Add {connection['name']}'s Bedrock API key in Settings > Connections: a team's participants use a "
             "key, never your AWS sign-in.")
 
 
 def participant_refusal(backend: Any) -> str:
-    """Why a participant's constructed backend can't run under the team, or ''."""
-    if getattr(backend, "handles_tools", False) or getattr(backend, "supervised_requests", None) is False:
+    """Why a participant's constructed backend can't run under the team, or ''.
+
+    An adapter takes part only when it declares the supervised request
+    contract; one that says nothing (a wrapper, a new adapter) is refused.
+    """
+    if getattr(backend, "handles_tools", False) or getattr(backend, "supervised_requests", None) is not True:
         return "A team participant needs a model whose tool calls Lumi runs; CLI tool loops can't take part."
     if getattr(backend, "uses_sign_in", False) is True:
         return "A team participant authenticates with a key, never a sign-in."
@@ -123,11 +138,22 @@ def participant_refusal(backend: Any) -> str:
 
 
 def team_providers(settings: Any) -> list[str]:
-    """Every provider and connection name a team can run on, for the Team panel's model choices."""
+    """Every provider and connection name a team can run on, for the Team panel's model choices.
+
+    Claude on Bedrock is offered only with a Bedrock API key to send (key_refusal).
+    """
     names = set(NATIVE_PROVIDERS)
     for connection in list_connections(settings):
-        if not connection_refusal(connection):
-            names.add("conn-" + connection["id"])
+        if connection_refusal(connection):
+            continue
+        if connection["type"] == "anthropic-bedrock":
+            try:
+                saved = str(settings.get("api_keys", secret_setting(connection["id"]), "") or "")
+            except TypeError:  # a plain mapping of settings (tests) has no section lookup
+                saved = ""
+            if key_refusal(connection, saved):
+                continue
+        names.add("conn-" + connection["id"])
     return sorted(names)
 
 

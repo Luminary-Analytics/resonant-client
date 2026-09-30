@@ -1,7 +1,8 @@
 /* Which models a team runs on, in the full source app's Team panel: real WebSocket, runtime and store.
  * A Codex conversation's panel says a team can't run on Codex, names the models a team runs on
  * and keeps Start unavailable; an Anthropic conversation's panel offers workers only models a
- * team runs on (never Codex, Claude Code or a connection that signs in).
+ * team runs on (never Codex, Claude Code, a connection that signs in, or Claude on Bedrock
+ * without its Bedrock API key).
  * node tests/swarm_providers.browser.cjs [absolute-path-to-playwright-module]
  * Optional SWARM_PYTHON and SWARM_BROWSER_EXECUTABLE select local runtimes.
  */
@@ -99,8 +100,10 @@ test('An Anthropic conversation\'s Team panel offers workers only models a team 
         await page.getByLabel('Enable team preview').check();
         await page.waitForFunction(()=>app._swarmState?.enabled===true);
         const options=await page.getByLabel('Worker model').locator('option').allTextContents();
+        // Claude on Bedrock only with its Bedrock API key; never Vertex, Codex or Claude Code.
         assert.deepEqual(options,['Same as this session','Anthropic · claude-haiku-4-5-20251001','OpenAI · gpt-5','OpenAI · gpt-5-mini',
-            'NVIDIA NIM · nvidia/nemotron-3-super-120b-a12b','ollama · fixture-native']);
+            'NVIDIA NIM · nvidia/nemotron-3-super-120b-a12b','Bedrock with its key · us.anthropic.claude-haiku-4-5-v1:0',
+            'ollama · fixture-native']);
         // Chosen from the keyboard, and kept across the panel's own refreshes.
         await page.getByLabel('Worker model').focus();
         await page.keyboard.press('ArrowDown');

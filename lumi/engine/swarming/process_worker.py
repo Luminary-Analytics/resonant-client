@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 import json
 import math
 import os
 from pathlib import Path
 import queue
+import re
 import signal
 import site
 import subprocess
@@ -28,6 +29,35 @@ from .processes import job_name
 PROTOCOL_VERSION = 1
 MAX_FRAME_BYTES = 4 * 1024 * 1024
 _EVENT_NAMES = frozenset(event.value for event in EngineEvent)
+# What a team process never inherits from the app (worker_environment): cloud
+# sign-in settings, and variables named like a credential.
+_CLOUD_PREFIXES = ("AWS_", "GOOGLE_", "GCLOUD_", "CLOUDSDK_", "AZURE_")
+_CREDENTIAL_NAME = re.compile(r"API_?KEY|TOKEN|SECRET|PASSWORD|PASSWD|PASSPHRASE|CREDENTIAL|ACCESS_?KEY|PRIVATE_?KEY")
+
+
+def worker_environment(base: Mapping[str, str] | None = None) -> dict[str, str]:
+    """The environment a team process starts with: the app's, without credentials.
+
+    A participant's process holds its own model key, which comes in its
+    private start message, and no other credential. So it doesn't inherit
+    cloud sign-in settings (``AWS_*``, ``GOOGLE_*``, ``GCLOUD_*``,
+    ``CLOUDSDK_*``, ``AZURE_*``), any ``*_API_KEY``, or any other variable
+    named like a key, token, secret, password or credential (``GITHUB_TOKEN``,
+    ``HF_TOKEN``); nor ``PYTHON*`` settings, so no startup hook runs before
+    it gets its configuration (_source_command). Everything else stays: PATH,
+    the system and temporary folders, the home and profile folders, locale,
+    proxy and certificate settings, and Lumi's own ``LUMI_*`` settings. A
+    check's command gets its own environment (integration.py).
+    """
+    environment = {}
+    for key, value in (os.environ if base is None else base).items():
+        name = key.upper()  # Windows names ignore case
+        if name.startswith(("PYTHON", *_CLOUD_PREFIXES)) or name.endswith("_API_KEY"):
+            continue
+        if _CREDENTIAL_NAME.search(name) and not name.startswith("LUMI_"):
+            continue
+        environment[key] = value
+    return environment
 
 
 def _source_command(entrypoint: str = "--swarm-worker") -> list[str]:
@@ -233,8 +263,7 @@ class ManagedWorkerProcess:
         self.process, self._job = popen_in_kill_job(self.command, name=job_name(self.launch_token),
             stdin=subprocess.PIPE, stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL, cwd=str(Path(__file__).resolve().parents[3]), bufsize=65536,
-            env={key: value for key, value in os.environ.items() if not key.upper().startswith("PYTHON")},
-            **background_process_kwargs(new_process_group=True))
+            env=worker_environment(), **background_process_kwargs(new_process_group=True))
         try:
             self.created_at = psutil.Process(self.process.pid).create_time()
         except BaseException:

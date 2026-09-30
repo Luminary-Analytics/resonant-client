@@ -25,6 +25,14 @@ from .process_worker import PROTOCOL_VERSION, encode_frame, read_frame, stdio_pi
 from .tools import SWARM_WORKER_TOOLS
 
 
+class _Refused(Exception):
+    """Lumi's own reason this participant can't run, which the host may show as it is.
+
+    Any other failure is reported by its type only: its text may come from a
+    provider or a library and could carry a credential.
+    """
+
+
 class _Channel:
     def __init__(self, reader, writer):
         self.reader, self.writer = reader, writer
@@ -237,6 +245,12 @@ def main(*, backend_factory=None) -> int:
         _configure_scan(initial)
         threading.Thread(target=channel.receive, daemon=True, name="swarm-host-control").start()
         spec = BackendSpec.from_dict(initial["backend"])
+        # The key comes only in the start message (the environment carries no
+        # credentials, process_worker.worker_environment): without one, Claude
+        # on Bedrock would sign in with the person's AWS credentials.
+        refusal = team_connections.key_refusal(initial["connection"], spec.api_key)
+        if refusal:
+            raise _Refused(refusal)
         if backend_factory:
             backend = backend_factory(spec)
         elif initial["connection"] is not None:
@@ -247,7 +261,7 @@ def main(*, backend_factory=None) -> int:
             raise ValueError("Constructed provider differs from the captured model")
         refusal = team_connections.participant_refusal(backend)
         if refusal:
-            raise ValueError(refusal)
+            raise _Refused(refusal)
         backend._supervised_single_request = True
         bind_sonn_conversation(backend, initial["workspace"], initial["conversation_key"])
         guard = _RemoteGuard(channel, initial["write_tools"])
@@ -281,8 +295,9 @@ def main(*, backend_factory=None) -> int:
             if event.get("event") == "step.end":
                 collect()
     except BaseException as exc:
+        message = str(exc)[:500] if isinstance(exc, _Refused) else f"Native worker failed ({type(exc).__name__})"
         try:
-            channel.send(kind="event", event={"event": "error", "message": f"Native worker failed ({type(exc).__name__})"})
+            channel.send(kind="event", event={"event": "error", "message": message})
         except BaseException:
             pass
     finally:

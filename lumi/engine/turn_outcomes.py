@@ -107,6 +107,32 @@ def unique_strings(values: Iterable[str]) -> list[str]:
     return list(dict.fromkeys(str(value) for value in values if str(value or "").strip()))
 
 
+def cli_backend_name(backend) -> str:
+    """The CLI backend (``codex``, ``claude-code``) that runs its own tool loop, else ``""``.
+
+    Lumi only observes such a backend's tools, so checks it runs internally
+    are visible only as far as it reports them (codex_events.check_command).
+    """
+    if not getattr(backend, "handles_tools", False):
+        return ""
+    return str(getattr(backend, "name", "") or "cli")
+
+
+def unverified_change_reason(checks: Iterable[dict]) -> str:
+    """Why changed files aren't ``changed_verified``: which case applies.
+
+    ``check_failed`` (a named check didn't pass), ``check_stale`` (it passed
+    before the last change) or ``not_checked`` (Lumi observed none). The
+    outcome id stays ``changed_unverified`` for every surface.
+    """
+    values = list(checks)
+    if any(c.get("status") not in {"passed", "stale"} for c in values):
+        return "check_failed"
+    if any(c.get("status") == "stale" for c in values):
+        return "check_stale"
+    return "not_checked" if not values else ""
+
+
 def classify_turn_outcome(
     *,
     user_request: str,

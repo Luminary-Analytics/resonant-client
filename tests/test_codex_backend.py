@@ -5,7 +5,9 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 
 from lumi.backends import (
+    ClaudeCodeCliBackend,
     CodexCliBackend,
+    EVENT_ERROR,
     EVENT_DONE,
     EVENT_TEXT_DELTA,
     _build_codex_prompt,
@@ -192,7 +194,7 @@ def test_codex_stream_parses_jsonl_final_message(monkeypatch, tmp_path):
         tools=[],
     ))
 
-    assert (EVENT_TEXT_DELTA, {"delta": "hello from codex"}) in events
+    assert (EVENT_TEXT_DELTA, {"delta": "hello from codex", "segment": "item_0"}) in events
     done = [data for event, data in events if event == EVENT_DONE][0]
     assert done["model"] == "gpt-5.5"
     assert done["stats"]["input_tokens"] == 10
@@ -215,7 +217,7 @@ def test_codex_yields_message_before_process_exits(monkeypatch, tmp_path):
     with ThreadPoolExecutor() as pool:
         first = pool.submit(next, stream)
         try:
-            assert first.result(timeout=2) == (EVENT_TEXT_DELTA, {'delta': 'Starting the change.'})
+            assert first.result(timeout=2) == (EVENT_TEXT_DELTA, {'delta': 'Starting the change.', 'segment': 'first'})
             assert proc.poll() is None
         finally:
             release.set()
@@ -244,3 +246,37 @@ def test_closing_codex_stream_stops_its_process(monkeypatch, tmp_path):
     assert next(stream)[0] == EVENT_TEXT_DELTA
     stream.close()
     assert proc.killed
+
+
+def _claude_proc(*events):
+    proc = _FakeProc()
+    proc.stdout = io.StringIO(''.join(json.dumps(event) + '\n' for event in events))
+    return proc
+
+
+def _assistant(message_id, text):
+    return {'type': 'assistant', 'message': {'id': message_id, 'content': [{'type': 'text', 'text': text}]}}
+
+
+def test_claude_code_messages_are_separate_segments(monkeypatch, tmp_path):
+    # The engine shows every message before the last as progress (session.py):
+    # each one carries its own segment.
+    proc = _claude_proc(_assistant('m1', 'Looking at the project.'), _assistant('m2', 'It is a CLI.'),
+                        {'type': 'result', 'subtype': 'success', 'result': 'It is a CLI.'})
+    monkeypatch.setattr('lumi.backends.subprocess.Popen', lambda *a, **kw: proc)
+    backend = ClaudeCodeCliBackend('sonnet', cwd=str(tmp_path), cli_path='claude')
+    events = list(backend.stream('explain', [], '', []))
+    deltas = [data for kind, data in events if kind == EVENT_TEXT_DELTA]
+    assert deltas == [{'delta': 'Looking at the project.', 'segment': 'm1'},
+                      {'delta': '\n\nIt is a CLI.', 'segment': 'm2'}]
+    assert events[-1][0] == EVENT_DONE
+
+
+def test_claude_code_partial_text_does_not_hide_terminal_failure(monkeypatch, tmp_path):
+    proc = _claude_proc(_assistant('m1', 'Working on it.'),
+                        {'type': 'result', 'subtype': 'error_during_execution', 'is_error': True, 'result': ''})
+    monkeypatch.setattr('lumi.backends.subprocess.Popen', lambda *a, **kw: proc)
+    backend = ClaudeCodeCliBackend('sonnet', cwd=str(tmp_path), cli_path='claude')
+    events = list(backend.stream('fix it', [], '', []))
+    assert events[-1] == (EVENT_ERROR, {'message': 'error_during_execution'})
+    assert not any(kind == EVENT_DONE for kind, _ in events)

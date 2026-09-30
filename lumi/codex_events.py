@@ -67,7 +67,9 @@ class CodexEvents:
                 return []
             delta = ('\n\n' if self.messages and item_id not in self.messages else '') + text[len(previous):]
             self.messages[item_id] = text
-            return [('text.delta', {'delta': delta})]
+            # Each agent message is its own segment: the engine shows the ones
+            # before the last as progress, and only the last as the reply.
+            return [('text.delta', {'delta': delta, 'segment': item_id})]
         if item_type == 'reasoning':
             # Report activity only, not raw reasoning content.
             return [('backend.status', {'kind': 'generation_progress', 'phase': 'reasoning', 'model': self.model})]

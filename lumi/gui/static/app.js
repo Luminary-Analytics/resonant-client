@@ -6109,6 +6109,10 @@ class LumiApp {
             // blocks with copy buttons (skipped during streaming for perf).
             this.renderMarkdown(this.currentMessageEl, finalText);
             this.currentMessageEl.querySelector('.message-content')?.classList.remove('streaming-cursor');
+            // A CLI backend's message before its last one (session.py
+            // close_segment): progress, dimmed now and folded away once the
+            // turn ends. The last message alone is the reply.
+            if (event.interim) this.currentMessageEl.classList?.add('task-progress-note');
         }
     }
 
@@ -12537,9 +12541,10 @@ class LumiApp {
         // Ensure the step is rendered if needed
         this.ensureStepRendered();
 
-        // Create a message element
+        // Create a message element. A CLI backend's message before its last
+        // one is progress (session.py close_segment), as it was live.
         const el = document.createElement('div');
-        el.className = 'msg-assistant';
+        el.className = event.interim ? 'msg-assistant task-progress-note' : 'msg-assistant';
 
         // Render markdown
         let html = text;

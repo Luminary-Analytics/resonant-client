@@ -12550,8 +12550,31 @@ body.is-window-dragging * {
     display: none;
 }
 
+/* While a turn runs, the model's earlier messages read as dimmed progress. */
+.task-card-running .task-progress-note {
+    opacity: .62;
+    font-size: .94em;
+}
+
+/* The summary wraps as a whole: the detail takes the room it needs and the
+   buttons stay one row (Review, Verify changes…) that moves below it when the
+   card is narrow, instead of shrinking into a vertical stack. */
+.task-run-summary {
+    flex-wrap: wrap;
+    row-gap: 6px;
+}
+
+.task-run-summary .task-run-detail {
+    flex: 1 1 14rem;
+}
+
+.task-run-summary.is-warning .task-run-detail {
+    white-space: normal;
+}
+
 .task-recovery-actions {
-    display: inline-flex;
+    display: flex;
+    flex: 0 0 auto;
     flex-wrap: wrap;
     gap: 6px;
     margin-left: auto;
@@ -12559,17 +12582,18 @@ body.is-window-dragging * {
 
 .task-recovery-actions .task-review-btn {
     margin-left: 0;
+    white-space: nowrap;
 }
 
 @media (max-width: 760px) {
-    .task-run-summary {
-        flex-wrap: wrap;
-    }
-
-    .task-run-detail,
-    .task-recovery-actions {
+    .task-run-detail {
         width: 100%;
         white-space: normal;
+    }
+
+    .task-recovery-actions {
+        flex: 1 1 100%;
+        margin-left: 0;
     }
 }
 

@@ -64,9 +64,11 @@ from .turn_outcomes import (
     VALIDATION_TOOL_NAMES,
     WRITE_TOOL_NAMES,
     classify_turn_outcome,
+    cli_backend_name,
     request_requires_workspace_change,
     response_promises_future_action,
     unique_strings,
+    unverified_change_reason,
 )
 from ..paths import state_home
 
@@ -2523,6 +2525,10 @@ class Session:
                 "changed_files": changed_files,
                 "checks": checks,
                 "validation_tools": validation_tools,
+                # A CLI backend runs its own tool loop; Lumi sees only what it
+                # reports, so the card can say why a check wasn't observed.
+                "cli_backend": cli_backend_name(self.backend),
+                "unverified_reason": unverified_change_reason(checks) if outcome == "changed_unverified" else "",
                 "empty_response_attempts": empty_response_attempts,
                 "promise_continuations": promise_continuations,
                 "model_requests": model_requests,
@@ -2905,6 +2911,20 @@ class Session:
 
             # ── Stream from backend ──
             collected_text = []
+            # A CLI backend's turn is one step holding several agent messages
+            # (a delta's `segment`, codex_events). Each message before the
+            # last is progress: it ends as its own `interim` text.done, as it
+            # happens, so only the last message is the step's reply.
+            segment = {"id": None, "parts": [], "interim": 0}
+
+            def close_segment():
+                text = strip_tool_call_tags("".join(segment["parts"]).strip())
+                segment["parts"] = []
+                segment["id"] = None
+                if not text:
+                    return None
+                segment["interim"] += 1
+                return make_event(EngineEvent.TEXT_DONE, text=text, interim=True)
             tool_calls = []
             cog_state = None
             done_stats = None
@@ -2942,6 +2962,13 @@ class Session:
                         delta = data.get("delta", "")
                         if delta:
                             phase_timings.setdefault('first_response', round(time.time() - total_start, 3))
+                        if data.get("segment") is not None:
+                            if segment["id"] not in (None, data["segment"]):
+                                closed = close_segment()
+                                if closed:
+                                    yield closed
+                            segment["id"] = data["segment"]
+                        segment["parts"].append(delta)
                         collected_text.append(delta)
                         yield make_event(EngineEvent.TEXT_DELTA, delta=delta)
 
@@ -2981,6 +3008,10 @@ class Session:
                         name, call_id = data['name'], data['call_id']
                         arguments = data.get('arguments', {})
                         if data['stage'] == 'started':
+                            # Text before a tool call is the model's progress.
+                            closed = close_segment()
+                            if closed:
+                                yield closed
                             turn_tool_names.append(name)
                             cli_tool_starts[call_id] = (time.time(), file_fingerprints(turn_changed_files, self.project_path))
                             presentation = tool_presentation(name, arguments)
@@ -3190,9 +3221,14 @@ class Session:
 
             empty_response_retries = 0
 
+            # After interim messages the reply is what followed the last one;
+            # history and the outcome still see the whole step's text.
+            reply_text = (strip_tool_call_tags("".join(segment["parts"]).strip())
+                          if segment["interim"] else full_text)
             if full_text:
                 turn_text_blocks.append(full_text)
-                yield make_event(EngineEvent.TEXT_DONE, text=full_text)
+                if reply_text:
+                    yield make_event(EngineEvent.TEXT_DONE, text=reply_text)
 
                 todo_items = parse_markdown_todos(full_text)
                 if todo_items:
@@ -4871,7 +4907,7 @@ class Session:
 
             if etype == EngineEvent.TEXT_DONE.value:
                 text = event.get("text", "")
-                if text:
+                if text and not event.get("interim"):
                     collected_text.append(text)
                 yield event
 

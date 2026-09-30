@@ -403,6 +403,52 @@ class LumiRunCards {
     }
 
 
+    /**
+     * Why a turn that changed files isn't `changed_verified`, in plain words.
+     * The outcome rule stays strict (turn_outcomes.classify_turn_outcome):
+     * only checks Lumi itself observed count, never a reply's claim. This
+     * says which case applies: a named check failed, one passed before the
+     * last change (stale), or Lumi saw none. `cli` is the CLI backend that ran
+     * the turn (evidence.cli_backend), whose own tool loop Lumi only observes.
+     * `canVerify` is false when asking again couldn't produce a check Lumi
+     * sees: Claude Code reports no tool activity to Lumi at all.
+     */
+    _unverifiedChangeReason(evidence = {}, cli = '') {
+        const checks = Array.isArray(evidence.checks) ? evidence.checks : [];
+        const name = check => String(check.command || check.requirement || 'A check').trim();
+        const failed = checks.find(check => !['passed', 'stale'].includes(check.status));
+        if (failed) {
+            return {kind: 'check_failed', label: 'Changed — check failed', canVerify: true,
+                detail: `${name(failed)} ${failed.status === 'failed' ? 'failed' : `ended as ${failed.status || 'unknown'}`}. Fix it before relying on these changes.`};
+        }
+        const stale = checks.find(check => check.status === 'stale');
+        if (stale) {
+            return {kind: 'check_stale', label: 'Changed — check out of date', canVerify: true,
+                detail: `${name(stale)} passed before the last change. Run it again to check the current files.`};
+        }
+        const detail = 'Lumi didn’t see a check run for these changes.';
+        if (cli === 'claude-code') {
+            return {kind: 'not_checked', label: 'Changed — not checked', canVerify: false,
+                detail: `${detail} Checks Claude Code runs inside its own tools aren’t visible to Lumi, so review the changes yourself.`};
+        }
+        if (cli) {
+            return {kind: 'not_checked', label: 'Changed — not checked', canVerify: true,
+                detail: `${detail} Checks the model ran inside its own tools aren’t visible to Lumi unless each one runs as its own command, such as pytest.`};
+        }
+        return {kind: 'not_checked', label: 'Changed — not checked', canVerify: true, detail};
+    }
+
+    /** The prompt behind Verify changes: ask for checks Lumi can observe. */
+    _verifyChangesPrompt(cli = '') {
+        const base = 'Verify the changes you just made. Run the project’s relevant tests, lint or build checks and report their results.';
+        return cli
+            // Codex's command items count as named checks only when each is a
+            // single standalone command (codex_events.check_command).
+            ? `${base} Run each check as its own command, without chaining commands with &&, ; or pipes, so Lumi can record its exit status. Don’t change files unless a check fails.`
+            : `${base} Run each one with the check_run tool so Lumi records its result. Don’t change files unless a check fails.`;
+    }
+
+
     _renderTaskCompletionSummary(event = {}) {
         const task = this._activeTask;
         if (!task || !task.card) return;
@@ -456,6 +502,10 @@ class LumiRunCards {
         // and nothing was sent, so it doesn't read as a failed turn.
         const refusedTurn = outcome === 'failed' && Boolean(this._agentRunRefused);
         if (refusedTurn) Object.assign(outcomeMeta, { label: 'Not sent', state: 'is-warning', card: 'task-card-warning' });
+        // Saves from before evidence.cli_backend: the session's backend.
+        const cli = String(evidence.cli_backend ?? (this.handlesTools ? 'cli' : ''));
+        const unverified = outcome === 'changed_unverified' ? this._unverifiedChangeReason(evidence, cli) : null;
+        if (unverified) outcomeMeta.label = unverified.label;
 
         task.card.classList.remove('task-card-running', 'task-card-done', 'task-card-error', 'task-card-warning');
         task.card.classList.add(outcomeMeta.card);
@@ -494,7 +544,7 @@ class LumiRunCards {
             incomplete: evidence.requires_workspace_change
                 ? 'The request asked for a workspace change, but no successful edit was recorded.'
                 : 'The turn ended without a visible result.',
-            changed_unverified: 'Changes have missing, failed, or stale acceptance checks. Review the check results before relying on them.',
+            changed_unverified: unverified?.detail,
             needs_input: 'The agent needs a decision before it can continue.',
         };
         const detail = outcomeDetails[outcome] || (parts.length ? parts.join(' | ') : outcomeMeta.label);
@@ -511,6 +561,9 @@ class LumiRunCards {
             this._attachFailureDetail(summary, detail);
         }
 
+        // One row of buttons that wraps as a unit at compact widths.
+        const actions = document.createElement('span');
+        actions.className = 'task-recovery-actions';
         if (files.length > 0 && outcome !== 'failed') {
             const review = document.createElement('button');
             review.type = 'button';
@@ -521,31 +574,33 @@ class LumiRunCards {
                 if (this.gitData && this.gitData.is_repo) this.toggleGitPopover();
                 else this.showStatusMessage('Not a git repository; nothing to review.');
             });
-            summary.appendChild(review);
+            actions.appendChild(review);
         }
 
         if (['incomplete', 'failed', 'changed_unverified'].includes(outcome) && !this._replay && !refusedTurn) {
-            const actions = document.createElement('span');
-            actions.className = 'task-recovery-actions';
             // The organization's DLP rules refused the request (lumi/dlp.py): sending
-            // it again, to this model or another, is refused the same way.
+            // it again, to this model or another, is refused the same way. A turn
+            // that changed files did its work: retrying would invite throwing it
+            // away, so it offers only verification (when Lumi could observe it).
             const refusedContent = outcome === 'failed' && ['dlp_blocked', 'policy_blocked'].includes(this._agentRunErrorCode);
-            actions.innerHTML = `
-                ${refusedContent ? '' : `<button type="button" class="task-review-btn" data-recovery="retry">Retry</button>
-                <button type="button" class="task-review-btn" data-recovery="alternate">Retry another model</button>`}
-                <button type="button" class="task-review-btn" data-recovery="continue">${outcome === 'changed_unverified' ? 'Verify changes' : 'Continue'}</button>
-            `;
-            actions.querySelector('[data-recovery="retry"]')?.addEventListener('click', () => {
-                this._retryTask(task, { mode: 'retry' });
-            });
-            actions.querySelector('[data-recovery="alternate"]')?.addEventListener('click', () => {
-                this._retryTask(task, { mode: 'retry', alternate: true });
-            });
-            actions.querySelector('[data-recovery="continue"]')?.addEventListener('click', () => {
-                this._retryTask(task, { mode: 'continue' });
-            });
-            summary.appendChild(actions);
+            const changed = outcome === 'changed_unverified';
+            const buttons = [];
+            if (!refusedContent && !changed) {
+                buttons.push(['retry', 'Retry', { mode: 'retry' }], ['alternate', 'Retry another model', { mode: 'retry', alternate: true }]);
+            }
+            if (!changed) buttons.push(['continue', 'Continue', { mode: 'continue' }]);
+            else if (unverified?.canVerify) buttons.push(['continue', 'Verify changes', { mode: 'continue', verify: cli || true }]);
+            for (const [id, label, options] of buttons) {
+                const button = document.createElement('button');
+                button.type = 'button';
+                button.className = 'task-review-btn';
+                button.dataset.recovery = id;
+                button.textContent = label;
+                button.addEventListener('click', () => this._retryTask(task, options));
+                actions.appendChild(button);
+            }
         }
+        if (actions.children.length) summary.appendChild(actions);
 
         task.footerEl.hidden = false;
         task.footerEl.prepend(summary);
@@ -579,16 +634,18 @@ class LumiRunCards {
     }
 
 
-    _retryTask(task, { mode = 'retry', alternate = false, auto = false } = {}) {
+    _retryTask(task, { mode = 'retry', alternate = false, auto = false, verify = false } = {}) {
         if (this.isRunning || !task) return;
         if (alternate && !this._selectAlternateModelValue()) {
             this.showStatusMessage('No alternate model is currently available.');
             if (auto) return;
         }
         const original = (task.requestText || '').trim();
-        const prompt = mode === 'continue'
-            ? 'Continue the previous request. Verify any changes already made and report concrete evidence.'
-            : original;
+        const prompt = verify
+            ? this._verifyChangesPrompt(verify === true ? '' : verify)
+            : mode === 'continue'
+                ? 'Continue the previous request. Verify any changes already made and report concrete evidence.'
+                : original;
         if (!prompt) return;
         this.userInput.value = prompt;
         this.userInput.style.height = 'auto';

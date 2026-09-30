@@ -3994,6 +3994,7 @@ class ClaudeCodeCliBackend:
             threads.append(t)
 
         emitted_text = False
+        messages_seen = 0
         stderr_tail: list[str] = []
         usage: dict = {}
         error_message = ""
@@ -4032,13 +4033,16 @@ class ClaudeCodeCliBackend:
             etype = event.get("type", "")
             if etype == "assistant":
                 message = event.get("message") or {}
+                # Each assistant message is its own segment: the engine shows
+                # the ones before the last as progress, the last as the reply.
+                segment = str(message.get("id") or f"message_{messages_seen}")
+                messages_seen += 1
                 for block in message.get("content") or []:
                     if isinstance(block, dict) and block.get("type") == "text":
                         text = str(block.get("text", "") or "")
                         if text:
-                            if emitted_text:
-                                yield (EVENT_TEXT_DELTA, {"delta": "\n\n"})
-                            yield (EVENT_TEXT_DELTA, {"delta": text})
+                            yield (EVENT_TEXT_DELTA, {"delta": ("\n\n" if emitted_text else "") + text,
+                                                      "segment": segment})
                             emitted_text = True
             elif etype == "result":
                 usage = event.get("usage") or {}
@@ -4050,13 +4054,14 @@ class ClaudeCodeCliBackend:
             t.join(timeout=0.2)
 
         returncode = proc.poll()
-        if error_message and not emitted_text:
+        # Partial text never masks a failure reported after it (AGENTS.md).
+        if error_message:
             yield (EVENT_ERROR, {"message": error_message})
             return
         if not emitted_text and result_text:
             yield (EVENT_TEXT_DELTA, {"delta": result_text})
             emitted_text = True
-        if not emitted_text and returncode:
+        if returncode:
             detail = "\n".join(stderr_tail).strip()
             yield (EVENT_ERROR, {"message": detail or f"Claude Code CLI exited with code {returncode}"})
             return

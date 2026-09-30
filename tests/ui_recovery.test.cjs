@@ -540,8 +540,8 @@ function accountView(settings = {}, sonnAccount, document = {}) {
     return app;
 }
 
-// Someone who uses SONN: a SONN key or project URL is set (settings_view.js _sonnConfigured).
-const SONN = {_meta: {api_keys_present: {sonn: true}}};
+// Someone who uses SONN: its key and project URL are set (settings_view.js _sonnConfigured).
+const SONN = {_meta: {api_keys_present: {sonn: true}}, network: {sonn_url: 'https://sonn.example.test/v1/projects/p'}};
 
 test('a Codex connection never supplies the SONN account identity', () => {
     const app = accountView();
@@ -550,7 +550,26 @@ test('a Codex connection never supplies the SONN account identity', () => {
     assert.equal(app._accountSummary().initials, 'P');
     app.settings = {...SONN};
     assert.equal(app._accountSummary().name, 'Profile');
+    // Not read yet (the menu hasn't opened): nothing is claimed about it.
+    assert.equal(app._accountSummary().detail, 'SONN');
+    app.sonnAccount = {error: 'Account unavailable'};
     assert.equal(app._accountSummary().detail, 'SONN not connected');
+    // The sidebar corner never turns that into a SONN warning; the menu says it.
+    assert.equal(app._accountSummary().cornerDetail, 'Settings and connections');
+    app.sonnAccount = {user: 'user-fixture', billing: {enabled: true}};
+    assert.equal(app._accountSummary().cornerDetail, 'SONN · Prepaid credits');
+});
+
+test('the profile corner shows the local name and a neutral line, and the menu the state of SONN', () => {
+    const elements = {};
+    const element = () => ({textContent: '', title: '', hidden: false, setAttribute() {}, classList: {toggle() {}}});
+    const app = accountView({...SONN, general: {display_name: 'Rich'}}, {error: 'Account unavailable'},
+        {getElementById: id => (elements[id] ||= element())});
+    app._renderAccountMenu();
+    assert.equal(elements['account-name'].textContent, 'Rich');
+    assert.equal(elements['account-detail'].textContent, 'Settings and connections');
+    assert.equal(elements['account-menu-detail'].textContent, 'SONN not connected');
+    assert.equal(elements['account-usage'].hidden, false);
 });
 
 test('the profile shows SONN only to someone who uses it', () => {
@@ -561,7 +580,17 @@ test('the profile shows SONN only to someone who uses it', () => {
     assert.equal(summary.detail, 'Settings and connections');
     assert.equal(summary.status, '');
     assert.equal(summary.sonn, false);
-    app.settings = {network: {sonn_url: 'https://sonn.example.test/v1/projects/p'}};
+    // A leftover URL or key alone (an upgrade from SONN Client) isn't a SONN setup.
+    app.settings = {general: {display_name: 'Alex Morgan'}, network: {sonn_url: 'https://sonn.example.test/v1/projects/p'}};
+    assert.equal(app._accountSummary().sonn, false);
+    assert.equal(app._accountSummary().detail, 'Settings and connections');
+    app.settings = {_meta: {api_keys_present: {sonn: true}}};
+    assert.equal(app._accountSummary().sonn, false);
+    app.settings = {...SONN};
+    assert.equal(app._accountSummary().sonn, true);
+    // Lumi found SONN (its key and URL may come from the environment).
+    app.settings = {};
+    app.backends = {sonn: {url: 'https://sonn.example.test/v1/projects/p', models: ['sonn-auto']}};
     assert.equal(app._accountSummary().sonn, true);
 });
 
@@ -3731,4 +3760,109 @@ test('the terms dialog opens at the top of its text every time', () => {
     elements['terms-dialog-body'].scrollTop = 200;
     elements['terms-dialog-back'].listeners.click();
     assert.equal(elements['terms-dialog-body'].scrollTop, 0);
+});
+
+
+// ── Changed but not verified: which case, and only Verify changes ──────
+// The outcome stays `changed_unverified` (turn_outcomes.py); the card says
+// whether no check was seen, one failed or one is stale, with the backend's
+// wording, and a turn that did its work offers no Retry.
+function finishedCard(outcome, evidence, {handlesTools = false} = {}) {
+    const app = refusedTurnApp();
+    app.handlesTools = handlesTools;
+    app.sendMessage = () => { app.sent = app.userInput.value; };
+    app.sendTurn('Explain what this project does, then suggest one small improvement and make it.');
+    app.handleEvent({event: 'session.end', total_steps: 1, outcome, evidence});
+    const card = app.chatMessages.children.filter(node => node.classList.contains('task-card')).at(-1);
+    const summary = card.children[3].children.find(child => child.classList.contains('task-run-summary'));
+    const actions = summary.children.find(child => child.className === 'task-recovery-actions');
+    return {app, outcome: card.dataset.outcome, label: /task-run-label">([^<]*)/.exec(summary.innerHTML)?.[1],
+        detail: /task-run-detail">([^<]*)/.exec(summary.innerHTML)?.[1], buttons: (actions?.children || []).map(b => b.textContent),
+        click: label => actions.children.find(b => b.textContent === label)};
+}
+
+test('a changed turn says which verification case applies, with the backend in mind', () => {
+    const changed = {changed_files: ['app.py']};
+    const codex = finishedCard('changed_unverified', {...changed, checks: [], cli_backend: 'codex'});
+    assert.equal(codex.outcome, 'changed_unverified');
+    assert.equal(codex.label, 'Changed — not checked');
+    assert.match(codex.detail, /^Lumi didn’t see a check run for these changes\. Checks the model ran inside its own tools aren’t visible to Lumi/);
+    assert.deepEqual(codex.buttons, ['Review', 'Verify changes']);
+
+    const claude = finishedCard('changed_unverified', {...changed, checks: [], cli_backend: 'claude-code'});
+    assert.match(claude.detail, /Checks Claude Code runs inside its own tools aren’t visible to Lumi/);
+    // Asking again couldn't produce a check Lumi sees: no Verify changes.
+    assert.deepEqual(claude.buttons, ['Review']);
+
+    const native = finishedCard('changed_unverified', {...changed, checks: [], cli_backend: ''});
+    assert.equal(native.detail, 'Lumi didn’t see a check run for these changes.');
+
+    const failed = finishedCard('changed_unverified', {...changed, cli_backend: '',
+        checks: [{status: 'passed', command: 'ruff check .'}, {status: 'failed', requirement: 'Tests pass', command: 'pytest -q'}]});
+    assert.equal(failed.label, 'Changed — check failed');
+    assert.match(failed.detail, /^pytest -q failed\./);
+
+    const stale = finishedCard('changed_unverified', {...changed, cli_backend: 'codex',
+        checks: [{status: 'stale', requirement: 'Codex command', command: 'python -m pytest -q'}]});
+    assert.equal(stale.label, 'Changed — check out of date');
+    assert.match(stale.detail, /^python -m pytest -q passed before the last change\./);
+
+    // A save from before evidence.cli_backend: the session's backend decides.
+    const legacy = finishedCard('changed_unverified', {...changed, checks: []}, {handlesTools: true});
+    assert.match(legacy.detail, /inside its own tools/);
+});
+
+test('only turns without their work offer Retry; Verify changes asks for checks Lumi can observe', () => {
+    for (const outcome of ['incomplete', 'failed']) {
+        assert.deepEqual(finishedCard(outcome, {}).buttons, ['Retry', 'Retry another model', 'Continue'], outcome);
+    }
+    const codex = finishedCard('changed_unverified', {changed_files: ['app.py'], checks: [], cli_backend: 'codex'});
+    assert.ok(codex.click('Verify changes'));
+    codex.app._retryTask({requestText: 'x'}, {mode: 'continue', verify: 'codex'});
+    assert.match(codex.app.sent, /Run each check as its own command, without chaining commands/);
+    assert.match(codex.app._verifyChangesPrompt(''), /check_run tool/);
+});
+
+// A CLI backend's earlier messages are progress (session.py close_segment):
+// live and replayed, only the last message is the reply.
+test('a CLI turn shows its earlier messages as progress and only the last as the reply', () => {
+    const command = {event: 'tool.call', name: 'codex_command', call_id: 'codex_ls', arguments: {command: 'ls'}, external: true};
+    const turn = [{event: 'step.start', step: 1},
+        {event: 'text.delta', delta: 'This project is a CLI.'}, {event: 'text.done', text: 'This project is a CLI.', interim: true},
+        command, toolResult(command),
+        {event: 'text.delta', delta: 'It is a CLI; I improved its help text.'}, {event: 'text.done', text: 'It is a CLI; I improved its help text.'},
+        {event: 'step.end', step: 1, elapsed: 1}, {event: 'session.end', total_elapsed: 1, total_steps: 1, outcome: 'answered'}];
+    const replies = app => {
+        const found = [];
+        const walk = node => (node.children || []).forEach(child => {
+            if (child.classList?.contains('msg-assistant')) found.push(child.classList.contains('task-progress-note') ? 'progress' : 'reply');
+            walk(child);
+        });
+        walk(app.chatMessages);
+        return found;
+    };
+    const live = refusedTurnApp();
+    live.handlesTools = true;
+    // The stub DOM can't parse the real message markup; the reply target is real.
+    live.addAssistantMessage = () => {
+        const el = summaryElement();
+        el.className = 'msg-assistant';
+        return live._getTaskResultTarget().appendChild(el);
+    };
+    live.scheduleRender = () => {};
+    live.addToToolActivityGroup = () => {};  // the CLI's tool rows: not under test
+    live.sendTurn('Explain what this project does');
+    turn.slice(0, 3).forEach(event => live.handleEvent(event));
+    // Dimmed as soon as it ends, before the next message arrives.
+    assert.deepEqual(replies(live), ['progress']);
+    turn.slice(3).forEach(event => live.handleEvent(event));
+    assert.deepEqual(replies(live), ['progress', 'reply']);
+    assert.equal(live.streamBuffer, 'It is a CLI; I improved its help text.');
+
+    const saved = turnSummaryApp();
+    saved.handlesTools = true;
+    saved.addToToolActivityGroup = () => {};
+    saved.replayDisplayEvents([{event: 'user_message', text: 'Explain what this project does'},
+        ...turn.filter(event => event.event !== 'text.delta')]);
+    assert.deepEqual(replies(saved), ['progress', 'reply']);
 });

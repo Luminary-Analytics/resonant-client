@@ -64,8 +64,9 @@ def test_chat_supports_structured_outcomes_recovery_and_model_fallback():
         "failed",
     ):
         assert outcome in source
-    assert 'data-recovery="retry"' in source
-    assert 'data-recovery="alternate"' in source
+    # Which outcomes offer which buttons: tests/ui_recovery.test.cjs.
+    assert "['retry', 'Retry', { mode: 'retry' }]" in source
+    assert "['alternate', 'Retry another model', { mode: 'retry', alternate: true }]" in source
     assert "this.permissionMode === 'bypass'" in source
     assert "_selectAlternateModelValue()" in source
 

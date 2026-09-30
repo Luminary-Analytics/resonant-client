@@ -23,6 +23,7 @@ refused before it's made. The GitLab token follows the same rule
 
 from __future__ import annotations
 
+import contextvars
 import os
 import re
 import subprocess
@@ -30,7 +31,13 @@ import time
 from dataclasses import dataclass
 from typing import Any, Callable
 
+from ..safe_git import GitRefused, run as _safe_git
+
 _token_source: Callable[[], str] = lambda: ""  # noqa: E731
+# Whether the session's project is trusted (tools.execute_tool sets it for a
+# call): its Git settings' programs and its hooks on push (lumi/safe_git.py).
+project_trusted: contextvars.ContextVar[bool | None] = contextvars.ContextVar("lumi_github_project_trusted",
+                                                                               default=None)
 _hosts_source: Callable[[str], Any] = lambda key: []  # noqa: E731
 _transport: Any = None  # httpx.MockTransport in tests
 _BODY_LIMIT = 1_500
@@ -212,7 +219,12 @@ def _git(cwd: str, *args: str) -> str:
         remote = next((arg for arg in args[1:] if not arg.startswith("-")), "origin")
         _check_push(cwd, remote)
     try:
-        completed = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True, timeout=30)
+        # The installed Git without the programs a repository's settings name;
+        # a push someone asked for runs a trusted project's hooks, as theirs would.
+        completed = _safe_git(cwd, *args, trusted_project=project_trusted.get(), hooks=args[:1] == ("push",),
+                              timeout=30)
+    except GitRefused as exc:
+        raise GitHubError(str(exc)) from exc
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise GitHubError(f"git {' '.join(args)} failed: {exc}") from exc
     if completed.returncode != 0:

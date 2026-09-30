@@ -565,10 +565,10 @@ def test_managed_search_refuses_path_resolution_without_bundled_binary(tmp_path,
     import lumi.engine.tools as tools
     monkeypatch.setattr(tools, "_VENDORED_RIPGREP_DIR", tmp_path / "missing")
     monkeypatch.delattr(sys, "_MEIPASS", raising=False)
-    monkeypatch.setattr(tools.shutil, "which", lambda _: pytest.fail("Managed search consulted PATH"))
-    tools._ripgrep_executable.cache_clear()
+    monkeypatch.setattr(tools, "find_program", lambda *a, **k: pytest.fail("Managed search consulted PATH"))
+    tools._bundled_ripgrep.cache_clear()
     try:
         with pytest.raises(FileNotFoundError, match="PATH executables"):
             tools._build_grep_command("pattern", str(tmp_path), "", trusted_only=True)
     finally:
-        tools._ripgrep_executable.cache_clear()
+        tools._bundled_ripgrep.cache_clear()

@@ -56,6 +56,9 @@ def test_valid_startup_injects_captured_helper_before_launch_without_network(tmp
     monkeypatch.setitem(sys.modules, "lumi.gui.app", SimpleNamespace(configure_managed_startup=lambda value: calls.append(("inject", value))))
     monkeypatch.setitem(sys.modules, "lumi.gui.server", SimpleNamespace(main=lambda: calls.append(("gui", list(sys.argv)))))
     monkeypatch.setitem(sys.modules, "lumi.updater", SimpleNamespace(init_updater=lambda: calls.append(("updater",))))
+    # The app leaves the folder it was started in before anything else runs (lumi/executables.py).
+    monkeypatch.setattr("lumi.executables.leave_working_folder", lambda: calls.append(("leave",)))
     monkeypatch.setattr(sys, "argv", ["sonn", "gui", "--browser", "--swarm-managed-config", path])
     entry.main()
-    assert calls == [("load", path), ("helper", "captured"), ("inject", helper), ("updater",), ("gui", ["sonn", "--browser"])]
+    assert calls == [("leave",), ("load", path), ("helper", "captured"), ("inject", helper), ("updater",),
+                     ("gui", ["sonn", "--browser"])]

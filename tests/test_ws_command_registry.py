@@ -592,16 +592,14 @@ def test_open_workspace_path_opens_a_file_inside_the_active_project(tmp_path):
         project=SimpleNamespace(project_path=str(tmp_path), current_session=None),
     )
 
-    with (
-        patch.object(ws_commands.sys, "platform", "win32"),
-        patch.object(ws_commands.os, "startfile", create=True) as startfile,
-    ):
+    # The system's opener (lumi/executables.py), with the file's full path.
+    with patch.object(ws_commands, "open_path") as opened:
         sent = _run(
             ws_commands.HANDLERS["open_workspace_path"],
             _ctx(msg={"path": "result.md"}, state=state),
         )
 
-    startfile.assert_called_once_with(str(target.resolve()))
+    opened.assert_called_once_with(target.resolve())
     assert sent[-1]["message"] == "Opened result.md"
 
 
@@ -614,13 +612,13 @@ def test_open_workspace_path_rejects_paths_outside_the_project(tmp_path):
         project=SimpleNamespace(project_path=str(project), current_session=None),
     )
 
-    with patch.object(ws_commands.os, "startfile", create=True) as startfile:
+    with patch.object(ws_commands, "open_path") as opened:
         sent = _run(
             ws_commands.HANDLERS["open_workspace_path"],
             _ctx(msg={"path": str(outside)}, state=state),
         )
 
-    startfile.assert_not_called()
+    opened.assert_not_called()
     assert "outside the active project" in sent[-1]["message"]
 
 

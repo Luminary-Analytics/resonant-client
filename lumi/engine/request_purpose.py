@@ -31,12 +31,15 @@ def auxiliary_stream(backend, purpose: str, *, usage_context: dict | None = None
 
 
 def _terms_refusal():
-    """An answer carrying the refusal of Lumi's terms while they wait to be accepted, else None."""
-    from .. import dlp
-    from ..terms import REFUSAL_CODE
+    """An answer carrying the refusal of Lumi's terms while they wait to be accepted (or an unusable machine
+    policy's error, which comes first), else None."""
+    from .. import dlp, terms
 
     refusal = dlp.terms_refusal()
-    return iter([("error", {"message": refusal, "code": REFUSAL_CODE})]) if refusal else None
+    if not refusal:
+        return None
+    code = terms.POLICY_CODE if terms.machine_policy_error() else terms.REFUSAL_CODE
+    return iter([("error", {"message": refusal, "code": code})])
 
 
 def _offline_refusal(backend):

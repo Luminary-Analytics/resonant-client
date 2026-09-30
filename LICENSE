@@ -1,10 +1,10 @@
 Copyright (c) 2026 Luminary Analytics, LLC. All rights reserved.
 
 Lumi is proprietary software. You may use it only under a written license
-from Luminary Analytics or under the Lumi End User License Agreement provided
-with the software (lumi/legal/EULA.md; in the app, Settings > About Lumi).
-Pre-release builds are also subject to the Lumi Alpha and Beta Test Terms
-(lumi/legal/ALPHA-TERMS.md). No other rights are granted.
+from Luminary Analytics, LLC or under the Lumi End User License Agreement
+provided with the software (lumi/legal/EULA.md; in the app, Settings > About
+Lumi). Pre-release builds are also subject to the Lumi Alpha and Beta Test
+Terms (lumi/legal/ALPHA-TERMS.md). No other rights are granted.
 
 The Extension SDK (the sdk/ folder) is licensed under the Lumi Extension SDK
 License (sdk/LICENSE), which lets developers use it to build and distribute
@@ -17,16 +17,16 @@ packaging/third-party-components.json.
 Earlier copies remain under the MIT License, under which they were
 published:
 
-- the releases tagged v0.6.3a1 through v0.19.1 (May 15 to September 13,
-  2026), published as Resonant Client (0.6.3a1 through 0.6.10), Resonant
-  (0.6.11 through 0.18.2) and SONN Client (0.19.0 and 0.19.1);
-- this repository's source code from commit c00f29c (May 15, 2026), which
-  applied the MIT License, until commit beb2848 (September 27, 2026), which
-  replaced it, and builds made from that source code; and
-- the Extension SDK and the VS Code extension as published here from
-  September 25, 2026 until their current licenses replaced the MIT License.
-  Neither was part of a release.
+- every commit of this repository whose LICENSE file is the MIT License,
+  and every release and build made from one, including the releases
+  published as Resonant Client, Resonant and SONN Client (tagged v0.6.3a1
+  through v0.19.1); and
+- the Extension SDK and the VS Code extension in every commit where the
+  license file that comes with them is the MIT License. Neither was part
+  of a release.
 
-The releases tagged v0.2.0 through v0.6.2 were not published under the MIT
-License. Lumi's releases under the End User License Agreement start at
-0.20.0. Section 5.4 of the agreement says the same.
+The MIT License first appeared in commit c00f29c (May 15, 2026). Nothing
+published before it is under the MIT License, including the releases tagged
+v0.2.0 through v0.6.2. Every other copy, including every release from
+0.20.0 on, is licensed as above. Section 5.4 of the End User License
+Agreement says the same.

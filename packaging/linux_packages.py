@@ -105,10 +105,10 @@ Upstream-Name: Lumi
 Source: {HOMEPAGE}
 
 Files: *
-Copyright: 2026 Luminary Analytics. All rights reserved.
+Copyright: 2026 Luminary Analytics, LLC. All rights reserved.
 License: proprietary
  Lumi is proprietary software. You may use it only under a written license
- from Luminary Analytics or under the Lumi End User License Agreement
+ from Luminary Analytics, LLC or under the Lumi End User License Agreement
  provided with the software, in /opt/lumi/_internal/lumi/legal/EULA.md
  (with the Alpha and Beta Test Terms, ALPHA-TERMS.md, for pre-release
  builds, and the privacy notice, PRIVACY.md). No other rights are granted.

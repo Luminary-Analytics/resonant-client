@@ -51,6 +51,7 @@
     "_internal/lumi/code_editors/vscode/extension.js",
     "_internal/lumi/code_editors/vscode/bridge.js",
     "_internal/lumi/code_editors/vscode/package.json",
+    "_internal/lumi/code_editors/vscode/LICENSE.txt",
     "_internal/keyring-*.dist-info/entry_points.txt",
     "_internal/licenses/THIRD_PARTY_NOTICES.txt"
   ],

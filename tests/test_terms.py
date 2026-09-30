@@ -734,6 +734,91 @@ class TestOnlyHardenedMachineSourcesAccept:
         assert policy.terms_accepted_by() == ("", "") and terms.pending()
 
 
+class TestAMachinePolicyInErrorDecidesFirst:
+    """The re-review of PR #104 (probe 3): a Group Policy PolicyFile out of reach fails closed, but the app
+    asked the person to accept the terms instead of saying so, and recorded their acceptance while nobody
+    could tell whether the organization had accepted for them."""
+
+    DOCUMENT = {"schema": policy.SCHEMA, "organization": "Acme", "legal": {"accepted_by_organization": "Acme"}}
+
+    @pytest.fixture
+    def out_of_reach(self, pending, monkeypatch, tmp_path):
+        """Group Policy names a file on a share that isn't there right now."""
+        share = tmp_path / "share"
+        monkeypatch.setattr(policy, "_registry_values", lambda: {"PolicyFile": str(share / "lumi-policy.json")})
+        monkeypatch.setattr(policy, "machine_policy_file", lambda: tmp_path / "no-machine" / "policy.json")
+        monkeypatch.setattr(policy, "MAC_MANAGED_PREFERENCES", tmp_path / "no-managed-preferences")
+        monkeypatch.delenv("LUMI_POLICY_FILE", raising=False)
+        state = policy.load(force=True)
+        assert state.error and state.from_machine and policy.machine_error() == policy.blocked_reason() != ""
+        yield share
+        policy.set_for_tests(None)
+
+    def test_the_gate_says_the_policy_cant_be_read_not_that_the_terms_wait(self, out_of_reach, tmp_path):
+        error = policy.blocked_reason()
+        assert oversight.gate("app") == (error, "policy_blocked")
+        assert oversight.refusal("terminal") == error and terms.gate("request") == (error, terms.POLICY_CODE)
+        status = terms.status()
+        assert status["policy_error"] == error and status["organization"] == ""
+        # A session's turn is refused the same way, with the code the page ends its running state on.
+        session = _session(tmp_path, NeverCalled())
+        [refusal] = [event for event in session.run("hello") if event.get("event") == "error"]
+        assert refusal["code"] == "policy_blocked" and refusal["message"] == error
+        # Underneath, every model request too.
+        from lumi import dlp
+
+        with pytest.raises(dlp.Blocked) as blocked:
+            dlp.refuse_until_terms_accepted()
+        assert blocked.value.code == "policy_blocked"
+
+    def test_no_one_accepts_personally_while_it_cant_be_read(self, out_of_reach, capsys):
+        with pytest.raises(terms.TermsError, match="records no acceptance"):
+            terms.accept(_versions(), "app")
+        assert terms.main(["accept", terms.acceptance_value(terms.required())]) == 1
+        assert "records no acceptance" in capsys.readouterr().err
+        # Nor from the app's dialog: its window hears why, and the terms are still to be decided.
+        answer = _command("terms_accept", documents=_versions())
+        assert answer[0] == {"event": "error", "code": "policy_blocked", "message": answer[0]["message"]}
+        assert "records no acceptance" in answer[0]["message"] and answer[-1]["event"] == "terms_status"
+        assert not terms.record_path().exists()
+
+    def test_once_it_can_be_read_the_policy_decides(self, out_of_reach):
+        (out_of_reach).mkdir()
+        (out_of_reach / "lumi-policy.json").write_text(json.dumps(self.DOCUMENT), encoding="utf-8")
+        policy.load(force=True)
+        assert policy.machine_error() == "" and terms.pending() == [] and oversight.gate("app") == ("", "")
+        # A policy that doesn't accept for anyone leaves the terms to the person again.
+        (out_of_reach / "lumi-policy.json").write_text(json.dumps({**self.DOCUMENT, "legal": {}}), encoding="utf-8")
+        policy.load(force=True)
+        assert oversight.gate("app")[1] == REFUSED and terms.status()["policy_error"] == ""
+        assert terms.accept(_versions(), "app") and terms.pending() == []
+
+    def test_a_lumi_policy_file_in_error_leaves_the_terms_to_the_person(self, pending, monkeypatch, tmp_path):
+        """LUMI_POLICY_FILE, which a person sets, can't accept for anyone, so its errors don't stand in for the
+        organization's decision: the terms come first, and the policy still refuses every request."""
+        monkeypatch.setattr(policy, "_registry_values", lambda: {})
+        monkeypatch.setattr(policy, "machine_policy_file", lambda: tmp_path / "no-machine" / "policy.json")
+        monkeypatch.setattr(policy, "MAC_MANAGED_PREFERENCES", tmp_path / "no-managed-preferences")
+        monkeypatch.setenv("LUMI_POLICY_FILE", str(tmp_path / "missing.json"))
+        try:
+            state = policy.load(force=True)
+            assert state.error and not state.from_machine and policy.machine_error() == ""
+            assert oversight.gate("app")[1] == REFUSED and terms.status()["policy_error"] == ""
+            assert terms.accept(_versions(), "app") and policy.blocked_reason()
+        finally:
+            policy.set_for_tests(None)
+
+    def test_any_machine_source_in_error_counts(self, pending):
+        policy.set_for_tests(None, error="The organization policy at C:\\ProgramData\\Lumi\\policy.json is invalid.",
+                             machine=True)
+        try:
+            assert oversight.gate("mission")[1] == "policy_blocked" and terms.status()["policy_error"]
+            with pytest.raises(terms.TermsError):
+                terms.accept(_versions(), "terminal")
+        finally:
+            policy.set_for_tests(None)
+
+
 class TestNothingWaitsInTheWrongPlace:
     def test_tasks_from_chat_wait_in_lumi_cloud_until_the_terms_are_accepted(self, pending, tmp_path):
         """The review's probe: each queued chat request was claimed, refused and reported failed."""

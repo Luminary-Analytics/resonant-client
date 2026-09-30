@@ -1,5 +1,5 @@
 {
-  "_comment": "Third-party parts of the Lumi installer that are not Python packages, including code ported into Lumi's own modules (kind \"Ported source code\", with the original's license file). packaging/third_party_notices.py adds them to THIRD_PARTY_NOTICES.txt and the release SBOM, each with its license text: license_files names committed copies, pinned to the version (the file name carries it); license_from takes the text from the build itself, \"python\" from the Python it embeds and \"distribution:<name>\" from that installed package, so it is the shipped version's. A component without a license text fails the build. Keep versions in step with the fetch scripts and the spec; tests/test_release_supply_chain.py checks that they agree.",
+  "_comment": "Third-party parts of the Lumi installer that are not Python packages, including code ported into Lumi's own modules (kind \"Ported source code\", with the original's license file). packaging/third_party_notices.py adds them to THIRD_PARTY_NOTICES.txt and the release SBOM, each with its license text: license_files names committed copies, pinned to the version (the file name carries it; packaging/licenses keeps upstream's bytes, so .gitattributes exempts it from whitespace checks); license_from takes the text from the build itself, \"python\" from the Python it embeds and \"distribution:<name>\" from that installed package, so it is the shipped version's. A component without a license text fails the build, and so does a shipped Python package without one (python_packages). Keep versions in step with the fetch scripts and the spec; tests/test_release_supply_chain.py checks that they agree.",
   "not_shipped": {
     "_comment": "Installed as dependencies but excluded from the bundle (packaging/lumi.spec reads this list). The notices leave them out.",
     "mouseinfo": "GPL-3.0-or-later. A PyAutoGUI dependency for its mouseInfo() tool, which Lumi never calls; PyAutoGUI works without it.",
@@ -8,6 +8,44 @@
   },
   "license_reviews": {
     "_comment": "Python packages with copyleft licenses that were reviewed and may ship: package name to the reason. third_party_notices.py fails the build for any other GPL, AGPL or LGPL package."
+  },
+  "python_packages": {
+    "_comment": "Shipped Python packages whose wheels and source distributions carry no license text: a committed copy of the license from the project's repository at that release (the file name carries the version), and the license it grants where the package metadata says otherwise. third_party_notices.py uses them, and fails the build when the installed version isn't this one (check the new release's license, then update the entry) or when any other shipped package has no license text.",
+    "proxy-tools": {
+      "version": "0.1.0",
+      "license": "BSD-2-Clause",
+      "url": "https://github.com/jtushman/proxy_tools",
+      "license_files": ["packaging/licenses/proxy-tools-0.1.0-LICENSE.txt"],
+      "note": "Its package metadata says MIT, but its source says it was extracted from Werkzeug under the BSD license, and its repository's LICENSE.txt at the 0.1.0 release (commit 70b751e) is that license, copyright 2013 Armin Ronacher and 2014 Jonathan Tushman. A dependency of pywebview."
+    },
+    "pygetwindow": {
+      "version": "0.0.9",
+      "license": "BSD-3-Clause",
+      "url": "https://github.com/asweigart/PyGetWindow",
+      "license_files": ["packaging/licenses/pygetwindow-0.0.9-LICENSE.txt"],
+      "note": "The repository's LICENSE.txt at the 0.0.9 release (commit be24279). A dependency of PyAutoGUI."
+    },
+    "pyobjc-core": {
+      "version": "12.2.2",
+      "license": "MIT",
+      "url": "https://github.com/ronaldoussoren/pyobjc",
+      "license_files": ["packaging/licenses/pyobjc-12.2.2-License.txt"],
+      "note": "pyobjc-core/License.txt at the repository's v12.2.2 tag. macOS only."
+    },
+    "pyobjc-framework-security": {
+      "version": "12.2.2",
+      "license": "MIT",
+      "url": "https://github.com/ronaldoussoren/pyobjc",
+      "license_files": ["packaging/licenses/pyobjc-12.2.2-License.txt"],
+      "note": "pyobjc-framework-Security/License.txt at the repository's v12.2.2 tag, the same text as pyobjc-core's. macOS only."
+    },
+    "pyobjc-framework-uniformtypeidentifiers": {
+      "version": "12.2.2",
+      "license": "MIT",
+      "url": "https://github.com/ronaldoussoren/pyobjc",
+      "license_files": ["packaging/licenses/pyobjc-12.2.2-License.txt"],
+      "note": "pyobjc-framework-UniformTypeIdentifiers/License.txt at the repository's v12.2.2 tag, the same text as pyobjc-core's. macOS only."
+    }
   },
   "components": [
     {
@@ -37,16 +75,29 @@
       "platforms": ["win32"]
     },
     {
+      "name": "ripgrep's Rust crates and PCRE2",
+      "version": "15.2.0",
+      "license": "MIT AND BSD-3-Clause",
+      "url": "https://github.com/BurntSushi/ripgrep",
+      "license_files": ["packaging/licenses/ripgrep-15.2.0-crates-LICENSES.txt"],
+      "note": "The third-party Rust crates rg.exe links, at the versions ripgrep 15.2.0's Cargo.lock pins, and PCRE2, which pcre2-sys compiles in (BSD-3-Clause WITH PCRE2-exception). A crate offered under the MIT License or another license is used under the MIT License; encoding_rs's WHATWG notice is BSD-3-Clause. packaging/ripgrep_crate_licenses.py writes the file for a new ripgrep.",
+      "platforms": ["win32"]
+    },
+    {
       "name": "WinSparkle",
       "version": "0.9.2",
-      "license": "MIT",
+      "license": "MIT AND OpenSSL AND (LGPL-2.0-or-later WITH WxWindows-exception-3.1) AND Zlib",
       "url": "https://winsparkle.org/",
       "purl": "pkg:github/vslavik/winsparkle@0.9.2",
       "license_files": [
         "packaging/winsparkle/WinSparkle-0.9.2/COPYING",
-        "packaging/winsparkle/WinSparkle-0.9.2/COPYING.expat"
+        "packaging/winsparkle/WinSparkle-0.9.2/COPYING.expat",
+        "packaging/licenses/openssl-1.0.2u-LICENSE.txt",
+        "packaging/licenses/wxwidgets-3.2.2.1-licence.txt",
+        "packaging/licenses/wxwidgets-3.2.2.1-lgpl.txt",
+        "packaging/licenses/ed25519-7fa6712-license.txt"
       ],
-      "note": "Windows update checks. Includes the Expat XML parser (MIT).",
+      "note": "Windows update checks. WinSparkle.dll links, at the commits WinSparkle 0.9.2 pins: the Expat XML parser (MIT); OpenSSL 1.0.2u's libcrypto (the OpenSSL License and the original SSLeay License, which both apply); wxWidgets 3.2.2.1 (the wxWindows Library Licence 3.1, whose exception lets binaries be distributed on any terms; the GNU Library General Public Licence it builds on follows it); and orlp/ed25519 at commit 7fa6712 (Zlib).",
       "platforms": ["win32"]
     },
     {
@@ -94,6 +145,20 @@
       "purl": "pkg:npm/%40fontsource/inter@5.0.17",
       "license_files": ["packaging/licenses/inter-5.0.17-OFL.txt"],
       "note": "Latin subset, weights 400 to 700, from the @fontsource/inter package."
+    },
+    {
+      "name": "Microsoft WebView2 SDK",
+      "version": "1.0.3856.49",
+      "license": "BSD-3-Clause",
+      "url": "https://www.nuget.org/packages/Microsoft.Web.WebView2",
+      "purl": "pkg:nuget/Microsoft.Web.WebView2@1.0.3856.49",
+      "license_files": [
+        "packaging/licenses/microsoft.web.webview2-1.0.3856.49-LICENSE.txt",
+        "packaging/licenses/microsoft.web.webview2-1.0.3856.49-NOTICE.txt"
+      ],
+      "shipped_by": {"package": "pywebview", "version": "6.2.1"},
+      "note": "Microsoft.Web.WebView2.Core.dll, Microsoft.Web.WebView2.WinForms.dll and WebView2Loader.dll, which pywebview 6.2.1 ships for the window Lumi shows; the WebView2 runtime itself is part of Windows. The texts are the NuGet package's LICENSE.txt and NOTICE.txt.",
+      "platforms": ["win32"]
     },
     {
       "name": "pi-coding-agent",

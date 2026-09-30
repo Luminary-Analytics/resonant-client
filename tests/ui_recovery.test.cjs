@@ -583,7 +583,7 @@ test('Settings say device management updates an MSI or PKG copy', () => {
     assert.match(app._renderUpdateStatus(), /installed from the Debian package, so your package manager updates it/);
     app.aboutInfo = {version: '0.20.0', license: 'Lumi End User License Agreement', installed_by: 'pkg'};
     assert.match(app._renderAbout(), /Installed from the macOS installer package; your organization’s device management updates it\./);
-    assert.match(app._renderAbout(), /© Luminary Analytics\. All rights reserved\. Licensed under the Lumi End User License Agreement\./);
+    assert.match(app._renderAbout(), /© Luminary Analytics, LLC\. All rights reserved\. Licensed under the Lumi End User License Agreement\./);
     assert.doesNotMatch(app._renderAbout(), /MIT|source is available/);
     app.aboutInfo.installed_by = 'rpm';
     assert.match(app._renderAbout(), /Installed from the RPM package; your package manager updates it\./);
@@ -3107,4 +3107,66 @@ test('About Lumi on a stable build offers no test terms, and says what leaves th
     assert.doesNotMatch(stable, /receives only the update check/);
     assert.match(stable, /Lumi Cloud receives more only when you sign in or this computer is enrolled/);
     assert.match(stable, /usage and crash counts/);
+    // The re-review: oversight's records go to Lumi Cloud too.
+    assert.match(stable, /the records your organization’s oversight asks for/);
+});
+
+test('an organization policy that can’t be read shows its error, not the terms, and nothing to accept', () => {
+    // The re-review of PR #104: an unreachable Group Policy PolicyFile opened the terms dialog, and
+    // accepting recorded a personal acceptance while the organization's own acceptance was unknown.
+    const {app, elements, document} = termsView();
+    const error = 'The policy file Group Policy names couldn’t be read: \\\\fileserver\\it\\lumi-policy.json. Ask your administrator to fix it.';
+    document.activeElement = elements['user-input'];
+    app._applyTerms({...TERMS, policy_error: error});
+    assert.notEqual(elements['terms-dialog'].style.display, 'flex');
+    assert.equal(elements['terms-notice'].hidden, false);
+    assert.equal(elements['terms-notice-text'].textContent, error);
+    assert.equal(elements['terms-notice-review'].hidden, true);
+    // The message box stays open, as for the policy's other refusals: the server refuses what's sent.
+    assert.equal(elements['user-input'].disabled, false);
+    assert.equal(elements['user-input'].placeholder, 'Message Lumi');
+    assert.equal(document.activeElement, elements['user-input']);
+    // Opened from About to read, the dialog offers no Accept, and a click on it sends nothing.
+    app.openTermsDialog();
+    assert.equal(elements['terms-dialog-accept'].hidden, true);
+    assert.equal(elements['terms-dialog-error'].textContent, error);
+    elements['terms-dialog-accept'].listeners.click({isTrusted: true});
+    assert.equal(app.sent.filter(message => message.command === 'terms_accept').length, 0);
+    app.closeTermsDialog();
+    // Fixed, the policy accepts for its organization: nothing waits.
+    app._applyTerms({...TERMS, pending: false, organization: 'Acme',
+        required: TERMS.required.map(doc => ({...doc, accepted: false}))});
+    assert.equal(elements['terms-notice'].hidden, true);
+    assert.equal(elements['terms-notice-review'].hidden, false);
+    assert.equal(elements['user-input'].disabled, false);
+    // Fixed without accepting for anyone: now the person is asked.
+    app._applyTerms({...TERMS, acceptance_value: 'eula-1.0,alpha-terms-1.0'});
+    assert.equal(elements['terms-dialog'].style.display, 'flex');
+    assert.equal(elements['terms-dialog-accept'].hidden, false);
+});
+
+test('the terms dialog opens at the top of its text every time', () => {
+    const {app, elements, document} = termsView();
+    const card = {scrollTop: 0};
+    elements['terms-dialog'].querySelector = selector => (selector === '.terms-dialog' ? card : null);
+    app._applyTerms(TERMS);
+    app._receiveLegalDocument({id: 'eula', format: 'text', text: 'The agreement'});
+    app._receiveLegalDocument({id: 'alpha_terms', format: 'text', text: 'The test terms'});
+    // The person reads down, then closes the dialog.
+    elements['terms-dialog-body'].scrollTop = 900;
+    card.scrollTop = 40;
+    elements['terms-dialog'].listeners.keydown({key: 'Escape', preventDefault() {}, stopPropagation() {}});
+    elements['terms-notice-review'].listeners.click({currentTarget: elements['terms-notice-review']});
+    assert.equal(elements['terms-dialog'].style.display, 'flex');
+    assert.equal(elements['terms-dialog-body'].scrollTop, 0);
+    assert.equal(card.scrollTop, 0);
+    assert.equal(document.activeElement, elements['terms-dialog-body']);
+    // So does another text, and the way back to the terms.
+    elements['terms-dialog-body'].scrollTop = 300;
+    elements['terms-dialog-privacy'].listeners.click();
+    assert.equal(elements['terms-dialog-body'].scrollTop, 0);
+    app._receiveLegalDocument({id: 'privacy', format: 'text', text: 'The notice'});
+    elements['terms-dialog-body'].scrollTop = 200;
+    elements['terms-dialog-back'].listeners.click();
+    assert.equal(elements['terms-dialog-body'].scrollTop, 0);
 });

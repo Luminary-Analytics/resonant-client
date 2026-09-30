@@ -8,6 +8,101 @@ The heartbeat remains paused. Documentation maintenance does not resume work,
 spending or grants, and changes no native implementation or installed bundle.
 The dated September 15/18 records below are historical.
 
+## September 29 Lumi's terms: the re-review's follow-ups (source only, not released)
+
+A second review of Lumi's terms (PR #104) found no blocker; these are its
+follow-ups. The texts' version 1.0 was never in a release and changes once
+more here; from now on `packaging/legal-published-pins.json` fixes each
+published version's text.
+
+- **Every shipped part comes with its license text** (EULA 5.1 promises it).
+  proxy-tools 0.1.0 and PyGetWindow 0.0.9 ship none, and on macOS neither do
+  pyobjc-core, pyobjc-framework-Security and
+  pyobjc-framework-UniformTypeIdentifiers 12.2.2: the components file's new
+  `python_packages` gives each a copy from its repository at that release
+  (proxy-tools is BSD, as its source says, though its metadata says MIT).
+  WinSparkle's entry adds the libraries its DLL links (OpenSSL 1.0.2u,
+  wxWidgets 3.2.2.1 with the LGPL its licence builds on, and orlp/ed25519);
+  new entries cover the Rust crates and PCRE2 in ripgrep's `rg.exe`
+  (`packaging/ripgrep_crate_licenses.py` writes their texts) and the WebView2
+  SDK's DLLs that pywebview ships. Writing the notices now fails for any
+  shipped Python package without a text, or with a committed text for
+  another version, as it did for the other components. The SBOM names the
+  PyInstaller bootloader version the release lock pins, not the calling
+  Python's. `packaging/licenses/` keeps upstream's bytes (DOMPurify's trailing
+  blank line included): `.gitattributes` spares it whitespace checks.
+- **The MIT copies are described by content**: every commit whose LICENSE
+  file is the MIT License, and what was built from one (the MIT License first
+  appeared in commit c00f29c; nothing before it was MIT), and the SDK and VS
+  Code extension wherever their own license file is the MIT License. MIT
+  commits reached `main` after the relicensing commit through a merge, so no
+  range could name them. The product names lost their version boundaries.
+- **A machine policy Lumi can't use decides first.** While an administrator's
+  policy (a Group Policy `PolicyFile` out of reach, say) can't be used, the
+  app shows its error above the message box instead of the terms dialog, the
+  gate and every model request refuse with `policy_blocked`, and no one's own
+  acceptance is recorded (`terms.accept` and `lumi terms accept` refuse), since
+  that policy may accept for them once it can be read. A `LUMI_POLICY_FILE` in
+  error, which a person sets, still leaves the terms to the person.
+- **The MSI's remembered `POLICYFILE`** comes back on an upgrade only while
+  the `PolicyFile` value still equals it, so deleting the value stops using
+  the file (docs/deploy-windows.md); CI's upgrade leg checks both.
+- **The texts:** the privacy notice says a DLP service's `on_error: allow`
+  lets requests go when it can't answer, that oversight sends full project
+  paths with `project_paths` and every argument kind it records (queries and
+  web addresses too), that a gateway chat confirms the notice for everyone in
+  it, that check-ins can come every five minutes, and that oversight's
+  records are among the telemetry exceptions. EULA 11.2 points to the privacy
+  notice for deleting data; the acceptance paragraphs say "answer yes (typing
+  yes or y)" and call `LUMI_ACCEPT_TERMS` an environment variable; the SDK
+  license keeps consumers' non-waivable rights; `LICENSE`, the installers'
+  publisher and the copyright notices name Luminary Analytics, LLC. Settings
+  says the same about check-ins and oversight's arguments.
+- **A published version's pin can't be rewritten:**
+  `packaging/legal-published-pins.json` records every published version's
+  hash; `check` fails while a text or its pin differs from its version's
+  record (its message never offers the hash to re-pin the same version), and
+  `release-check` also fails when the last release tag's record or pins
+  changed or went.
+- **The EXE installer:** uninstalling removes the empty `Luminary Analytics`
+  keys above its record; `license-versions.iss` names the version it was
+  rendered for, and compiling for another stops (CI checks both ways);
+  docs/updates.md says an update stops on the license page when the terms
+  changed, and that cancelling there leaves Lumi closed and not updated.
+- **Smaller:** `lumi_extension.__version__` (1.1.0) and the SDK's PEP 639
+  `license-files`; the bundle policies require the VS Code extension's
+  `LICENSE.txt`; the terms dialog opens at the top of its text every time.
+- **CI:** build-check also builds a stable (EULA-only) MSI, and compares each
+  MSI's license page with the text `legal_texts.py` renders for its version;
+  the macOS build compares the DMG's and the PKG's texts byte for byte.
+
+Validation on September 29, 2026, on this branch merged with `main` (PRs
+#109, #110 and #111, so no real scheduled tasks):
+
+- `ruff check .` is clean; `node --check` passes for `app.js`,
+  `settings_view.js`, `terms_view.js` and `run_cards.js`; the six Node UI
+  test files pass (162 tests; new: a machine policy that can't be read, the
+  dialog opening at the top).
+- The full pytest suite in a throwaway home (Python 3.13.5, six workers):
+  6,775 passed and 31 skipped. The swarm benchmark runner's tests need a Git
+  checkout (they fail in an archive extract) and pass in one (37). Two
+  (`test_a_child_left_suspended_outside_its_job…` and
+  `test_malformed_child_protocol…[early-eof]`) fail the same way on this
+  computer without these changes.
+- Against the code before these changes, all 22 new or changed Python tests
+  fail, and the three new or changed Node tests.
+- In headless Edge with real key presses (`tests/terms_acceptance.browser.cjs`):
+  the dialog, read to the end and closed, reopens from Review terms at the
+  top of its text with the text focused; a machine policy that can't be read
+  shows its error above an open message box, with no dialog and nothing to
+  accept, a sent message and a hand-made acceptance are refused with
+  `policy_blocked` (the message comes back, "Not sent"), and nothing is
+  recorded; at 375 px in both themes the notice fits, with contrast of 13.4:1
+  or more. The policy, oversight, DLP and panels browser checks pass.
+- The SDK builds a wheel whose metadata names its license file (PEP 639).
+- Not run on this computer: Inno Setup, WiX, and the macOS and Linux builds;
+  CI runs them.
+
 ## September 29 Lumi's terms: the EULA, the alpha terms, a privacy notice, and accepting them (source only, not released)
 
 The owner decided on September 27: no MIT License for this build. The
@@ -494,8 +589,8 @@ wording is a draft for counsel.
   (Superseded: Lumi's terms, above, add license pages to all three.)
 - **Before the next release,** the End User License Agreement has to exist
   and ship with the installers: `LICENSE` names an agreement "provided with
-  the software". (Done in Lumi's terms, above; its entity facts are still to
-  be provided.)
+  the software". (Done in Lumi's terms, above, with the entity facts the
+  owner gave on September 29.)
 - **Still to decide:** whether the repository stays public. On the
   organization's free GitHub plan, a private repository turns GitHub Pages
   off, and Pages serves the installers and the update feed (`FEED_BASE` in

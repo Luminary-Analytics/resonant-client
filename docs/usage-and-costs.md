@@ -171,8 +171,9 @@ spend across every computer, and Lumi adds this computer's spend since then.
 When that reaches the credit, model requests stop ("This month's spend
 across Acme is $51.00, which reaches Acme's $50.00 shared model credit.")
 until next month or a higher amount. Usage & cost lists it with the other
-budgets. Check-ins are hourly, so the organization can pass the credit by
-up to an hour of use across its computers.
+budgets. Check-ins are hourly unless Lumi Cloud asks for them more often, so
+the organization can pass the credit by up to an hour of use across its
+computers.
 
 ## Not covered yet
 

@@ -7,10 +7,11 @@ name = "lumi"
 version = "0.20.0.dev0"
 description = "Provider-adaptive multimodal coding agent for local and hosted models"
 readme = "README.md"
-# Proprietary since September 2026: see LICENSE, which names the earlier
-# releases and source published under the MIT License (Resonant Client,
-# Resonant and SONN Client, v0.6.3a1 through v0.19.1, and main before commit
-# beb2848). Versions start at 0.20.0 so none is theirs. The table form, not a
+# Proprietary since September 2026: see LICENSE, which describes the earlier
+# copies published under the MIT License (every commit whose LICENSE file is
+# the MIT License, from commit c00f29c on, and the releases v0.6.3a1 through
+# v0.19.1 built from them; nothing before c00f29c, such as v0.2.0 through
+# v0.6.2, was MIT). Versions start at 0.20.0 so none is theirs. The table form, not a
 # PEP 639 SPDX string, keeps the build working with setuptools>=68 and
 # allows the License classifier below.
 license = {text = "Proprietary"}

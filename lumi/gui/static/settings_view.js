@@ -330,7 +330,7 @@ class LumiSettingsView {
         // model requests, update checks, and Lumi Cloud only when signed in or
         // enrolled. An organization's oversight sends its Lumi Cloud more
         // (lumi/oversight.py); say so here too.
-        const leaves = 'Your prompts and code go to the model providers you choose, under your own accounts. Update checks go to Luminary Analytics’ update site unless you turn them off in Updates. Lumi Cloud receives more only when you sign in or this computer is enrolled in an organization (what you share or hand off, tasks from chat and approvals, and an enrolled computer’s usage and crash counts), and feedback only when you send it.';
+        const leaves = 'Your prompts and code go to the model providers you choose, under your own accounts. Update checks go to Luminary Analytics’ update site unless you turn them off in Updates. Lumi Cloud receives more only when you sign in or this computer is enrolled in an organization (what you share or hand off, tasks from chat and approvals, an enrolled computer’s usage and crash counts, and the records your organization’s oversight asks for), and feedback only when you send it.';
         const oversight = this.oversightStatus?.configured
             ? `${leaves} ${esc(this.oversightStatus.notice)} Privacy & security lists exactly what your organization receives.`
             : leaves;
@@ -352,7 +352,7 @@ class LumiSettingsView {
             row('Free for individuals', 'The whole agent, every tool, provider and feature in this app, works without an account: with your own API keys, your ChatGPT sign-in, or models on your own computer.'),
             row('What leaves this computer', `${oversight} The privacy notice below lists exactly what.`),
             row('For teams and organizations', 'Lumi Cloud adds central policy, members, devices and usage reporting; if your organization uses it, sign in from Lumi account. Without it, organizations set policy on each computer (see docs/enterprise-policy.md).'),
-            row('License', `© Luminary Analytics. All rights reserved. Licensed under the ${esc(info.license)}.${info.notices ? ` Third-party components and their licenses: <code>${esc(info.notices)}</code>` : ''}`),
+            row('License', `© Luminary Analytics, LLC. All rights reserved. Licensed under the ${esc(info.license)}.${info.notices ? ` Third-party components and their licenses: <code>${esc(info.notices)}</code>` : ''}`),
             `<div class="settings-row"><div class="settings-row-copy"><span class="settings-row-label">Terms and notices</span><div class="settings-row-hint" id="about-terms-status">${this._termsAcceptanceText?.(terms) || ''}</div><div class="about-legal-documents">${documents}</div></div></div>`,
         ].join('');
     }
@@ -431,7 +431,7 @@ class LumiSettingsView {
             parts.push(row('Team library', `Skills, prompts and project notes your organization publishes in Lumi Cloud. The agent is offered matching skills and recalls project notes for their repository, and the ❝ button beside the message box inserts prompts. ${counts ? `${counts}.` : 'Nothing is published yet.'} ${when}`
                 + (library.error ? `<div class="editor-error" role="alert">${esc(library.error)}</div>` : ''), button('library_sync', 'Sync now')));
         }
-        parts.push('<p class="editor-help">An enrolled computer checks in hourly with its Lumi version, the policy in force and usage totals per model (requests, tokens and cost). Prompts, code and file names never go to Lumi Cloud.</p>');
+        parts.push('<p class="editor-help">An enrolled computer checks in hourly, or as often as every five minutes when the organization’s Lumi Cloud asks, with its Lumi version, the policy in force and usage totals per model (requests, tokens and cost). Check-ins never carry prompts, code or file names.</p>');
         return parts.join('');
     }
 

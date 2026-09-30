@@ -80,7 +80,7 @@ class RemoteTasks:
             return "A managed computer doesn't take anyone's requests."
         if not os.path.isdir(options["project"]):
             return "Choose the project folder requests run in."
-        return terms.refusal("chat_task") or blocked_reason() or ""
+        return terms.gate("chat_task")[0] or blocked_reason() or ""
 
     def status(self) -> dict:
         return {**self.options(), "blocked": self.blocked(), "running": bool(self.current), "last": self.last}

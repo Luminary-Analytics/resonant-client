@@ -35,6 +35,7 @@
     "_internal/lumi/legal/ALPHA-TERMS.md",
     "_internal/lumi/legal/PRIVACY.md",
     "_internal/lumi/code_editors/vscode/extension.js",
+    "_internal/lumi/code_editors/vscode/LICENSE.txt",
     "_internal/keyring-*.dist-info/entry_points.txt",
     "_internal/licenses/THIRD_PARTY_NOTICES.txt"
   ],

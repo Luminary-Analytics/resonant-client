@@ -1083,7 +1083,11 @@ def _load_text() -> tuple[str, str] | None:
     which says whether a machine source gave it.
     """
     for finder in (_registry_policy, _macos_managed_policy, _machine_file_policy):
-        found = finder()
+        try:
+            found = finder()
+        except (OSError, ValueError) as exc:  # ValueError: a file that isn't UTF-8 text
+            # A machine source that can't be read is an administrator's policy that can't be used.
+            raise PolicyUnavailable(f"The policy file couldn't be read: {exc}") from exc
         if found:
             text, source = found
             return _Found(text, source, machine=True)
@@ -1175,6 +1179,7 @@ class PolicyState:
     # (``_Found.machine``: the HKLM Group Policy key or the PolicyFile it
     # names, a configuration profile, the machine policy file), not
     # LUMI_POLICY_FILE. Only then may it accept Lumi's terms (terms_accepted_by).
+    # With ``error``: the policy that can't be used is such a source's (machine_error).
     from_machine: bool = False
     # Machine files found but not used (see IgnoredFile), for Settings to show.
     ignored: tuple[IgnoredFile, ...] = ()
@@ -1310,7 +1315,8 @@ def load(*, force: bool = False) -> PolicyState:
             _state = _read_state()
         except Exception as exc:  # whatever went wrong, fail closed
             logger.exception("The organization policy couldn't be loaded")
-            _state = PolicyState(error=f"The organization policy couldn't be loaded: {exc}")
+            # Whichever source failed, Lumi can't tell what an administrator's policy says (machine_error).
+            _state = PolicyState(error=f"The organization policy couldn't be loaded: {exc}", from_machine=True)
         _loaded = True
         state = _state
     _record_ignored(state.ignored)
@@ -1335,8 +1341,8 @@ def _state_from_sources() -> PolicyState:
     try:
         found = _load_text()
     except PolicyUnavailable as exc:  # an administrator's policy Lumi can't use as it is: fail closed
-        return PolicyState(error=str(exc), source=exc.source)
-    except (OSError, ValueError) as exc:  # ValueError: a file that isn't UTF-8 text
+        return PolicyState(error=str(exc), source=exc.source, from_machine=True)
+    except (OSError, ValueError) as exc:  # LUMI_POLICY_FILE; ValueError: a file that isn't UTF-8 text
         return PolicyState(error=f"The policy file couldn't be read: {exc}")
     if not found:
         # No machine policy: an organization this person joined in the app.
@@ -1361,7 +1367,8 @@ def _state_from_sources() -> PolicyState:
         # A broken machine policy must not silently mean "no policy": model
         # requests are refused until IT fixes it (see blocked_reason). That
         # holds for any failure, not only the mistakes parse() names.
-        return PolicyState(error=f"The organization policy at {source} is invalid: {exc}", source=source)
+        return PolicyState(error=f"The organization policy at {source} is invalid: {exc}", source=source,
+                           from_machine=from_machine)
     state = PolicyState(policy=policy, source=source, from_machine=from_machine)
     if isinstance(policy.raw.get("cloud"), dict):
         state = _with_cloud_policy(state, keys)
@@ -1419,6 +1426,19 @@ def terms_accepted_by() -> tuple[str, str]:
     if state.error or not state.from_machine or machine is None or not machine.terms_accepted_by:
         return "", ""
     return machine.terms_accepted_by, machine.source
+
+
+def machine_error() -> str:
+    """Why an administrator's machine policy can't be used (``blocked_reason``), or ''.
+
+    Such a policy decides nothing until it's fixed, not even whether the organization accepted Lumi's
+    terms for this computer's people (``terms_accepted_by``): Lumi shows this error instead of asking the
+    person to accept the terms, and records no personal acceptance meanwhile (lumi/terms.py). A
+    ``LUMI_POLICY_FILE`` that can't be used, which a person set, blocks model requests too, but can't
+    accept for anyone, so the terms stay the person's.
+    """
+    state = load()
+    return blocked_reason() if state.error and state.from_machine else ""
 
 
 def blocked_reason() -> str:

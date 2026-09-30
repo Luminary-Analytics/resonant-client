@@ -15,7 +15,8 @@ machine policy with a ``cloud`` section enrolls it with the administrator's
 enrollment token. The device then signs short assertions to get device
 tokens, so it keeps working after the person signs out.
 
-**Check-ins** (hourly, from a background thread) report the app version, the
+**Check-ins** (hourly by default, from a background thread; Lumi Cloud may ask
+for them as often as every five minutes, ``next_checkin_seconds``) report the app version, the
 policy version in force and usage totals per model since the last check-in:
 request and token counts and cost, never prompts, code or file names. When
 the organization publishes a new policy, or the cached one is within a week

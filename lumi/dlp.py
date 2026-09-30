@@ -1021,12 +1021,13 @@ def terms_refusal() -> str:
 
 
 def refuse_until_terms_accepted() -> None:
-    """Raise Blocked (``terms.REFUSAL_CODE``) while Lumi's terms wait to be accepted."""
+    """Raise Blocked while Lumi's terms wait to be accepted (``terms.REFUSAL_CODE``), or while an
+    administrator's machine policy can't be used (``policy_blocked``), which comes first."""
     refusal = terms_refusal()
     if refusal:
-        from .terms import REFUSAL_CODE
+        from . import terms
 
-        raise Blocked(refusal, code=REFUSAL_CODE)
+        raise Blocked(refusal, code=terms.POLICY_CODE if terms.machine_policy_error() else terms.REFUSAL_CODE)
 
 
 def guarded(method: Any) -> Any:

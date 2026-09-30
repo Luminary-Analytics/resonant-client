@@ -14,7 +14,8 @@ a record of the turn and queues it for the organization's Lumi Cloud:
   and what it cost;
 * **messages** (``redacted`` or ``full``): the person's message and Lumi's
   final reply, the session's title (an automatic title is the gist of the
-  first message) and the commands, paths and patterns the tools were given.
+  first message) and what the tools were given to act on: commands, paths,
+  search patterns and queries, web addresses and the kind of agent delegated to.
   ``redacted`` leaves out code blocks, email addresses and web addresses'
   query strings and keeps 2,000 characters; ``full`` keeps 20,000. Secrets
   are removed at every level (``secret_scan.redact_for_sharing``), and paths
@@ -422,13 +423,13 @@ def described(settings: Any, organization: str) -> dict:
                       "refused, and its cost.")
     if settings.messages == "redacted":
         shared.append("Your message and Lumi's final reply in each turn and the session's title, up to 2,000 "
-                      "characters, without code blocks, email addresses or secrets; and the commands, paths and "
-                      "search patterns tools were given, shortened, without secrets or web addresses' query "
-                      "strings.")
+                      "characters, without code blocks, email addresses or secrets; and what tools were given to "
+                      "act on (commands, paths, search patterns and queries, and web addresses), shortened, "
+                      "without secrets or web addresses' query strings.")
     elif settings.messages == "full":
         shared.append("Your message and Lumi's final reply in each turn and the session's title, as written, up to "
-                      "20,000 characters, without secrets; and the commands, paths and search patterns tools were "
-                      "given, without secrets.")
+                      "20,000 characters, without secrets; and what tools were given to act on (commands, paths, "
+                      "search patterns and queries, and web addresses), without secrets.")
     if settings.security_flags:
         excerpt = ", each with a short excerpt without secrets" if settings.messages != "off" else ""
         shared.append("Security flags: dangerous commands Lumi refused, commands and files your organization's "
@@ -621,10 +622,11 @@ def admit(session: Any) -> Admission:
         trigger, unattended, chat = _surface_of(root)
     except Exception:  # a surface that can't say needs a person, never less
         trigger, unattended, chat = "app", False, ""
-    # Lumi's terms first (lumi/terms.py): whatever the policy, nothing reaches a model until they're accepted.
-    refused = _terms_refusal(trigger, key)
+    # Lumi's terms first (lumi/terms.py): whatever the policy, nothing reaches a model until they're accepted,
+    # and while an administrator's policy can't be used, its error comes before them.
+    refused, code = _terms_refusal(trigger, key)
     if refused:
-        return Admission(refusal=refused, trigger=trigger, unattended=unattended, code=_terms_code())
+        return Admission(refusal=refused, trigger=trigger, unattended=unattended, code=code)
     try:
         admission = _admission(Scope(), trigger=trigger, unattended=unattended, chat=chat, session_key=key)
     except Exception as exc:
@@ -650,9 +652,9 @@ def gate(trigger: str = "app") -> tuple[str, str]:
     ``('', '')`` when nothing stops the work. Never raises.
     """
     trigger = trigger if trigger in TRIGGERS else "app"
-    refused = _terms_refusal(trigger)
+    refused, code = _terms_refusal(trigger)
     if refused:
-        return refused, _terms_code()
+        return refused, code
     try:
         reason = _admission(Scope(), trigger=trigger, unattended=False).refusal
     except Exception as exc:
@@ -660,14 +662,10 @@ def gate(trigger: str = "app") -> tuple[str, str]:
     return reason, (REFUSAL_CODE if reason else "")
 
 
-def _terms_code() -> str:
-    from .terms import REFUSAL_CODE as TERMS_CODE
-
-    return TERMS_CODE
-
-
-def _terms_refusal(trigger: str, session_key: str = "") -> str:
-    """Why Lumi's terms stop this work (lumi/terms.py), in the words of the surface; '' when accepted.
+def _terms_refusal(trigger: str, session_key: str = "") -> tuple[str, str]:
+    """(refusal, code) of Lumi's terms for this work (lumi/terms.py ``gate``), in the words of the surface:
+    an unusable machine policy's error (``policy_blocked``), or the terms (``terms_not_accepted``); ('', '')
+    when neither stops it.
 
     Never raises, and a check that fails refuses (terms.refusal): unlike a broken oversight check, it
     can't fall open when no policy asks for oversight.
@@ -685,10 +683,13 @@ def _terms_refusal(trigger: str, session_key: str = "") -> str:
             place = "headless"
         else:
             place = "app"
-        return terms.refusal(place)
+        return terms.gate(place)
     except Exception as exc:
         logger.exception("Couldn't check whether Lumi's terms were accepted")
-        return f"Lumi couldn't check whether its terms were accepted ({exc}), so nothing is sent to a model."
+        from .terms import REFUSAL_CODE
+
+        return (f"Lumi couldn't check whether its terms were accepted ({exc}), so nothing is sent to a model.",
+                REFUSAL_CODE)
 
 
 # ── Terminals ───────────────────────────────────────────────────────────────

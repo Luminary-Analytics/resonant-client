@@ -9,10 +9,13 @@
 ;   1. Build the bundle and the license page: scripts/build_clean.ps1 (PyInstaller,
 ;      then packaging/legal_texts.py rtf --out dist/legal for lumi/__init__.py's version,
 ;      which also writes dist/legal/license-versions.iss, included below)
-;   2. Compile this script:     ISCC.exe packaging/installer.iss /DAppVersion=0.2.0
+;   2. Compile this script:     ISCC.exe packaging/installer.iss /DAppVersion=0.20.0
+;      (the version dist/legal was rendered for; left out, it is that version)
 ;
-; The /DAppVersion= switch lets CI override the version per build. If omitted,
-; it defaults to whatever is hardcoded in the #define below.
+; The /DAppVersion= switch sets the version per build. It must be the version
+; dist/legal was rendered for (LicenseForVersion in license-versions.iss), or
+; the compile stops: a pre-release's license page adds the Alpha and Beta Test
+; Terms and a stable one's leaves them out. If omitted, it is that version.
 ;
 ; Design choices:
 ;   - PrivilegesRequired=admin         — install to Program Files (machine-wide).
@@ -64,16 +67,20 @@
 ;   uninstaller keeps ~/.resonant, and Lumi moves it to ~/.lumi on first launch.
 ; -----------------------------------------------------------------------------
 
-#ifndef AppVersion
-  #define AppVersion "0.2.0"
-#endif
-
 ; LicenseEulaVersion and LicenseAlphaTermsVersion: the versions of Lumi's terms in
-; license.rtf (empty test terms for a stable version), rendered with it.
+; license.rtf (empty test terms for a stable version), rendered with it for
+; LicenseForVersion, the version of Lumi packaging/legal_texts.py rtf was given.
 #include "..\dist\legal\license-versions.iss"
 
+#ifndef AppVersion
+  #define AppVersion LicenseForVersion
+#endif
+#if AppVersion != LicenseForVersion
+  #error dist\legal was rendered for another version of Lumi than AppVersion: run python packaging/legal_texts.py rtf --out dist/legal --version with this installer's version (scripts/build_clean.ps1 does)
+#endif
+
 #define AppName        "Lumi"
-#define AppPublisher   "Luminary Analytics"
+#define AppPublisher   "Luminary Analytics, LLC"
 ; The source repository may be private; installer links use public pages.
 #define AppURL         "https://luminary-analytics.github.io/resonant-client/"
 #define AppExeName     "lumi.exe"
@@ -137,6 +144,10 @@ Type: files; Name: "{userdesktop}\SONN Client.lnk"
 Type: files; Name: "{userdesktop}\Resonant.lnk"
 
 [Registry]
+; The keys above the record, removed at uninstall once nothing else is in them
+; (uninstalling goes through these entries last to first, so after the record).
+Root: HKLM64; Subkey: "SOFTWARE\Luminary Analytics"; Flags: uninsdeletekeyifempty; Check: not WizardSilent
+Root: HKLM64; Subkey: "SOFTWARE\Luminary Analytics\Lumi"; Flags: uninsdeletekeyifempty; Check: not WizardSilent
 ; The versions of Lumi's terms this installation's license page showed, so the next
 ; installation skips the page while they're the same (ShouldSkipPage below). The
 ; installer's own convenience, never a person's acceptance: Lumi never reads it.

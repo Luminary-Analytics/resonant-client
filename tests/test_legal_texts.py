@@ -10,12 +10,14 @@ import importlib.util
 import json
 import re
 import shutil
+import sys
+import tomllib
 from datetime import date, timedelta
 from pathlib import Path
 
 import pytest
 
-from lumi import terms
+from lumi import oversight, terms
 
 ROOT = Path(__file__).resolve().parents[1]
 _spec = importlib.util.spec_from_file_location("legal_texts", ROOT / "packaging" / "legal_texts.py")
@@ -103,8 +105,13 @@ def test_the_app_reads_the_same_facts_and_texts():
 
 
 def test_each_version_pins_its_text(monkeypatch, tmp_path, capsys):
-    """A change to what a text says without a new version fails: the pin in terms.json is that version's text."""
+    """A change to what a text says without a new version fails: a version's text is the one it was
+    published with (packaging/legal-published-pins.json), and terms.json pins the same hash."""
     assert legal_texts.pin_problems() == []
+    published = legal_texts.published_pins()
+    for doc_id in legal_texts.PINNED:
+        entry = legal_texts.load_facts()["documents"][doc_id]
+        assert published[doc_id][entry["version"]] == entry["sha256"] == legal_texts.text_sha256(doc_id), doc_id
     templates = tmp_path / "templates"
     shutil.copytree(legal_texts.TEMPLATES, templates)
     eula = templates / "EULA.md"
@@ -112,19 +119,57 @@ def test_each_version_pins_its_text(monkeypatch, tmp_path, capsys):
                                                              "Lumi is free for everyone"), encoding="utf-8")
     monkeypatch.setattr(legal_texts, "TEMPLATES", templates)
     [problem] = legal_texts.pin_problems()
-    assert "lumi/legal/EULA.md isn't the text pinned for eula version '1.0'" in problem
-    assert "raise documents.eula.version" in problem
-    assert legal_texts.text_sha256("eula") in problem
+    assert "lumi/legal/EULA.md isn't the text eula version '1.0' was published with" in problem
+    assert "a published version's text never changes" in problem and "Give the new text a new version" in problem
+    # The message doesn't offer a hash to pin for the same version (the review: re-pinning was one step away).
+    assert legal_texts.text_sha256("eula") not in problem
     # The release check fails on it too, and `check` exits 1 once the text is rendered.
-    assert any("isn't the text pinned" in item for item in legal_texts.release_problems("0.20.0", release=True))
+    assert any("was published with" in item for item in legal_texts.release_problems("0.20.0", release=True))
     monkeypatch.setattr(legal_texts, "stale", lambda texts=None: [])
     assert legal_texts.main(["check"]) == 1
-    assert "isn't the text pinned for eula" in capsys.readouterr().err
-    # A new version with its pin passes (its number is part of the text it pins).
+    assert "isn't the text eula version '1.0' was published with" in capsys.readouterr().err
+    # A new version passes once it's recorded, with its pin (its number is part of the text it pins).
     facts = copy.deepcopy(legal_texts.load_facts())
     facts["documents"]["eula"]["version"] = "1.1"
-    facts["documents"]["eula"]["sha256"] = legal_texts.text_sha256("eula", legal_texts.rendered(facts))
-    assert legal_texts.pin_problems(facts) == []
+    digest = legal_texts.text_sha256("eula", legal_texts.rendered(facts))
+    facts["documents"]["eula"]["sha256"] = digest
+    [unrecorded] = legal_texts.pin_problems(facts)
+    assert "eula version '1.1' isn't recorded in packaging/legal-published-pins.json" in unrecorded
+    assert f'"1.1": "{digest}"' in unrecorded
+    recorded = copy.deepcopy(published)
+    recorded["eula"]["1.1"] = digest
+    assert legal_texts.pin_problems(facts, published=recorded) == []
+
+
+def test_a_published_versions_pin_is_never_rewritten(monkeypatch):
+    """The re-review of PR #104: check told how to re-pin a changed text under the same version, so a version's
+    pin could be rewritten silently. terms.json can't move away from the record, and the record can't drop or
+    change what the last release tag published."""
+    facts = copy.deepcopy(legal_texts.load_facts())
+    original = facts["documents"]["privacy"]["sha256"]
+    facts["documents"]["privacy"]["sha256"] = "0" * 64
+    [problem] = legal_texts.pin_problems(facts)
+    assert f"documents.privacy.sha256 in lumi/legal/terms.json isn't {original}" in problem
+    # The last release tag's record and terms.json pins are compared with this tree's record.
+    published = legal_texts.published_pins()
+    files = {"packaging/legal-published-pins.json": json.dumps({"eula": {"0.9": "a" * 64, "1.0": published["eula"]["1.0"]}}),
+             "lumi/legal/terms.json": json.dumps({"documents": {"privacy": {"version": "0.9", "sha256": "b" * 64}}})}
+    monkeypatch.setattr(legal_texts, "_git_show", lambda ref, path: files.get(path) if ref == "v0.20.0" else None)
+    problems = legal_texts.history_problems("v0.20.0")
+    assert problems == [
+        f"eula version '0.9' was published in v0.20.0 with sha256 {'a' * 64}, but packaging/legal-published-pins.json "
+        "no longer records it: a published version's text and pin never change.",
+        f"privacy version '0.9' was published in v0.20.0 with sha256 {'b' * 64}, but packaging/legal-published-pins.json "
+        "no longer records it: a published version's text and pin never change."]
+    changed = copy.deepcopy(published)
+    changed["eula"].update({"0.9": "c" * 64})
+    changed["privacy"] = {**changed["privacy"], "0.9": "b" * 64}
+    [problem] = legal_texts.history_problems("v0.20.0", published=changed)
+    assert "eula version '0.9' was published in v0.20.0" in problem and f"records {'c' * 64}" in problem
+    # Without an earlier release tag (a shallow checkout, or before the first release) there's nothing to compare.
+    assert legal_texts.history_problems("") == []
+    monkeypatch.setattr(legal_texts, "last_release_tag", lambda: "v0.20.0")
+    assert any("no longer records it" in item for item in legal_texts.release_problems("0.20.1", release=True))
 
 
 def test_a_placeholder_written_into_a_template_fails_the_release(monkeypatch, tmp_path):
@@ -230,24 +275,52 @@ def test_what_the_texts_promise_matches_how_lumi_asks():
     assert "Computer use is on unless you turn it off" in flat
     # The alpha terms leave feedback's details to the privacy notice, so they can change without re-acceptance.
     assert "Include diagnostics" not in alpha and "The Privacy Notice describes what a report contains" in _flat(alpha)
+    # The re-review: a typed answer is yes or y (oversight.is_yes), and LUMI_ACCEPT_TERMS is an environment variable.
+    for text in (flat, _flat(alpha)):
+        assert "answer yes (typing yes or y) where Lumi's command-line tools ask whether you accept" in text
+        assert "the `LUMI_ACCEPT_TERMS` environment variable" in text and "`LUMI_ACCEPT_TERMS` setting" not in text
+        assert 'type "yes"' not in text
+    assert oversight.is_yes("yes") and oversight.is_yes(" Y ") and not oversight.is_yes("yeah")
+    # Ending the agreement points to where deleting Lumi's data is described for everyone: the privacy notice.
+    assert "The Privacy Notice explains how to delete Lumi's data from your computer as well" in flat
+    privacy = _flat(terms.text("privacy"))
+    assert "## Deleting your data" in terms.text("privacy") and "remove the `.lumi` folder" in privacy
+    # The SDK license keeps consumers' rights, as EULA 15.3 does.
+    sdk = _flat((ROOT / "sdk" / "LICENSE").read_text(encoding="utf-8"))
+    assert "If you are a consumer and the law of the place where you live gives you rights that can't be waived" in sdk
+    assert "nothing in this license takes those rights away" in sdk
 
 
-def test_the_mit_copies_are_named_by_release_and_commit_not_a_version_range():
-    """0.19.2.dev11 was built both under the MIT License and after it, so the carve-out names releases and
-    commits (the PR #104 review), and this build's version is past every MIT version."""
+def test_the_mit_copies_are_described_by_what_their_license_file_says():
+    """The re-review of PR #104: MIT commits reached main after beb2848 through a merge (#100), and branches
+    hold more, so no range of commits names the MIT copies: they're every commit whose license file is the MIT
+    License, which first appeared in c00f29c, and what was built from them. The product names carry no
+    version boundaries, which the release history doesn't support."""
     eula = _flat(terms.text("eula"))
-    assert "the releases tagged v0.6.3a1 through v0.19.1, published from May 15 to September 13, 2026" in eula
-    assert "Resonant Client (0.6.3a1 through 0.6.10), Resonant (0.6.11 through 0.18.2) and SONN Client" in eula
-    assert "commit c00f29c of May 15, 2026" in eula and "commit beb2848 of September 27, 2026" in eula
-    assert "The releases tagged v0.2.0 through v0.6.2 were not published under the MIT License" in eula
-    assert "Neither was part of a release" in eula
+    assert ("every commit in Luminary's public source repository for the Software whose LICENSE file is the MIT "
+            "License, and every release and build made from one") in eula
+    assert "the releases published as Resonant Client, Resonant and SONN Client (tagged v0.6.3a1 through v0.19.1)" in eula
+    assert "in every commit of that repository where the license file that comes with them is the MIT License" in eula
+    assert "The MIT License first appeared in that repository in commit c00f29c of May 15, 2026" in eula
+    assert "Nothing published before it is under the MIT License, including the releases tagged v0.2.0 through v0.6.2" \
+        in eula
     texts = {name: (ROOT / name).read_text(encoding="utf-8") for name in (
-        "LICENSE", "README.md", "RELEASING.md", "pyproject.toml", "lumi/legal/EULA.md", "sdk/LICENSE",
-        "lumi/code_editors/vscode/LICENSE.txt", "packaging/legal_texts.py", "docs/plans.md", "docs/extensions.md")}
+        "LICENSE", "README.md", "RELEASING.md", "AGENTS.md", "pyproject.toml", "lumi/legal/EULA.md", "sdk/LICENSE",
+        "lumi/code_editors/vscode/LICENSE.txt", "packaging/legal_texts.py", "docs/plans.md", "docs/extensions.md",
+        "sdk/python/README.md", "sdk/python/pyproject.toml", "lumi/code_editors/vscode/README.md",
+        ".github/workflows/release.yml")}
     for name, text in texts.items():
-        assert not re.search(r"0\.19\.x|up to (?:and including )?(?:version )?(?:0\.1\.0|1\.0\.0)", _flat(text)), name
+        flat = _flat(text)
+        assert not re.search(r"0\.19\.x|up to (?:and including )?(?:version )?(?:0\.1\.0|1\.0\.0)", flat), name
+        # No range ending at the relicensing commit, and no product version boundaries.
+        assert "beb2848" not in flat and "0.6.10" not in flat and "0.18.2" not in flat, name
+        assert "before this license replaced it" not in flat and "until this license replaced it" not in flat, name
     license_text = _flat(texts["LICENSE"])
-    assert "v0.6.3a1 through v0.19.1" in license_text and "c00f29c" in license_text and "beb2848" in license_text
+    assert "every commit of this repository whose LICENSE file is the MIT License" in license_text
+    assert "The MIT License first appeared in commit c00f29c (May 15, 2026)" in license_text
+    # The lower bound where the docs mention the MIT copies, so the source before c00f29c never reads as MIT.
+    for name in ("docs/plans.md", "pyproject.toml", "README.md", "RELEASING.md"):
+        assert "c00f29c" in texts[name], name
     # This build is none of them.
     assert legal_texts.lumi_version() == "0.20.0.dev0" == terms.this_version()
     pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
@@ -277,6 +350,26 @@ def test_the_privacy_notice_says_what_the_code_sends():
     for claim in ("Luminary doesn't receive them", "sends nothing to a model until you confirm it. Then",
                   "never sends file contents, what tools returned", "no analytics, usage telemetry, advertising"):
         assert claim not in privacy, claim
+    # The re-review's corrections.
+    from lumi import cloud, dlp
+
+    # A DLP service that can't answer lets requests go when the policy says on_error: allow.
+    assert "sends the request only as the service allows. Then" not in privacy
+    assert ("unless the service can't be reached or doesn't answer and the policy lets requests go without its "
+            "answer then (`on_error: allow`)") in privacy
+    assert dlp._service({"url": "https://dlp.example", "on_error": "allow"}).on_error == "allow"
+    # Check-ins are hourly unless Lumi Cloud asks for more, down to every five minutes.
+    assert "or as often as every five minutes when the organization's Lumi Cloud asks" in privacy
+    assert cloud.DEFAULT_CHECKIN_SECONDS == 3600 and "max(300, int(answer.get(\"next_checkin_seconds\")" in \
+        (ROOT / "lumi" / "cloud.py").read_text(encoding="utf-8")
+    assert "hourly counts" not in privacy
+    # Oversight: full project paths with project_paths, and every argument kind it sends, queries and URLs too.
+    assert "the project folder's name, or its full path when the policy asks for paths" in privacy
+    assert "(commands, file paths, search patterns and queries, and web addresses)" in privacy
+    assert {"query", "url", "command", "pattern", "glob"} <= set(oversight._TEXT_ARGUMENTS)
+    # A gateway chat confirms the notice for everyone in it, and oversight's records are among the exceptions.
+    assert "its requests don't run until someone in that chat confirms it, for everyone in it" in privacy
+    assert "the records of your work your organization's oversight asks for" in privacy
 
 
 def test_the_installers_license_page(tmp_path):
@@ -310,6 +403,8 @@ def test_the_installers_license_page(tmp_path):
         {"eula": eula, "alpha_terms": alpha}
     iss = beta["license-versions.iss"].read_text(encoding="ascii")
     assert f'#define LicenseEulaVersion "{eula}"' in iss and f'#define LicenseAlphaTermsVersion "{alpha}"' in iss
+    assert '#define LicenseForVersion "0.21.0-beta.1"' in iss
+    assert '#define LicenseForVersion "0.20.0"' in stable["license-versions.iss"].read_text(encoding="ascii")
     assert '#define LicenseAlphaTermsVersion ""' in stable["license-versions.iss"].read_text(encoding="ascii")
     # A stable build written where a beta's was doesn't leave the test terms behind.
     legal_texts.write_rtf(tmp_path / "beta", "0.20.0")
@@ -334,7 +429,13 @@ def test_the_exe_installer_shows_the_terms_once_per_version():
     iss = (ROOT / "packaging" / "installer.iss").read_text(encoding="utf-8")
     assert '#include "..\\dist\\legal\\license-versions.iss"' in iss
     registry = [line for line in iss.splitlines() if line.startswith("Root: HKLM64;")]
-    assert len(registry) == 2
+    assert len(registry) == 4
+    # The empty keys above the record go at uninstall too (listed first, so removed after the record).
+    assert registry[:2] == [
+        'Root: HKLM64; Subkey: "SOFTWARE\\Luminary Analytics"; Flags: uninsdeletekeyifempty; Check: not WizardSilent',
+        'Root: HKLM64; Subkey: "SOFTWARE\\Luminary Analytics\\Lumi"; Flags: uninsdeletekeyifempty; '
+        'Check: not WizardSilent']
+    registry = registry[2:]
     for line, name, value in zip(registry, ("LicenseEulaVersion", "LicenseAlphaTermsVersion"),
                                  ("{#LicenseEulaVersion}", "{#LicenseAlphaTermsVersion}")):
         assert 'Subkey: "SOFTWARE\\Luminary Analytics\\Lumi\\Setup"' in line
@@ -342,6 +443,13 @@ def test_the_exe_installer_shows_the_terms_once_per_version():
         # A silent install shows no page, so it records nothing.
         assert line.endswith("Check: not WizardSilent")
     assert "function ShouldSkipPage(PageID: Integer): Boolean;" in iss and "if PageID = wpLicense then" in iss
+    # The license page is the one rendered for the version being compiled (the re-review): the include names
+    # the version, and another stops the compile.
+    include = iss.index('#include "..\\dist\\legal\\license-versions.iss"')
+    guard = iss.index("#if AppVersion != LicenseForVersion")
+    assert include < iss.index("  #define AppVersion LicenseForVersion") < guard
+    assert iss[guard:].split("\n")[1].startswith("  #error dist\\legal was rendered for another version")
+    assert '#define AppVersion "0.2.0"' not in iss
     # Inno Setup reads any line starting with "[" as a section tag, comments in [Code] included (CI
     # compiles the script, but only on Windows).
     sections = {"[Setup]", "[Languages]", "[Tasks]", "[Files]", "[InstallDelete]", "[Registry]", "[Icons]",
@@ -366,6 +474,8 @@ def test_the_texts_ship_everywhere_lumi_does():
         required = json.loads((ROOT / "packaging" / name).read_text(encoding="utf-8"))["required_globs"]
         for item in ("terms.json", "EULA.md", "ALPHA-TERMS.md", "PRIVACY.md"):
             assert f"_internal/lumi/legal/{item}" in required, (name, item)
+        # The VS Code extension's license ships with it (lumi.spec bundles it).
+        assert "_internal/lumi/code_editors/vscode/LICENSE.txt" in required, name
         assert "_internal/lumi/gui/static/terms_view.js" in required, name
     pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
     assert '"legal/*.md", "legal/terms.json"' in pyproject
@@ -386,8 +496,22 @@ def test_the_sdk_and_the_editor_extension_are_no_longer_mit():
     assert sdk.startswith("Lumi Extension SDK License\n") and "Permission is hereby granted" not in sdk
     flat = _flat(sdk)
     assert "The SDK was never part of a Lumi release" in flat
-    assert "with the lumi-extension Python package at version 1.0.0. Those copies remain under the MIT License" \
-        in flat
+    assert ("Its copies in every commit of Luminary's public source repository where the SDK's license file is the "
+            "MIT License (with the lumi-extension Python package at version 1.0.0) remain under the MIT License") in flat
+    # The license names versions, so a copy says which it is (the re-review), and the package metadata carries
+    # the license file (PEP 639).
+    sys.path.insert(0, str(ROOT / "sdk" / "python"))
+    try:
+        import lumi_extension
+    finally:
+        sys.path.remove(str(ROOT / "sdk" / "python"))
+    project = tomllib.loads((ROOT / "sdk" / "python" / "pyproject.toml").read_text(encoding="utf-8"))
+    assert lumi_extension.__version__ == project["project"]["version"] == "1.1.0"
+    assert project["project"]["license-files"] == ["lumi_extension/LICENSE"]
+    assert (ROOT / "sdk" / "python" / "lumi_extension" / "LICENSE").is_file()
+    assert project["project"]["license"] == "LicenseRef-Lumi-Extension-SDK-License"
+    assert "setuptools>=77" in project["build-system"]["requires"]
+    assert not any(item.startswith("License ::") for item in project["project"].get("classifiers", []))
     # People who install an Extension may run the SDK parts in it; the code the templates start is the developer's.
     assert "Anyone who receives an Extension that includes parts of the SDK" in flat
     assert "may install, run and use those parts as part of that Extension with Lumi" in flat

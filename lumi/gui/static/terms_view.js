@@ -14,7 +14,13 @@
  * A message sent while the terms wait is refused before any turn starts, and
  * comes back to the message box (app.js _endRefusedTurn). When the machine
  * policy accepted Lumi's terms for the organization's people, there is nothing
- * to accept, and About Lumi says who accepted.
+ * to accept, and About Lumi says who accepted. While an administrator's machine
+ * policy can't be used (status.policy_error: lumi/terms.py
+ * machine_policy_error), the notice shows its error instead, with nothing to
+ * accept, and the dialog doesn't open by itself: that policy may accept for the
+ * person once it can be read, and the server records no acceptance meanwhile.
+ * The message box stays open, as for the policy's other refusals: a message is
+ * refused with the policy's error and comes back to the box.
  *
  * About Lumi opens the same dialog to read any of the texts this build ships,
  * offline: the agreement, the test terms on a pre-release build, the privacy
@@ -48,21 +54,29 @@ class LumiTermsView {
         this._initTermsView();
         this.termsStatus = status;
         const pending = Boolean(status.pending);
+        const policyError = String(status.policy_error || '');
+        this._termsPolicyError = policyError;
         const notice = document.getElementById('terms-notice');
         const text = document.getElementById('terms-notice-text');
-        if (text) text.textContent = status.error || this._termsNoticeText(status);
-        if (notice) notice.hidden = !pending;
+        if (text) text.textContent = policyError || status.error || this._termsNoticeText(status);
+        const title = document.getElementById('terms-notice-title');
+        if (title) title.textContent = policyError ? 'Your organization’s policy' : 'Lumi’s terms';
+        // Nothing to review or accept until the organization's policy can be read.
+        const review = document.getElementById('terms-notice-review');
+        if (review) review.hidden = Boolean(policyError);
+        if (notice) notice.hidden = !pending && !policyError;
         const accepting = this._termsDialog?.mode === 'accept';
         if (!pending && accepting) this._termsFocusAfterAccept = true;
         // Once accepted, terms that wait again (an acceptance that no longer counts) ask again,
         // even if this page declined the same versions before.
         if (!pending) this._termsDeclinedFor = null;
-        this._termsLocked = pending;
+        this._termsLocked = pending && !policyError;
         this._applyComposerLock?.();
-        if (!pending && accepting) this.closeTermsDialog({accepted: true});
-        // First launch, or terms that changed since this page last declined them: ask.
+        if (!pending && !policyError && accepting) this.closeTermsDialog({accepted: true});
+        // First launch, or terms that changed since this page last declined them: ask,
+        // unless the organization's policy can't be read (the notice says so instead).
         const asked = String(status.acceptance_value || status.error || '');
-        if (pending && !this._termsDialog && this._termsDeclinedFor !== asked) this.openTermsDialog();
+        if (pending && !policyError && !this._termsDialog && this._termsDeclinedFor !== asked) this.openTermsDialog();
         else if (this._termsDialog) this._renderTermsDialog();
         if (this.currentView === 'settings') this.renderSettingsView?.();
     }
@@ -77,6 +91,7 @@ class LumiTermsView {
     /** Who accepted the terms in force, for About Lumi (HTML). */
     _termsAcceptanceText(status) {
         const esc = value => this.escapeHtml(String(value ?? ''));
+        if (status?.policy_error) return esc(status.policy_error);
         if (!status || status.error) return esc(status?.error || '');
         if (status.organization) {
             return `Accepted for everyone who uses Lumi on this computer by ${esc(status.organization)}, through its machine policy.`;
@@ -109,9 +124,21 @@ class LumiTermsView {
         this._termsDialog = {mode, doc: mode === 'read' ? String(options.doc || 'eula') : '', returnFocus};
         dialog.style.display = 'flex';
         this._renderTermsDialog();
-        // Reading starts in the text itself, where the arrow keys scroll it. Focus
-        // never lands on Accept by itself, so a key meant for something else can't accept.
-        document.getElementById('terms-dialog-body')?.focus();
+        // Every opening starts at the top of the text and of the dialog, not where the
+        // person left it when they closed it. Reading starts in the text itself, where the
+        // arrow keys scroll it. Focus never lands on Accept by itself, so a key meant for
+        // something else can't accept.
+        this._termsDialogToTop();
+    }
+
+    /** The dialog and its text scrolled to the top, and the text focused without scrolling. */
+    _termsDialogToTop() {
+        const body = document.getElementById('terms-dialog-body');
+        const card = document.getElementById('terms-dialog')?.querySelector?.('.terms-dialog');
+        if (card) card.scrollTop = 0;
+        if (!body) return;
+        body.scrollTop = 0;
+        body.focus({preventScroll: true});
     }
 
     /** Close the dialog. Closed without accepting, the notice above the message box opens it again. */
@@ -124,7 +151,7 @@ class LumiTermsView {
         if (state.mode === 'accept' && !options.accepted) {
             this._termsDeclinedFor = String(this.termsStatus?.acceptance_value || this.termsStatus?.error || '');
             const review = document.getElementById('terms-notice-review');
-            if (review && this.termsStatus?.pending) {
+            if (review && !review.hidden && this.termsStatus?.pending) {
                 review.focus();
                 return;
             }
@@ -144,7 +171,7 @@ class LumiTermsView {
         if (!this._termsDialog) return;
         this._termsDialog.doc = doc || '';
         this._renderTermsDialog();
-        document.getElementById('terms-dialog-body')?.focus();
+        this._termsDialogToTop();
     }
 
     _requestLegalDocument(id) {
@@ -199,9 +226,11 @@ class LumiTermsView {
             title.textContent = accepting ? 'Lumi’s terms'
                 : state.doc === 'notices' ? 'Third-party notices' : (about(state.doc).title || 'Lumi’s terms');
         }
+        // An administrator's policy that can't be used comes first: nothing can be accepted until it's fixed.
+        const blocked = String(status.policy_error || status.error || '');
         if (intro) {
             let words;
-            if (accepting && status.error) words = '';
+            if (accepting && blocked) words = '';
             else if (accepting) {
                 const changed = required.some(doc => (doc.changed || doc.previous_version) && !doc.accepted);
                 words = (changed ? 'Lumi’s terms have changed. Read the new version and accept it to keep using Lumi.'
@@ -233,10 +262,10 @@ class LumiTermsView {
             body.setAttribute('aria-label', accepting && !state.doc ? 'The terms' : (title?.textContent || 'Document'));
         }
         if (error) {
-            error.textContent = accepting ? String(status.error || '') : '';
+            error.textContent = accepting ? blocked : '';
             error.hidden = !error.textContent;
         }
-        const pending = Boolean(status.pending) && !status.error && required.length > 0;
+        const pending = Boolean(status.pending) && !blocked && required.length > 0;
         if (consent) {
             consent.innerHTML = accepting && pending
                 ? `By choosing Accept, you agree to ${required.map(named).join(' and ')}.` : '';
@@ -256,7 +285,7 @@ class LumiTermsView {
     _acceptTerms() {
         const status = this.termsStatus;
         const required = Array.isArray(status?.required) ? status.required : [];
-        if (!status?.pending || status.error || !required.length) return;
+        if (!status?.pending || status.error || status.policy_error || !required.length) return;
         // The versions this dialog showed: terms that changed meanwhile accept nothing (lumi/terms.py).
         const documents = {};
         for (const doc of required) documents[doc.id] = doc.version;

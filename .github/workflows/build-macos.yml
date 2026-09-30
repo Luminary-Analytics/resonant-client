@@ -79,31 +79,35 @@ jobs:
         run: bash packaging/build_macos.sh --sbom dist/lumi-macos-sbom.cdx.json
 
       # Lumi's terms (packaging/legal_texts.py): beside the app in the DMG, and on
-      # the PKG's license page. This is a development build, so the Alpha and
-      # Beta Test Terms come too.
+      # the PKG's license page, exactly as legal_texts.py renders them for this
+      # version. This is a development build, so the Alpha and Beta Test Terms
+      # come too.
       - name: Check the DMG's and the PKG's terms
         run: |
           set -euo pipefail
           dmg=$(ls dist/installer/lumi-*.dmg)
           pkg=$(ls dist/installer/lumi-*.pkg)
+          version=$(python3 -c 'import re,pathlib;print(re.search(r"__version__\s*=\s*\"([^\"]+)\"", pathlib.Path("lumi/__init__.py").read_text()).group(1))')
+          expected="$RUNNER_TEMP/expected-legal"
+          python3 packaging/legal_texts.py rtf --out "$expected" --version "$version"
+          test -f "$expected/alpha-terms.rtf"
           mount="$RUNNER_TEMP/lumi-dmg"
           hdiutil attach -nobrowse -readonly -mountpoint "$mount" "$dmg" >/dev/null
           trap 'hdiutil detach "$mount" >/dev/null 2>&1 || true' EXIT
           ls "$mount"
-          grep -q "Lumi End User License Agreement" "$mount/License Agreement.rtf"
-          grep -q "Lumi Alpha and Beta Test Terms" "$mount/Alpha and Beta Test Terms.rtf"
+          cmp "$expected/eula.rtf" "$mount/License Agreement.rtf"
+          cmp "$expected/alpha-terms.rtf" "$mount/Alpha and Beta Test Terms.rtf"
           hdiutil detach "$mount" >/dev/null
           trap - EXIT
-          echo "✓ The DMG carries the License Agreement and the Alpha and Beta Test Terms"
+          echo "✓ The DMG carries exactly the License Agreement and the Alpha and Beta Test Terms rendered for $version"
           expanded="$RUNNER_TEMP/lumi-pkg"
           rm -rf "$expanded"
           pkgutil --expand "$pkg" "$expanded"
           grep -q 'license file="license.rtf"' "$expanded/Distribution"
           license=$(find "$expanded/Resources" -name license.rtf | head -1)
           test -n "$license"
-          grep -q "Lumi End User License Agreement" "$license"
-          grep -q "Lumi Alpha and Beta Test Terms" "$license"
-          echo "✓ The PKG's license page shows Lumi's terms: $license"
+          cmp "$expected/license.rtf" "$license"
+          echo "✓ The PKG's license page is exactly the one rendered for $version: $license"
 
       - name: Check what Sparkle reads from the bundle
         run: |

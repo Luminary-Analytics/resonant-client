@@ -20,12 +20,13 @@ connect Lumi to do with what they receive; their own policies do.
 - Luminary's Lumi Cloud receives anything only once you sign in to it or your
   computer is enrolled in an organization: what you choose to share, hand
   off or send through it, what your organization's policy asks for, and,
-  from an enrolled computer, hourly counts of usage and crashes. Luminary
+  from an enrolled computer, regular counts of usage and crashes. Luminary
   receives feedback only when you send it.
 - Lumi has no advertising identifiers. It sends no analytics, usage
-  telemetry or crash reports, except the hourly counts a computer enrolled in
-  an organization reports to Lumi Cloud, and the audit log if you export it to
-  an OpenTelemetry endpoint of your own.
+  telemetry or crash reports, except the counts a computer enrolled in an
+  organization reports to Lumi Cloud, the records of your work your
+  organization's oversight asks for (below), and the audit log if you export
+  it to an OpenTelemetry endpoint of your own.
 
 ## Update checks
 
@@ -74,8 +75,10 @@ Lumi sends no model request until its terms have been accepted.
   Lumi applies them. If the policy also names a data loss prevention service,
   Lumi sends that service the text of each request, after its own
   redactions, with the organization's name and the provider, model and
-  purpose of the request, and sends the request only as the service allows.
-  Your organization chooses and runs that service.
+  purpose of the request. It sends the request only as the service allows,
+  unless the service can't be reached or doesn't answer and the policy lets
+  requests go without its answer then (`on_error: allow`). Your organization
+  chooses and runs that service.
 
 ## What the agent reaches for you
 
@@ -109,7 +112,8 @@ organization's agreement with Luminary.
   credential store.
 - **Enrolling** a computer sends its name, operating system and Lumi version,
   and a public key.
-- **While enrolled,** Lumi checks in about once an hour with its version and
+- **While enrolled,** Lumi checks in about once an hour, or as often as every
+  five minutes when the organization's Lumi Cloud asks, with its version and
   platform, the version of the organization's policy, per-model counts of
   requests, tokens and cost (naming each provider and model), and counts of
   turns and how they ended, of checks that passed, of files changed and of
@@ -172,21 +176,25 @@ a report only after you choose Send.
 Only if your organization's policy turns on oversight, and your computer is
 enrolled in that organization's Lumi Cloud:
 
-- **The notice.** For work you start yourself (in the app, at a terminal or
-  through the chat gateway), Lumi first shows a notice that names the
-  organization and what it receives, and sends nothing to a model until you
-  confirm it. Your confirmation is signed with your computer's key and sent to
-  the organization's Lumi Cloud. Work that runs with nobody there to see the
+- **The notice.** For work you start yourself (in the app or at a terminal),
+  Lumi first shows a notice that names the organization and what it
+  receives, and sends nothing to a model until you confirm it. A chat of the
+  chat gateway is sent the notice, and its requests don't run until someone
+  in that chat confirms it, for everyone in it. Each confirmation is signed
+  with your computer's key and sent to the organization's Lumi Cloud. Work
+  that runs with nobody there to see the
   notice, such as a scheduled task or `lumi run` without a terminal, is
   recorded as yours if you confirmed the notice on this computer. Otherwise,
   by default, it runs without asking and is recorded as unattended, with the
   notice in its output; the policy can refuse such work instead.
 - **What goes, for each turn:** your sessions' activity (such as the
-  project folder's name, your computer user name, the provider and model,
-  the permission mode, the tools used and whether they ran, the outcome and
-  the cost); if the policy asks, your messages, Lumi's replies, your
-  sessions' titles and the commands, paths and patterns the tools were given,
-  with secrets removed; and security flags, such as a refused command or text
+  project folder's name, or its full path when the policy asks for paths,
+  your computer user name, the provider and model, the permission mode, the
+  tools used and whether they ran, the outcome and the cost); if the policy
+  asks, your messages, Lumi's replies, your sessions' titles and what the
+  tools were given to act on (commands, file paths, search patterns and
+  queries, and web addresses), with secrets removed; and security flags,
+  such as a refused command or text
   in a tool's output that tried to instruct the agent. When your messages are
   shared, a flag carries a short excerpt of the text that raised it, which
   can come from what a tool returned (a web page, a file, a command's

@@ -1,12 +1,12 @@
 # Welcome to the Lumi alpha
 
-Lumi, from Luminary Analytics, is a coding agent for your desktop. Describe a
-change: Lumi reads your code, edits files, runs your checks and shows what it
-did and what passed, with the AI models and accounts you choose.
+Lumi, from Luminary Analytics, is a desktop coding agent. Describe a change:
+Lumi reads your code, edits files, runs your checks and shows what it did and
+what passed, with the AI models and accounts you choose.
 
 **Who it's for:** developers happy to try early software on code they can
-review and undo. Windows comes first; the Mac version (Apple silicon) is a
-preview. Free for individuals during the alpha.
+review and undo. Windows comes first; Mac (Apple silicon) is a preview. Free
+for individuals during the alpha.
 
 ## Install
 
@@ -27,15 +27,15 @@ preview. Free for individuals during the alpha.
 2. Open a project (or the sample project) and ask for a small fix. New
    installs start in Auto-edit: file edits apply, commands ask first.
    **Timeline** restores checkpoints.
-3. Try **Team** (preview): type `/team` and a goal, and an orchestrator runs
-   parallel workers. For now, use OpenRouter, Ollama or another
-   OpenAI-compatible model.
+3. Try **Team** (preview): type `/team` and a goal, check **Enable team
+   preview** and press **Start**; an orchestrator runs parallel workers. For
+   now, use OpenRouter, Ollama or another OpenAI-compatible model.
 
 ## Feedback
 
 Email rich.bellantoni@luminaryanalytics.com. Until our feedback service
-opens, **Help › Send Feedback** only saves reports on your computer; copy them
-into your email.
+opens, **Help › Send Feedback** only saves reports locally; copy them into
+your email.
 
 ## Your data
 

@@ -707,7 +707,7 @@ def test_the_jobs_whose_output_is_released_install_nothing_unchecked():
     # The release job holds the Azure sign-in and the EdDSA key, and the others
     # make what it (or the Developer ID) signs: whatever they run is pinned.
     jobs = _workflows()["release.yml"]["jobs"]
-    assert set(jobs) == {"test", *RELEASED_JOBS}
+    assert set(jobs) == {"test", "team-test", *RELEASED_JOBS}
     for name in RELEASED_JOBS:
         code = _code_a_job_runs(jobs[name])
         problems = [f"{where}: {command}" for where, text, suffix in code for command in _unchecked_installs(text, suffix)]
@@ -761,7 +761,7 @@ def test_the_version_and_the_terms_are_checked_where_releases_are_built():
         check = jobs[name]["steps"][names.index("Legal texts are complete")]
         assert "packaging/legal_texts.py release-check --release --version" in check["run"], name
         assert names.index("Legal texts are complete") < names.index(before), name
-    for name in ("test", "release", "publish-macos"):
+    for name in ("test", "team-test", "release", "publish-macos"):
         assert not any("legal_texts.py release-check" in step.get("run", "") for step in jobs[name]["steps"]), name
     # The release job's MSI and GitHub Release read its own pre-release flag.
     steps = {step.get("name"): step for step in jobs["release"]["steps"]}
@@ -791,16 +791,21 @@ def test_tests_and_the_signed_bytes_run_in_separate_jobs():
     def uses(job: dict, action: str) -> list[dict]:
         return [step for step in job["steps"] if str(step.get("uses", "")).startswith(action + "@")]
 
-    # `test` runs Ruff and pytest on packages from PyPI, and hands nothing on.
+    # `test` runs Ruff and pytest on packages from PyPI, and hands nothing on; `team-test`
+    # runs the Team suite the same way. Between them they run every test file.
     assert "python -m pytest" in runs(test) and "ruff check" in runs(test) and 'pip install -e ".[all,dev]"' in runs(test)
-    assert not uses(test, "actions/upload-artifact") and "outputs" not in test and "environment" not in test
-    assert test["permissions"] == {"contents": "read"}
+    team = jobs["team-test"]
+    assert '--ignore-glob="tests/test_swarm_*.py"' in runs(test)
+    assert '-o "python_files=test_swarm_*.py"' in runs(team) and 'pip install -e ".[all,dev]"' in runs(team)
+    for job in (test, team):
+        assert not uses(job, "actions/upload-artifact") and "outputs" not in job and "environment" not in job
+        assert job["permissions"] == {"contents": "read"}
     # `build` makes the bundle from pinned inputs, and runs no tests.
     assert "pytest" not in runs(build) and "ruff" not in runs(build) and "pip install -e" not in runs(build)
     assert "environment" not in build and build["permissions"] == {"contents": "read"}
     assert [step["with"]["name"] for step in uses(build, "actions/upload-artifact")] == ["lumi-windows-bundle"]
-    # `release` waits for both, takes only the bundle `build` made (by its ID), and runs no tests.
-    assert sorted(release["needs"]) == ["build", "test"]
+    # `release` waits for all three, takes only the bundle `build` made (by its ID), and runs no tests.
+    assert sorted(release["needs"]) == ["build", "team-test", "test"]
     assert [step["with"] for step in uses(release, "actions/download-artifact")] == [
         {"artifact-ids": "${{ needs.build.outputs.artifact-id || 'none' }}", "path": "dist", "merge-multiple": True}]
     assert "pytest" not in runs(release)

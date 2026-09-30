@@ -674,7 +674,7 @@ class Session:
         self.project_path: Optional[str] = None  # Set externally for path resolution
         self.browser_session_name: str = ""
         # Autonomy tiers: suggest (read-only) | ask (asks before changes) |
-        # auto-edit (files ok) | full-auto (sandboxed). The tier alone decides
+        # auto-edit (files ok) | full-auto (asks nothing). The tier alone decides
         # which calls need approval; auto_approve is a view of it.
         self.autonomy_tier: str = "full-auto" if auto_approve else "suggest"
         # The approval prompt of the turn in progress, lent to delegated workers.

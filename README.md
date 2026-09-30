@@ -108,7 +108,7 @@ for their context-handoff and verification boundaries.
   in Lumi Cloud ([second-person approval](docs/second-approval.md))
 - Built-in browser control (native CDP) and desktop computer use, with an
   on-screen indicator while the agent drives the machine
-- Permission modes and a project-root path sandbox
+- Permission modes (new installs start in Auto-edit) and a project-root path sandbox
 - Optional codebase indexing, RAG, and Engram memory
 
 ### Desktop client
@@ -444,7 +444,16 @@ now that browsing works out of the box.
 | `LUMI_KEYCHAIN_SERVICE` | `Lumi` | Service name for keys in the OS credential store |
 
 Persistent configuration lives in `~/.lumi/settings.json` and is managed
-through the desktop Settings view.
+through the desktop Settings view. Each save keeps the file as it was in
+`settings.json.bak`, without API keys or other credentials (after restoring
+it, enter again any the OS credential store doesn't hold), then replaces it
+in one step; on Windows, when another program has the file open, it's written
+in place instead. A save that still can't reach the file is shown in Settings
+and above the message box, and the change lasts until Lumi closes. A file
+Lumi can't read or parse (after a moment's retry, for a file another program
+holds) is never written over: Lumi runs on defaults, saves no change, and the
+app, the terminal UI and `lumi run` say so, so you can fix or restore the
+file.
 
 ## Run
 
@@ -459,9 +468,10 @@ From the desktop window, use **File > Open in Browser**. The local server refuse
 pages that were not opened from such a link.
 
 `lumi` without a subcommand opens the [terminal UI](docs/terminal-ui.md) in the
-current folder. It runs tools without asking unless you pass `--approve`; the
-project's rules, project trust and your organization's policy apply as in the
-app.
+current folder. It starts in the default permission mode from Settings, as the
+app does (Auto-edit on a new install); `--approve` asks before every change and
+`--full-auto` runs tools without asking. The project's rules, project trust and
+your organization's policy apply as in the app.
 
 For servers, containers and CI, `lumi run` runs one task without a UI and
 prints a JSON result with an exit code a job can act on:

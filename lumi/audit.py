@@ -16,6 +16,9 @@ Event types: ``turn.start``, ``turn.end``, ``model.usage``, ``tool.call``,
 ``tool.result``, ``file.change``, ``approval``, ``privacy.redaction``,
 ``dlp.finding`` and ``dlp.error`` (lumi/dlp.py: rule, action, content kind and
 count, never the matched text), ``settings.change``, ``trust.decision``,
+``permission.full_auto_grant`` (lumi/gui/app.py: one plan, roadmap,
+autonomous session or team run in Full-auto from a conversation in another
+mode, at the person's request),
 ``policy.file_ignored`` (lumi/policy.py: a machine policy, key or license
 file Lumi didn't use, and why),
 ``budget.warning``, ``budget.approval``, ``budget.block``, ``model.fallback``,

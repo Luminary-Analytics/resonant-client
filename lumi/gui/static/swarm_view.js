@@ -1,5 +1,7 @@
 /* Session-scoped team controls. Runtime state is authoritative; no model calls here. */
 window.LumiSwarmView = class LumiSwarmView {
+    static DECISIONS = new Set(['review_read_result', 'reject_result', 'retry_work', 'accept_writer', 'decide_proposal']);
+
     bindSwarmPanel() {
         this._swarmDialog = null;
         this._swarmRequestCounter = 0;
@@ -7,17 +9,46 @@ window.LumiSwarmView = class LumiSwarmView {
         document.getElementById('swarm-team-button')?.addEventListener('click', () => this.openSwarmPanel());
     }
 
-    /** The chat's `/team <objective>`: the panel with that objective, planned and run by the orchestrator. */
+    /**
+     * The chat's `/team <objective>`: the panel with that objective, planned
+     * and run by the orchestrator. The panel first learns this conversation's
+     * latest team: a finished one gives way to a new team's form, as New team
+     * does, and a team still working keeps the panel, which says so.
+     */
     openSwarmWithObjective(objective) {
         this.openSwarmPanel();
+        if (!this._swarmNodes?.form) return;
+        this._swarmObjectiveDraft = {objective};
+        // Otherwise the view the panel asked for applies it (receiveSwarmState).
+        if (!this._swarmPending) this._swarmApplyObjectiveDraft();
+    }
+
+    _swarmApplyObjectiveDraft() {
+        const draft = this._swarmObjectiveDraft;
+        if (!draft) return;
+        this._swarmObjectiveDraft = null;
         const nodes = this._swarmNodes;
-        if (!nodes?.form) return;
+        const run = this._swarmState?.run?.run;
+        if (run && !['completed', 'cancelled', 'failed'].includes(run.state)) {
+            nodes.notice.textContent = 'This conversation’s team is still working. Stop it, or wait until it finishes, then use /team again or choose New team.';
+            nodes.notice.dataset.error = 'true';
+            nodes.notice.scrollIntoView?.({block: 'nearest'});
+            return;
+        }
+        if (run) {
+            // As New team does; it is off only while another change is pending.
+            nodes['new-team'].click();
+            if (nodes.form.hidden) {
+                nodes.notice.textContent = 'Choose New team to start another team in this conversation.';
+                return;
+            }
+        }
         nodes['plan-mode'].value = 'coordinator';
-        if (objective) nodes.objective.value = objective;
+        if (draft.objective) nodes.objective.value = draft.objective;
         nodes.autonomous.checked = true;
         this._swarmRenumberTasks();
         // The person still reviews the limits and presses Start.
-        (objective ? nodes.rounds : nodes.objective).focus();
+        (draft.objective ? nodes.rounds : nodes.objective).focus();
     }
 
     openSwarmPanel() {
@@ -66,7 +97,7 @@ window.LumiSwarmView = class LumiSwarmView {
             <section class="swarm-setup" aria-labelledby="swarm-setup-title"><h3 id="swarm-setup-title">Team preview</h3>
             <p>Assign scoped work to a small team. Start with read-only investigations, or explicitly allow isolated file changes. Results still need verification.</p>
             <label class="swarm-switch"><input type="checkbox" data-swarm="enabled"> Enable team preview</label>
-            <label>Execution ownership<select data-swarm="execution-mode" aria-label="Execution ownership"><option value="personal">Personal team</option><option value="managed" disabled>Organization managed team</option></select></label>
+            <label>Execution ownership<select data-swarm="execution-mode" aria-label="Execution ownership"><option value="personal">Personal team</option><option value="managed" disabled>Organization managed team (set up by your organization)</option></select></label>
             <p data-swarm="managed-status" class="swarm-help" role="status">Personal work stays on this computer.</p>
             <p class="swarm-model"><span>Saved session model</span><strong data-swarm="model">Loading…</strong></p>
             <button type="button" data-swarm="previous-team" hidden>Back to saved team</button>
@@ -78,6 +109,7 @@ window.LumiSwarmView = class LumiSwarmView {
             <label>Worker model<select data-swarm="worker-model"><option value="">Same as this session</option></select></label>
             <p class="swarm-help">Workers use this model; the coordinator or orchestrator always uses this session’s. A faster or local model can do the work while a stronger one plans.</p>
             <label class="swarm-switch"><input type="checkbox" data-swarm="allow-writes"> Allow scoped file changes</label>
+            <p class="swarm-help" data-swarm="git-note" hidden></p>
             <fieldset data-swarm="writer-setup" class="swarm-task" hidden disabled><legend>File changes and verification</legend>
             <p class="swarm-help">Start from a clean, committed Git checkout. Its base and branch are captured when the team starts. Writers use isolated worktrees. Your checkout changes only after verified changes are explicitly applied.</p>
             <label>Writable project folders<input data-swarm="write-roots" required placeholder="src, tests"></label>
@@ -88,6 +120,7 @@ window.LumiSwarmView = class LumiSwarmView {
             <div class="swarm-fields"><label>Coordinator request allowance<input data-swarm="coordinator-requests" type="number" min="1" max="1000" step="1" value="3" required></label>
             <label>Allowance per worker<input data-swarm="worker-requests" type="number" min="1" max="1000" step="1" value="4" required></label></div>
             <label class="swarm-switch"><input type="checkbox" data-swarm="autonomous"> Let the orchestrator run the team</label>
+            <p class="swarm-help" data-swarm="autonomy-mode" hidden>The orchestrator decides for you, so it needs Full-auto. This conversation isn’t in Full-auto: starting asks first, and offers to run just this team in Full-auto. The conversation keeps its mode.</p>
             <div class="swarm-fields" data-swarm="autonomy-fields" hidden><label>Orchestrator rounds<input data-swarm="rounds" type="number" min="1" max="8" step="1" value="3" required></label></div>
             <label class="swarm-switch" data-swarm="auto-apply-label" hidden><input type="checkbox" data-swarm="auto-apply"> Apply changes that pass every check</label>
             <p class="swarm-help" data-swarm="autonomy-help" hidden>The orchestrator plans, starts workers, reads their findings and plans again for up to this many rounds, then writes a final report. It doesn’t wait for you at each step: findings it uses are marked accepted by the orchestrator, not reviewed by you. <span data-swarm="apply-help-manual">File changes still wait for you.</span><span data-swarm="apply-help-auto" hidden>Writers’ changes are combined and applied to your checkout once every declared check passes, without your review; a failing check sends the writers back once with its output. Every check runs on each round’s combined change, so declare checks the project should pass after every round. Keep the checkout clean and on its branch while the team runs.</span> You can pause or stop the team at any time.</p></div>
@@ -381,6 +414,20 @@ window.LumiSwarmView = class LumiSwarmView {
     _swarmRenumberTasks() {
         const nodes = this._swarmNodes;
         const coordinator = nodes['plan-mode'].value === 'coordinator';
+        // Writer teams need Git (lumi/git_support.py); read-only teams don't.
+        const git = this._gitMissingCopy?.();
+        nodes['git-note'].hidden = !git;
+        if (git) {
+            nodes['git-note'].textContent = `Writer teams need ${git.product}, which isn’t installed on this computer. Read-only teams work without it. `;
+            const link = document.createElement('a');
+            link.href = git.url;
+            link.target = '_blank';
+            link.rel = 'noopener noreferrer';
+            link.textContent = `Get ${git.product}`;
+            nodes['git-note'].appendChild(link);
+            nodes['allow-writes'].checked = false;
+        }
+        nodes['allow-writes'].disabled = Boolean(git);
         const writers = nodes['allow-writes'].checked;
         nodes['writer-setup'].hidden = !writers;
         nodes['writer-setup'].disabled = !writers;
@@ -395,6 +442,7 @@ window.LumiSwarmView = class LumiSwarmView {
         for (const name of ['coordinator-requests', 'worker-requests', 'autonomous']) nodes[name].disabled = !coordinator;
         nodes['autonomy-fields'].hidden = !autonomous;
         nodes['autonomy-help'].hidden = !autonomous;
+        nodes['autonomy-mode'].hidden = !autonomous || this.permissionMode === 'bypass';
         nodes.rounds.disabled = !autonomous;
         // Applying needs writer access: its checks are what decide.
         const canApply = autonomous && writers;
@@ -409,8 +457,9 @@ window.LumiSwarmView = class LumiSwarmView {
             const writes = writers && row.querySelector('[data-task-role]').value === 'implement';
             row.querySelector('[data-task-writer-fields]').hidden = !writes;
             for (const input of row.querySelectorAll('[data-task-writes],[data-task-criteria]')) input.disabled = !writes;
-            row.querySelector('legend').textContent = `Investigation ${index + 1}`;
-            row.querySelector('[data-remove-task]').setAttribute('aria-label', `Remove investigation ${index + 1}`);
+            const noun = writes ? 'Change' : 'Investigation';
+            row.querySelector('legend').textContent = `${noun} ${index + 1}`;
+            row.querySelector('[data-remove-task]').setAttribute('aria-label', `Remove ${noun.toLowerCase()} ${index + 1}`);
             row.querySelector('[data-remove-task]').disabled = nodes.tasks.children.length <= 1;
         });
         nodes['add-task'].disabled = nodes.tasks.children.length >= 8;
@@ -460,7 +509,7 @@ window.LumiSwarmView = class LumiSwarmView {
         }
     }
 
-    requestSwarm(action, extra = {}, {quiet = false} = {}) {
+    requestSwarm(action, extra = {}, {quiet = false, retried = false} = {}) {
         if (!this._swarmDialog?.open) return;
         if (action === 'stop' && this._swarmPending?.action === 'request_plan') {
             // The planner may already have committed a newer revision while its
@@ -492,16 +541,54 @@ window.LumiSwarmView = class LumiSwarmView {
         const request = {command: 'swarm', action, execution_mode: this._swarmExecutionMode || 'personal',
             ...this._collaborationReadFields?.(action), ...this._managedSharingReadFields?.(action), ...extra, ...scope, request_id};
         if (!scope.run_id) delete request.run_id;
+        // The owner chose "Run this team in Full-auto" (or Continue) for this request only (_swarmOfferFullAuto).
+        if (this._swarmFullAutoGrant && this._swarmFullAutoGrant === action) {
+            request.full_auto = true;
+            this._swarmFullAutoGrant = null;
+            this._swarmFullAutoGranted = true;
+        }
         if (['view', 'events'].includes(action)) request.after = this._swarmCursor;
         const revision = this._swarmState?.run?.run?.revision;
         if (Number.isInteger(revision) && !['view', 'events', 'configure', 'history', 'read_artifact'].includes(action)) request.expected_revision = revision;
-        this._swarmPending = {request_id, action, quiet, participant: extra.attempt_id
+        const decision = LumiSwarmView.DECISIONS.has(action) ? {extra, retried} : null;
+        this._swarmPending = {request_id, action, quiet, decision, participant: extra.attempt_id
             ? {attempt_id: extra.attempt_id, attempt_epoch: extra.attempt_epoch, text: extra.text} : null,
             historyPage: action === 'history' ? this._swarmRequestedHistoryPage : null,
             artifact: action === 'read_artifact' ? {artifact_id: extra.artifact_id, offset: extra.offset || 0, run_id: scope.run_id} : null};
         if (!quiet) this._swarmNodes.notice.textContent = ['view', 'events', 'history', 'read_artifact'].includes(action) ? 'Loading retained team information…' : 'Applying team change…';
         this._renderSwarmControls();
         this.send(request);
+    }
+
+    /**
+     * Offer to send the refused Start or Continue again with the owner's
+     * Full-auto grant for this one team (gui/swarming.py): the conversation
+     * keeps its mode. The grant rides only on the request that button sends
+     * (requestSwarm reads it while the form submits), never on a later one.
+     * Focus never moves onto the button, so a second Enter can't press it;
+     * the notice is a status, and takes focus itself only if focus was lost.
+     */
+    _swarmOfferFullAuto(action) {
+        const nodes = this._swarmNodes;
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'swarm-full-auto-grant';
+        button.textContent = action === 'start' ? 'Run this team in Full-auto' : 'Continue this team in Full-auto';
+        button.addEventListener('click', () => {
+            button.disabled = true;
+            this._swarmFullAutoGrant = action;
+            this._swarmFullAutoGranted = false;
+            try {
+                (action === 'start' ? nodes.form : nodes['continue-form']).requestSubmit();
+            } finally {
+                this._swarmFullAutoGrant = null;
+            }
+            // Nothing was sent (the form needs a fix first): the offer stays.
+            if (!this._swarmFullAutoGranted) button.disabled = false;
+        });
+        nodes.notice.append(' ', button);
+        nodes.notice.tabIndex = -1;
+        if (this._focusNotice) this._focusNotice(nodes.notice);
     }
 
     _swarmStopRefreshVisible() {
@@ -544,7 +631,7 @@ window.LumiSwarmView = class LumiSwarmView {
         if (!this._swarmDialog?.open || !this._swarmPending || event.request_id !== this._swarmPending.request_id) return;
         const scope = this._swarmScope;
         if (event.project !== scope.project || event.session_id !== scope.session_id) return;
-        const {action, quiet, participant, historyPage, artifact} = this._swarmPending;
+        const {action, quiet, participant, historyPage, artifact, decision} = this._swarmPending;
         // A read of the session's latest run must not replace an explicit new
         // team draft. Only its own successful start may bind that draft.
         if (this._swarmPlanningNew && !['start', 'collaboration_prepare', 'managed_sharing_prepare'].includes(action)) event = {...event, run: null, events: []};
@@ -552,9 +639,29 @@ window.LumiSwarmView = class LumiSwarmView {
         if (scope.run_id && incomingRun?.id && incomingRun.id !== scope.run_id) return;
         this._swarmPending = null;
         if (action === 'view') this._swarmSelectingRun = false;
+        if (event.error && decision && !decision.retried && /^Run revision changed/.test(String(event.error))) {
+            // Another change landed first: an earlier acceptance, or a worker
+            // the team started. The decision names its own immutable target
+            // (attempt and candidate, or proposal), so after a refresh it is
+            // sent once more; the server still checks that target.
+            this._swarmRetryDecision = {action, extra: decision.extra};
+            this.requestSwarm('view', {}, {quiet: true});
+            return;
+        }
+        if (action === 'view' && this._swarmRetryDecision) {
+            const retry = this._swarmRetryDecision;
+            this._swarmRetryDecision = null;
+            if (!event.error) setTimeout(() => this.requestSwarm(retry.action, retry.extra, {retried: true}), 0);
+        }
         if (event.error) {
             this._swarmNodes.notice.textContent = typeof event.error === 'string' ? event.error : 'The team change could not be applied. Refresh to inspect its current state.';
             this._swarmNodes.notice.dataset.error = 'true';
+            // Start and Continue are far below the notice; bring it into view.
+            if (!quiet) this._swarmNodes.notice.scrollIntoView?.({block: 'nearest'});
+            // A team the orchestrator runs needs Full-auto (gui/swarming.py): one click runs this team in it.
+            if (event.code === 'needs_full_auto' && event.can_grant && ['start', 'continue_recovered'].includes(action)) {
+                this._swarmOfferFullAuto(action);
+            }
             this._swarmNodes.enabled.checked = Boolean(this._swarmState?.enabled);
             if (action === 'read_artifact' && artifact?.artifact_id === this._swarmArtifactState?.target.artifact_id) {
                 this._swarmArtifactState.page = null;
@@ -621,7 +728,7 @@ window.LumiSwarmView = class LumiSwarmView {
             ? `Organization ${managed?.tenant_id || 'unavailable'} · ${managed?.connection || 'not contacted'} · No offline execution. Metadata and request/action counts are reported; prompts and file contents are not uploaded.`
                 + (policy?.authenticated ? ` ${policy.valid ? 'Current' : 'Expired'} policy: ${policy.policy?.max_workers ?? '—'} worker slots; ${policy.policy?.request_limit ?? '—'} shared model requests.` : ' Effective policy has not been obtained.')
             : managed?.available ? 'Personal work stays local. Choose organization ownership explicitly for a new team.'
-                : 'Organization teams require an operator-provided managed configuration at application startup.';
+                : 'Organization managed teams run under your organization’s Lumi Cloud, with a setup your administrator gives Lumi when it starts. Personal teams need nothing more.';
         nodes.model.textContent = event.model ? `${event.model.label || event.model.provider} · ${event.model.model}` : 'No supported model selected';
         this._swarmWorkerModels(event.model);
         const snapshot = event.run;
@@ -661,6 +768,7 @@ window.LumiSwarmView = class LumiSwarmView {
         }));
         if (!activity.length) { const item = document.createElement('li'); item.textContent = 'No recorded activity yet.'; nodes.activity.appendChild(item); }
         this._renderSwarmControls();
+        if (action === 'view') this._swarmApplyObjectiveDraft();
         if (!this._swarmHistory && action !== 'history') this._swarmLoadHistory(0);
     }
 
@@ -992,18 +1100,21 @@ window.LumiSwarmView = class LumiSwarmView {
                 const items = node._readableProposal ? plan.work_items.slice(0, 256) : [];
                 // A follow-up with no work is the orchestrator's final report.
                 const report = node._readableProposal && !items.length;
-                node.querySelector('h4').textContent = report ? 'Orchestrator report' : 'Proposed investigations';
+                node.querySelector('h4').textContent = report ? 'Orchestrator report'
+                    : items.some(item => item.role === 'implement') ? 'Proposed work' : 'Proposed investigations';
                 node.querySelector('[data-proposal-approach]').textContent = !node._readableProposal ? ''
                     : report ? 'No more work proposed: this is the final report.'
                     : plan.use_team ? 'Tasks can run as their dependencies are accepted and worker slots become available.'
                     : `The ${this._swarmCoordinatorName().toLowerCase()} recommends one focused assignment.`;
-                const labels = new Map(items.map((item, index) => [item.id, `Investigation ${index + 1}`]));
+                // One numbering; a writer's task is a change and a verifier's a check.
+                const noun = item => ({implement: 'Change', verify: 'Check'}[item.role] || 'Investigation');
+                const labels = new Map(items.map((item, index) => [item.id, `${noun(item)} ${index + 1}`]));
                 node.querySelector('[data-proposal-tasks]').replaceChildren(...items.map((item, index) => {
                     const entry = document.createElement('li');
                     const title = document.createElement('strong');
-                    title.textContent = `Investigation ${index + 1}: ${item.objective}`;
+                    title.textContent = `${labels.get(item.id)}: ${item.objective}`;
                     const detail = document.createElement('p');
-                    const dependencies = (item.dependencies || []).map(id => labels.get(id) || 'Unavailable investigation');
+                    const dependencies = (item.dependencies || []).map(id => labels.get(id) || 'Unavailable task');
                     detail.textContent = `Role: ${{explore: 'Investigate', verify: 'Verify', implement: 'Implement'}[item.role] || 'Unknown'}. Read access: ${(item.read_roots || []).join(', ') || 'None'}. Write access: ${(item.write_roots || []).join(', ') || 'None'}. Depends on: ${dependencies.join(', ') || 'None'}. Review criteria: ${(item.criteria || []).map(name => name === 'owner_review' ? 'Owner review of findings' : name).join(', ')}.`;
                     entry.append(title, detail);
                     return entry;
@@ -1532,7 +1643,8 @@ window.LumiSwarmView = class LumiSwarmView {
         nodes.enabled.disabled = !online || busy || !available;
         nodes.start.disabled = !online || busy || !available || !this._swarmState?.enabled || Boolean(run) || selectedElsewhere;
         nodes['execution-mode'].disabled = !online || busy || Boolean(run) || selectedElsewhere;
-        nodes['allow-writes'].disabled = !online || busy || Boolean(run);
+        // Writer teams need Git (_swarmRenumberTasks says so beside the switch).
+        nodes['allow-writes'].disabled = !online || busy || Boolean(run) || Boolean(this._gitMissingCopy?.());
         nodes.pause.hidden = !run || recoveryNeeded || run.state !== 'running';
         nodes.resume.hidden = !run || recoveryNeeded || run.state !== 'paused';
         nodes.stop.hidden = !run || (recoveryNeeded && !recoveryOwned) || Boolean(run.stop_requested) || ['completed', 'cancelled', 'failed', 'stopping'].includes(run.state);

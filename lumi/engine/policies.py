@@ -383,9 +383,13 @@ def default_auto_edit_policy() -> ExecutionPolicy:
 
 
 def default_full_auto_policy() -> ExecutionPolicy:
-    """Full-auto mode: allow everything (sandbox handles safety)."""
+    """Full-auto mode: allow everything the guardrails and rules above it allow.
+
+    File tools stay inside the project (the path sandbox). Commands are held to
+    the project only while the shell sandbox is on (engine/os_sandbox.py).
+    """
     return ExecutionPolicy([
-        PolicyRule(tool_pattern="*", action="allow", reason="Full autonomy (sandboxed)"),
+        PolicyRule(tool_pattern="*", action="allow", reason="Full-auto: runs without asking"),
     ])
 
 

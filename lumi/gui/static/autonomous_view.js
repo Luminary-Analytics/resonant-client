@@ -163,8 +163,14 @@ class LumiAutonomousView {
      */
     _missionDispatchRefused() {
         const restore = this._pendingMissionDispatch;
+        const retry = this._pendingMissionDispatchRetry;
         this._pendingMissionDispatch = null;
+        this._pendingMissionDispatchRetry = null;
         if (typeof restore === 'function') restore();
+        // {work, run}: `run` dispatches the same roadmap or session again in
+        // Full-auto for that run only, for the notice that offers it
+        // (app.js _showFullAutoNotice).
+        return retry && typeof retry.run === 'function' ? retry : null;
     }
 
 
@@ -1855,17 +1861,19 @@ class LumiAutonomousView {
                 </button>
                 <span class="mission-build-hint">Spec captured. Click to dispatch the planner with the full spec.</span>
             `;
-            wrap.querySelector('.mission-build-btn').addEventListener('click', () => {
+            const dispatchRoadmap = ({fullAuto = false} = {}) => {
                 // Tier-1 fix #1: hand the FULL spec markdown over, not
                 // just the refined-intent paragraph — the planner
                 // needs the assumptions / scope / acceptance criteria
                 // too. Backend owns the intent_start + phase
-                // transition.
+                // transition. `fullAuto`: the person chose to build this
+                // roadmap in Full-auto (the conversation keeps its mode).
                 this.send({
                     command: 'mission_dispatch_roadmap',
                     session_id: sessionId,
                     spec_markdown: specMd,
                     refined_intent: refined,
+                    ...(fullAuto ? {full_auto: true} : {}),
                 });
                 const btn = wrap.querySelector('.mission-build-btn');
                 const label = btn.querySelector('.mission-build-label');
@@ -1877,10 +1885,12 @@ class LumiAutonomousView {
                     btn.disabled = false;
                     label.textContent = 'Build this roadmap';
                 };
+                this._pendingMissionDispatchRetry = {work: 'roadmap', run: () => dispatchRoadmap({fullAuto: true})};
                 // Surface the planner UI proactively so the user sees
                 // the graph populate as it builds.
                 this.openPlanTab(true);
-            });
+            };
+            wrap.querySelector('.mission-build-btn').addEventListener('click', () => dispatchRoadmap());
             target.appendChild(wrap);
         }
         this.scrollToBottom();
@@ -2155,11 +2165,12 @@ class LumiAutonomousView {
         }
 
         const buildBtn = wrap.querySelector('.mission-build-btn-autonomous');
-        buildBtn.addEventListener('click', () => {
+        const dispatchAutonomous = ({fullAuto = false} = {}) => {
             // The chosen budget is included in the spec the daemon
             // reads — overwrite the `**Time budget:**` line in the
             // spec markdown so the user's pick wins over the model's
-            // recommendation.
+            // recommendation. `fullAuto`: the person chose to run this
+            // session in Full-auto (the conversation keeps its mode).
             const finalSpec = this._patchTimeBudget(specMd, chosen);
             this.send({
                 command: 'mission_dispatch_autonomous',
@@ -2169,6 +2180,7 @@ class LumiAutonomousView {
                 time_budget: chosen,
                 decision_timeout: chosenDecision,
                 spend_limit: chosenSpend,
+                ...(fullAuto ? {full_auto: true} : {}),
             });
             // v0.5.7a4 — collapse the dispatch card into a one-line
             // confirmation chip after click. Linux-bridge field-
@@ -2183,8 +2195,10 @@ class LumiAutonomousView {
             this._pendingMissionDispatch = () => {
                 if (chip && chip.parentNode) chip.parentNode.replaceChild(wrap, chip);
             };
+            this._pendingMissionDispatchRetry = {work: 'autonomous', run: () => dispatchAutonomous({fullAuto: true})};
             this.openPlanTab(true);
-        });
+        };
+        buildBtn.addEventListener('click', () => dispatchAutonomous());
 
         return wrap;
     }

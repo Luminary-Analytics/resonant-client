@@ -129,3 +129,6 @@
 .swarm-messages li { border-left: 2px solid var(--brand2, #b4aaff); padding: 2px 0 2px 10px; }
 .swarm-panel .swarm-message-heading { color: var(--text-secondary, #aaa); font-size: 11px; margin: 0 0 2px; }
 .swarm-panel .swarm-message-body { margin: 0; }
+/* Run this team in Full-auto, inside the notice (swarm_view.js _swarmOfferFullAuto). */
+.swarm-notice .swarm-full-auto-grant { margin-top: 8px; display: inline-flex; align-items: center; }
+.swarm-notice:focus { outline: 2px solid var(--accent, #7c9cff); outline-offset: 2px; }

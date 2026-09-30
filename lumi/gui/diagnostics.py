@@ -170,7 +170,7 @@ def _meta_text(version: str, state_dir: Path, known: Iterable[str] = ()) -> str:
     settings_path = state_dir / "settings.json"
     if settings_path.is_file():
         try:
-            settings_blob = settings_path.read_text(encoding="utf-8", errors="replace")
+            settings_blob = settings_path.read_text(encoding="utf-8-sig", errors="replace")
             try:
                 settings_blob = json.dumps(mask_settings(json.loads(settings_blob)), indent=2)
             except ValueError:

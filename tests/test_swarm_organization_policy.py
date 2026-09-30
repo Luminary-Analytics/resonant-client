@@ -456,17 +456,19 @@ def test_each_request_is_priced_and_recorded_under_its_own_model(team, records):
 # ── Modes ──────────────────────────────────────────────────────────────────
 
 
-@pytest.mark.parametrize("modes, reader, writers, applier", [
-    (["plan"], "", "neither Auto-edit nor Full-auto", "doesn't allow Full-auto"),
-    (["ask"], "", "neither Auto-edit nor Full-auto", "doesn't allow Full-auto"),
-    (["ask", "auto-edit"], "", "", "doesn't allow Full-auto"),
-    (["bypass"], "", "", ""),
-    (None, "", "", ""),
+@pytest.mark.parametrize("modes, reader, writers, orchestrated, applier", [
+    (["plan"], "", "neither Auto-edit nor Full-auto", "a team the orchestrator runs", "doesn't allow Full-auto"),
+    (["ask"], "", "neither Auto-edit nor Full-auto", "a team the orchestrator runs", "doesn't allow Full-auto"),
+    (["ask", "auto-edit"], "", "", "a team the orchestrator runs", "doesn't allow Full-auto"),
+    (["bypass"], "", "", "", ""),
+    (None, "", "", "", ""),
 ])
-def test_team_features_map_to_permission_modes(modes, reader, writers, applier):
+def test_team_features_map_to_permission_modes(modes, reader, writers, orchestrated, applier):
     install(**({"permissions": {"allowed_modes": modes}} if modes else {}))
     for refusal, expected in ((mode_refusal(writers=False, applies=False), reader),
                               (mode_refusal(writers=True, applies=False), writers),
+                              # The orchestrator approves plans and accepts results for the owner.
+                              (mode_refusal(writers=False, applies=False, orchestrated=True), orchestrated),
                               (mode_refusal(writers=True, applies=True), applier)):
         if expected:
             assert expected in refusal
@@ -489,6 +491,18 @@ def test_a_writer_team_is_refused_before_any_team_state_where_writers_arent_allo
             "plan_mode": "coordinator", "tasks": None, "write_roots": ["."], "checks": [check],
             "request_limit": 20, "max_workers": 2, "coordinator_requests": 3, "worker_requests": 3,
             "autonomy": {"rounds": 1, "apply": True}})
+    assert not backends and not service.busy
+    assert service.operate(capture, {"request_id": "look"})["run"] is None
+
+
+def test_a_team_the_orchestrator_runs_is_refused_where_full_auto_isnt_allowed(team):
+    # Even one that only reads and reports: the orchestrator decides for the
+    # owner, which needs Full-auto (the desktop's AppState.full_auto_needed
+    # leaves this refusal to the team's rules). A team the owner reviews runs.
+    service, capture, outputs, backends = team
+    install(permissions={"allowed_modes": ["ask", "auto-edit"]})
+    with pytest.raises(Conflict, match="doesn't allow Full-auto, which a team the orchestrator runs needs"):
+        start_orchestrated(service, capture)
     assert not backends and not service.busy
     assert service.operate(capture, {"request_id": "look"})["run"] is None
 

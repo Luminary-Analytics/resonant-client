@@ -237,6 +237,18 @@ def main():
         from lumi.extension_check import main as extension_main
         raise SystemExit(extension_main(sys.argv[2:]))
 
+    # The app works in many projects at once and gives each command its
+    # folder, so it leaves the folder it was started in (often a project)
+    # before the managed setup or the updater below could start anything
+    # there (lumi/executables.py). gui/server.py does it again for lumi-gui.
+    try:
+        opening_app = _managed_startup_arguments(sys.argv)[0][1:2] == ["gui"]
+    except ValueError:
+        opening_app = False
+    if opening_app:
+        from lumi.executables import leave_working_folder
+        leave_working_folder()
+
     # This is an operator startup option, never browser state or a discovered
     # credential. Reject invalid setup before updater/UI startup; do not quietly
     # fall back to a personal run after an explicit managed configuration fails.

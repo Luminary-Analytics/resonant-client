@@ -17,8 +17,9 @@ import subprocess
 from pathlib import Path
 from typing import Optional
 
+from lumi.executables import batch_argument_problem, find_program, project_tool
 from lumi.processes import background_process_kwargs
-from lumi.secrets_store import child_env
+from lumi.secrets_store import server_env
 
 
 # (linter_name, base_argv). The file path is appended at lint time.
@@ -101,9 +102,14 @@ def lint_file(
     file_path: Path | str,
     *,
     timeout: float = 10.0,
+    trusted: bool = False,
 ) -> dict:
     """
     Run the detected linter on a single file. Cheap (per-file scope).
+
+    ``trusted``: the project is trusted, so its own linter (``.venv``,
+    ``venv``, ``node_modules/.bin``) comes before one on PATH
+    (lumi/executables.py ``project_tool``).
 
     Returns:
         {
@@ -111,6 +117,8 @@ def lint_file(
             "ok": bool,              # True if no errors / linter unavailable / no lint applicable
             "errors": str,           # captured stdout+stderr (only set if !ok)
             "skipped_reason": str,   # populated when skipped (no linter, wrong filetype, etc.)
+            "source": str,           # "from the project's .venv", "from PATH"
+            "notice": str,           # an untrusted project's own linter, unused until it's trusted
         }
     """
     p = Path(project_path)
@@ -124,12 +132,31 @@ def lint_file(
     if not _file_matches_linter(name, f):
         return {"linter": name, "ok": True, "errors": "", "skipped_reason": f"{name} doesn't apply to {f.suffix}"}
 
-    cmd = list(base_args) + [str(f)]
+    # A trusted project's own linter, else the one installed on PATH, never
+    # a program from the project otherwise (lumi/executables.py).
+    if name == "eslint":
+        linter, source, notice = project_tool("eslint", p, trusted=trusted, scripts=True)
+        arguments = [*base_args[3:], str(f)]  # without "npx --no-install eslint"
+        if not linter:
+            linter, source = find_program("npx", exclude=[p]), "from PATH"
+            arguments = [*base_args[1:], str(f)]
+    else:
+        linter, source, notice = project_tool(base_args[0], p, trusted=trusted)
+        arguments = [*base_args[1:], str(f)]
+    if not linter:
+        return {"linter": name, "ok": True, "errors": "", "skipped_reason": f"{name} not installed",
+                "source": "", "notice": notice}
+    # node_modules/.bin/eslint.cmd starts through cmd.exe, which would parse the file's name.
+    problem = batch_argument_problem(linter, arguments)
+    if problem:
+        return {"linter": name, "ok": True, "errors": "", "skipped_reason": problem, "source": source,
+                "notice": notice}
+    cmd = [linter, *arguments]
     try:
         proc = subprocess.run(
             cmd,
             cwd=str(p),
-            env=child_env(),
+            env=server_env(),
             capture_output=True,
             text=True,
             timeout=max(0.5, timeout),
@@ -139,9 +166,11 @@ def lint_file(
             **background_process_kwargs(),
         )
     except FileNotFoundError:
-        return {"linter": name, "ok": True, "errors": "", "skipped_reason": f"{name} not installed"}
+        return {"linter": name, "ok": True, "errors": "", "skipped_reason": f"{name} not installed",
+                "source": source, "notice": notice}
     except subprocess.TimeoutExpired:
-        return {"linter": name, "ok": True, "errors": "", "skipped_reason": f"{name} timed out after {timeout:.1f}s"}
+        return {"linter": name, "ok": True, "errors": "", "skipped_reason": f"{name} timed out after {timeout:.1f}s",
+                "source": source, "notice": notice}
 
     output = ((proc.stdout or "") + (proc.stderr or "")).strip()
     return {
@@ -149,4 +178,6 @@ def lint_file(
         "ok": proc.returncode == 0,
         "errors": output if proc.returncode != 0 else "",
         "skipped_reason": "",
+        "source": source,
+        "notice": notice,
     }

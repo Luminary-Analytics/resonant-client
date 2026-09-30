@@ -71,6 +71,29 @@ def test_a_schedule_is_checked_before_it_is_saved(project):
     assert every_day.days == [] and every_day.describe() == "every day at 02:30"
 
 
+def test_tests_never_register_real_os_tasks(project, monkeypatch):
+    # conftest switches the OS scheduler off for the whole run (and its
+    # subprocesses): leftover "Lumi\<id>" tasks once ran `python -m lumi` against
+    # the developer's real home. Saving here must not reach schtasks, launchd or cron.
+    def refuse(args, **kwargs):
+        raise AssertionError(f"a test tried to run {args[0]}")
+    monkeypatch.setattr(schedules, "_run", refuse)
+    monkeypatch.setattr(schedules, "_registrar", None)  # this module's fake, set for every test
+    assert isinstance(schedules.registrar(), schedules.NullRegistrar)
+    schedule = schedules.save(_raw(project, days=["fri"]))
+    schedules.set_enabled(schedule.id, False)
+    schedules.remove(schedule.id)
+
+
+def test_the_os_scheduler_switch(monkeypatch):
+    monkeypatch.setattr(schedules, "_registrar", None)
+    monkeypatch.setenv("LUMI_OS_SCHEDULER", "off")
+    assert not schedules.os_scheduler_enabled()
+    monkeypatch.delenv("LUMI_OS_SCHEDULER")
+    assert schedules.os_scheduler_enabled()
+    assert not isinstance(schedules.registrar(), schedules.NullRegistrar)
+
+
 def test_saving_registers_pausing_unregisters_and_removing_deletes_the_results(project, registrar):
     schedule = schedules.save(_raw(project, days=["fri"]))
     assert registrar.calls == [("unregister", schedule.id), ("register", schedule.id, "02:30", ("fri",))]

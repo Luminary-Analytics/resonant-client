@@ -17,12 +17,13 @@ from __future__ import annotations
 
 import json
 import re
-import shutil
 import ssl
 import subprocess
 import threading
 import time
 from typing import Any
+
+from .executables import find_program
 
 AZURE_OPENAI_SCOPE = "https://cognitiveservices.azure.com/.default"
 _REFRESH_EARLY = 60.0
@@ -148,7 +149,7 @@ def entra_token(tenant: str, *, client_id: str = "", client_secret: str = "", sc
     # resource URIs so nothing in the arguments can be interpreted.
     if not _RESOURCE.fullmatch(resource):
         raise SignInError("The scope for Azure CLI sign-in should be a single resource URI.")
-    az = shutil.which("az")
+    az = find_program("az", scripts=True)  # the installed one, never from Lumi's working folder
     completed = None
     if az:
         command = [az, "account", "get-access-token", "--resource", resource, "--output", "json"]

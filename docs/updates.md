@@ -12,7 +12,7 @@ can set the same choices by policy.
 | Setting | Values | Effect |
 |---|---|---|
 | **Check for updates** (`updates.mode`) | `automatic` (default), `manual`, `off` | `automatic` checks once a day and whenever you choose **Check for updates**. `manual` checks only when you choose it. `off` never checks or prompts; it's for organizations that deploy Lumi themselves. |
-| **Channel** (`updates.channel`) | `stable` (default), `beta` | The beta channel gets beta releases first. It also gets every stable release, so beta users aren't left behind. |
+| **Channel** (`updates.channel`) | `stable` (default), `beta` | The beta channel gets beta releases first. It also gets every stable release, so beta users aren't left behind. A beta build comes with the [Alpha and Beta Test Terms](../lumi/legal/ALPHA-TERMS.md), which Lumi asks you to accept when it first starts. |
 | **Stay on release line** (`updates.pin`) | empty (default), or a line such as `0.20` | Lumi takes only stable releases of that line (0.20.1, 0.20.2 …) and nothing newer. A pin wins over the channel. Lumi never moves to an older version, so a pin below the installed version means no updates. |
 
 Changes apply the next time Lumi starts. Until then, **This installation**

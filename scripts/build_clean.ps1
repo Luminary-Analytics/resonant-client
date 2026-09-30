@@ -68,15 +68,17 @@ try {
 
     python -m venv $tempRoot
     $python = Join-Path $tempRoot "Scripts/python.exe"
-    & $python -m pip install --disable-pip-version-check --no-cache-dir --upgrade pip
-    if ($LASTEXITCODE -ne 0) { throw "pip upgrade failed with exit code $LASTEXITCODE" }
-    # Exact, hash-checked versions of everything the bundle is built from
-    # (packaging/requirements-release.txt, made by scripts/lock_release.py), then
-    # Lumi itself without resolving anything again.
+    # Only hash-pinned packages go into the build (release.yml's build job
+    # relies on it): the pip that comes with this Python, not the newest, then
+    # exact, hash-checked versions of everything the bundle is built from
+    # (packaging/requirements-release.txt, made by scripts/lock_release.py),
+    # then Lumi itself from this checkout, built with the pinned setuptools
+    # and without an index, so nothing is resolved or downloaded again.
     & $python -m pip install --disable-pip-version-check --no-cache-dir --require-hashes `
         -r (Join-Path $repo "packaging/requirements-release.txt")
     if ($LASTEXITCODE -ne 0) { throw "Locked dependency install failed with exit code $LASTEXITCODE" }
-    & $python -m pip install --disable-pip-version-check --no-cache-dir --no-deps $repo
+    & $python -m pip install --disable-pip-version-check --no-cache-dir --no-index --no-deps `
+        --no-build-isolation $repo
     if ($LASTEXITCODE -ne 0) { throw "Lumi install failed with exit code $LASTEXITCODE" }
 
     # License texts of every third-party part, from this environment's metadata.
@@ -96,6 +98,12 @@ try {
         --policy (Join-Path $repo "packaging/bundle-policy.json") `
         --manifest (Join-Path $repo $ManifestPath)
     if ($LASTEXITCODE -ne 0) { throw "Bundle policy gate failed" }
+
+    # The installer's license page (packaging/installer.iss): Lumi's terms for
+    # lumi/__init__.py's version, with the Alpha and Beta Test Terms when it's
+    # a pre-release (packaging/legal_texts.py).
+    & $python (Join-Path $repo "packaging/legal_texts.py") rtf --out (Join-Path $dist "legal")
+    if ($LASTEXITCODE -ne 0) { throw "Rendering Lumi's terms for the installer failed" }
 
     if ($SbomPath) {
         $sbom = [IO.Path]::GetFullPath((Join-Path $repo $SbomPath))

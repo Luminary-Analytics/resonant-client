@@ -151,7 +151,7 @@ optional.
 
 | Section | Effect |
 | --- | --- |
-| `settings` | `"section.key": value` pairs that override what people set, locked in Settings and refused by the app's settings commands. Useful keys: `general.default_permission_mode`, `privacy.secret_scan`, `privacy.transcript_retention_days`, `privacy.excluded_paths`, `security.cli_adapters`, `security.computer_use`, `security.chat_gateway`, `security.scheduled_tasks` (see [scheduled tasks](scheduled-tasks.md#for-administrators)), `security.editor_bridge` (VS Code and JetBrains reaching Lumi; see [code editors](code-editors.md)), `cloud.remote_tasks` (tasks from Slack and Teams; see [Lumi Cloud](lumi-cloud.md#tasks-from-slack-and-teams)), `security.shell_sandbox` (`"off"` or `"project"`; see [shell sandbox](shell-sandbox.md)), `security.extension_panels` (`false` turns off capability packs' panels; see [Panels](extensions.md#panels)), `code_hosts.github_hosts` and `code_hosts.gitlab_hosts` (lists of the GitHub Enterprise Server and self-managed GitLab hosts that may receive those tokens, besides github.com and gitlab.com; see [which hosts get the token](github.md#which-hosts-get-the-token)), `swarming.enabled` (`false` keeps the [Team preview](swarming.md#under-an-organization-policy) off), `network.proxy_url`, `network.no_proxy`, `network.system_certificates`, `cost_tracking.budget_alert_usd`, the [audit log](audit-log.md#for-administrators)'s `privacy.audit_log`, `privacy.audit_capture`, `privacy.audit_retention_days`, `audit.otlp_endpoint` and `audit.otlp_auth_header`, and [updates](updates.md#for-administrators)' `updates.mode` (`automatic`, `manual` or `off`), `updates.channel` (`stable` or `beta`) and `updates.pin` (a release line such as `0.20`), and [dictation](voice-input.md#for-administrators)'s `voice.engine` (`off` turns it off), `voice.service`, `voice.model` and `voice.language`, and [offline mode](offline.md#for-administrators)'s `offline.enabled` (`true` or `false`) and `offline.allowed_hosts` (a list of names, `*.domain`, addresses and networks such as `10.20.0.0/16`; `*`, a whole top-level domain such as `*.com` and `0.0.0.0/0` make the policy invalid). When the policy turns offline mode on, only its `offline.allowed_hosts` apply, not hosts people list in Settings. A policy that exists but can't be used keeps offline mode on with no allowed hosts until it's fixed. |
+| `settings` | `"section.key": value` pairs that override what people set, locked in Settings and refused by the app's settings commands. Useful keys: `general.default_permission_mode`, `privacy.secret_scan`, `privacy.transcript_retention_days`, `privacy.excluded_paths`, `security.cli_adapters`, `security.computer_use`, `security.chat_gateway`, `security.scheduled_tasks` (see [scheduled tasks](scheduled-tasks.md#for-administrators)), `security.editor_bridge` (VS Code and JetBrains reaching Lumi; see [code editors](code-editors.md)), `cloud.remote_tasks` (`true` or `false`: tasks from Slack and Teams; see [Lumi Cloud](lumi-cloud.md#tasks-from-slack-and-teams); it's the only `cloud.*` key `settings` may lock: which Lumi Cloud a computer uses comes only from the machine policy's `cloud` section below, and any other `cloud.*` key makes the policy invalid), `security.shell_sandbox` (`"off"` or `"project"`; see [shell sandbox](shell-sandbox.md)), [feedback](feedback.md#for-administrators)'s `privacy.feedback` (`"on"` or `"off"`), `privacy.feedback_diagnostics` (`"allowed"` or `"never"`) and `privacy.feedback_url` (a Lumi Cloud address, `https` without a user name, or `""`), `security.extension_panels` (`false` turns off capability packs' panels; see [Panels](extensions.md#panels)), `code_hosts.github_hosts` and `code_hosts.gitlab_hosts` (lists of the GitHub Enterprise Server and self-managed GitLab hosts that may receive those tokens, besides github.com and gitlab.com; see [which hosts get the token](github.md#which-hosts-get-the-token)), `swarming.enabled` (`false` keeps the [Team preview](swarming.md#under-an-organization-policy) off), `network.proxy_url`, `network.no_proxy`, `network.system_certificates`, `cost_tracking.budget_alert_usd`, the [audit log](audit-log.md#for-administrators)'s `privacy.audit_log`, `privacy.audit_capture`, `privacy.audit_retention_days`, `audit.otlp_endpoint` and `audit.otlp_auth_header`, and [updates](updates.md#for-administrators)' `updates.mode` (`automatic`, `manual` or `off`), `updates.channel` (`stable` or `beta`) and `updates.pin` (a release line such as `0.20`), and [dictation](voice-input.md#for-administrators)'s `voice.engine` (`off` turns it off), `voice.service`, `voice.model` and `voice.language`, and [offline mode](offline.md#for-administrators)'s `offline.enabled` (`true` or `false`) and `offline.allowed_hosts` (a list of names, `*.domain`, addresses and networks such as `10.20.0.0/16`; `*`, a whole top-level domain such as `*.com` and `0.0.0.0/0` make the policy invalid). When the policy turns offline mode on, only its `offline.allowed_hosts` apply, not hosts people list in Settings. A policy that exists but can't be used keeps offline mode on with no allowed hosts until it's fixed. |
 | `permissions.allowed_modes` | Which of `ask`, `auto-edit`, `plan` and `bypass` people may choose. Others are hidden, and a saved default outside the list becomes the first allowed mode. The [terminal UI](terminal-ui.md) starts in the first allowed mode it has when Bypass, its default, isn't allowed. Missions (**Build this roadmap**) and autonomous sessions run unattended in Full-auto (`bypass`), so without it they don't start, and one already running stops at its next step (see [orchestration specialists](modern-agent-runtime.md#orchestration-specialists)). A [team](swarming.md#under-an-organization-policy) with writers needs `auto-edit` or `bypass`, and one whose orchestrator applies checked changes needs `bypass`; a read-only team runs under any modes. |
 | `models.allowed`, `models.blocked` | `provider:model` patterns, for example `anthropic:*`, `ollama:qwen*` or `conn-gateway:*` for a custom connection. Blocked wins. Other models are removed from the model menu and refused if selected. |
 | `files.exclude` | Gitignore-style patterns added to every project's file exclusions (see the README's *Keys, network and privacy*). |
@@ -169,10 +169,61 @@ optional.
 | `pricing.prices` | Negotiated prices in USD per million tokens by `provider:model` pattern (`input`, `output`, optional `cached_input` and `cache_write`). They win over users' prices and Lumi's list; see [usage records and prices](usage-and-costs.md). |
 | `oversight` | Share work with the organization's Lumi Cloud: `version` (1), `activity` (each turn's metadata), `messages` (`off`, `redacted` or `full`, with the session's title; secrets always removed), `security_flags`, `retention_days` (1 to 3650), `notice` (the organization's words), `project_paths` and `unattended` (`record`, the default, or `block`: what a scheduled task or a `lumi run` with no interactive terminal does while nobody confirmed the notice as that computer user; `record` runs it, prints the notice with its output and records it as that user and computer, `block` refuses it). Off unless set. People see a notice naming the organization and what it receives, and nothing is sent to a model until they confirm it (a signed record goes to Lumi Cloud). A key or version Lumi doesn't know turns oversight off, with the reason in Settings, and the rest of the policy still applies. See [organization oversight](organization-oversight.md). |
 | `dlp` | Data loss prevention rules checked on everything sent to a model provider: `version` (`1`), built-in `detectors` (`credit_card`, `us_ssn`, `iban`, `secrets`, `email`), keyword and pattern `rules`, each `flag`, `redact` or `block` with an optional `scope`, and an optional external `service`. See [data loss prevention](dlp.md). |
+| `legal.accepted_by_organization` | The organization's name: it accepts Lumi's terms for everyone who uses Lumi on the computer, so Lumi doesn't ask each person. Only in a machine policy. See [Lumi's terms for your organization](#lumis-terms-for-your-organization). |
 
 Patterns use `*` and `?` wildcards (the `dlp` section's `pattern` rules are
 regular expressions).
 
+
+## Lumi's terms for your organization
+
+Lumi asks each person to accept its
+[End User License Agreement](../lumi/legal/EULA.md), and on pre-release builds
+the [Alpha and Beta Test Terms](../lumi/legal/ALPHA-TERMS.md), at first launch
+and again when their version changes. Until they do, nothing is sent to a
+model: not from the app, `lumi run`, the terminal UI, the chat gateway, plans,
+missions or Team. An organization that deploys Lumi can accept the terms for
+its people in the machine policy:
+
+```json
+{
+  "schema": "lumi.policy/v1",
+  "organization": "Example Corp",
+  "legal": {"accepted_by_organization": "Example Corp"}
+}
+```
+
+- **Only a machine policy accepts, from a place only administrators can
+  write:** the Group Policy key in HKLM (its `Policy` value, or the
+  `PolicyFile` it names, which the MSI's `POLICYFILE` sets and which must pass
+  [the file rules](#only-files-only-administrators-can-change-count)), a macOS
+  configuration profile, or the machine policy file in a folder only
+  administrators can change. `LUMI_POLICY_FILE` (even naming the machine file)
+  and a Lumi Cloud policy can't: a person can bring those themselves. A
+  machine policy that sets up Lumi Cloud keeps accepting while Lumi Cloud's
+  policy is in force. A policy Lumi can't use accepts nothing: a `PolicyFile`
+  it can't read, for example, fails closed and stops model requests until
+  it's fixed.
+- **What it covers:** the terms in force, including new versions that updates
+  bring, for everyone who uses Lumi on the computer, under your organization's
+  agreement with Luminary Analytics. Set it only with the authority to accept
+  for your organization.
+- **What people see:** no terms dialog. Settings > About Lumi says the terms
+  were accepted for everyone on the computer by Example Corp, through its
+  machine policy, and still opens every text. `lumi run` needs no
+  `--accept-terms`.
+- **A mistake:** a value that isn't a name (empty, not text, longer than 200
+  characters) makes the policy invalid, like any other mistake in it.
+- **Checking a computer:** `lumi terms` prints the state as JSON: `pending`,
+  `organization` and `acceptance_value` (what `--accept-terms` would take).
+
+Without it, each person accepts once in the app, or at a terminal, or with
+`lumi terms accept <value>`, and CI accepts with `--accept-terms` or
+`LUMI_ACCEPT_TERMS` ([Running Lumi without a UI](headless.md#lumis-terms)).
+Installing silently (the MSI with `/qn`, the EXE with `/VERYSILENT`, the PKG
+from device management) shows no license page; see
+[Deploying on Windows](deploy-windows.md#lumis-terms) and
+[Deploying on macOS](deploy-macos.md#lumis-terms).
 
 ## Commands a second person approves
 
@@ -202,6 +253,16 @@ verifies against `trusted_keys` (or `PolicyKeys`, or on macOS and Linux
 `policy-keys.json`). Until then, and whenever it doesn't verify, the machine
 policy's rules apply. Lumi Cloud's Devices page prints this file when you
 create an enrollment token. See [Lumi Cloud](lumi-cloud.md).
+
+**The `cloud.url` is authoritative for enrollment.** Every device request goes
+only to the Lumi Cloud the computer enrolled with. When the machine policy
+names another address than that one (you moved computers to another
+deployment, or a computer had joined an organization itself), the next
+check-in round ends the old enrollment: the old Lumi Cloud is told the
+computer left, with its own device token and nowhere else, and its
+downloaded policy is deleted. With `enrollment_token`, the computer then
+enrolls at the new address; without one it stays unenrolled until you add
+one. A computer's device token is never sent to another Lumi Cloud.
 
 ## Signed policies and offline use
 
@@ -272,8 +333,11 @@ like a machine policy would.
 
 The MSI package can point Lumi at a policy file as it installs:
 `msiexec /i lumi-X.Y.Z.msi /qn POLICYFILE="\\server\share\lumi-policy.json"`
-sets the `PolicyFile` value below, and uninstalling removes it. It also
-creates `%ProgramData%\Lumi` locked down. See
+sets the `PolicyFile` value below, and uninstalling removes it. The package
+remembers it, so an upgrade that doesn't name `POLICYFILE` again keeps it.
+Like any `PolicyFile`, one Lumi can't read, or that others can change, fails
+closed: Lumi refuses model requests until it's fixed. It also creates
+`%ProgramData%\Lumi` locked down. See
 [Deploying on Windows](deploy-windows.md).
 
 `packaging/policy/lumi.admx` and `packaging/policy/en-US/lumi.adml` define

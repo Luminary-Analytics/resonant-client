@@ -11,11 +11,18 @@ successful push alone is not deployment. See
    out of the release. Verify the GitHub account has write access to
    `Luminary-Analytics/resonant-client` before pushing.
 2. Update both `lumi/__init__.py` and `pyproject.toml` to the chosen
-   version. Add `docs/vX.Y.Z-release-notes.md`, update the docs index, and move
+   version: `X.Y.Z`, or `X.Y.Z-alpha.N`, `X.Y.Z-beta.N` or `X.Y.Z-rc.N` for a
+   pre-release, never a PEP 440 spelling such as `0.20.0rc1` (the release
+   check refuses it, since GitHub's pre-release flag, the update feeds and
+   the installers tell a pre-release by its hyphen). Add `docs/vX.Y.Z-release-notes.md`, update the docs index, and move
    shipped entries out of `docs/unreleased.md`. Do not relabel unshipped work as
    part of an existing release.
-3. Run the checks below. Investigate failures rather than weakening gates.
-4. Build and smoke-test the final source. Record what was actually exercised,
+3. Check Lumi's terms: `python packaging/legal_texts.py release-check --release
+   --version X.Y.Z` must pass (see [Lumi's terms](#lumis-terms)). The release
+   workflow runs it in its `build` and `macos` jobs, before anything is built,
+   and fails while any fact is still to be provided.
+4. Run the checks below. Investigate failures rather than weakening gates.
+5. Build and smoke-test the final source. Record what was actually exercised,
    especially whether provider generation was live or mocked.
 
 ```sh
@@ -29,9 +36,11 @@ git diff --check
 ```
 
 On Windows, run `./scripts/build_clean.ps1`. It builds in a fresh environment
-from the hash-pinned `packaging/requirements-release.txt`, fetches verified
-ripgrep/web assets, writes the third-party notices (failing on unreviewed
-copyleft licenses), runs PyInstaller, and enforces the bundle policy. Add
+from the hash-pinned `packaging/requirements-release.txt` and nothing else
+(the pip that comes with the Python, and Lumi from the checkout with no index),
+fetches verified ripgrep/web assets, writes the third-party notices (failing
+on unreviewed copyleft licenses), runs PyInstaller, and enforces the bundle
+policy. Add
 `-SbomPath dist/lumi-sbom.cdx.json` for the CycloneDX SBOM; that needs the
 pinned tools (`python -m pip install --require-hashes -r
 packaging/tools-requirements.txt`) in the Python running the script. Do not
@@ -74,6 +83,68 @@ Verify:
 - Changed commands/assets are present; drafts and navigation work.
 - Bundled skills install and startup logs have no unexplained errors.
 - Relevant desktop/compact layouts and keyboard controls remain usable.
+
+## Lumi's terms
+
+Lumi ships its [End User License Agreement](lumi/legal/EULA.md),
+[Alpha and Beta Test Terms](lumi/legal/ALPHA-TERMS.md) and
+[privacy notice](lumi/legal/PRIVACY.md), the
+[Extension SDK License](sdk/LICENSE) and the VS Code extension's license. They
+are rendered from `lumi/legal/templates/` with one file of facts,
+`lumi/legal/terms.json`: Luminary's legal entity (Luminary Analytics, LLC, a
+New Hampshire limited liability company), the governing law and venue (New
+Hampshire), the notices and support email, and for each document its
+version, the day its text was published and the SHA-256 pinning that
+version's text.
+
+- **Changing a fact or a text:** edit `terms.json` or the template, run
+  `python packaging/legal_texts.py render`, and commit the rendered files with
+  it. `tests/test_legal_texts.py` fails while a rendered text isn't what
+  `render` writes.
+- **Versions and pins:** any change to what a text says, a correction
+  included, needs a new `version` and a new `sha256` (render prints the hash;
+  the tests and `check` fail while a text doesn't match its version's pin).
+  Set `published` to the day the text was written; each version applies to a
+  person from the day they accept it, and the release check refuses a
+  `published` date after the day of the build. Who is asked again:
+  - a new **EULA** version: everyone, at the app's next launch or through a
+    new `--accept-terms` value, unless their machine policy accepts for the
+    organization (which covers it);
+  - a new **Alpha and Beta Test Terms** version: everyone on a pre-release
+    build, the same way; stable builds don't need them;
+  - a new **privacy notice** or **Extension SDK License** version: no one.
+    They are read, not accepted.
+
+  An acceptance also records the text's hash, so an accepted text that no
+  longer matches the shipped one counts as pending. Announce a new version in
+  the release notes.
+- **The release check:** `release-check` warns in pull request CI
+  (`tests.yml`); with `--release` it fails both release jobs (Windows and
+  macOS) while a fact or any rendered text still reads
+  `[[TO BE PROVIDED: ...]]`, a text is stale or doesn't match its pin, a
+  `published` date is after the build's, or the version isn't `X.Y.Z` or
+  `X.Y.Z-alpha.N`/`-beta.N`/`-rc.N` from 0.20.0 on. Releases under the EULA
+  start at 0.20.0, above every version published under the MIT License: the
+  releases tagged v0.6.3a1 through v0.19.1 (Resonant Client, Resonant and SONN
+  Client) and the source on `main` from commit c00f29c until commit beb2848
+  ([LICENSE](LICENSE), EULA section 5.4). A carve-out names releases and
+  commits, never a version range: `0.19.2.dev11` was built both under MIT and
+  after it.
+- **Installers:** `scripts/build_clean.ps1` renders `dist/legal/license.rtf`
+  for Inno Setup's license page, `packaging/build_msi.ps1` renders the MSI's,
+  and `packaging/build_macos.sh` the PKG's and the DMG's copies
+  (`python packaging/legal_texts.py rtf --out DIR --version X.Y.Z`). A
+  pre-release version gets the EULA followed by the Alpha and Beta Test
+  Terms; a stable one, the EULA. `rtf` also writes the versions
+  `license.rtf` holds (`license-versions.iss` and `.json`): the EXE installer
+  records them in `HKLM\SOFTWARE\Luminary Analytics\Lumi\Setup` and skips
+  its license page when the installed copy already showed the same versions,
+  so an update with unchanged terms doesn't stop on it (a stable-to-beta
+  update still shows the test terms). That record is the installer's
+  convenience, never a person's acceptance: the app asks each person itself.
+  Square brackets are RTF escapes, so the MSI never reads them as properties.
+- **Before publishing:** counsel reviews the texts; the texts carry no drafts
+  or review notes, so what's in the repository is what ships.
 
 ## Commit, push, and publish
 
@@ -178,12 +249,19 @@ private key stays outside source control. WinSparkle tools are under
 `packaging/winsparkle/`.
 
 Every job that signs runs in the `release` environment. Restrict it to `v*`
-tags and keep the signing secrets there rather than in the repository, so
-only a tagged release can use them: pull requests run workflow files from
-their own branch, and a repository secret could be read out by one that
-names it. Settings › Environments › `release` › Deployment branches and tags ›
-*Selected branches and tags* › add the tag rule `v*`; then add each secret to
-the environment and delete the repository copy:
+tags, make the owner its required reviewer, and keep the signing secrets
+there rather than in the repository, so only a tagged release a person
+approved can use them: pull requests run workflow files from their own
+branch, and a repository secret could be read out by one that names it.
+Settings › Environments › `release` › Deployment branches and tags ›
+*Selected branches and tags* › add the tag rule `v*`; Required reviewers ›
+the owner. Add a tag ruleset too (Settings › Rules › Rulesets › *New tag
+ruleset*: target `v*`; *Restrict creations*, *Restrict updates* and *Restrict
+deletions*), so that only the owner can create, move or delete a release tag.
+Its bypass list takes roles, teams and apps, not people: give it only the
+Repository admin role while the owner is the only admin, or a team with the
+owner alone. The release jobs also refuse a tag whose commit isn't on main.
+Then add each secret to the environment and delete the repository copy:
 
 ```sh
 gh secret set EDDSA_PRIVATE_KEY --env release --repo Luminary-Analytics/resonant-client < eddsa_priv.key
@@ -199,14 +277,32 @@ EdDSA validates the installer bytes against the update feed. It is separate
 from Windows Authenticode publisher signing; do not describe an update-feed
 signature as a SmartScreen-trusted publisher certificate.
 
-Authenticode signing of `lumi.exe` and the installer runs through
-`packaging/sign_windows.ps1` when credentials are configured, and otherwise
-leaves a warning on the run; see
-[pipeline architecture](docs/release-pipeline.md#authenticode). Buying a
-certificate or a signing service is an account decision for the owner. Once
-signing works, set the repository variable `WINDOWS_SIGNING_REQUIRED` to
+Authenticode signing of `lumi.exe`, the MSI and the installer runs through
+`.github/actions/authenticode-sign` and `packaging/sign_windows.ps1` when a
+signer is configured, and otherwise leaves a warning on the run; see
+[pipeline architecture](docs/release-pipeline.md#authenticode). The signer
+Lumi means to use is **Azure Artifact Signing**, which stores no secret: the
+release job signs in to Azure with its short-lived GitHub OIDC token, the
+only job allowed to ask for one. The owner's setup, in this order, is in
+[Azure Artifact Signing](docs/release-pipeline.md#azure-artifact-signing):
+protect the `release` environment (the `v*` tag rule and the owner as
+required reviewer) and add the tag ruleset before anything trusts it; create
+the app registration;
+add its federated credential for
+`repo:Luminary-Analytics/resonant-client:environment:release` with audience
+`api://AzureADTokenExchange`; give it the "Artifact Signing Certificate
+Profile Signer" role on the certificate profile; and fill in the environment
+variables `ARTIFACT_SIGNING_ENDPOINT`, `ARTIFACT_SIGNING_ACCOUNT`,
+`ARTIFACT_SIGNING_PROFILE`, `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`,
+`AZURE_SUBSCRIPTION_ID` and `WINDOWS_SIGN_EXPECTED_SUBJECT` (the certificate's
+subject, exactly as Windows shows it: a signature by any other fails the
+release). A PFX certificate or another signer's command works too, one at a
+time, with the expected subject. The release publishes only the files it
+signed, checked unchanged just before each upload
+(`packaging/check_release_files.ps1`). Once signing works, set
+`WINDOWS_SIGNING_REQUIRED` to
 `true` (`gh variable set WINDOWS_SIGNING_REQUIRED --body true --repo
-Luminary-Analytics/resonant-client`), so a lost secret fails the release
+Luminary-Analytics/resonant-client`), so losing the signer fails the release
 instead of shipping unsigned files.
 
 The same `EDDSA_PRIVATE_KEY` signs the macOS disk image and the macOS feeds;

@@ -29,6 +29,13 @@ Never file contents or tool output (beyond a flag's short excerpt when
 messages are shared), never screenshots, keystrokes or anything outside
 Lumi's own turns.
 
+**The gate every turn path asks.** ``admit`` (before each turn and each model
+request, from ``Session.run``) and ``refusal``/``gate`` (at entry points outside
+a turn) ask Lumi's terms first (lumi/terms.py): until the person accepted the
+End User License Agreement, and the Alpha and Beta Test Terms on a pre-release
+build, nothing reaches a model, whatever the policy says, and the refusal
+carries ``terms.REFUSAL_CODE``. The organization's notice comes next.
+
 **Nothing reaches a model until the person has confirmed the notice.** While
 a policy's oversight is in force (it asks for something, and records have
 somewhere to go), ``admit`` refuses every turn of a person who hasn't
@@ -196,15 +203,25 @@ def os_user() -> str:
     return str(name or "")[:200]
 
 
-def _cloud_account() -> str | None:
-    """The signed-in Lumi Cloud user's id from settings.json, or None (never a secret)."""
+def _cloud_account(device: dict | None) -> str | None:
+    """The signed-in Lumi Cloud user's id from settings.json, for records sent to ``device``'s Lumi Cloud; or None.
+
+    Only when that Lumi Cloud issued the sign-in (``cloud.account_url``, as
+    lumi/cloud.py records it): a person signed in to another one isn't anyone
+    there, and their id isn't sent to it. Never a secret.
+    """
+    from .cloud import same_address
     from .paths import state_home
 
     data = _read_json(state_home() / "settings.json", {})
     section = data.get("cloud") if isinstance(data, dict) else None
-    account = section.get("account") if isinstance(section, dict) else None
+    section = section if isinstance(section, dict) else {}
+    account = section.get("account")
     user = account.get("user_id") if isinstance(account, dict) else None
-    return str(user)[:200] if user else None
+    destination = str((device or {}).get("url") or "")
+    if not user or not same_address(str(section.get("account_url") or ""), destination):
+        return None
+    return str(user)[:200]
 
 
 def canonical(document: dict) -> bytes:
@@ -482,7 +499,7 @@ def status() -> dict:
             "unattended": settings.unattended,
             "acknowledgment": _acknowledgment_status(scope),
             # Whom confirming now would count for (the person signed in here, or this computer).
-            "confirms_as": _counts_for(scope, _cloud_account()) if scope.in_force else "",
+            "confirms_as": _counts_for(scope, _cloud_account(scope.device)) if scope.in_force else "",
             **(described(settings, scope.organization) if scope.configured else {}),
         }
     except Exception as exc:  # the page still shows the policy's error elsewhere
@@ -517,6 +534,8 @@ class Admission:
     trigger: str = "app"
     unattended: bool = False
     acknowledged: bool = False
+    # What refused it: this notice (REFUSAL_CODE) or Lumi's terms (terms.REFUSAL_CODE).
+    code: str = REFUSAL_CODE
 
 
 def _surface_of(session: Any) -> tuple[str, bool, str]:
@@ -607,10 +626,17 @@ def admit(session: Any) -> Admission:
     root, depth = session, 0
     while getattr(root, "parent_session", None) is not None and depth < 50:
         root, depth = root.parent_session, depth + 1
+    key = str(getattr(root, "audit_session_id", "") or "")
     try:
         trigger, unattended, chat = _surface_of(root)
-        admission = _admission(Scope(), trigger=trigger, unattended=unattended, chat=chat,
-                               session_key=str(getattr(root, "audit_session_id", "") or ""))
+    except Exception:  # a surface that can't say needs a person, never less
+        trigger, unattended, chat = "app", False, ""
+    # Lumi's terms first (lumi/terms.py): whatever the policy, nothing reaches a model until they're accepted.
+    refused = _terms_refusal(trigger, key)
+    if refused:
+        return Admission(refusal=refused, trigger=trigger, unattended=unattended, code=_terms_code())
+    try:
+        admission = _admission(Scope(), trigger=trigger, unattended=unattended, chat=chat, session_key=key)
     except Exception as exc:
         return _failed_check(exc)
     if root is not session:
@@ -623,12 +649,56 @@ def refusal(trigger: str = "app") -> str:
 
     For entry points outside a turn: the app's message box, /plan, missions,
     autonomous sessions, Team, model comparisons, dictation and evaluations.
-    Never raises.
+    Lumi's terms come first (``gate`` says which refused). Never raises.
+    """
+    return gate(trigger)[0]
+
+
+def gate(trigger: str = "app") -> tuple[str, str]:
+    """(refusal, code) for ``refusal``: Lumi's terms (``terms.REFUSAL_CODE``), then this notice (``REFUSAL_CODE``).
+
+    ``('', '')`` when nothing stops the work. Never raises.
+    """
+    trigger = trigger if trigger in TRIGGERS else "app"
+    refused = _terms_refusal(trigger)
+    if refused:
+        return refused, _terms_code()
+    try:
+        reason = _admission(Scope(), trigger=trigger, unattended=False).refusal
+    except Exception as exc:
+        reason = _failed_check(exc).refusal
+    return reason, (REFUSAL_CODE if reason else "")
+
+
+def _terms_code() -> str:
+    from .terms import REFUSAL_CODE as TERMS_CODE
+
+    return TERMS_CODE
+
+
+def _terms_refusal(trigger: str, session_key: str = "") -> str:
+    """Why Lumi's terms stop this work (lumi/terms.py), in the words of the surface; '' when accepted.
+
+    Never raises, and a check that fails refuses (terms.refusal): unlike a broken oversight check, it
+    can't fall open when no policy asks for oversight.
     """
     try:
-        return _admission(Scope(), trigger=trigger if trigger in TRIGGERS else "app", unattended=False).refusal
+        from . import terms
+
+        if session_key.startswith(TASK_PREFIX):
+            place = "chat_task"
+        elif trigger == "gateway" or session_key.startswith(CHAT_PREFIX):
+            place = "gateway"
+        elif trigger == "terminal":
+            place = "terminal"
+        elif trigger in ("headless", "schedule"):
+            place = "headless"
+        else:
+            place = "app"
+        return terms.refusal(place)
     except Exception as exc:
-        return _failed_check(exc).refusal
+        logger.exception("Couldn't check whether Lumi's terms were accepted")
+        return f"Lumi couldn't check whether its terms were accepted ({exc}), so nothing is sent to a model."
 
 
 # ── Terminals ───────────────────────────────────────────────────────────────
@@ -693,7 +763,7 @@ def _acknowledgment_record(scope: Scope, surface: str, notice: str, chat: str) -
         "surface": surface,
         "person": {
             # A chat's people aren't this computer's Lumi Cloud account.
-            "account": None if surface == "gateway" else _cloud_account(),
+            "account": None if surface == "gateway" else _cloud_account(scope.device),
             "os_user": os_user(),
             "chat": chat[len(CHAT_PREFIX):] if surface == "gateway" else None,
         },
@@ -1638,15 +1708,18 @@ def _upload_acknowledgments(client: Any) -> str:
             _settle_acknowledgment(ack_id, "not_sent", error="It wasn't signed with this computer's key.")
             continue
         headers, sign_in = {}, ""
+        # Where it goes: the Lumi Cloud this computer enrolled with. The account's token goes only to that one,
+        # when it issued the sign-in, and the request is refused if the enrollment moved meanwhile (expect).
+        destination = str(device.get("url") or "")
         account = (record.get("person") or {}).get("account") if isinstance(record.get("person"), dict) else None
         if account and record.get("surface") != "gateway" and device.get("how") == "managed":
             # A managed computer belongs to nobody in Lumi Cloud: the person's own
             # sign-in shows the confirmation is theirs. Only theirs, while they're
-            # still the one signed in here.
+            # still the one signed in there.
             sign_in = "missing"
-            if _cloud_account() == account and callable(getattr(client, "account_token", None)):
+            if _cloud_account(device) == account and callable(getattr(client, "account_token", None)):
                 try:
-                    headers = {ACCOUNT_TOKEN_HEADER: str(client.account_token())}
+                    headers = {ACCOUNT_TOKEN_HEADER: str(client.account_token(destination, user_id=account))}
                     sign_in = "sent"
                 except CloudError as exc:
                     if exc.code != "signed_out":
@@ -1655,7 +1728,7 @@ def _upload_acknowledgments(client: Any) -> str:
                         continue
         try:
             answer = client.device_call("POST", ACKNOWLEDGMENT_PATH, json={"record": record, "signature": signature},
-                                        **({"headers": headers} if headers else {}))
+                                        expect=destination, **({"headers": headers} if headers else {}))
         except CloudError as exc:
             status = int(getattr(exc, "status", 0) or 0)
             # Refusals sending again won't change: shown in Settings, never resent.

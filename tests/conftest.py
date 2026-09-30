@@ -38,8 +38,16 @@ os.environ["LUMI_OS_SCHEDULER"] = "off"
 # their own through lumi.policy.set_for_tests.
 os.environ.pop("LUMI_POLICY_FILE", None)
 import lumi.policy as _lumi_policy  # noqa: E402
+import lumi.terms as _lumi_terms  # noqa: E402
 
 _lumi_policy.set_for_tests(None)
+
+# Lumi's terms (lumi/terms.py) must be accepted before anything reaches a
+# model. In this process the autouse fixture below treats them as accepted;
+# the processes tests start (lumi run, Team workers) accept them the way CI
+# does, through LUMI_ACCEPT_TERMS naming the versions in force. Tests of the
+# gate itself turn both off (tests/test_terms.py).
+os.environ[_lumi_terms.ENVIRONMENT] = _lumi_terms.acceptance_value()
 
 
 @pytest.fixture(autouse=True)
@@ -48,11 +56,12 @@ def _no_organization_policy():
     # AppState turns the secret scan on (a policy can lock it) would otherwise
     # mark every later test's history in the same worker. The audit log and
     # usage records are recreated for each test, under its isolated home.
-    from lumi import audit, budgets, dlp, license as lumi_license, offline, pricing, secret_scan, updater, usage
+    from lumi import audit, budgets, dlp, feedback, license as lumi_license, offline, pricing, secret_scan, updater, usage
     from lumi.engine import review_gate, second_approval
 
     def reset():
         _lumi_policy.set_for_tests(None)
+        _lumi_terms.set_for_tests(True)
         # Offline mode is process-wide too: a test that turns it on must not
         # refuse the next test's requests. The license is read once per process.
         offline.reset_for_tests()
@@ -60,6 +69,7 @@ def _no_organization_policy():
         updater.reset_for_tests()
         secret_scan.reset()
         dlp.reset_for_tests()
+        feedback.reset_for_tests()
         audit.set_for_tests(None)
         pricing.reset()
         usage.set_for_tests(None)

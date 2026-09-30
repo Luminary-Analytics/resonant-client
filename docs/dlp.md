@@ -39,6 +39,15 @@ provider: recall queries, memories (including the codebase index's file
 summaries) and session summaries. Text a block rule matches isn't sent there,
 redactions apply, and a withheld entry (below) never goes into a summary.
 
+They apply to [feedback](feedback.md) sent to Lumi Cloud too (purpose `feedback`): the message and reply-to
+address as `prompt`, the diagnostics as mixed content, which every rule checks whatever its scope (the log can
+quote model output). A block refuses the report, redactions apply to what is sent, and a reply-to address the
+rules would change is left out. While the person types, the report shown is checked with the rules on this
+computer only; the service (`dlp.service`) sees a report only when it's sent, and one it changes is shown
+again before it goes. Send checks the reviewed report again, so rules that arrived since, or a policy that
+became unusable, still refuse it. There's no copy of a report the rules refused. In offline mode a report that
+can't leave is refused before the rules see it, and its copy is only what was typed, unchecked.
+
 The check sees each request as it will be sent, after the
 [secret scan](../README.md) has removed saved keys: the instructions (Lumi's
 own, the project's instructions and notes, memory, team notes, skills,
@@ -299,9 +308,9 @@ first: a turn refused for an unconfirmed notice never reaches DLP.
   DLP checks what Lumi hands them (instructions, history and the message), not
   what they read themselves. Turn them off with `security.cli_adapters: false`
   if that matters.
-- Text that isn't a model request, apart from Engram's and organization
-  oversight's records: dictation audio (its transcript is checked when it's
-  sent), MCP servers' and web tools' requests,
+- Text that isn't a model request, apart from Engram's, organization
+  oversight's records and feedback: dictation audio (its transcript is
+  checked when it's sent), MCP servers' and web tools' requests,
   sharing a conversation or a hand-off with Lumi Cloud, SONN task graphs, and
   the audit log's own content capture and OpenTelemetry export.
 - A new DLP section applies to text already in a conversation from the next

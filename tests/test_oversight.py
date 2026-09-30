@@ -61,13 +61,19 @@ def _parse(section, **extra):
     return policy.parse({**BASE, **extra, "oversight": section}, source="test")
 
 
-def _device(how="joined", device_id="dev-1", organization_id="org_acme", account=None, owner=None):
+ACME_CLOUD = "https://cloud.example.test"
+
+
+def _device(how="joined", device_id="dev-1", organization_id="org_acme", account=None, owner=None,
+            url=ACME_CLOUD, account_url=None):
+    """Enrolled at ``url``; ``account`` signed in at ``account_url`` (by default the same Lumi Cloud)."""
     home = state_home()
     home.mkdir(parents=True, exist_ok=True)
     cloud = {"device": {"id": device_id, "how": how, "organization_id": organization_id, "organization_name": "Acme",
-                        "user_id": owner or ""}}
+                        "user_id": owner or "", "url": url}}
     if account:
         cloud["account"] = {"user_id": account, "email": "ada@acme.example"}
+        cloud["account_url"] = url if account_url is None else account_url
     # The enrolled device key (LUMI_KEYCHAIN=off keeps it in settings.json): confirmations must verify with it.
     (home / "settings.json").write_text(json.dumps({"cloud": cloud, "api_keys": {"lumi_cloud_device_key": DEVICE_SECRET}}),
                                         encoding="utf-8")
@@ -707,11 +713,14 @@ class _AckClient:
         self.events: list[dict] = []
         self.key = key
         self._account_token = account_token  # the signed-in person's desktop sign-in, or the CloudError it raises
+        self.token_requests: list[tuple[str, str]] = []  # (destination, user id) of each token asked for
+        self.expected: list[str] = []  # the destination each device call was prepared for
 
     def sign_as_device(self, data: bytes) -> str:
         return base64.urlsafe_b64encode(self.key.sign(data)).decode("ascii")
 
-    def account_token(self) -> str:
+    def account_token(self, destination: str, *, user_id: str = "", refused: str = "") -> str:
+        self.token_requests.append((destination, user_id))
         if isinstance(self._account_token, Exception):
             raise self._account_token
         return self._account_token or ""
@@ -719,6 +728,7 @@ class _AckClient:
     def device_call(self, method, path, **kwargs):
         assert method == "POST"
         if path == oversight.ACKNOWLEDGMENT_PATH:
+            self.expected.append(kwargs.get("expect", ""))
             if self.failures:
                 raise self.failures.pop(0)
             self.headers.append(dict(kwargs.get("headers") or {}))
@@ -730,6 +740,27 @@ class _AckClient:
 
 
 class TestAcknowledgment:
+    def test_a_person_signed_in_elsewhere_is_never_named_to_this_lumi_cloud(self, org, monkeypatch):
+        """The review of #101: a confirmation sent to B named the person signed in at A (A's user id)."""
+        org(EVERYTHING, extra={"cloud": {"url": "https://b.example.test"}})
+        _device(how="managed", url="https://b.example.test", account="usr_ada", account_url=ACME_CLOUD)
+        monkeypatch.setattr(oversight, "os_user", lambda: "ada")
+        assert "counts for this computer, not for a person" in oversight.status()["confirms_as"]
+        _shown()
+        saved = json.loads((state_home() / "oversight" / "notice.json").read_text(encoding="utf-8"))
+        assert saved["record"]["person"] == {"account": None, "os_user": "ada", "chat": None}
+        client = _AckClient(account_token="tok-ada")
+        assert oversight.upload_pending(client) == "idle"
+        assert client.token_requests == [] and client.headers == [{}]  # A's sign-in isn't asked for, or sent
+        assert client.expected == ["https://b.example.test"]
+        # The same Lumi Cloud, written otherwise, is the same one.
+        oversight.forget_notice("test")
+        _device(how="managed", url="https://b.example.test", device_id="dev-2", account="usr_ada",
+                account_url="HTTPS://B.Example.test:443/")
+        _shown()
+        saved = json.loads((state_home() / "oversight" / "notice.json").read_text(encoding="utf-8"))
+        assert saved["record"]["person"]["account"] == "usr_ada"
+
     def test_the_record_is_canonical_and_signed_by_the_device_key(self, org, monkeypatch):
         org(EVERYTHING)
         _device(account="usr_ada")
@@ -841,6 +872,8 @@ class TestAcknowledgment:
         client = _AckClient(account_token="tok-ada")
         assert oversight.upload_pending(client) == "idle"
         assert client.headers == [{oversight.ACCOUNT_TOKEN_HEADER: "tok-ada"}]
+        # Asked for the Lumi Cloud it goes to, as the person the record names, and sent only there.
+        assert client.token_requests == [(ACME_CLOUD, "usr_ada")] and client.expected == [ACME_CLOUD]
         assert oversight.status()["acknowledgment"]["counts_for"].startswith("It counts for you: Lumi sent your sign-in")
         # Signed out before it went: sent without it, a claim Lumi Cloud can't count.
         oversight.forget_notice("test")

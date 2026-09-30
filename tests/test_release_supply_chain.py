@@ -1,17 +1,17 @@
-"""The release lock, third-party notices, SBOM additions and signing step."""
+"""The release lock, third-party notices, SBOM additions, and the release workflow's
+guards: who may sign, what the signing jobs run, and what they publish."""
 
 from __future__ import annotations
 
 import json
-import os
 import re
-import subprocess
 import sys
 import tomllib
 from importlib import metadata
 from pathlib import Path
 
 import pytest
+import yaml
 from packaging.requirements import Requirement
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -198,9 +198,93 @@ class TestNotices:
 
     def test_cli_writes_the_file(self, tmp_path, monkeypatch):
         monkeypatch.setattr(notices.metadata, "distributions", _some_distributions)
+        _built_with_pyinstaller(monkeypatch)
+        _with_fetched_license_files(monkeypatch, tmp_path)
         out = tmp_path / "licenses" / "THIRD_PARTY_NOTICES.txt"
         assert notices.main(["--out", str(out)]) == 0
-        assert "ripgrep 15.2.0 — MIT OR Unlicense" in out.read_text(encoding="utf-8")
+        text = out.read_text(encoding="utf-8")
+        assert "ripgrep 15.2.0 — MIT OR Unlicense" in text
+        assert f"Python {notices.platform.python_version()} — PSF-2.0" in text
+        assert "PyInstaller bootloader 6.22.3 — GPL-2.0-or-later WITH Bootloader-exception" in text
+        assert "No license file is distributed" not in text
+
+
+def _built_with_pyinstaller(monkeypatch, version="6.22.3"):
+    """The build environment's PyInstaller (packaging/requirements-release.txt), which tests don't install."""
+    real = notices.distribution_license
+
+    def distribution_license(name):
+        if name == "pyinstaller":
+            return version, [("COPYING.txt", "GNU GENERAL PUBLIC LICENSE Version 2 ... Bootloader Exception")]
+        return real(name)
+
+    monkeypatch.setattr(notices, "distribution_license", distribution_license)
+
+
+def _with_fetched_license_files(monkeypatch, tmp_path):
+    """Stand-ins for the license files the build fetches (ripgrep's, Sparkle's), which a checkout may not have."""
+    fetched = {"packaging/ripgrep/LICENSE-MIT", "packaging/ripgrep/UNLICENSE", "packaging/sparkle/LICENSE"}
+    real = notices.component_texts
+
+    def component_texts(component):
+        texts = real(component)
+        missing = [name for name in component.get("license_files", []) if name in fetched
+                   and not (notices.ROOT / name).is_file()]
+        return texts + [(Path(name).name, f"{name} as the build fetches it") for name in missing]
+
+    monkeypatch.setattr(notices, "component_texts", component_texts)
+
+
+class TestLicenseTexts:
+    """Every bundled component ships its real license text, for the version that ships (PR #104 review item 11:
+    Python, the PyInstaller bootloader, marked, highlight.js, DOMPurify and Inter had none)."""
+
+    def test_the_web_assets_and_font_have_their_license_files_pinned_to_their_version(self):
+        components = {item["name"]: item for item in notices.load_components()}
+        for name, start in (("marked", "# License information"), ("highlight.js", "BSD 3-Clause License"),
+                            ("DOMPurify", "DOMPurify\nCopyright 2023 Dr.-Ing. Mario Heiderich, Cure53"),
+                            ("Inter", "Copyright 2020 The Inter Project Authors")):
+            component = components[name]
+            [relative] = component["license_files"]
+            # The file name carries the version it is the text of; a version bump needs the new text.
+            assert f"-{component['version']}-" in Path(relative).name, (name, relative)
+            [(_filename, text)] = notices.component_texts(component)
+            assert text.startswith(start), name
+        texts = {name: notices.component_texts(components[name])[0][1]
+                 for name in ("marked", "highlight.js", "DOMPurify", "Inter")}
+        assert "Permission is hereby granted" in texts["marked"] and "John Gruber" in texts["marked"]
+        assert "Apache License" in texts["DOMPurify"] and "Mozilla Public License" in texts["DOMPurify"]
+        assert "SIL OPEN FONT LICENSE Version 1.1" in texts["Inter"]
+
+    def test_python_and_the_bootloader_come_from_the_build(self, monkeypatch):
+        python = next(item for item in notices.load_components() if item["name"] == "Python")
+        # The Python running the build is the one PyInstaller embeds: its version and the LICENSE.txt it ships.
+        assert notices.resolved(python)["version"] == notices.platform.python_version()
+        [(filename, text)] = notices.component_texts(python)
+        assert filename == "LICENSE.txt" and "PYTHON SOFTWARE FOUNDATION LICENSE VERSION 2" in text
+        bootloader = next(item for item in notices.load_components() if item["name"] == "PyInstaller bootloader")
+        _built_with_pyinstaller(monkeypatch)
+        assert notices.resolved(bootloader)["version"] == "6.22.3"
+        assert notices.component_texts(bootloader)[0][0] == "COPYING.txt"
+        # Any patch release of the pinned minor (the release jobs set up Python 3.13) and major is the pin.
+        monkeypatch.setattr(notices.platform, "python_version", lambda: "3.13.9")
+        assert notices.version_problems(notices.load_components()) == []
+
+    def test_a_component_without_its_text_or_on_another_version_fails_the_build(self, tmp_path, monkeypatch,
+                                                                                capsys):
+        monkeypatch.setattr(notices.metadata, "distributions", _some_distributions)
+        _with_fetched_license_files(monkeypatch, tmp_path)
+        out = tmp_path / "THIRD_PARTY_NOTICES.txt"
+        # No PyInstaller in the environment: its bootloader's text is missing.
+        monkeypatch.setattr(notices, "distribution_license", lambda name: ("", []))
+        assert notices.main(["--out", str(out)]) == 1
+        assert "PyInstaller bootloader 6 has no license text" in capsys.readouterr().err and not out.exists()
+        # A build on another Python minor or PyInstaller major than the components file pins.
+        _built_with_pyinstaller(monkeypatch, version="7.0.0")
+        monkeypatch.setattr(notices.platform, "python_version", lambda: "3.14.1")
+        assert notices.main(["--out", str(out)]) == 1
+        err = capsys.readouterr().err
+        assert "Python 3.14.1 isn't 3.13" in err and "PyInstaller bootloader 7.0.0 isn't 6" in err
 
 
 class TestSbom:
@@ -220,40 +304,6 @@ class TestSbom:
         ripgrep = next(item for item in listed if item["name"] == "ripgrep")
         assert ripgrep["purl"] == "pkg:github/BurntSushi/ripgrep@15.2.0"
         assert ripgrep["licenses"] == [{"expression": "MIT OR Unlicense"}]
-
-
-@pytest.mark.skipif(sys.platform != "win32", reason="Authenticode signing runs on Windows")
-def test_signing_without_credentials_warns_and_continues(tmp_path):
-    target = tmp_path / "lumi.exe"
-    target.write_bytes(b"MZ")
-    env = {key: value for key, value in os.environ.items()
-           if key not in {"WINDOWS_SIGN_PFX_BASE64", "WINDOWS_SIGN_PFX_PASSWORD", "WINDOWS_SIGN_COMMAND"}}
-    result = subprocess.run(
-        ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
-         str(PACKAGING / "sign_windows.ps1"), "-Files", str(target)],
-        capture_output=True, text=True, timeout=120, env=env,
-    )
-    assert result.returncode == 0, result.stderr
-    assert "Not Authenticode-signed" in result.stdout
-    assert target.read_bytes() == b"MZ"
-
-
-@pytest.mark.skipif(sys.platform != "win32", reason="Authenticode signing runs on Windows")
-def test_signing_required_without_credentials_fails_the_release(tmp_path):
-    # Once a certificate exists, WINDOWS_SIGNING_REQUIRED turns losing it into a failed release.
-    target = tmp_path / "lumi.exe"
-    target.write_bytes(b"MZ")
-    env = {key: value for key, value in os.environ.items()
-           if key not in {"WINDOWS_SIGN_PFX_BASE64", "WINDOWS_SIGN_PFX_PASSWORD", "WINDOWS_SIGN_COMMAND"}}
-    env["WINDOWS_SIGNING_REQUIRED"] = "true"
-    result = subprocess.run(
-        ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
-         str(PACKAGING / "sign_windows.ps1"), "-Files", str(target)],
-        capture_output=True, text=True, timeout=120, env=env,
-    )
-    assert result.returncode != 0
-    assert "WINDOWS_SIGNING_REQUIRED" in result.stdout + result.stderr
-    assert target.read_bytes() == b"MZ"
 
 
 def _jobs(workflow: str) -> dict[str, str]:
@@ -280,8 +330,606 @@ def test_gh_pages_is_published_byte_for_byte_and_checked_before_it_is_pushed():
     assert "scripts/rehearse_pages_publish.py" in rehearsal
 
 
-def test_no_workflow_asks_for_an_oidc_token():
-    # A cloud role that trusts the release environment's identity is only as
-    # safe as that environment's tag rule (docs/release-pipeline.md).
-    for workflow in (ROOT / ".github" / "workflows").glob("*.yml"):
-        assert "id-token" not in workflow.read_text(encoding="utf-8"), workflow.name
+GITHUB = ROOT / ".github"
+WORKFLOWS = GITHUB / "workflows"
+SIGNING_ACTION = GITHUB / "actions" / "authenticode-sign" / "action.yml"
+# Where the signing action records each file it signs, and the release's check reads them.
+RECORD = "${{ runner.temp }}/lumi-authenticode.jsonl"
+# Every release.yml job whose output is released: all but `test`.
+RELEASED_JOBS = ("build", "release", "macos", "publish-macos")
+
+
+class _StrictLoader(yaml.SafeLoader):
+    """YAML with each key once per mapping. GitHub refuses a workflow that repeats
+    one; PyYAML would keep the last, and a guard reading that could miss a grant."""
+
+    def construct_mapping(self, node, deep=False):
+        keys = [self.construct_object(key, deep=deep) for key, _ in node.value]
+        repeated = sorted({str(key) for key in keys if keys.count(key) > 1})
+        if repeated:
+            raise yaml.constructor.ConstructorError(None, None, f"repeated keys {repeated}", node.start_mark)
+        return super().construct_mapping(node, deep=deep)
+
+
+def _parse(text: str):
+    return yaml.load(text, Loader=_StrictLoader)  # noqa: S506 - a SafeLoader subclass
+
+
+def _load(path: Path):
+    """A workflow or action as GitHub reads it (YAML, whatever its style)."""
+    return _parse(path.read_text(encoding="utf-8"))
+
+
+def _workflows() -> dict[str, dict]:
+    """Every workflow GitHub runs, by file name: .yml and .yaml alike."""
+    return {path.name: _load(path) for path in sorted([*WORKFLOWS.glob("*.yml"), *WORKFLOWS.glob("*.yaml")])}
+
+
+def _local_action(uses: str) -> Path:
+    """The action a `uses: ./folder` step runs."""
+    folder = ROOT / uses.removeprefix("./")
+    for name in ("action.yml", "action.yaml"):
+        if (folder / name).is_file():
+            return (folder / name).resolve()
+    raise AssertionError(f"{uses} names no action")
+
+
+def _actions() -> list[Path]:
+    """Every action defined under .github, and any other a workflow runs from this repository."""
+    found = {path.resolve() for name in ("action.yml", "action.yaml") for path in GITHUB.rglob(name)}
+    for workflow in _workflows().values():
+        for job in workflow["jobs"].values():
+            found |= {_local_action(step["uses"]) for step in job.get("steps", [])
+                      if str(step.get("uses", "")).startswith("./")}
+    return sorted(found)
+
+
+def _job_permissions(workflow: dict, job: dict):
+    """A job's token permissions: its own, else the workflow's (None: the repository's default)."""
+    return job["permissions"] if "permissions" in job else workflow.get("permissions")
+
+
+def _grants_oidc(permissions) -> bool:
+    """Whether a `permissions` value lets a job ask GitHub for an OIDC token."""
+    if permissions is None:
+        return False
+    if isinstance(permissions, str):
+        return permissions.strip().lower() == "write-all"
+    if isinstance(permissions, dict):
+        return any(str(key).strip().lower() == "id-token" and str(value).strip().lower() != "none"
+                   for key, value in permissions.items())
+    return True  # not a form GitHub documents: count it as a grant
+
+
+@pytest.mark.parametrize("text", [
+    "permissions: write-all",
+    "permissions: {contents: read, id-token: write}",
+    "permissions:\n  'id-token': write",
+    'permissions:\n  "id-token": "write"',
+    "permissions:\n  ID-Token: write",
+])
+def test_the_oidc_guard_sees_every_way_to_grant_a_token(text):
+    assert _grants_oidc(_parse(text)["permissions"])
+
+
+@pytest.mark.parametrize("text", [
+    "permissions: read-all",
+    "permissions: {}",
+    "permissions: {contents: write, id-token: none}",
+    "permissions:\n  contents: read\n  # id-token: write",
+])
+def test_the_oidc_guard_passes_what_grants_none(text):
+    assert not _grants_oidc(_parse(text)["permissions"])
+
+
+def test_a_key_given_twice_is_refused():
+    # GitHub refuses such a workflow; the guards must not read the last one alone.
+    with pytest.raises(yaml.constructor.ConstructorError, match="repeated keys"):
+        _parse("jobs:\n  build:\n    permissions: {id-token: write}\n    permissions: {contents: read}\n")
+
+
+def test_every_workflow_sets_its_tokens_permissions():
+    # Explicitly, so no job depends on the repository's default token permissions.
+    unset = [f"{name}: {job_name}" for name, workflow in _workflows().items()
+             for job_name, job in workflow["jobs"].items() if _job_permissions(workflow, job) is None]
+    assert not unset
+
+
+def test_only_the_windows_release_job_can_ask_for_an_oidc_token():
+    # The Azure identity that signs as Luminary Analytics trusts GitHub's OIDC
+    # subject for the release environment; any job that could get a token in
+    # that environment could sign anything (docs/release-pipeline.md).
+    granted = []
+    for name, workflow in _workflows().items():
+        assert not _grants_oidc(workflow.get("permissions")), f"{name} gives every job an OIDC token"
+        granted += [(name, job_name) for job_name, job in workflow["jobs"].items()
+                    if _grants_oidc(_job_permissions(workflow, job))]
+    assert granted == [("release.yml", "release")]
+    release = _workflows()["release.yml"]["jobs"]["release"]
+    assert release["environment"] == "release"
+    assert release["permissions"] == {"contents": "write", "id-token": "write"}
+
+
+def test_no_action_holds_permissions_or_asks_for_a_token_itself():
+    actions = _actions()
+    assert SIGNING_ACTION.resolve() in actions
+    for path in actions:
+        text = path.read_text(encoding="utf-8")
+        action = _parse(text)
+        assert "permissions" not in action, path
+        assert not any("permissions" in step for step in action.get("runs", {}).get("steps", [])), path
+        # Only azure/login, pinned, asks for the token; no step reads the request itself.
+        assert "ACTIONS_ID_TOKEN_REQUEST" not in text and "getIDToken" not in text, path
+
+
+# Tools a step would fetch as it runs, from wherever they resolve then.
+RUNTIME_INSTALL = re.compile(
+    r"\bwix(?:\.exe)?\s+extension\s+add\b"
+    r"|\bdotnet(?:\.exe)?\s+(?:tool\s+(?:install|update|restore)|add\s+(?:\S+\s+)?package"
+    r"|workload\s+(?:install|update|restore)|new\s+install)\b"
+    r"|\bdnx\b|\bnuget(?:\.exe)?\s+(?:install|restore|update)\b"
+    r"|\b(?:npm|pnpm|yarn|bun)(?:\.cmd|\.exe)?\s+\w|\b(?:npx|bunx|pnpx|uvx|pipx)\b"
+    r"|\b(?:choco|chocolatey|cinst|winget|scoop)(?:\.exe)?\s+\w"
+    r"|\b(?:Install|Save|Update)-(?:Module|Package|Script|PSResource)\b"
+    r"|\b(?:apt-get|apt|yum|dnf|zypper|apk|brew|port|gem|cargo|go|conda|mamba)\s+(?:install|add|get)\b"
+    r"|\buv\s+(?:tool|pip|add|sync|run)\b"
+    r"|\b(?:curl|wget|iwr|irm|Invoke-WebRequest|Invoke-RestMethod)\b[^\n]*\|\s*(?:sudo\s+)?(?:ba|z|da)?sh\b"
+    r"|\|\s*(?:iex|Invoke-Expression)\b",
+    re.IGNORECASE,
+)
+PIP = re.compile(r"\bpip3?(?:\.exe)?\s+(?:install|download|wheel)\b"
+                 r"""|["']pip3?["']\s*,\s*["'](?:install|download)["']""", re.IGNORECASE)
+# Scripts that install a tool only after checking its package against a pinned
+# SHA-256, from a source holding nothing else (tested below).
+HASH_CHECKED_INSTALLERS = {"packaging/fetch_wix.ps1"}
+SCRIPT_NAME = re.compile(r"[\w./-]*?[\w-]+\.(?:ps1|sh|py)\b")
+
+
+def _commands(text: str, suffix: str = "") -> list[str]:
+    """A script's commands: comments dropped, continued lines (` or \\ at the end) joined."""
+    if suffix == ".ps1":
+        text = re.sub(r"<#.*?#>", "", text, flags=re.S)
+    commands, current = [], ""
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if stripped.endswith(("`", "\\")):
+            current += stripped[:-1] + " "
+            continue
+        commands.append(current + stripped)
+        current = ""
+    return commands + ([current] if current else [])
+
+
+def _unchecked_installs(text: str, suffix: str = "") -> list[str]:
+    """Commands that install something at run time without checking it against a pinned hash."""
+    found = []
+    for command in _commands(text, suffix):
+        if RUNTIME_INSTALL.search(command):
+            found.append(command)
+        elif PIP.search(command) and "--require-hashes" not in command and not all(
+                flag in command for flag in ("--no-index", "--no-deps", "--no-build-isolation")):
+            found.append(command)  # only hash-checked packages, or the local source with no index at all
+    return found
+
+
+def _scripts_named(text: str, near: Path | None = None) -> set[Path]:
+    """The build and release scripts (packaging/, scripts/) a text names: from the root, beside ``near``,
+    or by name alone."""
+    found = set()
+    for name in SCRIPT_NAME.findall(text):
+        name = name.removeprefix("./")
+        candidates = [ROOT / name, *([near.parent / name] if near else []),
+                      ROOT / "packaging" / Path(name).name, ROOT / "scripts" / Path(name).name]
+        existing = [candidate.resolve() for candidate in candidates if candidate.is_file()
+                    and candidate.resolve().parent in (ROOT / "packaging", ROOT / "scripts")]
+        if existing:
+            found.add(existing[0])
+    return found
+
+
+def _code_a_job_runs(job: dict) -> list[tuple[str, str, str]]:
+    """(where, text, suffix) for all a job runs: its steps, the local actions they use (and theirs), and the
+    repository scripts any of those name (and theirs)."""
+    texts, scripts, seen = [], set(), set()
+
+    def walk(steps: list[dict], where: str) -> None:
+        for step in steps:
+            if "run" in step:
+                texts.append((f"{where}: {step.get('name', '')}", step["run"], ""))
+                scripts.update(_scripts_named(step["run"]))
+            if str(step.get("uses", "")).startswith("./"):
+                action = _local_action(step["uses"])
+                if action not in seen:
+                    seen.add(action)
+                    walk(_load(action)["runs"].get("steps", []), action.relative_to(ROOT).as_posix())
+
+    walk(job.get("steps", []), "workflow")
+    done: set[Path] = set()
+    while scripts - done:
+        script = sorted(scripts - done)[0]
+        done.add(script)
+        text = script.read_text(encoding="utf-8")
+        if script.relative_to(ROOT).as_posix() not in HASH_CHECKED_INSTALLERS:
+            texts.append((script.relative_to(ROOT).as_posix(), text, script.suffix))
+        scripts |= _scripts_named(text, near=script)
+    return texts
+
+
+@pytest.mark.parametrize("command", [
+    "dotnet tool install --global wix --version 5.0.2",
+    "python -m pip install --upgrade pip",
+    'pip install -e ".[all,dev]"',
+    "npm ci",
+    "npx some-tool",
+    "choco install innosetup",
+    "winget install Microsoft.DotNet.SDK.8",
+    "Install-Module ArtifactSigning -Force",
+    '& wix extension add -g "WixToolset.UI.wixext/5.0.2"',
+    "curl -fsSL https://example.com/install.sh | bash",
+    "iwr https://example.com/tool.ps1 | iex",
+    "& $python -m pip install --no-deps $repo",
+    "python -m pip install `\n    -r requirements.txt",
+    'subprocess.run([sys.executable, "-m", "pip", "install", "cryptography"])',
+])
+def test_the_install_guard_sees_run_time_installs(command):
+    assert _unchecked_installs(command, ".ps1")
+
+
+@pytest.mark.parametrize("command", [
+    "python -m pip install --require-hashes -r packaging/tools-requirements.txt",
+    '& $python -m pip install --no-cache-dir --require-hashes `\n    -r (Join-Path $repo "requirements.txt")',
+    '"$PY" -m pip install --no-cache-dir --no-index --no-deps --no-build-isolation "$ROOT"',
+    "# dotnet tool install --global wix",
+    "<#\n    dotnet tool install --global wix --version 5.0.2\n#>",
+])
+def test_the_install_guard_passes_hash_checked_installs(command):
+    assert not _unchecked_installs(command, ".ps1")
+
+
+def test_the_jobs_whose_output_is_released_install_nothing_unchecked():
+    # The release job holds the Azure sign-in and the EdDSA key, and the others
+    # make what it (or the Developer ID) signs: whatever they run is pinned.
+    jobs = _workflows()["release.yml"]["jobs"]
+    assert set(jobs) == {"test", *RELEASED_JOBS}
+    for name in RELEASED_JOBS:
+        code = _code_a_job_runs(jobs[name])
+        problems = [f"{where}: {command}" for where, text, suffix in code for command in _unchecked_installs(text, suffix)]
+        assert not problems, (name, problems)
+        # A fresh Python from setup-python, never a cache another run could have filled.
+        for step in jobs[name]["steps"]:
+            if str(step.get("uses", "")).startswith("actions/setup-python@"):
+                assert "cache" not in step.get("with", {}), name
+    # The walk reaches the scripts and the signing action the release job runs.
+    reached = {where for where, _, _ in _code_a_job_runs(jobs["release"])}
+    assert {"packaging/sign_windows.ps1", "packaging/fetch_artifact_signing.ps1", "packaging/build_msi.ps1",
+            "packaging/check_release_files.ps1"} <= reached
+    assert any(where.startswith(".github/actions/authenticode-sign/action.yml") for where in reached)
+
+
+def test_wix_is_installed_only_from_its_checked_packages():
+    # The tool and the UI extension the MSI's license page needs (PR #104), each pinned by SHA-256.
+    script = (PACKAGING / "fetch_wix.ps1").read_text(encoding="utf-8")
+    assert re.search(r'^\$Sha256 = "[0-9a-f]{64}"$', script, re.M)
+    assert re.search(r'^\$UiExtensionSha256 = "[0-9a-f]{64}"$', script, re.M)
+    check = script.index("if ($actual -ne $Expected)")
+    assert script.index("$actual = Get-Sha256 $kept") < check
+    assert "throw" in script[check:script.index("}", check)]
+    tool = script.index("$toolPackage = Get-CheckedPackage")
+    extension = script.index("$extensionPackage = Get-CheckedPackage")
+    install = script.index("& dotnet tool install")
+    extract = script.index("ExtractToFile($entry, $uiExtension")
+    assert script.index("function Get-CheckedPackage") < tool < extension < install < extract
+    # The tool's only package source is a folder that holds just its checked package.
+    assert "<clear />" in script and "--configfile $config" in script[install:script.index("\n", install)]
+    # The extension is loaded by its path, never installed from NuGet as the MSI builds.
+    msi_script = (PACKAGING / "build_msi.ps1").read_text(encoding="utf-8")
+    assert "-ext $UiExtension" in msi_script and not _unchecked_installs(msi_script, ".ps1")
+    for workflow, job, name in (("release.yml", "release", "Build the MSI"), ("build-check.yml", "smoke-build", "Build the MSI")):
+        step = next(item for item in _workflows()[workflow]["jobs"][job]["steps"] if item.get("name") == name)
+        assert "./packaging/fetch_wix.ps1" in step["run"], workflow
+        assert "-Wix $wix.Wix -UiExtension $wix.UiExtension" in step["run"], workflow
+
+
+def test_the_version_and_the_terms_are_checked_where_releases_are_built():
+    # PR #104's rules in this workflow's split: every job that reads the tag's version refuses one
+    # that isn't X.Y.Z(-(alpha|beta|rc).N), and says whether it's a pre-release (no MSI, a
+    # pre-release on GitHub); the terms are checked where what's released is built, before building.
+    jobs = _workflows()["release.yml"]["jobs"]
+    rule = "^[0-9]+\\.[0-9]+\\.[0-9]+(-(alpha|beta|rc)\\.[0-9]+)?$"
+    for name in ("build", "release", "macos"):
+        version = next(step for step in jobs[name]["steps"] if step.get("id") == "version")
+        assert rule in version["run"] and 'echo "prerelease=$PRERELEASE" >> "$GITHUB_OUTPUT"' in version["run"], name
+    for name, before in (("build", "Build PyInstaller bundle"), ("macos", "Build Lumi.app, the DMG and the PKG")):
+        names = [step.get("name") for step in jobs[name]["steps"]]
+        check = jobs[name]["steps"][names.index("Legal texts are complete")]
+        assert "packaging/legal_texts.py release-check --release --version" in check["run"], name
+        assert names.index("Legal texts are complete") < names.index(before), name
+    for name in ("test", "release", "publish-macos"):
+        assert not any("legal_texts.py release-check" in step.get("run", "") for step in jobs[name]["steps"]), name
+    # The release job's MSI and GitHub Release read its own pre-release flag.
+    steps = {step.get("name"): step for step in jobs["release"]["steps"]}
+    for name in ("Build the MSI", "Authenticode-sign the MSI"):
+        assert steps[name]["if"] == "${{ steps.version.outputs.prerelease == 'false' }}", name
+    assert steps["Create GitHub Release with installer"]["with"]["prerelease"] == \
+        "${{ steps.version.outputs.prerelease == 'true' }}"
+
+
+@pytest.mark.parametrize("script", ["scripts/build_clean.ps1", "packaging/build_macos.sh", "packaging/build_linux.sh"])
+def test_release_builds_install_only_pinned_packages(script):
+    path = ROOT / script
+    text = path.read_text(encoding="utf-8")
+    assert not _unchecked_installs(text, path.suffix)
+    pips = [command for command in _commands(text, path.suffix) if PIP.search(command)]
+    assert len(pips) == 2 and all("--no-cache-dir" in command for command in pips)
+    assert not any("--upgrade" in command for command in pips)  # the pip that came with the Python
+
+
+def test_tests_and_the_signed_bytes_run_in_separate_jobs():
+    jobs = _workflows()["release.yml"]["jobs"]
+    test, build, release = jobs["test"], jobs["build"], jobs["release"]
+
+    def runs(job: dict) -> str:
+        return "\n".join(step.get("run", "") for step in job["steps"])
+
+    def uses(job: dict, action: str) -> list[dict]:
+        return [step for step in job["steps"] if str(step.get("uses", "")).startswith(action + "@")]
+
+    # `test` runs Ruff and pytest on packages from PyPI, and hands nothing on.
+    assert "python -m pytest" in runs(test) and "ruff check" in runs(test) and 'pip install -e ".[all,dev]"' in runs(test)
+    assert not uses(test, "actions/upload-artifact") and "outputs" not in test and "environment" not in test
+    assert test["permissions"] == {"contents": "read"}
+    # `build` makes the bundle from pinned inputs, and runs no tests.
+    assert "pytest" not in runs(build) and "ruff" not in runs(build) and "pip install -e" not in runs(build)
+    assert "environment" not in build and build["permissions"] == {"contents": "read"}
+    assert [step["with"]["name"] for step in uses(build, "actions/upload-artifact")] == ["lumi-windows-bundle"]
+    # `release` waits for both, takes only the bundle `build` made (by its ID), and runs no tests.
+    assert sorted(release["needs"]) == ["build", "test"]
+    assert [step["with"] for step in uses(release, "actions/download-artifact")] == [
+        {"artifact-ids": "${{ needs.build.outputs.artifact-id || 'none' }}", "path": "dist", "merge-multiple": True}]
+    assert "pytest" not in runs(release)
+
+
+def test_only_commits_on_main_are_built_or_signed():
+    jobs = _workflows()["release.yml"]["jobs"]
+    for name in ("build", "release", "macos"):
+        checkout, check = jobs[name]["steps"][:2]
+        assert checkout["uses"].startswith("actions/checkout@") and checkout["with"]["fetch-depth"] == 0, name
+        # The history, not the files: gh-pages' installers alone are tens of megabytes.
+        assert checkout["with"]["filter"] == "blob:none", name
+        assert check["name"] == "Check the tag is on main", name
+        assert 'tagged="$(git rev-parse "${GITHUB_REF}^{commit}")"' in check["run"]
+        assert 'git merge-base --is-ancestor "$tagged" refs/remotes/origin/main' in check["run"]
+
+
+def test_every_action_is_pinned_to_a_commit():
+    files = [WORKFLOWS / name for name in ("release.yml", "build-macos.yml", "build-check.yml")] + _actions()
+    for path in files:
+        data = _load(path)
+        jobs = data.get("jobs", {})
+        steps = [step for job in jobs.values() for step in job.get("steps", [])]
+        steps += data["runs"].get("steps", []) if isinstance(data.get("runs"), dict) else []
+        for action in [str(step["uses"]) for step in steps if "uses" in step] + [
+                str(job["uses"]) for job in jobs.values() if "uses" in job]:
+            if not action.startswith("./"):
+                assert re.fullmatch(r"[\w.-]+/[\w./-]+@[0-9a-f]{40}", action), (path.name, action)
+        # With the version it is beside the commit.
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if re.match(r"\s*(?:- )?uses:\s*(?!\./)[\w.-]+/", line):
+                assert re.search(r"@[0-9a-f]{40} # v\d+(\.\d+)*$", line), (path.name, line)
+
+
+def test_the_release_signs_all_three_files_through_the_signing_action():
+    steps = _workflows()["release.yml"]["jobs"]["release"]["steps"]
+    signing = [step for step in steps if step.get("uses") == "./.github/actions/authenticode-sign"]
+    assert [step["with"]["files"] for step in signing] == [
+        "dist/lumi/lumi.exe", "dist/installer/lumi-${{ steps.version.outputs.version }}.msi",
+        "dist/installer/lumi-setup-${{ steps.version.outputs.version }}.exe"]
+    assert not any("sign_windows.ps1" in step.get("run", "") for step in steps)  # only through the action
+    for step in signing:
+        # The Azure identity, the account and the expected subject are variables: no secret signs with Azure.
+        for key, name in (("azure-client-id", "AZURE_CLIENT_ID"), ("azure-tenant-id", "AZURE_TENANT_ID"),
+                          ("azure-subscription-id", "AZURE_SUBSCRIPTION_ID"),
+                          ("artifact-signing-endpoint", "ARTIFACT_SIGNING_ENDPOINT"),
+                          ("artifact-signing-account", "ARTIFACT_SIGNING_ACCOUNT"),
+                          ("artifact-signing-profile", "ARTIFACT_SIGNING_PROFILE"),
+                          ("expected-subject", "WINDOWS_SIGN_EXPECTED_SUBJECT"),
+                          ("command", "WINDOWS_SIGN_COMMAND"), ("required", "WINDOWS_SIGNING_REQUIRED")):
+            assert step["with"][key] == f"${{{{ vars.{name} }}}}", key
+        assert step["with"]["pfx-base64"] == "${{ secrets.WINDOWS_SIGN_PFX_BASE64 }}"
+    order = {step.get("name"): index for index, step in enumerate(steps)}
+    # The build's files are taken first; lumi.exe is signed before the installer wraps it, the
+    # installer before its EdDSA signature; what's published is checked after both, before each upload.
+    assert (order["Take only the bundle, SBOM and notices from the build"] < order["Authenticode-sign lumi.exe"]
+            < order["Build installer with Inno Setup"] < order["Authenticode-sign the installer"]
+            < order["Sign installer with EdDSA"] < order["Check the release files"]
+            < order["Create GitHub Release with installer"] < order["Check the release files again"]
+            < order["Publish installer and appcast to the Pages site"])
+
+
+def test_the_release_publishes_only_what_it_checked():
+    steps = {step.get("name"): step for step in _workflows()["release.yml"]["jobs"]["release"]["steps"]}
+    assert "-Handover" in steps["Take only the bundle, SBOM and notices from the build"]["run"]
+    for name, id_ in (("Check the release files", "files"), ("Check the release files again", "pages-files")):
+        step = steps[name]
+        assert step["id"] == id_ and "./packaging/check_release_files.ps1" in step["run"], name
+        assert "-Handover" not in step["run"]
+        assert step["env"] == {"WINDOWS_SIGN_RECORD": RECORD,
+                               "WINDOWS_SIGN_EXPECTED_SUBJECT": "${{ vars.WINDOWS_SIGN_EXPECTED_SUBJECT }}",
+                               "WINDOWS_SIGNING_REQUIRED": "${{ vars.WINDOWS_SIGNING_REQUIRED }}"}
+    assert steps["Create GitHub Release with installer"]["with"]["files"] == "${{ steps.files.outputs.files }}"
+    publish = steps["Publish installer and appcast to the Pages site"]["run"]
+    assert '$msi = "${{ steps.pages-files.outputs.msi }}"' in publish and "Test-Path" not in publish
+    # push_pages.py checks the staged installers against the record too, as Pages will serve them.
+    push = steps["Push the Pages site"]
+    assert push["env"] == {"WINDOWS_SIGN_RECORD": RECORD} and "--signed $env:WINDOWS_SIGN_RECORD" in push["run"]
+    # The action records each file where the check reads it.
+    action = {step.get("name"): step for step in _load(SIGNING_ACTION)["runs"]["steps"]}
+    assert action["Sign and check"]["env"]["WINDOWS_SIGN_RECORD"] == RECORD
+
+
+def _handover_jobs() -> list[tuple[str, str, dict, dict]]:
+    """(workflow, job name, job, workflow) for every job that signs or publishes: release.yml's, and any
+    other in the `release` environment."""
+    found = []
+    for name, workflow in _workflows().items():
+        for job_name, job in workflow["jobs"].items():
+            if name == "release.yml" or job.get("environment") == "release":
+                found.append((name, job_name, job, workflow))
+    return found
+
+
+def test_build_hands_over_what_the_release_expects():
+    # The upload, the digest and check_release_files.ps1 -Handover name the same entries of dist:
+    # the bundle, the installers' license page (packaging/installer.iss includes it), SBOM, notices.
+    build = {step.get("id"): step for step in _workflows()["release.yml"]["jobs"]["build"]["steps"]}
+    uploaded = [line.strip().removeprefix("dist/").rstrip("/").replace("${{ steps.version.outputs.version }}", "$v")
+                for line in build["upload"]["with"]["path"].splitlines() if line.strip()]
+    digest = re.search(r"tree_digest\.py dist (.+)", build["handover"]["run"]).group(1).replace('"', "").split()
+    script = (PACKAGING / "check_release_files.ps1").read_text(encoding="utf-8")
+    handover = re.search(r'Assert-Holds \$Dist @\(("lumi"[^)]*)\)', script).group(1)
+    expected = [item.strip().strip('"') for item in handover.split(",")]
+    names = {"$sbom": "lumi-$v-sbom.cdx.json", "$notices": "lumi-$v-THIRD_PARTY_NOTICES.txt"}
+    assert sorted(uploaded) == sorted(digest) == sorted(names.get(item, item) for item in expected)
+    assert "legal" in expected
+
+
+def test_signing_jobs_take_artifacts_only_by_id_and_check_their_digest():
+    # Any job in a run can delete an artifact and upload another under its
+    # name (`test` holds the token that can). Only a job output, which no other
+    # job can change, names what a signing job takes, and the files must match
+    # the digest the job that made them took (packaging/tree_digest.py).
+    downloads = 0
+    for workflow_name, job_name, job, workflow in _handover_jobs():
+        steps = job.get("steps", [])
+        for index, step in enumerate(steps):
+            if not str(step.get("uses", "")).startswith("actions/download-artifact@"):
+                continue
+            downloads += 1
+            where = f"{workflow_name}: {job_name}"
+            options = step.get("with", {})
+            assert "name" not in options and "pattern" not in options, f"{where} downloads by name"
+            match = re.fullmatch(r"\$\{\{ needs\.([\w-]+)\.outputs\.artifact-id \|\| 'none' \}\}",
+                                 str(options.get("artifact-ids", "")))
+            assert match, f"{where} must download by the ID a job it needs recorded: {options}"
+            maker = match.group(1)
+            needs = job.get("needs", [])
+            assert maker in ([needs] if isinstance(needs, str) else needs), where
+            assert options.get("merge-multiple") is True and options.get("path"), where
+            # Right after it, before anything reads the files: the digest.
+            check = steps[index + 1]
+            assert check.get("env") == {"HANDOVER_DIGEST": f"${{{{ needs.{maker}.outputs.digest }}}}"}, where
+            assert f'python packaging/tree_digest.py {options["path"]} --expect "$env:HANDOVER_DIGEST"' \
+                in check["run"] and "$LASTEXITCODE -ne 0" in check["run"], where
+            # And the job that made it: the digest of what it uploads, then the upload, as job outputs.
+            made = workflow["jobs"][maker]
+            assert made["outputs"]["artifact-id"] == "${{ steps.upload.outputs.artifact-id }}", maker
+            assert made["outputs"]["digest"] == "${{ steps.handover.outputs.digest }}", maker
+            ids = [item.get("id") for item in made["steps"]]
+            digest, upload = made["steps"][ids.index("handover")], made["steps"][ids.index("upload")]
+            assert ids.index("handover") < ids.index("upload"), maker
+            assert "packaging/tree_digest.py" in digest["run"], maker
+            assert upload["uses"].startswith("actions/upload-artifact@"), maker
+            assert upload["with"]["include-hidden-files"] is True, maker  # everything the digest covers
+    assert downloads == 2  # release's bundle and publish-macos's release files
+
+
+def test_the_handover_is_rehearsed_with_the_swap_it_stops():
+    # build-check.yml runs the same handover on every packaging change, then
+    # deletes the artifact and uploads other files under its name, as `test`
+    # could: the download by ID must fail, and the digest must refuse the
+    # files a download by name gets.
+    jobs = _workflows()["build-check.yml"]["jobs"]
+    swap = jobs["handover-swap"]["steps"][-1]
+    assert swap["uses"].startswith("actions/upload-artifact@") and swap["with"]["overwrite"] is True
+    after = {step.get("id"): step for step in jobs["handover-after-swap"]["steps"]}
+    assert after["by-id"]["with"]["artifact-ids"] == "${{ needs.handover-upload.outputs.artifact-id || 'none' }}"
+    assert after["by-id"]["continue-on-error"] is True and after["by-name"]["continue-on-error"] is True
+    last = jobs["handover-after-swap"]["steps"][-1]["run"]
+    assert '"${{ steps.by-id.outcome }}" -ne "failure"' in last and '"${{ steps.by-name.outcome }}" -ne "failure"' in last
+
+
+class TestTreeDigest:
+    """packaging/tree_digest.py: what one job hands the next, checked on arrival."""
+
+    @staticmethod
+    def module():
+        import tree_digest
+
+        return tree_digest
+
+    @staticmethod
+    def handover(root: Path) -> Path:
+        (root / "lumi" / "_internal").mkdir(parents=True)
+        (root / "lumi" / "lumi.exe").write_bytes(b"MZ")
+        (root / "lumi" / "_internal" / ".hidden").write_bytes(b"hidden too")
+        (root / "sbom.json").write_text("{}", encoding="utf-8")
+        return root
+
+    def test_the_same_files_give_the_same_digest_wherever_they_are(self, tmp_path):
+        digest = self.module().tree_digest
+        first = self.handover(tmp_path / "first")
+        (first / "not-handed-over.json").write_text("{}", encoding="utf-8")
+        second = self.handover(tmp_path / "second")
+        assert digest(first, ["lumi", "sbom.json"]) == digest(second) == digest(second, ["sbom.json", "lumi"])
+
+    @pytest.mark.parametrize("change", ["content", "extra", "missing", "renamed", "hidden"])
+    def test_any_change_to_the_files_changes_it(self, tmp_path, change):
+        digest = self.module().tree_digest
+        root = self.handover(tmp_path / "files")
+        before = digest(root)
+        if change == "content":
+            (root / "lumi" / "lumi.exe").write_bytes(b"MZ!")
+        elif change == "extra":
+            (root / "lumi-1.2.3.msi").write_bytes(b"MSI")
+        elif change == "missing":
+            (root / "sbom.json").unlink()
+        elif change == "renamed":
+            (root / "sbom.json").rename(root / "sbom2.json")
+        else:
+            (root / "lumi" / "_internal" / ".hidden").write_bytes(b"changed")
+        assert digest(root) != before
+
+    def test_expect_fails_on_a_difference_or_no_digest(self, tmp_path, capsys):
+        module = self.module()
+        root = self.handover(tmp_path / "files")
+        good = module.tree_digest(root)
+        assert module.main([str(root), "--expect", good]) == 0
+        assert "byte for byte what was handed over" in capsys.readouterr().out
+        (root / "lumi" / "lumi.exe").write_bytes(b"MZ, swapped")
+        assert module.main([str(root), "--expect", good]) == 1
+        err = capsys.readouterr().err
+        assert "aren't what the job that made them handed over" in err and "lumi/lumi.exe" in err
+        for missing in ("", "none", "0" * 63):
+            assert module.main([str(root), "--expect", missing]) == 1
+            assert "no digest to compare with" in capsys.readouterr().err
+
+    def test_a_link_is_refused(self, tmp_path):
+        module = self.module()
+        root = self.handover(tmp_path / "files")
+        try:
+            (root / "link").symlink_to(root / "sbom.json")
+        except OSError:
+            pytest.skip("this account can't make links")
+        with pytest.raises(ValueError, match="is a link"):
+            module.tree_digest(root)
+
+
+def test_the_signing_action_signs_in_to_azure_only_when_it_is_configured():
+    steps = {step.get("name"): step for step in _load(SIGNING_ACTION)["runs"]["steps"]}
+    login = steps["Sign in to Azure with GitHub's OIDC token"]
+    assert login["uses"].startswith("azure/login@")
+    assert login["if"] == "${{ inputs.azure-client-id != '' && inputs.azure-tenant-id != '' }}"
+    assert "Why there's no Azure sign-in" in steps  # the reason, when it's skipped
+    sign = steps["Sign and check"]
+    assert sign["env"]["ARTIFACT_SIGNING_SIGNED_IN"] == "${{ steps.azure.outcome == 'success' }}"
+    assert sign["env"]["WINDOWS_SIGN_EXPECTED_SUBJECT"] == "${{ inputs.expected-subject }}"
+    # The dry run runs the same action, and the same check, as a pull request can: no identity, no token.
+    workflow = _workflows()["build-check.yml"]
+    dry_run = workflow["jobs"]["signing-dry-run"]
+    signing = [step for step in dry_run["steps"] if step.get("uses") == "./.github/actions/authenticode-sign"]
+    assert len(signing) == 3 and not any("azure-client-id" in step.get("with", {}) for step in signing)
+    assert not _grants_oidc(_job_permissions(workflow, dry_run))
+    runs = "\n".join(step.get("run", "") for step in dry_run["steps"])
+    assert "./packaging/sign_windows.ps1 -CheckTools" in runs and "./packaging/check_release_files.ps1" in runs

@@ -19,6 +19,9 @@ on:
       - 'packaging/docs-requirements.txt'
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   docs-site:
     runs-on: ubuntu-latest

@@ -118,6 +118,7 @@
                         <div class="menubar-action" data-action="shortcuts">Keyboard Shortcuts <span class="menubar-shortcut">Ctrl+/</span></div>
                         <div class="menubar-action" data-action="check-updates">Check for Updates&hellip;</div>
                         <div class="menubar-action" data-action="save-diagnostics">Save Diagnostics ZIP&hellip;</div>
+                        <div class="menubar-action" data-action="send-feedback">Send Feedback&hellip;</div>
                         <div class="menubar-sep"></div>
                         <div class="menubar-action" data-action="about">About Lumi</div>
                     </div>
@@ -244,6 +245,7 @@
                     <button type="button" id="account-usage">SONN account &amp; credits</button>
                     <button type="button" id="account-connections">Provider connections <span aria-hidden="true">↗</span></button>
                     <button type="button" id="account-pet" aria-pressed="false">Show Echo <span aria-hidden="true">✧</span></button>
+                    <button type="button" id="account-feedback" aria-haspopup="dialog">Send feedback&hellip;</button>
                     <button type="button" id="account-settings">Settings <kbd>Ctrl+,</kbd></button>
                 </div>
                 <button type="button" id="sidebar-account" class="sidebar-account" aria-label="Profile and settings" aria-haspopup="dialog" aria-expanded="false" aria-controls="account-popover">
@@ -398,6 +400,16 @@
                              user pressed send, leaving only a model name and a
                              contradictory error. -->
                         <div id="runtime-banner" class="runtime-banner" hidden role="status" aria-live="polite"></div>
+                        <!-- Lumi's terms (lumi/terms.py, terms_view.js): until
+                             this person accepts them, nothing is sent to a model
+                             and the message box is locked. The dialog asks at
+                             first launch and when their version changes; after
+                             Decline, this notice opens it again. -->
+                        <section id="terms-notice" class="terms-notice" aria-labelledby="terms-notice-title" tabindex="-1" hidden>
+                            <h2 id="terms-notice-title" class="sr-only">Lumi’s terms</h2>
+                            <p id="terms-notice-text" class="terms-notice-text" role="status">Lumi won’t send anything to a model until you accept its terms.</p>
+                            <button type="button" id="terms-notice-review" class="terms-notice-review" aria-describedby="terms-notice-text">Review terms</button>
+                        </section>
                         <!-- Organization oversight (lumi/oversight.py): while an
                              organization's policy has Lumi share activity,
                              messages or security flags, this names the
@@ -660,6 +672,34 @@
         </main>
     </div>
 
+    <!-- ═══ Lumi's terms (terms_view.js) ═══
+         Accept mode: the terms in force, Decline and Accept; Accept counts only
+         as the person's own click or key press. Read mode (About Lumi): one of
+         the texts Lumi ships, with Close. -->
+    <div id="terms-dialog" class="dialog-overlay terms-dialog-overlay" data-start-hidden role="dialog" aria-modal="true" aria-labelledby="terms-dialog-title" aria-describedby="terms-dialog-intro">
+        <div class="dialog terms-dialog">
+            <div class="dialog-header terms-dialog-header">
+                <h2 id="terms-dialog-title" class="terms-dialog-title">Lumi’s terms</h2>
+                <button type="button" id="terms-dialog-close" class="dialog-btn-close" aria-label="Close">×</button>
+            </div>
+            <p id="terms-dialog-intro" class="terms-dialog-intro"></p>
+            <div id="terms-dialog-body" class="terms-dialog-body" tabindex="0" role="region" aria-labelledby="terms-dialog-title"></div>
+            <p id="terms-dialog-error" class="editor-error terms-dialog-error" role="alert" hidden></p>
+            <div class="terms-dialog-footer">
+                <p id="terms-dialog-consent" class="terms-dialog-consent"></p>
+                <div class="terms-dialog-links">
+                    <button type="button" id="terms-dialog-back" class="terms-dialog-link" hidden>Back to the terms</button>
+                    <button type="button" id="terms-dialog-privacy" class="terms-dialog-link">Privacy notice</button>
+                </div>
+                <div class="dialog-actions terms-dialog-actions">
+                    <button type="button" id="terms-dialog-decline" class="dialog-btn deny">Decline</button>
+                    <button type="button" id="terms-dialog-accept" class="dialog-btn allow">Accept</button>
+                    <button type="button" id="terms-dialog-done" class="dialog-btn allow" hidden>Close</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <!-- ═══ Permission Dialog ═══ -->
     <div id="permission-dialog" class="dialog-overlay" data-start-hidden role="dialog" aria-modal="true" aria-label="Tool permission" tabindex="-1">
         <div class="dialog diff-review-dialog">
@@ -801,6 +841,72 @@
         </div>
     </div>
 
+    <!-- ═══ Send feedback (feedback_view.js, lumi/feedback.py) ═══ -->
+    <div id="feedback-dialog" class="dialog-overlay" data-start-hidden role="dialog" aria-modal="true" aria-labelledby="feedback-dialog-title" aria-describedby="feedback-dialog-intro">
+        <div class="dialog feedback-dialog">
+            <div class="dialog-header">
+                <span id="feedback-dialog-title">Send feedback</span>
+                <button type="button" id="feedback-dialog-close" class="dialog-btn-close" aria-label="Close" title="Close">×</button>
+            </div>
+            <form id="feedback-form" class="dialog-body feedback-form" novalidate>
+                <p id="feedback-dialog-intro" class="share-note">Report a problem or suggest an idea. <span id="feedback-destination"></span></p>
+                <p id="feedback-disabled" class="feedback-alert" role="status" hidden></p>
+                <fieldset class="feedback-kinds">
+                    <legend class="share-label">What is it?</legend>
+                    <label class="feedback-kind"><input type="radio" name="feedback-kind" id="feedback-kind-bug" value="bug" checked> Bug</label>
+                    <label class="feedback-kind"><input type="radio" name="feedback-kind" id="feedback-kind-idea" value="idea"> Idea</label>
+                    <label class="feedback-kind"><input type="radio" name="feedback-kind" id="feedback-kind-other" value="other"> Other</label>
+                    <span id="feedback-kind-error" class="feedback-error" hidden></span>
+                </fieldset>
+                <label class="share-label" for="feedback-message">Message</label>
+                <textarea id="feedback-message" class="handoff-note feedback-message" rows="6" required aria-describedby="feedback-message-error feedback-message-count"></textarea>
+                <div class="feedback-field-foot">
+                    <span id="feedback-message-error" class="feedback-error" hidden></span>
+                    <span id="feedback-message-count" class="feedback-count">0 / 5,000</span>
+                </div>
+                <label class="share-label" for="feedback-reply-to">Reply-to email <span class="feedback-optional">(optional)</span></label>
+                <input id="feedback-reply-to" class="settings-input feedback-reply-to" type="email" inputmode="email" autocomplete="email" maxlength="254" spellcheck="false" aria-describedby="feedback-reply-to-error feedback-reply-to-hint">
+                <span id="feedback-reply-to-error" class="feedback-error" hidden></span>
+                <p id="feedback-reply-to-hint" class="share-note feedback-hint">Only if you’d like an answer.</p>
+                <label class="feedback-check" for="feedback-diagnostics"><input type="checkbox" id="feedback-diagnostics" aria-describedby="feedback-diagnostics-hint feedback-diagnostics-off"> Include diagnostics</label>
+                <p id="feedback-diagnostics-hint" class="share-note feedback-hint">Python and platform versions, the provider type and model (never keys), offline mode, and the end of Lumi’s log. The log can include parts of recent conversations and file names; saved keys, secret-looking values and your home folder are taken out. You see the whole report before it’s sent.</p>
+                <p id="feedback-diagnostics-off" class="share-note feedback-hint" hidden></p>
+                <p id="feedback-always" class="share-note feedback-hint"></p>
+                <section id="feedback-preview" class="feedback-preview" aria-labelledby="feedback-preview-title" hidden>
+                    <h3 id="feedback-preview-title" class="share-label">What Lumi will send</h3>
+                    <p id="feedback-preview-meta" class="share-note" role="status"></p>
+                    <pre id="feedback-preview-body" class="feedback-preview-body" tabindex="0" aria-labelledby="feedback-preview-title" hidden></pre>
+                    <ul id="feedback-preview-notices" class="feedback-notices"></ul>
+                </section>
+                <div id="feedback-queue" class="feedback-queue" hidden>
+                    <span id="feedback-queue-text"></span>
+                    <button type="button" id="feedback-flush" class="dialog-btn deny">Send now</button>
+                    <button type="button" id="feedback-discard" class="dialog-btn deny">Discard all</button>
+                    <ul id="feedback-held" class="feedback-held" aria-label="Reports waiting on this computer" hidden></ul>
+                </div>
+                <p id="feedback-alert" class="feedback-alert" role="alert" hidden></p>
+                <textarea id="feedback-copy-text" class="handoff-note feedback-copy-text" readonly hidden aria-label="Your report as text"></textarea>
+                <p id="feedback-progress" class="share-note feedback-progress" role="status"></p>
+                <div class="dialog-actions">
+                    <button type="button" id="feedback-copy" class="dialog-btn deny" hidden>Copy to clipboard</button>
+                    <button type="button" id="feedback-cancel" class="dialog-btn deny">Cancel</button>
+                    <button type="submit" id="feedback-send" class="dialog-btn allow">Send</button>
+                </div>
+            </form>
+            <div id="feedback-done" class="dialog-body feedback-done" hidden>
+                <p id="feedback-done-text" class="feedback-done-text" role="status"></p>
+                <ul id="feedback-done-notices" class="feedback-notices"></ul>
+                <div class="dialog-actions">
+                    <button type="button" id="feedback-another" class="dialog-btn deny">Send another</button>
+                    <button type="button" id="feedback-done-close" class="dialog-btn allow" aria-describedby="feedback-done-text">Done</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Send feedback's outcome when it arrives after the dialog closed (feedback_view.js). -->
+    <p id="feedback-announcer" class="sr-only" role="status" aria-live="polite"></p>
+
     <!-- ═══ Command Palette ═══ -->
     <div id="command-palette" class="cmd-palette-overlay" data-start-hidden role="dialog" aria-modal="true" aria-label="Command palette">
         <div class="cmd-palette">
@@ -823,6 +929,7 @@
          missing, rather than failing later at call time. -->
     <script src="/static/autonomous_view.js?v={{ asset_version }}"></script>
     <script src="/static/settings_view.js?v={{ asset_version }}"></script>
+    <script src="/static/terms_view.js?v={{ asset_version }}"></script>
     <script src="/static/voice_input.js?v={{ asset_version }}"></script>
     <script src="/static/swarm_view.js?v={{ asset_version }}"></script>
     <script src="/static/collaboration_view.js?v={{ asset_version }}"></script>
@@ -830,6 +937,7 @@
     <script src="/static/run_cards.js?v={{ asset_version }}"></script>
     <script src="/static/employee_tasks.js?v={{ asset_version }}"></script>
     <script src="/static/panels_view.js?v={{ asset_version }}"></script>
+    <script src="/static/feedback_view.js?v={{ asset_version }}"></script>
     <div class="window-resize-edge window-resize-top" data-resize-edge="top" aria-hidden="true"></div>
     <div class="window-resize-edge window-resize-right" data-resize-edge="right" aria-hidden="true"></div>
     <div class="window-resize-edge window-resize-bottom" data-resize-edge="bottom" aria-hidden="true"></div>

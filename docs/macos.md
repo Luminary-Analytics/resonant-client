@@ -21,6 +21,12 @@ person to approve it once.
 2. Open it and drag **Lumi** to **Applications**.
 3. Open Lumi from Applications. Don't run it from the disk image: a copy that
    runs there can't update itself, and Sparkle says so.
+4. The first time Lumi opens, it shows its terms: the
+   [End User License Agreement](../lumi/legal/EULA.md) and, for a pre-release
+   build, the [Alpha and Beta Test Terms](../lumi/legal/ALPHA-TERMS.md). Nothing
+   is sent to a model until you accept them. The disk image has them too, as
+   `License Agreement.rtf` (and `Alpha and Beta Test Terms.rtf`) beside the app,
+   since dragging an app to Applications has no step to accept anything in.
 
 ### Opening a build that isn't notarized
 
@@ -123,10 +129,14 @@ It does what `scripts/build_clean.ps1` does on Windows, and adds Sparkle:
 5. Checks the bundle against `packaging/bundle-policy-macos.json`.
 6. Copies `Sparkle.framework` into `Lumi.app/Contents/Frameworks` and signs
    the app again: with the Developer ID when there is one, else ad hoc.
-7. Makes `dist/installer/lumi-X.Y.Z.dmg`, with an Applications shortcut for
-   drag-to-install.
-8. Makes `dist/installer/lumi-X.Y.Z.pkg` for device management: the same app,
-   marked so it leaves updates to the MDM (`packaging/macos_pkg.py`).
+7. Renders Lumi's terms for the version as RTF (`packaging/legal_texts.py`:
+   the End User License Agreement, and for a pre-release the Alpha and Beta
+   Test Terms).
+8. Makes `dist/installer/lumi-X.Y.Z.dmg`, with an Applications shortcut for
+   drag-to-install and the terms beside the app.
+9. Makes `dist/installer/lumi-X.Y.Z.pkg` for device management: the same app,
+   marked so it leaves updates to the MDM (`packaging/macos_pkg.py`), with the
+   terms on the Installer app's license page (`productbuild --resources`).
 
 ## Signing and notarization
 
@@ -270,6 +280,10 @@ CI runs on a Mac, but not as a person does, and it has no Apple account:
   app replaces itself also needs checking.
 - **The native window** beyond starting: menus, keyboard shortcuts, dragging,
   resizing, the folder and file pickers, and Sparkle's windows over it.
+- **Lumi's terms as a person meets them:** the Installer app's license page
+  for the PKG, and the terms dialog in the WebKit window. CI checks that the
+  PKG holds the license page and the DMG the texts, and the dialog was
+  exercised in headless Edge, not WebKit.
 - **Dictation:** the microphone prompt, and the webview's speech recognition
   or a transcription service.
 - **Computer use:** the Accessibility and Screen Recording prompts, and real

@@ -10,7 +10,9 @@ core.autocrlf=true, Windows' default, and check what the branch holds.
 from __future__ import annotations
 
 import base64
+import hashlib
 import importlib.util
+import json
 import os
 import subprocess
 from pathlib import Path
@@ -90,11 +92,23 @@ def origin(tmp_path):
     return bare
 
 
-def publish_windows(site: Path, tmp_path: Path, version: str, key) -> None:
+def publish_windows(site: Path, tmp_path: Path, version: str, key) -> Path:
     installer = tmp_path / f"lumi-setup-{version}.exe"
     installer.write_bytes(b"MZ" + os.urandom(64))
     publish_pages.publish(site, installer, version)
     appcast.publish_feeds(site, version, installer, key.sign(installer.read_bytes()), f"<p>{version}</p>", BASE)
+    return installer
+
+
+def signing_record(tmp_path: Path, *installers: Path) -> Path:
+    """What sign_windows.ps1 records in the release job: lumi.exe, then each installer as signed."""
+    record = tmp_path / "lumi-authenticode.jsonl"
+    entries = [{"path": str(tmp_path / "dist" / "lumi" / "lumi.exe"), "sha256": "0" * 64, "signed": True}]
+    entries += [{"path": str(tmp_path / "dist" / "installer" / installer.name),
+                 "sha256": hashlib.sha256(installer.read_bytes()).hexdigest(), "signed": True}
+                for installer in installers]
+    record.write_text("".join(json.dumps(entry) + "\n" for entry in entries), encoding="utf-8")
+    return record
 
 
 def publish_macos(site: Path, tmp_path: Path, version: str, key) -> None:
@@ -203,6 +217,32 @@ def test_the_lease_keeps_what_another_run_pushed(origin, tmp_path, key, capsys):
     assert push(second, key, "--message", "second") == 1
     assert git(origin, "rev-parse", "gh-pages") == pushed
     assert "stale info" in capsys.readouterr().err
+
+
+def test_the_windows_installer_published_is_the_one_signed(origin, tmp_path, key, capsys):
+    windows = checkout(origin, tmp_path / "windows", WINDOWS_DEFAULT)
+    installer = publish_windows(windows, tmp_path, "0.21.0", key)
+    record = signing_record(tmp_path, installer)
+    assert push(windows, key, "--check", "--signed", str(record)) == 0
+    assert "downloads/v0.21.0/lumi-setup-0.21.0.exe: SHA-256 as sign_windows.ps1 recorded it" in capsys.readouterr().out
+    # Changed after it was signed: never pushed.
+    (windows / "downloads" / "v0.21.0" / "lumi-setup-0.21.0.exe").write_bytes(b"MZ changed")
+    before = git(origin, "rev-parse", "gh-pages")
+    assert push(windows, key, "--message", "must not be pushed", "--signed", str(record)) == 1
+    assert git(origin, "rev-parse", "gh-pages") == before
+    assert "lumi-setup-0.21.0.exe isn't the file sign_windows.ps1 recorded" in capsys.readouterr().err
+
+
+def test_a_signed_installer_missing_from_the_site_is_refused(origin, tmp_path, key, capsys):
+    windows = checkout(origin, tmp_path / "windows")
+    installer = publish_windows(windows, tmp_path, "0.21.0", key)
+    msi = tmp_path / "lumi-0.21.0.msi"
+    msi.write_bytes(b"MSI")
+    assert push(windows, key, "--message", "m", "--signed", str(signing_record(tmp_path, installer, msi))) == 1
+    assert "lumi-0.21.0.msi, which this release signed, isn't on the site" in capsys.readouterr().err
+    (tmp_path / "empty.jsonl").write_text("", encoding="utf-8")
+    assert push(windows, key, "--check", "--signed", str(tmp_path / "empty.jsonl")) == 1
+    assert "records no installer" in capsys.readouterr().err
 
 
 def test_nothing_changed_pushes_nothing(origin, tmp_path, key, capsys):

@@ -1978,7 +1978,8 @@ class Session:
         if admission.refusal:
             self.display_prompt = None
             tracker = None
-            turn = self._oversight_refused(admission.refusal)
+            # Lumi's terms (lumi/terms.py) or the organization's notice: the code says which.
+            turn = self._oversight_refused(admission.refusal, admission.code)
         else:
             # None unless the organization's policy records this turn.
             tracker = oversight.begin_turn(self, user_msg, images=len(images or ()), input_origin=input_origin,
@@ -2017,18 +2018,46 @@ class Session:
             if tracker is not None:
                 tracker.finish(outcome)
 
+    def policy_refusal(self) -> str:
+        """Why the organization's policy stops a turn of this session before anything is sent, or ''.
+
+        An invalid or expired policy (``policy.blocked_reason``), or a model it doesn't allow. The turn
+        refuses with it (code ``policy_blocked``); the app asks it before a message becomes a turn, so
+        a refused message goes back to the message box (gui/app.py ``_process_chat_message``).
+        """
+        from ..policy import blocked_reason, current as current_policy
+
+        refusal = blocked_reason()
+        if refusal:
+            return refusal
+        org_policy = current_policy()
+        if org_policy is None or self.backend is None:
+            return ""
+        backend_name = str(getattr(self.backend, "name", "") or "")
+        model = str(getattr(self.backend, "model", "") or "")
+        if not org_policy.model_allowed(backend_name, model):
+            return (f"{org_policy.organization}'s policy doesn't allow {model or 'this model'} "
+                    f"on {backend_name or 'this provider'}. Choose another model.")
+        return ""
+
     def _oversight_checkpoint(self) -> str:
-        """Why organization oversight stops this turn before its next model request, or ''."""
+        """Why Lumi's terms or organization oversight stop this turn before its next model request, or ''.
+
+        The gate's code (``oversight.REFUSAL_CODE`` or ``terms.REFUSAL_CODE``) is kept for the error the
+        turn ends with.
+        """
         from .. import oversight
 
-        return oversight.admit(self).refusal
+        admission = oversight.admit(self)
+        self._oversight_stop_code = admission.code
+        return admission.refusal
 
     @staticmethod
-    def _oversight_refused(message: str) -> Iterator[dict]:
-        """A turn organization oversight refused (lumi/oversight.py): nothing reaches a model or the history."""
+    def _oversight_refused(message: str, code: str = "") -> Iterator[dict]:
+        """A turn the gate refused (lumi/oversight.py, lumi/terms.py): nothing reaches a model or the history."""
         from ..oversight import REFUSAL_CODE
 
-        yield make_event(EngineEvent.ERROR, message=message, code=REFUSAL_CODE)
+        yield make_event(EngineEvent.ERROR, message=message, code=code or REFUSAL_CODE)
 
     def _next_fallback(self, error: str) -> Iterator[dict]:
         """Switch to the next usable fallback model; returns whether it did.
@@ -2307,20 +2336,10 @@ class Session:
 
         # Organization policy (lumi/policy.py): an invalid or expired policy,
         # or a model it blocks, stops the turn before anything is sent.
-        from ..policy import blocked_reason, current as current_policy
-
-        refusal = blocked_reason()
-        org_policy = current_policy()
+        refusal = self.policy_refusal()
         backend_name = str(getattr(self.backend, "name", "") or "")
-        if not refusal and org_policy and self.backend is not None and not org_policy.model_allowed(
-            backend_name, str(last_done_model or ""),
-        ):
-            refusal = (
-                f"{org_policy.organization}'s policy doesn't allow {last_done_model or 'this model'} "
-                f"on {backend_name or 'this provider'}. Choose another model."
-            )
         if refusal:
-            yield make_event(EngineEvent.ERROR, message=refusal)
+            yield make_event(EngineEvent.ERROR, message=refusal, code="policy_blocked")
             return
         # Offline mode (lumi/offline.py): a provider this computer may not
         # reach, or one whose own process Lumi can't check (Codex, Claude Code,
@@ -4262,7 +4281,8 @@ class Session:
         if oversight_stop:
             from ..oversight import REFUSAL_CODE
 
-            yield make_event(EngineEvent.ERROR, message=oversight_stop, code=REFUSAL_CODE)
+            yield make_event(EngineEvent.ERROR, message=oversight_stop,
+                             code=getattr(self, "_oversight_stop_code", "") or REFUSAL_CODE)
 
         if request_limit_reached:
             terminal_error = (

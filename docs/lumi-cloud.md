@@ -25,8 +25,30 @@ apps, RFC 8252):
   never in `settings.json`, and keeps the short-lived one only in memory.
 
 This account is separate from your display name and from any SONN or ChatGPT
-sign-in. **Sign out** ends it on Lumi Cloud too. Your organization can also
-sign the app out from Lumi Cloud.
+sign-in. **Sign out** ends it on this computer at once, and on Lumi Cloud too.
+When Lumi Cloud can't be told (offline mode doesn't allow it, or it can't be
+reached), Settings says so: that sign-in stays valid there until it expires,
+and nothing of it is kept here. Your organization can also sign the app out
+from Lumi Cloud. Signing in again, at the same Lumi Cloud or another, ends the
+earlier sign-in where it was issued.
+
+**Your sign-in belongs to the Lumi Cloud that issued it.** Lumi records its
+address when the sign-in completes (a sign-in you cancel changes nothing),
+and refreshes it, uses it and signs it out only there. If this computer later
+uses another Lumi Cloud (your organization's policy enrolls it somewhere
+else, or the address changes), you count as signed out for the new one:
+nothing of your sign-in is sent to it, and Settings > Lumi account says
+you're still signed in to the first one, with **Sign out of** it. An address
+with a user name or password in it (`https://name:secret@…`) isn't accepted.
+Addresses are compared as addresses: a capital letter, the default port
+(`:443`), a trailing slash or an internationalized name written either way
+don't make two of them different Lumi Clouds; any other part does.
+
+Lumi reads the sign-in's address and its tokens together, and sends a token
+only to the address it came with, never to one it reads again afterwards.
+When a sign-in completes (or you sign out) while Lumi is refreshing the
+earlier one, the refreshed tokens aren't kept: the one Lumi Cloud just made
+is revoked where it was made.
 
 ## Using your organization on this computer
 
@@ -39,6 +61,15 @@ computer**. Lumi generates a key pair for this computer:
 
 From then on the computer checks in about once an hour, even after you sign
 out. **Leave on this computer** undoes it.
+
+**The enrollment belongs to the Lumi Cloud it was made with.** Lumi records
+its address when the computer enrolls, and sends every device request only
+there: device tokens, check-ins, policy downloads, leaving, tasks from
+Slack and Teams, and oversight's records and confirmations. If you later sign
+in to another Lumi Cloud, this computer counts as enrolled elsewhere:
+check-ins and the organization's policy still come from where it enrolled,
+tasks from chat wait, and Settings > Lumi account says so, with **Leave …
+on this computer**. Nothing of the enrollment goes to the other Lumi Cloud.
 
 A check-in sends:
 
@@ -112,7 +143,10 @@ the chat with **Approve** and **Deny** buttons. No answer within 10 minutes,
 or **stop** in the chat, refuses it. The reply goes back to the chat.
 
 Only your own computer takes your requests: never a managed computer, and
-never a colleague's. Your organization can turn this off with
+never a colleague's. Requests wait while this computer uses another Lumi Cloud
+than the one it enrolled with, and everything about a request (its approvals,
+whether you said stop, its reply) goes back to the Lumi Cloud that handed it
+out, or nowhere. Your organization can turn this off with
 `cloud.remote_tasks` in its policy.
 
 ## Sharing a conversation
@@ -153,7 +187,24 @@ organization. Lumi Cloud emails them, and their Lumi lists it under
 Skills and prompts your organization publishes in Lumi Cloud's **Library**
 reach your Lumi: matching skills are offered to the agent, and the **❝**
 button beside the message box inserts prompts. **Team library** on this page
-shows what's synced, with **Sync now**. See [team library](team-library.md).
+shows what's synced, with **Sync now**. A synced copy belongs to the sign-in
+it came with: after a sign-in at another Lumi Cloud, or as someone else, it
+isn't offered until the next sync replaces it. See [team
+library](team-library.md).
+
+## Sending feedback
+
+**Help › Send Feedback…** (also in the command palette, the profile menu and
+About Lumi) sends a bug report, an idea or other feedback to a feedback
+inbox, which only its staff can read: the address your organization or
+this build of Lumi sets, else this Lumi Cloud's. You needn't sign in; while
+you're signed in to the Lumi Cloud the report goes to, it carries your
+account so staff see who sent it, and a report written so goes only with your
+account: if you sign out before it goes, it waits for you, unless you choose
+**Send without your account**. When it can't be reached, the report waits
+on this computer and goes later; one written before any address was set goes
+only when you send it to the address shown, as the account its button names. What a report holds, what never
+leaves and how it's checked first: [Sending feedback](feedback.md).
 
 ## For administrators: enrolling managed computers
 
@@ -192,6 +243,14 @@ Lumi enrolls on its next start. After that:
   only a cache.
 - People can't leave a managed enrollment or point Lumi at a different Lumi
   Cloud.
+- **The machine policy's address is authoritative for enrollment.** When it
+  names another Lumi Cloud than the one this computer enrolled with (you
+  moved the computer to another deployment, or it had joined an organization
+  itself), the old enrollment ends: the Lumi Cloud it was made with is told
+  the computer left, with that computer's own device token and nowhere else,
+  and its downloaded policy is deleted. With an `enrollment_token` for the
+  new address, the computer then enrolls there; without one, it stays
+  unenrolled. The old Lumi Cloud's device token is never sent to the new one.
 
 Revoke an enrollment token once the rollout is done. Computers already
 enrolled keep working until they are revoked on the Devices page.

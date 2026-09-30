@@ -29,6 +29,7 @@ from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
 from .paths import state_home
+from .safe_git import status_entries
 
 HANDOFFS_DIR = "handoffs"
 PROJECT_DIR = Path(".lumi") / "handoffs"
@@ -46,16 +47,19 @@ class HandoffError(Exception):
 
 
 def _git(project_path: str, *args: str) -> str:
-    from .processes import background_process_kwargs
+    """Git's answer, or "" (no repository, no Git, or none allowed here).
+
+    lumi/safe_git.py: the installed Git without the programs a repository's
+    settings name, none in an untrusted project whose settings name some,
+    and no input (an inherited stdin can be a private protocol pipe, a swarm
+    worker's host channel, and on Windows git blocks querying a pipe handle
+    while the parent has a read pending on it).
+    """
+    from .safe_git import GitRefused, run
 
     try:
-        # No input: an inherited stdin can be a private protocol pipe (a swarm
-        # worker's host channel), and on Windows git blocks querying a pipe
-        # handle while the parent has a read pending on it.
-        result = subprocess.run(["git", *args], cwd=project_path, capture_output=True, text=True, encoding="utf-8",
-                                errors="replace", timeout=10, check=False, stdin=subprocess.DEVNULL,
-                                **background_process_kwargs())
-    except (OSError, subprocess.SubprocessError):
+        result = run(project_path, *args, timeout=10)
+    except (GitRefused, OSError, subprocess.SubprocessError):
         return ""
     return result.stdout.strip() if result.returncode == 0 else ""
 
@@ -85,7 +89,7 @@ def repo_state(project_path: str) -> dict:
         "remote": without_credentials(remote),
         "branch": "" if branch == "HEAD" else branch,
         "commit": _git(project_path, "rev-parse", "HEAD"),
-        "changed_files": len([line for line in _git(project_path, "status", "--porcelain").splitlines() if line]),
+        "changed_files": len(status_entries(_git(project_path, "status", "--porcelain=v1", "-z"))[1]),
     }
     if remote:
         unpushed = _git(project_path, "rev-list", "--count", "HEAD", "--not", "--remotes")
@@ -134,13 +138,11 @@ def same_repository(first: str, second: str) -> bool:
 
 
 def _has_commit(project_path: str, commit: str) -> bool:
-    from .processes import background_process_kwargs
+    from .safe_git import GitRefused, run
 
     try:
-        return subprocess.run(["git", "cat-file", "-e", f"{commit}^{{commit}}"], cwd=project_path,
-                              capture_output=True, timeout=10, check=False,
-                              **background_process_kwargs()).returncode == 0
-    except (OSError, subprocess.SubprocessError):
+        return run(project_path, "cat-file", "-e", f"{commit}^{{commit}}", timeout=10).returncode == 0
+    except (GitRefused, OSError, subprocess.SubprocessError):
         return False
 
 

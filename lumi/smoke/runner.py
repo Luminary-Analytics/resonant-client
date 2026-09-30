@@ -18,13 +18,13 @@ from __future__ import annotations
 
 import logging
 import os
-import subprocess
 import tempfile
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Optional
 
+from .. import safe_git
 from .specs import SmokeSpec, get_spec
 
 logger = logging.getLogger(__name__)
@@ -237,12 +237,12 @@ def make_fresh_project(
         "GIT_COMMITTER_NAME": "smoke",
         "GIT_COMMITTER_EMAIL": "smoke@example.com",
     }
-    subprocess.run(["git", "init", "-q"], cwd=project, check=True,
-                   capture_output=True, env=env)
-    subprocess.run(
-        ["git", "commit", "--allow-empty", "-q", "-m", "initial"],
-        cwd=project, check=True, capture_output=True, env=env,
-    )
+    def git(*args: str) -> None:
+        # The repository is the one made here (lumi/safe_git.py).
+        safe_git.run(project, *args, trusted_project=True, env=env).check_returncode()
+
+    git("init", "-q")
+    git("commit", "--allow-empty", "-q", "-m", "initial")
     if seed_files:
         for relpath, content in seed_files.items():
             # Re-validate against the resolved project root — this
@@ -257,12 +257,8 @@ def make_fresh_project(
         # Commit the seed so the autonomous loop's first commit is
         # `seed: ...` -> seed-baseline; subsequent iterations are
         # the loop's own work.
-        subprocess.run(["git", "add", "-A"], cwd=project, check=True,
-                       capture_output=True, env=env)
-        subprocess.run(
-            ["git", "commit", "-q", "-m", "smoke seed (pre-existing project state)"],
-            cwd=project, check=True, capture_output=True, env=env,
-        )
+        git("add", "-A")
+        git("commit", "-q", "-m", "smoke seed (pre-existing project state)")
     return project
 
 

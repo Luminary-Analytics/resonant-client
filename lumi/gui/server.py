@@ -270,9 +270,9 @@ def launch_gui(
                     Only the desktop window has this bridge, so browser pages and
                     other local clients cannot mint launch codes.
                     """
-                    import webbrowser
+                    from lumi.executables import open_url
                     try:
-                        return bool(webbrowser.open(local_access.launch_url(url)))
+                        return bool(open_url(local_access.launch_url(url)))
                     except Exception:
                         logger.debug("Could not open the default browser", exc_info=True)
                         return False
@@ -378,17 +378,21 @@ def launch_gui(
             # For example Linux without GTK or Qt, which the packages don't
             # bundle: the app runs in the system browser instead.
             logger.debug("pywebview not available: %s", exc)
-            import webbrowser
-
             import lumi.gui.app as _gui_app
+            from lumi.executables import open_url
 
-            if _without_native_window(_gui_app, lambda: webbrowser.open(local_access.launch_url(url))):
+            if _without_native_window(_gui_app, lambda: open_url(local_access.launch_url(url))):
                 print("  Opened Lumi in your browser.", flush=True)
             _run_in_browser()
 
 
 def main():
     """CLI entry point for lumi-gui."""
+    # The app works in many projects at once and gives each command its
+    # folder, so no project is ever its working folder (lumi/executables.py).
+    from ..executables import leave_working_folder
+
+    leave_working_folder()
     from ..paths import migrate_legacy_home
     migrate_legacy_home()
     parser = argparse.ArgumentParser(

@@ -457,7 +457,10 @@ class Registrar:
 
 
 def _run(args: list[str], **kwargs) -> subprocess.CompletedProcess:
-    return subprocess.run(args, capture_output=True, text=True, timeout=30,
+    """Run one of the system's scheduler tools (schtasks, launchctl, crontab) by its full path."""
+    from .executables import system_program
+
+    return subprocess.run([system_program(args[0]), *args[1:]], capture_output=True, text=True, timeout=30,
                           creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0), **kwargs)
 
 

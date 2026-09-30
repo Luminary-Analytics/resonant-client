@@ -9,11 +9,11 @@ from __future__ import annotations
 import atexit
 import json
 import queue
-import shutil
 import subprocess
 import threading
 
 from .backends import resolve_codex_cli_path
+from .executables import find_program
 
 
 class CodexCliMissing(ValueError):
@@ -21,8 +21,12 @@ class CodexCliMissing(ValueError):
 
 
 def missing_cli_message() -> str:
-    """What to install before signing in with ChatGPT: the Codex CLI, and Node.js for it."""
-    if shutil.which("node") and shutil.which("npm"):
+    """What to install before signing in with ChatGPT: the Codex CLI, and Node.js for it.
+
+    Node.js and npm are looked for as Lumi looks for its own programs
+    (lumi/executables.py), never in the working folder; npm is a script.
+    """
+    if find_program("node") and find_program("npm", scripts=True):
         return ("Signing in with ChatGPT uses the Codex CLI, which isn't installed. In a terminal, run "
                 "npm install -g @openai/codex, then choose Refresh account & models.")
     return ("Signing in with ChatGPT uses the Codex CLI, which needs Node.js; neither is installed. "

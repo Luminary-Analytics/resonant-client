@@ -38,9 +38,7 @@ import asyncio
 import json
 import logging
 import os
-import shutil
 import subprocess
-import sys
 import threading
 import time
 import uuid
@@ -49,7 +47,7 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable, Optional
 
 from ..engine.session import inspect_system_instructions
-from ..processes import background_process_kwargs
+from ..executables import NoProject, OpensAsProgram, current_project, open_path, opens_as_program, show_in_folder
 from .autonomous_session import (
     build_roadmap_inspector_payload as _build_roadmap_inspector_payload,
     find_orphaned_autonomous_missions as _find_orphaned_autonomous_missions,
@@ -217,6 +215,22 @@ def command(name: str) -> Callable[[Handler], Handler]:
 
 async def _in_executor(func, *args):
     return await asyncio.get_event_loop().run_in_executor(None, func, *args)
+
+
+def _typed_folder(ctx: CommandContext, text: Any) -> str:
+    """A folder typed in Settings as a full path, "" for none.
+
+    A relative one is relative to the open project, as it was when the project
+    was the app's working folder. The app never is one now
+    (lumi/executables.py), and its own folder is no place for a project.
+    """
+    folder = os.path.expanduser(str(text or "").strip().strip('"'))
+    if not folder:
+        return ""
+    current = str(getattr(getattr(ctx.state, "project", None), "project_path", "") or "")
+    if not os.path.isabs(folder) and current:
+        folder = os.path.join(current, folder)
+    return os.path.abspath(folder)
 
 
 async def _block_active_navigation(ctx: CommandContext) -> bool:
@@ -1057,6 +1071,8 @@ async def _schedule_save(ctx: CommandContext) -> None:
     if not isinstance(raw, dict):
         await ctx.send_error("Send the schedule's fields.")
         return
+    if str(raw.get("project") or "").strip():
+        raw = {**raw, "project": _typed_folder(ctx, raw.get("project"))}
     settings = getattr(ctx.state, "settings", None)
     try:
         saved = await _in_executor(lambda: schedules.save(raw, str(ctx.msg.get("id") or ""), settings=settings))
@@ -1499,9 +1515,13 @@ async def _mcp_disconnect(ctx: CommandContext) -> None:
 
 @command("lsp_list")
 async def _lsp_list(ctx: CommandContext) -> None:
+    trusted = False
+    if ctx.project_path and hasattr(ctx.state, "project_trust"):
+        trusted = ctx.state.project_trust(ctx.project_path).trusted
     await ctx.send(_lsp_list_payload(
         project_path=ctx.project_path,
         settings=ctx.state.settings,
+        trusted=trusted,
     ))
 
 
@@ -1566,7 +1586,11 @@ async def _rag_index(ctx: CommandContext) -> None:
     from ..engine.rag import CodebaseIndex
 
     if not ctx.state.codebase_index:
-        project_path = ctx.project_path if ctx.state.project else os.getcwd()
+        try:
+            project_path = current_project(ctx.project_path if ctx.state.project else None)
+        except NoProject as exc:
+            await ctx.send({"event": "status_msg", "message": str(exc)})
+            return
         ctx.state.codebase_index = CodebaseIndex(project_path, engram=ctx.state.engram)
     stats = await _in_executor(ctx.state.codebase_index.index, ctx.msg.get("force", False))
     await ctx.send({"event": "rag_indexed", **stats})
@@ -1930,38 +1954,70 @@ async def _get_session_history_page(ctx: CommandContext) -> None:
     })
 
 
+def _workspace_file(project_path: str, raw: str) -> Path | None:
+    """An existing file or folder inside the project, by its absolute or project-relative path."""
+    try:
+        root = Path(project_path).resolve(strict=True)
+        requested = Path(raw)
+        target = (requested if requested.is_absolute() else root / requested).resolve(strict=True)
+        target.relative_to(root)
+    except (OSError, ValueError):
+        return None
+    return target
+
+
 @command("open_workspace_path")
 async def _open_workspace_path(ctx: CommandContext) -> None:
-    """Open an existing project file explicitly selected by the user."""
+    """Open an existing project file explicitly selected by the user.
+
+    A document opens with its own program, as double-clicking it would. A
+    file that opening would run (a program, script, shortcut or installer,
+    lumi/executables.py ``opens_as_program``) doesn't: the page names it and
+    its type and offers to show it in its folder (``reveal_workspace_path``).
+    """
     raw = str(ctx.msg.get("path") or "").strip()
     if not raw:
         await ctx.send({"event": "status_msg", "message": "No file path was provided."})
         return
-    try:
-        root = Path(ctx.project_path).resolve(strict=True)
-        requested = Path(raw)
-        target = (requested if requested.is_absolute() else root / requested).resolve(
-            strict=True
-        )
-        target.relative_to(root)
-    except (OSError, ValueError):
+    target = _workspace_file(ctx.project_path, raw)
+    if target is None:
         await ctx.send({
             "event": "status_msg",
             "message": "That file is unavailable or outside the active project.",
         })
         return
-
+    kind = opens_as_program(target)
     try:
-        if sys.platform == "win32":
-            os.startfile(str(target))  # type: ignore[attr-defined]
-        elif sys.platform == "darwin":
-            subprocess.Popen(["open", str(target)], **background_process_kwargs())
-        else:
-            subprocess.Popen(["xdg-open", str(target)], **background_process_kwargs())
-    except OSError as exc:
+        if not kind:
+            # The opener itself is the system's, never one from the project.
+            open_path(target)
+    except OpensAsProgram as exc:
+        kind = exc.kind
+    except (OSError, ValueError) as exc:
         await ctx.send({"event": "status_msg", "message": f"Could not open file: {exc}"})
         return
+    if kind:
+        await ctx.send({"event": "workspace_path_runs", "path": raw, "name": target.name, "kind": kind})
+        return
     await ctx.send({"event": "status_msg", "message": f"Opened {target.name}"})
+
+
+@command("reveal_workspace_path")
+async def _reveal_workspace_path(ctx: CommandContext) -> None:
+    """Show a project file selected in Explorer, the Finder or the file manager, without opening it."""
+    target = _workspace_file(ctx.project_path, str(ctx.msg.get("path") or "").strip())
+    if target is None:
+        await ctx.send({
+            "event": "status_msg",
+            "message": "That file is unavailable or outside the active project.",
+        })
+        return
+    try:
+        show_in_folder(target)
+    except (OSError, ValueError) as exc:
+        await ctx.send({"event": "status_msg", "message": f"Could not show the file: {exc}"})
+        return
+    await ctx.send({"event": "status_msg", "message": f"Showing {target.name} in its folder"})
 
 
 # ---------------------------------------------------------------------------
@@ -2898,11 +2954,13 @@ async def _cmd_list_project_files(ctx: CommandContext) -> None:
     # capping at a sane upper bound so giant monorepos don't
     # ship multi-megabyte JSON over the websocket.
     request_id = ctx.msg.get("request_id", "")
-    project_path_str = (
-        ctx.state.project.project_path
-        if ctx.state.project and ctx.state.project.project_path
-        else os.getcwd()
-    )
+    try:
+        project_path_str = current_project(
+            ctx.state.project.project_path if ctx.state.project and ctx.state.project.project_path else None)
+    except NoProject:
+        await ctx.send({"event": "project_files", "request_id": request_id, "files": [], "total": 0,
+                        "truncated": False, "project_path": ""})
+        return
     _SKIP_DIRS = {
         ".git", "node_modules", "__pycache__", ".pytest_cache",
         "dist", "build", ".venv", "venv", ".tox", ".idea",
@@ -3867,8 +3925,7 @@ async def _cmd_cloud_remote_tasks(ctx: CommandContext) -> None:
     from ..remote_tasks import MODES
 
     enabled = ctx.msg.get("enabled") is True
-    project = os.path.abspath(os.path.expanduser(str(ctx.msg.get("project") or "").strip())) \
-        if str(ctx.msg.get("project") or "").strip() else ""
+    project = _typed_folder(ctx, ctx.msg.get("project"))
     mode = str(ctx.msg.get("mode") or "ask")
 
     def save(client) -> None:
@@ -4064,47 +4121,6 @@ async def _cmd_save_diagnostics(ctx: CommandContext) -> None:
 
 
 
-def _windows_folder() -> str:
-    """The Windows folder as GetWindowsDirectoryW reports it; never from the environment."""
-    import ctypes
-    from ctypes import wintypes
-
-    function = ctypes.WinDLL("kernel32", use_last_error=True).GetWindowsDirectoryW
-    function.argtypes = [wintypes.LPWSTR, wintypes.UINT]
-    function.restype = wintypes.UINT
-    buffer = ctypes.create_unicode_buffer(32768)
-    length = function(buffer, len(buffer))
-    if not length or length >= len(buffer):
-        raise ctypes.WinError(ctypes.get_last_error())
-    return buffer.value
-
-
-def show_in_folder_command(path: str) -> list[str]:
-    """The absolute program and the arguments that show ``path`` selected in its folder.
-
-    Never a bare program name: the app's working folder is the open project,
-    and Windows looks for ``explorer`` there before its own folder, so a
-    repository's ``explorer.exe`` or ``explorer.bat`` would run. Explorer
-    comes from the Windows folder, the Finder's ``open`` from /usr/bin, and
-    ``xdg-open`` only from the system folders.
-    TODO(#110): use ``executables.show_in_folder`` once it lands, without
-    background_process_kwargs()'s STARTUPINFO: with SW_HIDE, Explorer opens
-    the folder window hidden (checked on Windows 11, September 29, 2026).
-    """
-    target = os.fspath(path)
-    if not os.path.isabs(target):
-        raise ValueError("Give the full path of the file to show.")
-    if sys.platform == "win32":
-        return [os.path.join(_windows_folder(), "explorer.exe"), "/select,", target]
-    if sys.platform == "darwin":
-        return ["/usr/bin/open", "-R", target]
-    for folder in ("/usr/bin", "/bin", "/usr/local/bin"):
-        opener = os.path.join(folder, "xdg-open")
-        if os.path.isfile(opener) and os.access(opener, os.X_OK):
-            return [opener, os.path.dirname(target)]
-    raise FileNotFoundError("xdg-open isn't installed, so Lumi can't open the folder.")
-
-
 @command("reveal_diagnostics")
 async def _cmd_reveal_diagnostics(ctx: CommandContext) -> None:
     """Show the diagnostics ZIP the last save made, selected in its folder.
@@ -4115,14 +4131,10 @@ async def _cmd_reveal_diagnostics(ctx: CommandContext) -> None:
     if not target or not os.path.isfile(target):
         await ctx.send({"event": "status_msg", "message": "That diagnostics file isn't there anymore. Save diagnostics again."})
         return
-    # No console window flashes, but the file manager's own window must show:
-    # the hidden start-up that background_process_kwargs gives console tools
-    # (SW_HIDE) stays away from it.
-    kwargs = background_process_kwargs()
-    kwargs.pop("startupinfo", None)
     try:
-        subprocess.Popen(show_in_folder_command(target), stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                         stderr=subprocess.DEVNULL, **kwargs)
+        # Explorer, the Finder or the file manager by its full path, never
+        # from the project (executables.show_in_folder).
+        show_in_folder(target)
     except (OSError, ValueError) as exc:
         await ctx.send({"event": "status_msg", "message": f"Could not show the folder: {exc}"})
         return
@@ -5027,56 +5039,69 @@ async def _cmd_skill_archive(ctx: CommandContext) -> None:
 # one concern across two files for no reason.
 # ---------------------------------------------------------------------------
 
-def _git_run(*args: str, cwd: str | None = None) -> tuple[int, str]:
-    """Run a git command and return (returncode, stdout).
+def _git_run(*args: str, cwd: str | None = None, hooks: bool = False,
+             trusted: bool | None = None) -> tuple[int, str, str]:
+    """Run a git command for the page; returns (returncode, stdout, stderr).
 
-    `cwd` is required in practice. It used to fall back to the module-level
-    AppState singleton in app.py, which made these helpers untestable and
-    silently tied "which repository" to global state — the caller always knew
-    the project path and now has to say so.
+    `cwd` is required. It used to fall back to the module-level AppState
+    singleton in app.py, which made these helpers untestable and silently
+    tied "which repository" to global state — the caller always knew the
+    project path and now has to say so.
+
+    Git runs through lumi/safe_git.py: the installed Git, none of the
+    programs a repository's settings name, and nothing at all in an
+    untrusted project whose settings name some (GitRefused, which callers
+    turn into a notice). The page asks for the status as soon as a project
+    opens.
     """
-    import subprocess
+    from ..safe_git import run as git
+
+    if not cwd:
+        return 1, "", "No project folder."
     try:
-        result = subprocess.run(
-            ["git"] + list(args),
-            capture_output=True, text=True, timeout=15,
-            cwd=cwd or os.getcwd(),
-            shell=(sys.platform == "win32"),
-            **background_process_kwargs(),
-        )
-        return result.returncode, (result.stdout + result.stderr).strip()
-    except Exception as e:
-        return 1, str(e)
+        result = git(cwd, *args, hooks=hooks, trusted_project=trusted, timeout=15)
+    except OSError as e:  # no Git installed, or it couldn't start
+        return 1, "", str(e)
+    except subprocess.TimeoutExpired:
+        return 1, "", "Git took too long."
+    return result.returncode, result.stdout, result.stderr
 
 
 def _git_status(project_path: str) -> dict:
-    """Get git status for the given project."""
+    """Branch, changed files and recent commits of the project's repository."""
+    from ..safe_git import GitRefused, refusal, status_entries
+
     cwd = project_path
-
-    # Branch
-    rc, branch = _git_run("branch", "--show-current", cwd=cwd)
-    if rc != 0:
-        return {"is_repo": False}
-
-    # Status (porcelain)
-    _, status_raw = _git_run("status", "--porcelain", cwd=cwd)
+    try:
+        reason = refusal(cwd) if cwd else ""
+    except Exception as e:  # Git missing: report it as not a repository
+        logger.debug("git settings check failed: %s", e)
+        reason = ""
+    if reason:
+        return {"is_repo": True, "refused": reason, "branch": "", "changes": [], "change_count": 0,
+                "commits": []}
+    try:
+        rc, branch, _ = _git_run("branch", "--show-current", cwd=cwd)
+        if rc != 0:
+            return {"is_repo": False}
+        # -z: names exactly as they are (spaces, other scripts), one record
+        # each, renames with their old name in the next field.
+        _, status_raw, _ = _git_run("status", "--porcelain=v1", "-z", "--untracked-files=normal", cwd=cwd)
+        _, log_raw, _ = _git_run("log", "--format=%h%x1f%s", "-10", cwd=cwd)
+    except GitRefused as e:  # the settings changed since the check above
+        return {"is_repo": True, "refused": str(e), "branch": "", "changes": [], "change_count": 0,
+                "commits": []}
     changes = []
-    for line in status_raw.split("\n"):
-        line = line.strip()
-        if line:
-            status_code = line[:2].strip()
-            filepath = line[3:]
-            changes.append({"status": status_code, "file": filepath})
-
-    # Recent commits
-    _, log_raw = _git_run("log", "--oneline", "-10", cwd=cwd)
+    for entry in status_entries(status_raw)[1]:
+        change = {"status": (entry["x"] + entry["y"]).strip(), "file": entry["path"]}
+        if "from" in entry:
+            change["from"] = entry["from"]
+        changes.append(change)
     commits = []
-    for line in log_raw.split("\n"):
-        line = line.strip()
+    for line in log_raw.splitlines():
         if line:
-            parts = line.split(" ", 1)
-            commits.append({"hash": parts[0], "message": parts[1] if len(parts) > 1 else ""})
-
+            short, _, subject = line.partition("\x1f")
+            commits.append({"hash": short, "message": subject})
     return {
         "is_repo": True,
         "branch": branch.strip(),
@@ -5087,40 +5112,47 @@ def _git_status(project_path: str) -> dict:
 
 
 def _git_quick(action: str, msg: dict, project_path: str) -> dict:
-    """Execute quick git actions."""
-    cwd = project_path
+    """The Git popover's actions."""
+    from ..safe_git import GitRefused
 
-    if action == "diff":
-        _, output = _git_run("diff", cwd=cwd)
-        return {"output": output}
-    elif action == "diff_staged":
-        _, output = _git_run("diff", "--staged", cwd=cwd)
-        return {"output": output}
-    elif action == "log":
-        count = msg.get("count", 20)
-        _, output = _git_run("log", "--oneline", f"-{count}", cwd=cwd)
-        return {"output": output}
-    elif action == "add":
-        files = msg.get("files", [])
-        if files:
-            rc, output = _git_run("add", *files, cwd=cwd)
+    cwd = project_path
+    try:
+        if action == "diff":
+            _, output, error = _git_run("diff", cwd=cwd)
+            return {"output": (output or error).strip()}
+        elif action == "diff_staged":
+            _, output, error = _git_run("diff", "--staged", cwd=cwd)
+            return {"output": (output or error).strip()}
+        elif action == "log":
+            try:
+                count = max(1, min(int(msg.get("count", 20)), 200))
+            except (TypeError, ValueError):
+                count = 20
+            _, output, error = _git_run("log", "--oneline", f"-{count}", cwd=cwd)
+            return {"output": (output or error).strip()}
+        elif action == "add":
+            files = [str(name) for name in (msg.get("files") or []) if str(name)]
+            # "--": a name that starts with "-" is a file, not an option.
+            rc, output, error = _git_run("add", "--", *files, cwd=cwd) if files else _git_run("add", "-A", cwd=cwd)
+            return {"success": rc == 0, "output": (output + error).strip()}
+        elif action == "commit":
+            message = msg.get("message", "")
+            if not message:
+                return {"success": False, "output": "No commit message"}
+            # Someone asked for this commit: a trusted project's hooks run, as
+            # its own `git commit` would run them (lumi/safe_git.py).
+            rc, output, error = _git_run("commit", "-m", message, cwd=cwd, hooks=True)
+            return {"success": rc == 0, "output": (output + error).strip()}
+        elif action == "stash":
+            rc, output, error = _git_run("stash", cwd=cwd)
+            return {"success": rc == 0, "output": (output + error).strip()}
+        elif action == "stash_pop":
+            rc, output, error = _git_run("stash", "pop", cwd=cwd)
+            return {"success": rc == 0, "output": (output + error).strip()}
         else:
-            rc, output = _git_run("add", "-A", cwd=cwd)
-        return {"success": rc == 0, "output": output}
-    elif action == "commit":
-        message = msg.get("message", "")
-        if not message:
-            return {"success": False, "output": "No commit message"}
-        rc, output = _git_run("commit", "-m", message, cwd=cwd)
-        return {"success": rc == 0, "output": output}
-    elif action == "stash":
-        rc, output = _git_run("stash", cwd=cwd)
-        return {"success": rc == 0, "output": output}
-    elif action == "stash_pop":
-        rc, output = _git_run("stash", "pop", cwd=cwd)
-        return {"success": rc == 0, "output": output}
-    else:
-        return {"success": False, "output": f"Unknown action: {action}"}
+            return {"success": False, "output": f"Unknown action: {action}"}
+    except GitRefused as e:
+        return {"success": False, "output": str(e), "refused": True}
 
 
 # ── Skill list/view payload helpers (v0.6.2a3) ───────────────────────
@@ -5171,12 +5203,15 @@ def _workspace_language_hints(project_path: str, *, max_files: int = 1600) -> se
     return found
 
 
-def _lsp_list_payload(*, project_path: str = "", settings: SettingsManager | None = None) -> dict:
+def _lsp_list_payload(*, project_path: str = "", settings: SettingsManager | None = None,
+                      trusted: bool = False) -> dict:
     """Build the {event: "lsp_list", servers: [...]} status payload.
 
     The servers the ``code_intel`` tool can use (engine/lsp.py): Settings'
     ``lsp_servers``, then well-known servers installed on PATH or matching the
-    project's languages, with whether each is running for this project.
+    project's languages, with whether each is running for this project and
+    where its program comes from (a trusted project's own environment, or
+    PATH).
     """
     from ..engine import lsp
 
@@ -5193,11 +5228,13 @@ def _lsp_list_payload(*, project_path: str = "", settings: SettingsManager | Non
     for spec, enabled in lsp.configured(settings):
         program = spec.command[0]
         configured_programs.add(lsp._program_name(program))
-        available = bool(shutil.which(program) or os.path.isfile(program))
+        found, found_from, notice = lsp.program_source(program, project_path, trusted=trusted)
+        available = bool(found)
         languages = sorted(set(spec.languages.values()))
         status, error = status_of(spec.id, "available" if available else "missing")
         if not enabled:
             status, error = "disabled", ""
+        detail = error or (", ".join(languages) if languages else "Add extensions or languages to use it")
         servers.append({
             "id": spec.id,
             "name": spec.name,
@@ -5206,9 +5243,10 @@ def _lsp_list_payload(*, project_path: str = "", settings: SettingsManager | Non
             "available": available,
             "status": status,
             "source": "configured",
+            "program_source": found_from,
             "languages": languages,
-            "detail": error or (", ".join(languages) if languages
-                                else "Add extensions or languages to use it"),
+            "detail": " ".join(part for part in (detail + (f" · {found_from}" if found_from else ""), notice)
+                               if part),
         })
 
     workspace_langs = _workspace_language_hints(project_path)
@@ -5216,8 +5254,8 @@ def _lsp_list_payload(*, project_path: str = "", settings: SettingsManager | Non
         if lsp._program_name(spec.command[0]) in configured_programs:
             continue
         languages = sorted(set(spec.languages.values()))
-        executable = shutil.which(spec.command[0])
-        if not executable and not workspace_langs.intersection(languages):
+        executable, found_from, notice = lsp.program_source(spec.command[0], project_path, trusted=trusted)
+        if not executable and not workspace_langs.intersection(languages) and not notice:
             continue
         status, error = status_of(spec.id, "available" if executable else "missing")
         servers.append({
@@ -5228,9 +5266,11 @@ def _lsp_list_payload(*, project_path: str = "", settings: SettingsManager | Non
             "available": bool(executable),
             "status": status,
             "source": "detected",
+            "program_source": found_from,
             "languages": languages,
-            "detail": error or (f"Installed: {executable}; starts when the agent asks about this code"
-                                if executable else f"Install {spec.command[0]} to use it"),
+            "detail": " ".join(part for part in (
+                error or (f"Installed ({found_from}): {executable}; starts when the agent asks about this code"
+                          if executable else f"Install {spec.command[0]} to use it"), notice) if part),
         })
 
     servers.sort(key=lambda item: (

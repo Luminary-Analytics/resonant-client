@@ -16,3 +16,11 @@ def _mirror_legacy_environment() -> None:
 
 
 _mirror_legacy_environment()
+
+# Every entry point (the app, the terminal UI, `lumi run`, workers, the
+# gateway, scheduled runs) imports this package before it starts any
+# process: from here on Windows never looks for a program in the working
+# folder, which may be a repository (lumi/executables.py).
+from . import executables as _executables  # noqa: E402
+
+_executables.harden_process()

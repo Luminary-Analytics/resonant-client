@@ -465,10 +465,12 @@ class CapabilityPackManager:
             *(folder / "packs" for folder in project_dirs(self.project_path)),
             state_home() / "packs",
         ]
-        self.roots = [Path(root).expanduser() for root in (*default_roots, *roots)]
+        # A relative folder is the project's, never Lumi's working folder
+        # (the system folder in the app, lumi/executables.py).
+        self.roots = [self.project_path / Path(root).expanduser() for root in (*default_roots, *roots)]
         for value in self.configured.values():
             if isinstance(value, dict) and (value.get("path") or value.get("directory")):
-                self.roots.append(Path(value.get("path") or value.get("directory")).expanduser())
+                self.roots.append(self.project_path / Path(value.get("path") or value.get("directory")).expanduser())
         self._packs: dict[str, CapabilityPack] = {}
         self._manifests: dict[str, dict[str, Any]] = {}
         self._reported_changes: set[str] = set()

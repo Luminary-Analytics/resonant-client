@@ -724,12 +724,12 @@ def test_chatgpt_sign_in_without_the_codex_cli_says_what_to_install(monkeypatch)
     from lumi import codex_account
 
     monkeypatch.setattr(codex_account, "resolve_codex_cli_path", lambda: "")
-    monkeypatch.setattr(codex_account.shutil, "which", lambda name: None)
+    monkeypatch.setattr(codex_account, "find_program", lambda name, **kwargs: None)
     account = codex_account.CodexAccount()
     with pytest.raises(codex_account.CodexCliMissing, match="needs Node.js") as missing:
         account.login()
     assert "npm install -g @openai/codex" in str(missing.value)
-    monkeypatch.setattr(codex_account.shutil, "which", lambda name: f"C:/tools/{name}.exe")
+    monkeypatch.setattr(codex_account, "find_program", lambda name, **kwargs: f"C:/tools/{name}.exe")
     assert "needs Node.js" not in codex_account.missing_cli_message()
 
     monkeypatch.setattr(codex_account, "codex_account", account)
@@ -744,10 +744,11 @@ def test_chatgpt_sign_in_without_the_codex_cli_says_what_to_install(monkeypatch)
 
 
 def _windows_folder() -> str:
+    """The Windows folder, asked of Windows itself (as executables.windows_folder does)."""
     import ctypes
 
     buffer = ctypes.create_unicode_buffer(32768)
-    assert ctypes.windll.kernel32.GetWindowsDirectoryW(buffer, len(buffer))
+    assert ctypes.windll.kernel32.GetSystemWindowsDirectoryW(buffer, len(buffer))
     return buffer.value
 
 
@@ -770,7 +771,8 @@ def test_show_in_folder_reveals_only_the_saved_diagnostics(tmp_path, monkeypatch
     assert kwargs.get("shell") is not True
     if sys.platform == "win32":
         assert args[1:] == ["/select,", str(saved)]
-        # The file manager's window shows: no hidden start-up for it.
+        # The file manager's window shows: started with SW_HIDE (the hidden
+        # start-up console tools get), Explorer opens the folder hidden.
         assert "startupinfo" not in kwargs
     elif sys.platform == "darwin":
         assert args == ["/usr/bin/open", "-R", str(saved)]
@@ -795,9 +797,12 @@ def test_show_in_folder_starts_the_file_manager_by_its_absolute_path(tmp_path, m
     assert os.path.isabs(program), program
     assert not os.path.normcase(program).startswith(os.path.normcase(str(project)))
     if sys.platform == "win32":
-        # From GetWindowsDirectoryW, not from the environment or PATH.
+        # The Windows folder Windows reports, not the environment or PATH.
         assert os.path.normcase(program) == os.path.normcase(os.path.join(_windows_folder(), "explorer.exe"))
         assert os.path.isfile(program)
-    assert ws_commands.show_in_folder_command(str(saved))[0] == program
+    # executables.show_in_folder (#110), not a command of the page's own.
+    from lumi import executables
+
+    assert executables.show_in_folder_command(str(saved))[0] == program
     with pytest.raises(ValueError):
-        ws_commands.show_in_folder_command("relative/lumi-diagnostics-1.zip")
+        executables.show_in_folder_command("relative/lumi-diagnostics-1.zip")

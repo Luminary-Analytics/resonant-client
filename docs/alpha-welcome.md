@@ -28,8 +28,9 @@ for individuals during the alpha.
    installs start in Auto-edit: file edits apply, commands ask first.
    **Timeline** restores checkpoints.
 3. Try **Team** (preview): type `/team` and a goal, check **Enable team
-   preview** and press **Start**; an orchestrator runs parallel workers. For
-   now, use OpenRouter, Ollama or another OpenAI-compatible model.
+   preview** and press **Start**; an orchestrator runs parallel workers. Use
+   an Anthropic, OpenAI, OpenRouter or Ollama model; Codex and Claude Code
+   can't run a team.
 
 ## Feedback
 

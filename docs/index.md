@@ -4,6 +4,9 @@ Lumi is a coding agent that runs on your computer, with the models you
 choose: Anthropic, OpenAI, OpenRouter, Codex, Claude Code, local models
 through Ollama or EXO, SONN, or your company's own gateway.
 
+Lumi is in open alpha: start with [Welcome to the Lumi alpha](alpha-welcome.md)
+and the [0.20.0-alpha.1 release notes](v0.20.0-alpha.1-release-notes.md).
+
 ## Using Lumi
 
 - [Getting started, projects and sessions](desktop-workflow.md)

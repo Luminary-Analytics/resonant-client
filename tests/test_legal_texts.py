@@ -322,9 +322,9 @@ def test_the_mit_copies_are_described_by_what_their_license_file_says():
     for name in ("docs/plans.md", "pyproject.toml", "README.md", "RELEASING.md"):
         assert "c00f29c" in texts[name], name
     # This build is none of them.
-    assert legal_texts.lumi_version() == "0.20.0.dev0" == terms.this_version()
+    assert legal_texts.lumi_version() == "0.20.0-alpha.1" == terms.this_version()
     pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
-    assert 'version = "0.20.0.dev0"' in pyproject
+    assert 'version = "0.20.0-alpha.1"' in pyproject
 
 
 def test_the_privacy_notice_says_what_the_code_sends():

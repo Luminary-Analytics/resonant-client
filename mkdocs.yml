@@ -63,6 +63,8 @@ validation:
 nav:
   - Home: index.md
   - Using Lumi:
+      - Welcome to the Lumi alpha: alpha-welcome.md
+      - What's new in 0.20.0-alpha.1: v0.20.0-alpha.1-release-notes.md
       - Getting started, projects and sessions: desktop-workflow.md
       - The terminal UI: terminal-ui.md
       - Models, fallbacks and image descriptions: models.md

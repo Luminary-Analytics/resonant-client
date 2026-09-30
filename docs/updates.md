@@ -44,6 +44,16 @@ Before running the installer, WinSparkle asks Lumi whether it can close:
   installer can replace its files. Sessions are saved as they go, and Lumi
   opens again on the new version.
 
+The installer shows Lumi's terms on its license page only when they changed
+since this computer's installation showed them: a new version of the End User
+License Agreement, or the Alpha and Beta Test Terms when a pre-release
+installs over a stable release. Then the update waits on that page until
+someone chooses **I accept the agreement** and goes on. Cancelling there
+declines it: Lumi, which closed for the installer, stays closed and isn't
+updated. Open it again from the Start menu, still on the old version; the
+next update check offers the update again. Lumi itself also asks each person
+to accept new terms when it opens.
+
 The installer asks for administrator rights, since Lumi is installed for all
 users.
 

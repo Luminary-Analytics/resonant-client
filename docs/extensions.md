@@ -11,9 +11,9 @@ are the whole contract. The SDK is under the
 [Lumi Extension SDK License](../sdk/LICENSE): you may use, change and ship it
 as part of extensions for Lumi, and license your extensions as you like, as
 long as the SDK's own files keep its license (`lumi_extension/LICENSE` travels
-with every copy). The SDK was never part of a Lumi release; its copies
-published in the repository under the MIT License before this license
-replaced it (`lumi-extension` 1.0.0) remain under the MIT License. People
+with every copy). The SDK was never part of a Lumi release; its copies in
+every commit where its license file is the MIT License (`lumi-extension`
+1.0.0) remain under the MIT License. People
 who install an extension may use the SDK parts in it, and the code the
 templates start for you is yours.
 

@@ -1027,6 +1027,10 @@ async def _terms_accept(ctx: CommandContext) -> None:
     versions = {str(key): str(value) for key, value in shown.items()} if isinstance(shown, dict) else {}
     try:
         accepted = await asyncio.to_thread(terms.accept, versions, "app")
+    except terms.TermsError as exc:
+        # An administrator's policy that can't be used decides first (terms.machine_policy_error).
+        await ctx.send({"event": "error", "code": terms.POLICY_CODE, "message": str(exc)})
+        accepted = False
     except (OSError, ValueError) as exc:
         logger.exception("Recording the acceptance of Lumi's terms failed")
         await ctx.send({"event": "error", "code": terms.REFUSAL_CODE,

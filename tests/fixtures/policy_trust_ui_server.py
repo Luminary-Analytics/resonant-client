@@ -60,6 +60,13 @@ def main() -> None:
     socket.socket.connect = local_connect
 
     from lumi import policy as lumi_policy
+    from lumi import terms as lumi_terms
+
+    # This computer user accepted Lumi's terms already, as in the app (lumi/terms.py), before the machine
+    # policy below was set up (while an administrator's policy can't be read, no acceptance is recorded):
+    # the checks here are about other things, and the terms dialog would lock the message box first.
+    lumi_policy.set_for_tests(None)
+    lumi_terms.accept({doc.id: doc.version for doc in lumi_terms.required()}, "app")
 
     # The fixture's machine folder and Group Policy, never this computer's.
     lumi_policy.machine_policy_file = lambda: machine / "policy.json"
@@ -93,11 +100,6 @@ def main() -> None:
         def classify(self, prompt, max_tokens=20):
             return super().classify(prompt, max_tokens=max_tokens)
 
-    # This computer user accepted Lumi's terms already, as in the app (lumi/terms.py): the checks here
-    # are about other things, and the terms dialog would lock the message box first.
-    from lumi import terms as lumi_terms
-
-    lumi_terms.accept({doc.id: doc.version for doc in lumi_terms.required()}, "app")
     state = gui.state
     state.project.set_project(str(workspace))
     state.apply_project_context(str(workspace), refresh_index=False)

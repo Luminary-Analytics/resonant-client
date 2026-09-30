@@ -203,7 +203,11 @@ its people in the machine policy:
   machine policy that sets up Lumi Cloud keeps accepting while Lumi Cloud's
   policy is in force. A policy Lumi can't use accepts nothing: a `PolicyFile`
   it can't read, for example, fails closed and stops model requests until
-  it's fixed.
+  it's fixed. Meanwhile Lumi can't tell whether your organization accepted
+  for its people, so it shows the policy's error instead of asking anyone to
+  accept the terms, and records no one's own acceptance (`lumi terms accept`
+  refuses too). Once the policy can be read, it decides: its
+  `accepted_by_organization`, or else each person is asked.
 - **What it covers:** the terms in force, including new versions that updates
   bring, for everyone who uses Lumi on the computer, under your organization's
   agreement with Luminary Analytics. Set it only with the authority to accept
@@ -215,7 +219,8 @@ its people in the machine policy:
 - **A mistake:** a value that isn't a name (empty, not text, longer than 200
   characters) makes the policy invalid, like any other mistake in it.
 - **Checking a computer:** `lumi terms` prints the state as JSON: `pending`,
-  `organization` and `acceptance_value` (what `--accept-terms` would take).
+  `organization`, `acceptance_value` (what `--accept-terms` would take) and
+  `policy_error` (the error of a machine policy Lumi can't use).
 
 Without it, each person accepts once in the app, or at a terminal, or with
 `lumi terms accept <value>`, and CI accepts with `--accept-terms` or

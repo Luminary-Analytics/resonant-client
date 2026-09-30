@@ -14,27 +14,27 @@
       "file": "EULA.md",
       "version": "1.0",
       "published": "2026-09-29",
-      "sha256": "05e589eccdb2797b765418936424ef9dfe4c386833fef25360e70dccce1cd85c"
+      "sha256": "4c07baa43ede636c435b756fe57c5a888aa4bc066868c5567d94a1791f4b9030"
     },
     "alpha_terms": {
       "title": "Lumi Alpha and Beta Test Terms",
       "file": "ALPHA-TERMS.md",
       "version": "1.0",
       "published": "2026-09-29",
-      "sha256": "65cba599aad1bba7f90fc5bce6e46d0c8d6023bada7f02313026027614ae4bbc"
+      "sha256": "9d79522e34664b61871e152ae7b5063e3220c91afd3c156ac3ed3a3fe46150d5"
     },
     "privacy": {
       "title": "Lumi Privacy Notice",
       "file": "PRIVACY.md",
       "version": "1.0",
       "published": "2026-09-29",
-      "sha256": "fe43182a38f84d15940ded6b9e9cc7b6b428a2e0b4a1d0db3aa8b382ea1a654b"
+      "sha256": "67ddadbe281df6ff788959448e68b147bfc34eae23ceb9d607ae2db324782d12"
     },
     "sdk_license": {
       "title": "Lumi Extension SDK License",
       "version": "1.0",
       "published": "2026-09-29",
-      "sha256": "7f5302d90961feef372e499648e17a344517a258c59b12bd1dd2bbff16c25795"
+      "sha256": "ad562e56b9d91eacdf27316ebbdc89ff99757fb6e2eb3709c9893549a96e6706"
     }
   }
 }

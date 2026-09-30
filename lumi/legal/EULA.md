@@ -13,9 +13,10 @@ limits on liability) and section 15 (governing law and where disputes are
 heard).
 
 **How you accept.** You accept this Agreement when you choose Accept in Lumi
-or in its installer; when you type "yes" where Lumi's command-line tools show
-it to you; when you run `lumi terms accept`, or use Lumi's `--accept-terms`
-option or `LUMI_ACCEPT_TERMS` setting, naming this version; or when you
+or in its installer; when you answer yes (typing yes or y) where Lumi's
+command-line tools ask whether you accept it; when you run
+`lumi terms accept`, or use Lumi's `--accept-terms` option or the
+`LUMI_ACCEPT_TERMS` environment variable, naming this version; or when you
 install or use Lumi. If you don't agree, don't install or use Lumi.
 
 **If you accept for an organization.** If you accept this Agreement on behalf
@@ -210,23 +211,20 @@ Extensions for Lumi.
 versions of the Software under the MIT License, and those copies remain under
 it:
 
-- the releases tagged v0.6.3a1 through v0.19.1, published from May 15 to
-  September 13, 2026 as Resonant Client (0.6.3a1 through 0.6.10), Resonant
-  (0.6.11 through 0.18.2) and SONN Client (0.19.0 and 0.19.1);
-- the Software's source code in Luminary's public source repository from
-  commit c00f29c of May 15, 2026, which applied the MIT License, until commit
-  beb2848 of September 27, 2026, which replaced it, and builds made from that
-  source code; and
-- the Lumi Extension SDK and the Lumi extension for Visual Studio Code in that
-  repository from September 25, 2026 until the Lumi Extension SDK License and
-  this Agreement replaced the MIT License for them there. Neither was part of
-  a release.
+- every commit in Luminary's public source repository for the Software whose
+  LICENSE file is the MIT License, and every release and build made from one,
+  including the releases published as Resonant Client, Resonant and SONN
+  Client (tagged v0.6.3a1 through v0.19.1); and
+- the Lumi Extension SDK and the Lumi extension for Visual Studio Code in every
+  commit of that repository where the license file that comes with them is
+  the MIT License. Neither was part of a release.
 
-The releases tagged v0.2.0 through v0.6.2 were not published under the MIT
-License. This Agreement doesn't change the MIT License for the copies above,
-and it applies to every other copy of the Software, including every release
-numbered 0.20.0 or later. A version number alone doesn't make a copy one of
-those above: a build must come from them.
+The MIT License first appeared in that repository in commit c00f29c of May
+15, 2026. Nothing published before it is under the MIT License, including the
+releases tagged v0.2.0 through v0.6.2. This Agreement doesn't change the MIT
+License for the copies above, and it applies to every other copy of the
+Software, including every release numbered 0.20.0 or later. A version number
+alone doesn't make a copy one of those above: a build must come from them.
 
 ## 6. Lumi is an AI agent: your responsibilities
 
@@ -359,8 +357,8 @@ that doesn't suggest Luminary sponsors or endorses it.
 ends under this section.
 
 **11.2 Ending it yourself.** You may end this Agreement at any time by
-uninstalling the Software and deleting all copies of it. The Alpha Terms
-explain how to remove Lumi's local data as well.
+uninstalling the Software and deleting all copies of it. The Privacy Notice
+explains how to delete Lumi's data from your computer as well.
 
 **11.3 Ending by Luminary.** Luminary may end or suspend your license
 immediately if you breach this Agreement, and for any other reason by giving
@@ -464,7 +462,8 @@ version of this Agreement, or, for a Pre-Release Build, of the Alpha Terms,
 the Software shows it and asks you to accept it before it sends anything more
 to a Model Provider: in the app, at the terminal, or, for command-line and
 automated use, through `lumi terms accept`, the `--accept-terms` option or the
-`LUMI_ACCEPT_TERMS` setting naming the new version. A new version of the
+`LUMI_ACCEPT_TERMS` environment variable naming the new version. A new
+version of the
 Privacy Notice or of the Lumi Extension SDK License doesn't ask you to accept
 anything. On a computer where your organization accepted Lumi's terms through
 its machine policy, as section 2.4 describes, that acceptance covers the new

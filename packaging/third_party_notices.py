@@ -7,19 +7,28 @@ packages the bundle is built from:
     python packaging/third_party_notices.py --out build/licenses/THIRD_PARTY_NOTICES.txt
 
 Python packages come from the environment's metadata, with the license texts
-they ship. Everything else Lumi bundles (ripgrep, WinSparkle, the vendored web
-assets and fonts, the Python runtime and PyInstaller's bootloader) is listed in
-packaging/third-party-components.json, each with its license text: a copy
-committed for its version, or, for the Python runtime and PyInstaller's
-bootloader, the text this build's own Python and PyInstaller ship, with their
-exact versions. Writing the notices fails when any component would ship
-without its text, or the build's Python or PyInstaller isn't the pinned one.
+they ship; a package that ships none (its wheel and source distribution carry
+no license file) gets a committed copy from its repository, for its version
+(``python_packages`` in the components file). Everything else Lumi bundles
+(ripgrep and the crates it links, WinSparkle and the libraries in it, the
+WebView2 SDK's DLLs, the vendored web assets and fonts, the Python runtime and
+PyInstaller's bootloader) is listed in packaging/third-party-components.json,
+each with its license text: a copy committed for its version, or, for the
+Python runtime and PyInstaller's bootloader, the text this build's own Python
+and PyInstaller ship, with their exact versions. Writing the notices fails
+when anything shipped, a Python package or not, would ship without its
+license text (the EULA's section 5.1 promises every one), when a package's
+committed text is for another version, or when the build's Python or
+PyInstaller isn't the pinned one.
 
 With --sbom, the same non-Python components are appended to an existing
 CycloneDX JSON document (made by `cyclonedx-py environment`), so the SBOM names
-every third-party part of the installer, not only the Python packages. Add
---validate to check the result against the CycloneDX schema; that needs
-cyclonedx-bom (packaging/tools-requirements.txt) in the Python running it.
+every third-party part of the installer, not only the Python packages. It runs
+in the Python that makes the SBOM, not the build environment, so PyInstaller's
+bootloader takes the version packaging/requirements-release.txt locks, which
+the build installed. Add --validate to check the result against the CycloneDX
+schema; that needs cyclonedx-bom (packaging/tools-requirements.txt) in the
+Python running it.
 """
 
 from __future__ import annotations
@@ -35,6 +44,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 COMPONENTS = ROOT / "packaging" / "third-party-components.json"
+# The release lock: what the build environment installs (scripts/lock_release.py writes it).
+LOCK = ROOT / "packaging" / "requirements-release.txt"
 
 # Build tooling installed next to the release dependencies but not shipped.
 # PyInstaller's bootloader is shipped; it is listed in the components file.
@@ -105,11 +116,16 @@ def license_texts(dist: metadata.Distribution) -> list[tuple[str, str]]:
     return texts
 
 
-def python_packages(distributions=None, *, skip: set[str] = frozenset()) -> list[dict]:
+def python_packages(distributions=None, *, skip: set[str] = frozenset(),
+                    committed: dict[str, dict] | None = None) -> list[dict]:
     """Installed packages with their licenses; ``distributions`` defaults to all.
 
-    ``skip`` names packages that are installed but not shipped.
+    ``skip`` names packages that are installed but not shipped. ``committed`` (by default
+    ``python_packages`` in the components file) gives the license, and a committed copy of its text,
+    for packages that ship none; each such entry records the version its text is for (``pinned``),
+    which ``package_problems`` compares.
     """
+    committed = committed_package_licenses() if committed is None else committed
     seen: dict[str, dict] = {}
     skipped = BUILD_ONLY | SELF | {normalize(name) for name in skip}
     for dist in metadata.distributions() if distributions is None else distributions:
@@ -124,7 +140,30 @@ def python_packages(distributions=None, *, skip: set[str] = frozenset()) -> list
             "url": homepage_of(dist),
             "texts": license_texts(dist),
         }
+        entry = committed.get(key)
+        if entry:
+            seen[key].update(license=entry["license"], url=entry.get("url") or seen[key]["url"],
+                             note=entry.get("note", ""), pinned=str(entry["version"]),
+                             texts=component_texts(entry) + seen[key]["texts"])
     return sorted(seen.values(), key=lambda item: normalize(item["name"]))
+
+
+def committed_package_licenses(path: Path = COMPONENTS) -> dict[str, dict]:
+    """``python_packages`` in the components file: {normalized name: entry}."""
+    data = json.loads(path.read_text(encoding="utf-8")).get("python_packages") or {}
+    return {normalize(name): entry for name, entry in data.items() if not name.startswith("_")}
+
+
+def package_problems(packages: list[dict]) -> list[str]:
+    """Shipped Python packages without a license text, or whose committed text is for another version."""
+    problems = []
+    for item in packages:
+        if item.get("pinned") and item["version"] != item["pinned"]:
+            problems.append(f"{item['name']} {item['version']} isn't {item['pinned']}, the version whose license "
+                            "text python_packages holds")
+        elif not item["texts"]:
+            problems.append(f"{item['name']} {item['version']} ships no license text")
+    return problems
 
 
 def load_components(path: Path = COMPONENTS, platform: str = sys.platform) -> list[dict]:
@@ -192,21 +231,37 @@ def component_texts(component: dict) -> list[tuple[str, str]]:
     return texts
 
 
-def resolved(component: dict) -> dict:
+def locked_version(name: str, lock: Path = LOCK) -> str:
+    """The version the release lock pins for package ``name``, or ''."""
+    wanted = normalize(name)
+    for line in lock.read_text(encoding="utf-8").splitlines():
+        match = re.match(r"^([A-Za-z0-9][A-Za-z0-9._-]*)==([^\s;\\]+)", line)
+        if match and normalize(match.group(1)) == wanted:
+            return match.group(2)
+    return ""
+
+
+def resolved(component: dict, *, locked: bool = False) -> dict:
     """``component`` with the exact version the build ships, for one whose text comes from the build
     (``license_from``): the running Python's (``3.13.7``) or the installed package's. The file's version is
-    the pin: a build on another Python minor, or another major of the package, fails (``version_problems``)."""
+    the pin: a build on another Python minor, or another major of the package, fails (``version_problems``).
+
+    ``locked`` takes a package's version from the release lock instead, for the SBOM, which is made outside
+    the build environment (the build installed exactly the locked version).
+    """
     source = str(component.get("license_from") or "")
     if source == "python":
         return {**component, "version": platform.python_version()}
     if source.startswith("distribution:"):
-        version = distribution_license(source.split(":", 1)[1])[0]
+        name = source.split(":", 1)[1]
+        version = locked_version(name) if locked else distribution_license(name)[0]
         return {**component, "version": version} if version else dict(component)
     return dict(component)
 
 
 def version_problems(components: list[dict]) -> list[str]:
-    """Components whose version in the build isn't the one the components file pins."""
+    """Components whose version in the build isn't the one the components file pins, or, for a package's
+    (``distribution:<name>``), the one the release lock pins, which the SBOM names (``resolved``)."""
     problems = []
     for component in components:
         if not component.get("license_from"):
@@ -215,6 +270,11 @@ def version_problems(components: list[dict]) -> list[str]:
         pinned = str(component["version"])
         if actual != pinned and not actual.startswith(pinned + "."):
             problems.append(f"{component['name']} {actual} isn't {pinned} (packaging/third-party-components.json)")
+            continue
+        locked = resolved(component, locked=True)["version"]
+        if str(component["license_from"]).startswith("distribution:") and actual != locked:
+            problems.append(f"{component['name']} {actual} isn't {locked}, the version "
+                            "packaging/requirements-release.txt locks")
     return problems
 
 
@@ -231,8 +291,8 @@ def render(packages: list[dict], components: list[dict]) -> str:
         "license; the license texts that each part ships are reproduced here. Lumi",
         # The bundle doesn't ship the repository's LICENSE, so say it here, as
         # Settings > About Lumi does.
-        "itself is © Luminary Analytics, all rights reserved, and licensed under",
-        "the Lumi End User License Agreement.",
+        "itself is © Luminary Analytics, LLC, all rights reserved, and licensed",
+        "under the Lumi End User License Agreement.",
         "",
         "Contents",
         "",
@@ -252,10 +312,10 @@ def render(packages: list[dict], components: list[dict]) -> str:
             lines.append(f"Source: {entry['url']}")
         if entry.get("note"):
             lines.append(entry["note"])
+        # main() refuses to write notices with a part that has no license text (package_problems,
+        # missing_texts).
         for filename, body in entry["texts"]:
             lines += ["", f"--- {filename} ---", "", body]
-        if not entry["texts"]:
-            lines += ["", "No license file is distributed with this part; see the source above."]
     return "\n".join(lines) + "\n"
 
 
@@ -265,7 +325,7 @@ def add_to_sbom(sbom_path: Path, components: list[dict]) -> int:
     listed = sbom.setdefault("components", [])
     refs = {item.get("bom-ref") for item in listed}
     added = 0
-    for component in (resolved(item) for item in components):
+    for component in (resolved(item, locked=True) for item in components):
         ref = component.get("purl") or f"lumi-bundled:{normalize(component['name'])}@{component['version']}"
         if ref in refs:
             continue
@@ -320,13 +380,14 @@ def main(argv: list[str] | None = None) -> int:
                 file=sys.stderr,
             )
             return 1
-        # Every bundled component ships its license text (the EULA says so), from the version that ships.
-        problems = version_problems(components) + [
+        # Everything shipped comes with its license text (the EULA says so), from the version that ships:
+        # Python packages and the other components alike.
+        problems = package_problems(packages) + version_problems(components) + [
             f"{name} has no license text" for name in missing_texts(components)]
         if problems:
             print("The third-party notices would be incomplete: " + "; ".join(problems) + ". Add the text "
-                  "(license_files or license_from in packaging/third-party-components.json) or build with the "
-                  "pinned versions.", file=sys.stderr)
+                  "(python_packages, or license_files or license_from, in "
+                  "packaging/third-party-components.json) or build with the pinned versions.", file=sys.stderr)
             return 1
         args.out.parent.mkdir(parents=True, exist_ok=True)
         args.out.write_text(render(packages, components), encoding="utf-8")

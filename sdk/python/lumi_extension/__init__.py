@@ -34,6 +34,9 @@ from pathlib import Path
 from typing import Iterable, TextIO
 
 __all__ = ["PROTOCOL", "Provider", "StreamRequest", "data_dir", "done", "error", "serve", "text", "tool_call"]
+# This copy's version (sdk/python/pyproject.toml). The Lumi Extension SDK License covers 1.1.0 and later;
+# a copy at 1.0.0 is one published under the MIT License (the license's section 6).
+__version__ = "1.1.0"
 PROTOCOL = 1
 
 

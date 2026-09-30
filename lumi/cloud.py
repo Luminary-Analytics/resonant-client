@@ -40,7 +40,8 @@ another Lumi Cloud than the enrollment's, the old one is told the computer
 left (with its own device token, nowhere else), and the policy's enrollment
 token, if it has one, enrolls the computer at the new address.
 
-**Check-ins** (hourly, from a background thread) report the app version, the
+**Check-ins** (hourly by default, from a background thread; Lumi Cloud may ask
+for them as often as every five minutes, ``next_checkin_seconds``) report the app version, the
 policy version in force and usage totals per model since the last check-in:
 request and token counts and cost, never prompts, code or file names. When
 the organization publishes a new policy, or the cached one is within a week

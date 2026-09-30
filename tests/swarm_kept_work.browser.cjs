@@ -95,9 +95,9 @@ test('Ended writer teams keep their unapplied work until it is discarded', {time
                 && app._swarmState.run.submissions?.length===2
                 && app._swarmState.run.attempts.every(row=>row.process_state==='stopped') && !app._swarmPending,[...before]);
             const writers=await page.evaluate(()=>app._swarmState.run.writer_worktrees.map(row=>({branch:JSON.parse(row.manifest_json).branch,path:row.path})));
-            // Stop says what it keeps. The runner's lease renewal advances the
-            // run's revision every few seconds; a Stop that meets one is refused
-            // and the owner refreshes and sends it again.
+            // Stop says what it keeps. A Stop that meets another change to the
+            // run (the team's own work) is refused, and the owner refreshes and
+            // sends it again.
             for(let attempt=0;;attempt++) {
                 await page.getByRole('button',{name:'Stop team',exact:true}).click();
                 await page.waitForFunction(()=>/Stop requested|revision changed/i.test(document.querySelector('[data-swarm="notice"]').textContent));

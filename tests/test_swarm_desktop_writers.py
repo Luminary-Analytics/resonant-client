@@ -60,9 +60,10 @@ def view(desktop, run_id):
 def operate(desktop, run_id, action, request_id, **payload):
     """One owner action at the revision just seen, as the panel sends it.
 
-    The runner's lease renewal (every 5 s) also advances the revision, so on a
-    busy runner one can land between the view and the action, which is then
-    refused before anything commits. The owner refreshes and sends it again.
+    The team's own work (its workers' request accounting, a writer's commit)
+    also advances the revision, so on a busy runner a change can land between
+    the view and the action, which is then refused before anything commits.
+    The owner refreshes and sends it again.
     """
     service, capture, *_ = desktop
     for attempt in range(3):

@@ -284,7 +284,9 @@ jobs:
       # End User License Agreement alone, without the Alpha and Beta Test Terms.
       - name: Build a stable MSI for the license check
         shell: pwsh
-        run: ./packaging/build_msi.ps1 -Version 0.20.0 -OutDir dist/installer-stable
+        run: |
+          ./packaging/build_msi.ps1 -Version 0.20.0 -OutDir dist/installer-stable `
+              -Wix "${{ steps.msi.outputs.wix }}" -UiExtension "${{ steps.msi.outputs.ui-extension }}"
 
       # The license page an installation with the MSI's UI shows: WixUI_Minimal's
       # scrolling text holds the RTF packaging/legal_texts.py rendered, exactly, for the

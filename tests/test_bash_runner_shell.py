@@ -8,64 +8,57 @@ prefers `bash` (e.g. Git Bash on Windows) when it's on PATH;
 falls back to the platform default otherwise.
 
 These tests pin:
-- `_detect_bash()` returns a path when bash is available, None
-  otherwise (cached per-process)
+- `_detect_bash()` returns a path when bash is on PATH, None
+  otherwise, and never a `bash` in the project (lumi/executables.py)
 - `BashRunner.run()` uses bash when detected
 - Falls back to platform default when bash isn't available
 - Tests can override the bash-path detection via `_bash_path`
-- Test helper `_reset_bash_detection_cache` works
 """
 from __future__ import annotations
 
+import os
+import sys
 from unittest.mock import MagicMock, patch
-
-import pytest
 
 from lumi.orchestration.acceptance_check import (
     BashRunner,
     _detect_bash,
-    _reset_bash_detection_cache,
 )
 
+_BASH = "bash.exe" if sys.platform == "win32" else "bash"
 
-@pytest.fixture(autouse=True)
-def _clear_bash_cache():
-    """Each test starts with a fresh detection cache."""
-    _reset_bash_detection_cache()
-    yield
-    _reset_bash_detection_cache()
+
+def _program(folder, name=_BASH):
+    folder.mkdir(parents=True, exist_ok=True)
+    path = folder / name
+    path.write_text("#!/bin/sh\n", encoding="utf-8")
+    path.chmod(0o755)
+    return path
 
 
 # ── _detect_bash ──────────────────────────────────────────────────────
 
 
 class TestDetectBash:
-    def test_returns_path_when_bash_in_PATH(self):
-        with patch("shutil.which", return_value="/usr/bin/bash") as m:
-            result = _detect_bash()
-        assert result == "/usr/bin/bash"
-        m.assert_called_once_with("bash")
+    def test_returns_path_when_bash_in_PATH(self, tmp_path, monkeypatch):
+        bash = _program(tmp_path / "bin")
+        monkeypatch.setenv("PATH", str(tmp_path / "bin"))
+        assert _detect_bash() == str(bash)
 
-    def test_returns_none_when_bash_not_in_PATH(self):
-        with patch("shutil.which", return_value=None):
-            result = _detect_bash()
-        assert result is None
+    def test_returns_none_when_bash_not_in_PATH(self, tmp_path, monkeypatch):
+        (tmp_path / "empty").mkdir()
+        monkeypatch.setenv("PATH", str(tmp_path / "empty"))
+        assert _detect_bash() is None
 
-    def test_result_is_cached(self):
-        with patch("shutil.which", return_value="/usr/bin/bash") as m:
-            _detect_bash()
-            _detect_bash()
-            _detect_bash()
-        # Three calls but `which` was only invoked once — cache hit
-        assert m.call_count == 1
-
-    def test_reset_cache_works(self):
-        with patch("shutil.which", return_value="/usr/bin/bash") as m:
-            _detect_bash()
-            _reset_bash_detection_cache()
-            _detect_bash()
-        # After reset, the second call probes again
-        assert m.call_count == 2
+    def test_never_a_bash_in_the_project(self, tmp_path, monkeypatch):
+        project = tmp_path / "project"
+        _program(project)
+        _program(project / "tools")
+        bash = _program(tmp_path / "bin")
+        monkeypatch.chdir(project)
+        # The working folder, a relative entry and a folder inside the project all come first.
+        monkeypatch.setenv("PATH", os.pathsep.join([".", "tools", str(project / "tools"), str(tmp_path / "bin")]))
+        assert _detect_bash(str(project)) == str(bash)
 
 
 # ── BashRunner shell selection ────────────────────────────────────────

@@ -199,6 +199,7 @@ const LUMI_EVENT_DELEGATES = {
     'tool.result': 'handleToolResult',
     'tool_permission': 'handleToolPermission',
     'user_input_received': 'handleUserInputReceived',
+    'workspace_path_runs': 'handleWorkspacePathRuns',
 };
 
 // The state label in the Plan tab's toolbar, for the plan it follows.
@@ -4431,6 +4432,8 @@ class LumiApp {
                 break;
             case 'project_trust':
                 this.projectTrust = event;
+                // Trusting the project turns Lumi's own Git features back on (lumi/safe_git.py).
+                if (this.gitData?.refused) this.requestGitStatus();
                 if (this._runtimeBannerState) {
                     this._applyRuntimeError({...this._runtimeBannerState, project_trust: event.current});
                 }
@@ -7908,8 +7911,43 @@ class LumiApp {
     _openWorkspacePath(path) {
         const value = String(path || '').trim();
         if (!value) return;
+        // The server says "Opened …", or asks first when opening would run the file.
         this.send({ command: 'open_workspace_path', path: value });
-        this.showStatusMessage(`Opening ${this.shortenPath(value)}…`);
+    }
+
+    /**
+     * The file clicked would run if opened (a program, script, shortcut or
+     * installer): the server didn't open it. Name the file and its type, and
+     * offer to show it in its folder instead (lumi/executables.py).
+     */
+    handleWorkspacePathRuns(event) {
+        document.getElementById('reveal-program-dialog')?.remove();
+        const returnFocus = document.activeElement;
+        const name = String(event.name || event.path || 'This file');
+        const dialog = document.createElement('dialog');
+        dialog.id = 'reveal-program-dialog';
+        dialog.className = 'dialog reveal-program-dialog';
+        dialog.setAttribute('aria-labelledby', 'reveal-program-title');
+        dialog.setAttribute('aria-describedby', 'reveal-program-text');
+        dialog.innerHTML = `
+            <div class="dialog-header" id="reveal-program-title">Show ${this.escapeHtml(name)} in its folder?</div>
+            <div class="dialog-body"><p id="reveal-program-text"><strong>${this.escapeHtml(name)}</strong> is ${this.escapeHtml(event.kind || 'a file that runs when opened')}. Opening it would run it, so Lumi doesn’t open it. You can show it in its folder instead.</p></div>
+            <div class="dialog-actions">
+                <button type="button" class="dialog-btn deny" data-cancel>Cancel</button>
+                <button type="button" class="dialog-btn allow" data-reveal>Show in folder</button>
+            </div>`;
+        dialog.querySelector('[data-cancel]').onclick = () => dialog.close();
+        dialog.querySelector('[data-reveal]').onclick = () => {
+            this.send({ command: 'reveal_workspace_path', path: String(event.path || '') });
+            dialog.close();
+        };
+        dialog.addEventListener('close', () => {
+            dialog.remove();
+            if (returnFocus?.isConnected) returnFocus.focus();
+        });
+        document.body.appendChild(dialog);
+        dialog.showModal();
+        dialog.querySelector('[data-cancel]').focus();
     }
 
     _selectAlternateModelValue() {
@@ -10945,7 +10983,11 @@ class LumiApp {
                 : `This project brings ${parts.join(' and ')}. Lumi isn't using them until you trust the project.`;
         }
 
-        if (!reason && !mcpNote && !packNote && !trustNote) {
+        // Lumi's own Git is off in an untrusted project whose Git settings run
+        // programs (lumi/safe_git.py); trusting the project turns it back on.
+        const gitNote = (event && event.git_refused) || '';
+
+        if (!reason && !mcpNote && !packNote && !trustNote && !gitNote) {
             el.hidden = true;
             el.textContent = '';
             this._dismissedRuntimeNotice = '';
@@ -10956,7 +10998,7 @@ class LumiApp {
         // with no way to close it is just noise once the user has read it —
         // but silencing it forever would hide a *different*, later problem, so
         // a changed message brings it back.
-        const signature = `${reason}||${mcpNote}||${packNote}||${trustNote}`;
+        const signature = `${reason}||${mcpNote}||${packNote}||${trustNote}||${gitNote}`;
         if (this._dismissedRuntimeNotice === signature) {
             el.hidden = true;
             return;
@@ -11000,6 +11042,23 @@ class LumiApp {
                 button.addEventListener('click', () => {
                     button.disabled = true;
                     this.send({command: 'project_trust_set', decision, project_path: trust.project_path});
+                });
+                line.appendChild(button);
+            }
+            el.appendChild(line);
+        }
+        if (gitNote) {
+            const line = document.createElement('div');
+            line.className = 'runtime-banner-git';
+            line.textContent = gitNote;
+            if (!trustNote) {  // the trust line above already offers the choice
+                const button = document.createElement('button');
+                button.type = 'button';
+                button.className = 'runtime-banner-action';
+                button.textContent = 'Trust this project';
+                button.addEventListener('click', () => {
+                    button.disabled = true;
+                    this.send({command: 'project_trust_set', decision: 'trusted', project_path: ''});
                 });
                 line.appendChild(button);
             }
@@ -13786,6 +13845,13 @@ class LumiApp {
     handleGitStatus(data) {
         this.gitData = data;
         this._applyGitBadgeFromData();
+        // An untrusted project whose Git settings run programs: Lumi runs no
+        // Git there (lumi/safe_git.py). The banner says so until the project
+        // is trusted (or the notice is dismissed); the Git popover keeps it.
+        const refused = (data && data.refused) || '';
+        if ((this._runtimeBannerState?.git_refused || '') !== refused) {
+            this._applyRuntimeError({...(this._runtimeBannerState || {}), git_refused: refused});
+        }
     }
 
     /** Git badge is Agent/workspace context; hidden on Ask so chat feels repo-agnostic. */

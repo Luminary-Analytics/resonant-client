@@ -1820,7 +1820,8 @@ class Session:
         if self.auto_lint_enabled and self.project_content_trusted:
             try:
                 from .lint import lint_file
-                lint_result = lint_file(self.project_path, abs_path, timeout=10.0)
+                lint_result = lint_file(self.project_path, abs_path, timeout=10.0,
+                                        trusted=self.project_content_trusted)
             except Exception as exc:
                 lint_result = {"error": f"lint runner crashed: {exc}", "ok": True, "errors": ""}
 
@@ -1835,7 +1836,8 @@ class Session:
                     self.conversation_history.append({"role": "user", "content": msg, "input_origin": "generated"})
                     yield make_event(
                         EngineEvent.STATUS,
-                        message=f"Auto-lint feedback injected ({linter_name})",
+                        message=f"Auto-lint feedback injected ({linter_name}"
+                                f"{', ' + lint_result['source'] if lint_result.get('source') else ''})",
                     )
 
         # ── Tests ──
@@ -1847,6 +1849,7 @@ class Session:
                     abs_path,
                     command=self.auto_test_command,
                     timeout=60.0,
+                    trusted=self.project_content_trusted,
                 )
             except Exception as exc:
                 test_result = {"error": f"test runner crashed: {exc}", "ok": True, "output": ""}
@@ -1862,7 +1865,8 @@ class Session:
                     self.conversation_history.append({"role": "user", "content": msg, "input_origin": "generated"})
                     yield make_event(
                         EngineEvent.STATUS,
-                        message=f"Auto-test feedback injected ({target})",
+                        message=f"Auto-test feedback injected ({target}"
+                                f"{', runner ' + test_result['source'] if test_result.get('source') else ''})",
                     )
 
     def _compact_tool_result_for_context(

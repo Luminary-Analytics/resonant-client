@@ -32,6 +32,9 @@ ALLOWED_APP_SURFACE = {
     "normalize_session_mode",
     "normalize_session_role",
     "project",
+    # Sprint mode's validation Python comes from the project's own .venv only
+    # once the person trusts the project: the host's trust decision.
+    "project_trust",
     "settings",
 }
 
@@ -51,6 +54,7 @@ def _stub_app(project_path: str, *, harness_service=None) -> SimpleNamespace:
         normalize_session_mode=AppState.normalize_session_mode,
         normalize_session_role=AppState.normalize_session_role,
         project=SimpleNamespace(project_path=project_path),
+        project_trust=lambda path=None: SimpleNamespace(trusted=False),
         settings=SimpleNamespace(get=lambda *a, **k: ""),
     )
 

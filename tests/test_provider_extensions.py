@@ -332,9 +332,12 @@ def test_programs_come_from_path_or_the_pack_never_the_current_folder(tmp_path, 
     program.write_text("@echo off\n" if os.name == "nt" else "#!/bin/sh\n", encoding="utf-8")
     program.chmod(0o755)
     monkeypatch.chdir(here)
-    for path in ("", ".", os.pathsep.join([".", "relative"])):
+    # Nor from the working folder named in full (lumi/executables.py).
+    for path in ("", ".", os.pathsep.join([".", "relative"]), str(here)):
         with pytest.raises(extensions.ProviderExtensionError, match="isn't on PATH"):
             extensions.find_program(name, path)
+    (tmp_path / "elsewhere").mkdir()
+    monkeypatch.chdir(tmp_path / "elsewhere")
     assert Path(extensions.find_program(name, str(here))) == program
 
     pack = SimpleNamespace(name="Acme", path=str(tmp_path / "pack"))

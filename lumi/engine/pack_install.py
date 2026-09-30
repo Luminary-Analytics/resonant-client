@@ -32,6 +32,7 @@ import urllib.parse
 from dataclasses import dataclass
 from pathlib import Path
 
+from .. import safe_git
 from ..paths import state_home
 
 _COMMIT = re.compile(r"[0-9a-f]{40}")
@@ -92,9 +93,12 @@ def _git(args: list[str], *, cwd: Path | None = None, local: bool = False, remot
         reason = offline.refusal(remote, feature)
         if reason:
             raise PackInstallError(reason)
-    git = shutil.which("git")
-    if not git:
-        raise PackInstallError("Installing from a repository needs Git. Install it and try again.")
+    # The installed Git with Lumi's fixed options (lumi/safe_git.py). The
+    # repository is the one made here, so it has no settings of its own.
+    try:
+        git = safe_git.argv(project=cwd)
+    except FileNotFoundError:
+        raise PackInstallError("Installing from a repository needs Git. Install it and try again.") from None
     config = ["-c", "credential.helper=", "-c", "core.askPass=", "-c", "submodule.recurse=false",
               "-c", "advice.detachedHead=false"]
     if not local:
@@ -107,7 +111,7 @@ def _git(args: list[str], *, cwd: Path | None = None, local: bool = False, remot
         # and don't let it follow a redirect to another host.
         config += ["-c", "http.followRedirects=false"]
         try:
-            rewritten = subprocess.run([git, *config, "ls-remote", "--get-url", "--", remote], cwd=cwd, env=env,
+            rewritten = subprocess.run([*git, *config, "ls-remote", "--get-url", "--", remote], cwd=cwd, env=env,
                                        capture_output=True, text=True, timeout=_GIT_TIMEOUT).stdout.strip()
         except (OSError, subprocess.TimeoutExpired) as exc:
             raise PackInstallError(f"Git couldn't run: {exc}") from exc
@@ -115,7 +119,7 @@ def _git(args: list[str], *, cwd: Path | None = None, local: bool = False, remot
         if reason:
             raise PackInstallError(reason)
     try:
-        completed = subprocess.run([git, *config, *args], cwd=cwd, env=env, capture_output=True,
+        completed = subprocess.run([*git, *config, *args], cwd=cwd, env=env, capture_output=True,
                                    text=True, timeout=_GIT_TIMEOUT)
     except subprocess.TimeoutExpired as exc:
         raise PackInstallError("Git took too long; check the address and your network.") from exc

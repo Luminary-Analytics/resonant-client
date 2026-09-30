@@ -41,13 +41,44 @@ PROVIDER_KEY_ENV = (
 def child_env(base: dict[str, str] | None = None) -> dict[str, str]:
     """A copy of the environment without Lumi's model-provider keys.
 
+    Program lookups are as in the person's own terminal
+    (``executables.person_environment``): Lumi hardens only its own process,
+    so the code these children run finds programs as it would outside Lumi.
     Callers add what a child is configured with afterwards, such as an MCP
     server entry's own ``env``.
     """
-    env = dict(os.environ if base is None else base)
+    from .executables import person_environment
+
+    env = person_environment(os.environ if base is None else base)
     # Windows variable names are case-insensitive: openai_api_key counts too.
     for name in [key for key in env if key.upper() in PROVIDER_KEY_ENV]:
         del env[name]
+    return env
+
+
+def server_env(base: dict[str, str] | None = None, *, keep_provider_keys: bool = False) -> dict[str, str]:
+    """The environment for programs Lumi starts for itself, which serve it.
+
+    MCP servers, language servers, provider extensions, automatic lint and
+    test runs and the CLI agents (Codex, Claude Code) start in the project
+    folder, and often through a launcher script: npm's ``tool.cmd`` runs
+    ``node`` by bare name. Unlike ``child_env``, Lumi's own hardening stays
+    (``NoDefaultCurrentDirectoryInExePath``, lumi/executables.py), so such a
+    script finds programs on PATH and never in the project. Model-provider
+    keys are removed, except for the CLI agents, which sign in with them
+    (``keep_provider_keys``). Callers add a server's configured ``env``
+    afterwards.
+    """
+    from .executables import NO_CURRENT_FOLDER
+
+    env = dict(os.environ if base is None else base)
+    if not keep_provider_keys:
+        for name in [key for key in env if key.upper() in PROVIDER_KEY_ENV]:
+            del env[name]
+    if sys.platform == "win32":
+        for name in [key for key in env if key.upper() == NO_CURRENT_FOLDER.upper()]:
+            del env[name]
+        env[NO_CURRENT_FOLDER] = "1"
     return env
 
 

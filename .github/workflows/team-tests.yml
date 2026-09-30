@@ -21,6 +21,8 @@ on:
       - 'lumi/engine/artifacts.py'
       - 'lumi/backends.py'
       - 'lumi/processes.py'
+      - 'lumi/executables.py'
+      - 'lumi/__init__.py'
       - 'lumi/policy.py'
       - 'lumi/paths.py'
       - 'lumi/handoff.py'

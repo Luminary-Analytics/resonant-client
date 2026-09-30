@@ -81,6 +81,12 @@ Bedrock keys) after it merged found these. Each is fixed here.
   `participant_refusal` let through an adapter that said nothing about it (it
   checked `supervised_requests is False`); it now requires `True`. The tests'
   scripted backend declares it.
+- **The Team panel's view reads the workers' state before the stored
+  records.** It read them the other way round, so a worker that finished
+  between the two reads showed as ended beside records from before its end
+  (no submission yet) until the next refresh. A test that reads that view
+  failed about one run in six for this reason
+  (`test_a_participants_last_request_keeps_its_tools_and_lets_none_run`).
 - **Docs:** a Bedrock connection must be set to Bedrock API key
   authentication; one set to AWS sign-in is refused even when
   `AWS_BEARER_TOKEN_BEDROCK` is set. Whether Bedrock accepts `tool_choice`

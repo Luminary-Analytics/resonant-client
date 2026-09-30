@@ -87,7 +87,11 @@ guidance needs an explicit status notice and a current replacement.
   `lumi/legal/terms.json`; `packaging/legal-published-pins.json` keeps each
   published version's hash. Edit the templates and facts, never the rendered
   files, and give a changed text a new version.
-- [docs/unreleased.md](unreleased.md)
+- [docs/alpha-welcome.md](alpha-welcome.md): a one-page introduction to the
+  0.20.0-alpha.1 open alpha, for a landing page or an email. Its download
+  and privacy links name that release; update them for the next one.
+- [docs/unreleased.md](unreleased.md): empty since the entries up to
+  0.20.0-alpha.1 moved to its [change record](v0.20.0-alpha.1-change-record.md).
 
 ## Planning proposals
 
@@ -162,6 +166,12 @@ guidance needs an explicit status notice and a current replacement.
 
 ## Versioned release records
 
+- [docs/v0.20.0-alpha.1-release-notes.md](v0.20.0-alpha.1-release-notes.md): the
+  first open alpha and the first release named Lumi. Its
+  [change record](v0.20.0-alpha.1-change-record.md) holds the Unreleased
+  entries since 0.19.1 as they were written, each with its own date and checks.
+- [docs/v0.19.1-release-notes.md](v0.19.1-release-notes.md)
+- [docs/v0.19.0-release-notes.md](v0.19.0-release-notes.md)
 - [docs/v0.10.0-release-notes.md](v0.10.0-release-notes.md)
 - [docs/v0.11.0-release-notes.md](v0.11.0-release-notes.md)
 - [docs/v0.11.1-release-notes.md](v0.11.1-release-notes.md)

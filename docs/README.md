@@ -17,10 +17,14 @@ local dev11 capabilities, actual native-engine/browser runs, remaining gaps and
 the source-only project-picker fix. Consult it before interpreting older setup
 or evaluation notes as the current candidate state.
 
-The current release is [Lumi 0.19.1](v0.19.1-release-notes.md).
-[Unreleased changes](unreleased.md) describe work in the checkout that has not
-yet shipped. Versioned release notes and dated evaluations record their own
-point in time; they are not instructions to restore an old design.
+The current release is [Lumi 0.20.0-alpha.1](v0.20.0-alpha.1-release-notes.md),
+the first open alpha and the first release under the Lumi name and license.
+Its [change record](v0.20.0-alpha.1-change-record.md) keeps every entry that
+[Unreleased](unreleased.md) held before it, with their dates and checks, and
+[Welcome to the Lumi alpha](alpha-welcome.md) is a one-page introduction for
+testers. [Unreleased changes](unreleased.md) describe work in the checkout
+that has not yet shipped. Versioned release notes and dated evaluations record
+their own point in time; they are not instructions to restore an old design.
 
 [September 26 worktree recovery](worktree-recovery-2026-09-26.md) records the
 local integration of open PRs and unfinished work, its review and validation.
@@ -35,6 +39,8 @@ guide belongs in that navigation; historical records stay out of it.
 
 ## Using Lumi
 
+- [Welcome to the Lumi alpha: what it is, who it's for, installing, what to try, feedback and your data](alpha-welcome.md)
+- [Lumi 0.20.0-alpha.1 release notes: what to try first, installing unsigned builds, upgrading, known issues](v0.20.0-alpha.1-release-notes.md)
 - [Install, configure providers, and run](../README.md)
 - [Plans: free for individuals, and what's planned for organizations](plans.md)
 - [Lumi account and Lumi Cloud: signing in, enrolling this computer, sharing a conversation, managed enrollment](lumi-cloud.md)
@@ -102,6 +108,7 @@ guide belongs in that navigation; historical records stay out of it.
 - [Release runbook](../RELEASING.md)
 - [Release pipeline architecture](release-pipeline.md)
 - [Swarming live qualification plan and required environment](swarming-live-qualification.md)
+- [0.20.0-alpha.1 release notes and validation](v0.20.0-alpha.1-release-notes.md), and its [change record](v0.20.0-alpha.1-change-record.md): the entries moved from Unreleased, with their own dates and checks
 - [0.19.1 release notes and validation](v0.19.1-release-notes.md)
 - [0.19.0 release notes and validation](v0.19.0-release-notes.md)
 - [0.18.2 release notes and validation](v0.18.2-release-notes.md)

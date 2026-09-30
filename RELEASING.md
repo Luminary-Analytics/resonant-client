@@ -433,7 +433,9 @@ that update.
   download alone), and `packaging/third-party-components.json` its version
   for the notices; `tests/test_release_supply_chain.py` checks they agree.
 
-Current release evidence is recorded in [0.19.1 notes](docs/v0.19.1-release-notes.md).
+Current release evidence is recorded in the
+[0.20.0-alpha.1 notes](docs/v0.20.0-alpha.1-release-notes.md#validation); the
+[0.19.1 notes](docs/v0.19.1-release-notes.md) hold the last stable release's.
 
 ## Lumi rebrand and upgrades
 

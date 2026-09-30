@@ -4,7 +4,8 @@ The coding agent by Luminary Analytics, formerly SONN Client and originally
 Resonant. It runs on the model endpoints you choose, including SONN. The
 rebrand keeps working setups working: `resonant` commands remain aliases,
 `RESONANT_*` environment variables are still read, and `~/.resonant` moves to
-`~/.lumi` on first launch. See [Unreleased](docs/unreleased.md).
+`~/.lumi` on first launch. See the
+[0.20.0-alpha.1 release notes](docs/v0.20.0-alpha.1-release-notes.md).
 
 **A provider-adaptive multimodal coding agent for local and hosted models.**
 
@@ -19,8 +20,10 @@ for the engineering contract that governs harness changes.
 
 Start with the [desktop workflow](docs/desktop-workflow.md) for navigation and
 provider selection, or the [documentation index](docs/README.md) for contributor
-guides. [0.19.1](docs/v0.19.1-release-notes.md) fixes Codex live progress and completion evidence;
-[Unreleased](docs/unreleased.md) tracks subsequent changes.
+guides. [0.20.0-alpha.1](docs/v0.20.0-alpha.1-release-notes.md), the first
+open alpha, says what to try first, how to install the unsigned builds, and
+what's known not to work yet; [Unreleased](docs/unreleased.md) tracks later
+changes.
 
 The source checkout also includes an opt-in [Team preview](docs/swarming.md)
 for scoped workers, reviewed file changes and explicit collaboration. Managed
@@ -138,8 +141,11 @@ explicit user configuration; Lumi does not silently switch models by role.
 
 Download the latest `lumi-setup-X.Y.Z.exe` from the
 [Lumi download page](https://luminary-analytics.github.io/resonant-client/).
+The download page lists stable releases; a pre-release such as 0.20.0-alpha.1
+is on its GitHub release, and its release notes link it.
 
-- Installs without an administrator prompt
+- Asks for administrator rights: Lumi installs for all users in
+  `Program Files\Lumi`
 - Adds a Start Menu shortcut
 - Checks the signed appcast for future updates. **Settings > Updates** picks
   the stable or beta channel, pins a release line, or checks only when asked or
@@ -157,8 +163,11 @@ it's notarized by Apple, macOS asks you to approve it once in
 System Settings › Privacy & Security › **Open Anyway**; see
 [Lumi on macOS](docs/macos.md).
 
-Windows SmartScreen may show "Unrecognized publisher" for the v0.x line. Code
-signing is planned for v1.0.
+Until Luminary's Windows code signing is set up, the installer carries no
+publisher signature: SmartScreen may show **Windows protected your PC**
+(choose **More info**, then **Run anyway**), and the administrator prompt
+names no publisher. Updates are still checked against the signing key built
+into Lumi before they install.
 
 ### Source install
 

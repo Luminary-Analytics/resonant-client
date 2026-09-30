@@ -26,6 +26,13 @@ if str(PROJECT_ROOT) not in sys.path:
 # in-memory keyring explicitly.
 os.environ["LUMI_KEYCHAIN"] = "off"
 
+# Nor may they register real scheduled tasks (Task Scheduler, launchd, cron).
+# Those outlive the test run: on 2026-09-28 at 02:30, 183 leftover
+# "Lumi\<id>" tasks ran `python -m lumi schedule run` against the developer's
+# real home and renamed ~/.resonant to ~/.lumi. Schedules are still saved, in
+# the test's own home; subprocesses inherit the switch.
+os.environ["LUMI_OS_SCHEDULER"] = "off"
+
 # Nor may an organization policy installed on the machine (registry, managed
 # preferences, ProgramData) change what the tests see. Policy tests install
 # their own through lumi.policy.set_for_tests.

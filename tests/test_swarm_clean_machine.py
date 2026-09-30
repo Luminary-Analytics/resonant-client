@@ -24,10 +24,17 @@ from lumi.engine.swarming.git_boundary import (REPOSITORY_LOCK_NAME, git_error_l
                                                release_repository_lock, trusted_git_executable, try_repository_lock)
 from lumi.engine.swarming.models import Conflict
 from lumi.gui import swarming
-from tests.test_gui_swarming import enable, setup, start_request, wait_stopped  # noqa: F401 (fixture)
+from tests.test_gui_swarming import enable, setup, start_request  # noqa: F401 (fixture)
 from tests.test_swarm_desktop_writers import (desktop, operate, request, settled, submitted,  # noqa: F401 (fixture)
                                               view)
 from tests.test_swarm_workers import until
+
+
+def workers_stopped(service, run_id):
+    """test_gui_swarming.wait_stopped, with a minute instead of 5 s: a loaded CI runner took longer."""
+    runner = service._runners[run_id][1]
+    until(lambda: runner.inspect_all() and not any(row["alive"] for row in runner.inspect_all()), timeout=60,
+          describe=lambda: f"fixture workers did not stop: {runner.inspect_all()}")
 
 
 # ── Without Git ────────────────────────────────────────────────────────────
@@ -103,7 +110,7 @@ def test_an_unfinished_team_blocks_only_its_own_conversation(setup):
     service, capture, _ = setup
     enable(service, capture)
     run_id = service.operate(capture, start_request())["run"]["run"]["id"]
-    wait_stopped(service, run_id)
+    workers_stopped(service, run_id)
     found = service.blocking("project", "session")
     assert found["run_id"] == run_id and found["reason"] == "team" and found["owned"] == "yes"
     assert found["objective"] == "Investigate two independent questions"
@@ -122,7 +129,7 @@ def test_a_team_blocks_its_conversation_the_moment_it_starts(setup):
     found = service.blocking("project", "session")
     assert found and found["reason"] == "team" and found["run_id"] == run_id and found["owned"] == "yes"
     assert service.blocking("project", "another-session") is None
-    wait_stopped(service, run_id)
+    workers_stopped(service, run_id)
 
 
 def test_an_active_run_without_a_known_owner_holds_every_conversation(setup):
@@ -215,7 +222,7 @@ def test_a_team_from_before_a_restart_blocks_only_its_conversation(setup):
     service, capture, _ = setup
     enable(service, capture)
     run_id = service.operate(capture, start_request())["run"]["run"]["id"]
-    wait_stopped(service, run_id)
+    workers_stopped(service, run_id)
     from lumi.engine.swarming.service import SwarmRuntime
 
     reopened = SwarmRuntime(service.settings, state_root=service._state_root)
@@ -238,7 +245,7 @@ def test_a_new_team_is_refused_with_the_unfinished_team_and_its_conversation(set
     saved.mkdir(parents=True, exist_ok=True)
     (saved / "session.json").write_text(json.dumps({"id": "session", "title": "Refactor the parser"}), encoding="utf-8")
     run_id = service.operate(capture, start_request())["run"]["run"]["id"]
-    wait_stopped(service, run_id)
+    workers_stopped(service, run_id)
     other = replace(capture, scope=replace(capture.scope, session_id="another-session"))
     with pytest.raises(Conflict) as refused:
         service.operate(other, start_request(request_id="second-team"))
@@ -286,7 +293,7 @@ def test_the_ownership_observer_survives_a_cleanup_it_cannot_start(setup, monkey
 
     monkeypatch.setattr(service_module.threading, "Thread", NoCleanupThread)
     run_id = service.operate(capture, start_request())["run"]["run"]["id"]
-    wait_stopped(service, run_id)
+    workers_stopped(service, run_id)
     service.operate(capture, {"action": "stop", "request_id": "stop", "run_id": run_id,
                               "expected_revision": view_run(service, capture, run_id)["revision"]})
     until(lambda: refused and not service._pending_cleanups, timeout=30)  # refused, kept, then retried

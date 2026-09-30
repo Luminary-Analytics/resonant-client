@@ -230,6 +230,152 @@ unpinned, a published date is after the build's day, or the version isn't
 - Real processes in a throwaway home: `lumi terms`, `lumi run` with and
   without an acceptance, `lumi terms show` and `lumi terms accept`.
 
+## September 29 security fix: Lumi's own programs never come from the project (source only, not released)
+
+Lumi starts programs for its own work (Git for the status bar, ripgrep for
+search, the system's tools, editors' command lines, language and MCP servers,
+the Codex and Claude Code CLIs). It named many of them by bare name while the
+app's working folder was the open project, and Windows looks for a program in
+the working folder before the system folders and PATH, so a program of the
+same name in a repository could run in their place. They are now resolved in
+one place, `lumi/executables.py` (see [shell sandbox](shell-sandbox.md#programs-lumi-starts-itself)).
+A review found more ways for a project to start a program through Lumi: its
+own Git settings, a server's launcher script, a changed file clicked in the
+page and computer use's open application. Those are closed too:
+
+- **Every process hardens itself.** Importing the `lumi` package, which every
+  entry point does first (the app, the terminal UI, `lumi run`, scheduled
+  runs, the gateway, workers), sets `NoDefaultCurrentDirectoryInExePath` on
+  Windows: CreateProcess, cmd.exe and `shutil.which` (Python 3.12+) then leave
+  the working folder out.
+- **The app never works in a project.** It stays in the system folder (`/`
+  elsewhere) and gives each command its folder; opening a project no longer
+  changes the working folder, so ShellExecute and DLL lookups, which the
+  setting doesn't cover, never search a project either. Stdio MCP servers,
+  which pack commands expect to run in the project, now get it as their
+  working folder explicitly. A relative folder typed for a schedule or for
+  tasks from Slack and Teams is still taken relative to the open project;
+  opening, adding or starting a mission in a project takes its full path.
+- **Full paths for Lumi's own launches.** The system's tools (`cmd`,
+  `powershell`, `explorer`, `taskkill`, `schtasks`, `clip`, `findstr`) come
+  from the folders Windows reports (`GetSystemDirectoryW`,
+  `GetSystemWindowsDirectoryW`), never from environment variables; on macOS
+  from `/usr/bin` and the like. Everything else comes from PATH's full folders,
+  skipping empty, `.` and relative entries and any folder inside the open
+  project or the working folder (the home folder and the Windows folder
+  excepted, since per-user installs live there). No more `shell=True` for
+  Lumi's own calls: Git status (which ran through cmd.exe), MCP batch files
+  and opening an application no longer use a shell.
+- **Git for Lumi's own work** goes through one helper, `lumi/safe_git.py`:
+  the page's status when a project opens, indexing, `@diff`, checkpoints,
+  hand-offs, the editor bridge, agent worktrees, model comparisons, the Git
+  popover and the agent's Git and pull-request tools. Every call switches off
+  the programs a repository's own settings can start
+  (`core.fsmonitor=false`, `core.hooksPath` set to an empty folder Lumi owns,
+  `safe.bareRepository=explicit`, `log.showSignature=false`,
+  `protocol.ext.allow=never`, `--no-optional-locks` for status and
+  `--no-ext-diff --no-textconv` for diffs). A commit or push you ask for (the
+  popover's commit, the agent's `git_commit` and pull-request tools) still
+  runs a trusted project's hooks, as your own `git commit` would. In a project
+  you haven't trusted, Lumi first reads the repository's settings with
+  `git config` (which runs nothing), including the files they include, the
+  ones an `includeIf` names even when its condition doesn't hold yet, and its
+  submodules' settings. If they name programs (clean, smudge and process
+  filters, diff drivers, merge drivers, `core.sshCommand`, `core.askPass`,
+  `gpg.program`, credential helpers, editors and pagers, `uploadpack` and
+  `receivepack`), Lumi runs no Git there: a banner says "Git features are off
+  for this project until you trust it", names the settings and offers **Trust
+  this project**, the Git popover keeps the notice, `@diff` attaches it,
+  indexing walks the folder instead, and session checkpoints keep an archive.
+  Trusting the project (there, or in Settings > Privacy & security > Project
+  trust) turns them back on. The page's changed-file list now reads
+  `status --porcelain=v1 -z`, so names with spaces, other scripts and renames
+  show as they are.
+- **Servers keep Lumi's hardening.** MCP servers, language servers, provider
+  extensions, automatic lint and test runs and the Codex and Claude Code CLIs
+  get `secrets_store.server_env`: Lumi's model-provider keys removed (the CLI
+  agents keep theirs, which they sign in with) and
+  `NoDefaultCurrentDirectoryInExePath` kept, so a launcher script such as
+  npm's `tool.cmd`, which runs `node` by bare name, finds it on PATH and never
+  in the project. Codex no longer gets the project's path on its command line
+  (its working folder is the project), and a CLI agent installed as a batch
+  file refuses arguments cmd.exe would read as commands.
+- **Clicking a changed file.** A document opens with its own program; a file
+  that opening would run (a program, batch file, PowerShell or Python script,
+  shortcut, installer, a type whose registered command runs it; `.app`,
+  `.command` and `.pkg` on macOS; `.desktop` on Linux; an executable file) is
+  never opened: the page names the file and its type and offers **Show in
+  folder** instead. The worker hand-off's file buttons do the same.
+- **Computer use's open application** takes an installed application by
+  name, or on Windows a web page (`https:`), mail (`mailto:`), a Settings page
+  (`ms-settings:`), an installed app's id (`shell:AppsFolder\<id>`) or a
+  document by its full path. It refuses `file:` and every other address kind,
+  network shares, and files that would run; on macOS and Linux it takes
+  names only.
+- **Smaller fixes.** A relative capability-pack folder in Settings is the
+  project's; a tool that needs the project (jobs, previews, checks, notes,
+  code intelligence, the CLI agents, `@file` completion, indexing, `!`
+  commands) says to open one instead of using the system folder; the app
+  leaves the folder it was started in before the managed setup or the updater
+  run; a mission's project path must be a full path with its drive;
+  JetBrains' External Tools start `python -P -m lumi`, so a `lumi` module in
+  the project isn't imported; and the working folder is out of Lumi's own DLL
+  search (`SetDllDirectoryW("")`, not inherited by children).
+- **A trusted project's own tools.** Automatic lint and tests, language
+  servers and sprint mode's Python look in a trusted project's `.venv`,
+  `venv` and `node_modules/.bin` first (`executables.project_tool`), and say
+  where each came from ("from the project's .venv", "from PATH") in the LSP
+  list and in their results. In a project you haven't trusted they never run
+  from there, and Lumi says the project has its own copy and to trust it.
+  Git, ripgrep, the system's tools and the CLI agents never come from the
+  project.
+- **What changes for you.** Tools in a virtual environment you activated
+  inside a project you haven't trusted are not picked up by Lumi's own
+  automatic runs (language servers, auto-test, auto-lint); trust the project,
+  or name them by full path, or by a path relative to the project, in
+  Settings. A server started through a batch file that runs another program
+  by bare name from the project folder (`helper.cmd`) needs to name it with a
+  path (`.\helper.cmd`, `%~dp0helper.cmd`). `LUMI_CODEX_CLI`,
+  `LUMI_CLAUDE_CLI`, `CODEX_CLI_PATH` and `LUMI_BROWSER_CHROME_PATH` take a
+  full path or a name on PATH; a relative path is ignored. A stdio MCP server
+  configured as `npx` now finds `npx.cmd` on Windows. Computer use's "open
+  application" on Windows opens a name found on PATH or registered under App
+  Paths, or one of the addresses above, without cmd.exe.
+- **Unchanged by design.** The agent's shell and checks, jobs and previews,
+  the composer's `!` commands and your hooks still run in the project with
+  your own environment (`executables.person_environment`, which
+  `secrets_store.child_env` applies), and the Codex and Claude Code tool loops
+  still run in the project (their own launch keeps Lumi's hardening),
+  so `gradlew build` in cmd.exe finds the project's script as in your
+  terminal. A job or preview naming a program relative to the project still
+  runs it from there. Sprint-mode validation commands and worktree
+  validation commands now get that same environment (without Lumi's model
+  keys), like other checks.
+- **Tests.** `tests/test_safe_git.py` builds repositories whose settings
+  name programs (fsmonitor, external diff, textconv, clean filter, gpg with
+  signatures, hooks, includes, `includeIf`, submodules), each a harmless
+  script, and runs every Lumi Git caller against them, untrusted and trusted.
+  `tests/test_open_files.py`, `tests/test_project_tools.py` and new cases in
+  `tests/test_project_programs.py` cover clicking scripts, open application,
+  project tools, the npm-shim chain for MCP servers and the CLI agents, the
+  DLL search and `-P`. `tests/open_files.browser.cjs` and
+  `tests/git_trust.browser.cjs` click through the page. The launch scan now
+  requires every program to come from a resolver, `sys.executable` or an
+  absolute path, follows wrappers across modules, module constants,
+  f-strings, `*prefix`, `append`, `functools.partial`, event loops,
+  `getattr(os, "startfile")`, `ShellExecuteW` and `pty.spawn`, and counts
+  each by-design use. `tests/test_project_programs.py` plants harmless `git.exe`,
+  `git.bat`, `explorer.exe`, `rg.exe` and similar programs in a project and
+  runs Lumi's Git status, Git tools, indexing, context, search (bundled
+  ripgrep and PATH), language-server and editor lookups and "Show in folder"
+  with that project as the working folder and PATH pointing into it, without
+  the process setting, plus a fresh process that imports `lumi` and launches
+  by bare name, `shell=True` included. `tests/test_launch_scan.py` fails on
+  any new launch by bare name, shell, `shutil.which`, `os.startfile` or
+  `webbrowser` outside a reviewed list; `tests/test_executables.py` covers
+  the resolver. The macOS CI job runs all three.
+- `executables.show_in_folder` is there for the first-run polish work's
+  "Show in folder".
 ## September 29 security fix: machine policy only from places only administrators can write (source only, not released)
 
 Organization policy, the keys that sign policies, and a machine
@@ -306,6 +452,16 @@ couldn't read left it without the organization's policy. See
   `build-linux.yml` checks the installed .deb: root's
   `/etc/lumi/policy.json` made writable by everyone fails closed, and one
   the runner's account owns is ignored.
+## September 29 Tests no longer register real scheduled tasks (source only, not released)
+
+Tests that saved a schedule registered a real Task Scheduler entry
+(`Lumi\<id>`, `python -m lumi schedule run <id>`); only `tests/test_schedules.py`
+installed a fake. On a developer machine 183 such tasks ran nightly at 02:30
+and renamed the real `~/.resonant` folder to `~/.lumi`. `tests/conftest.py` now
+sets `LUMI_OS_SCHEDULER=off` for the whole run, and subprocesses inherit it.
+With it, `lumi.schedules.registrar()` returns `NullRegistrar`: schedules are
+saved but never registered with Task Scheduler, launchd or cron. A test
+checks that saving, pausing and removing a schedule never runs `schtasks`.
 
 ## September 27 macOS alpha: Sparkle updates and release publishing (source only, not released)
 

@@ -1249,7 +1249,7 @@ class LumiSettingsView {
                 <div class="settings-row-hint">${item.decision === 'trusted' ? 'Trusted' : 'Restricted'} since ${esc(item.at)}${item.note ? ` · ${esc(item.note)}` : ''}</div></div>
                 <div class="settings-row-value"><button type="button" class="btn-sm" data-trust-decision="forget" data-trust-path="${esc(item.path)}" aria-label="Forget the decision for ${esc(item.path)}">Forget</button></div>
             </div>`).join('');
-        return `<p class="editor-help">A project’s instruction files (AGENTS.md, LUMI.md, CLAUDE.md and similar), its notes and codebase summary, and the allow rules in its lumi-policy.json, which skip approval in Auto-edit, apply only after you trust it, and language servers (code intelligence) and automatic lint and test runs wait for trust because they execute the project’s code. Its deny and ask rules always apply, because they only make Lumi more careful. Capability packs keep their own approval.</p>
+        return `<p class="editor-help">A project’s instruction files (AGENTS.md, LUMI.md, CLAUDE.md and similar), its notes and codebase summary, and the allow rules in its lumi-policy.json, which skip approval in Auto-edit, apply only after you trust it, and language servers (code intelligence) and automatic lint and test runs wait for trust because they execute the project’s code. So do Lumi’s own Git features (status, indexing, @diff, checkpoints) in a repository whose Git settings name programs, such as filters or diff drivers. Its deny and ask rules always apply, because they only make Lumi more careful. Capability packs keep their own approval.</p>
             <div class="settings-row"><div class="settings-row-copy"><span class="settings-row-label">This project</span>
                 <div class="settings-row-hint">${esc(`${brings.length ? `Brings ${brings.join(', ')}.` : 'Brings no instructions or policy.'} ${state}`)}</div></div></div>
             ${actions}
@@ -3424,7 +3424,7 @@ class LumiSettingsView {
     _gitPopoverHtml(data) {
         return `
             <div class="git-popover-header">
-                <span>${this.escapeHtml(data.branch)}</span>
+                <span>${this.escapeHtml(data.refused ? 'Git features are off' : data.branch)}</span>
                 <button class="icon-btn git-popover-close">&times;</button>
             </div>
             <div class="git-popover-tabs">
@@ -3439,6 +3439,10 @@ class LumiSettingsView {
         const body = document.getElementById('git-popover-body');
         if (!body || !this.gitData) return;
 
+        if (this.gitData.refused) {
+            body.innerHTML = `<div class="git-popover-empty">${this.escapeHtml(this.gitData.refused)}</div>`;
+            return;
+        }
         if (tab === 'changes') {
             if (this.gitData.changes.length === 0) {
                 body.innerHTML = '<div class="git-popover-empty">No changes</div>';
@@ -3449,9 +3453,10 @@ class LumiSettingsView {
                 if (c.status === '??' || c.status === 'A') statusClass = 'added';
                 if (c.status === 'D') statusClass = 'deleted';
                 if (c.status === '??') statusClass = 'untracked';
+                const name = c.from ? `${c.from} → ${c.file}` : c.file;
                 return `<div class="git-file-item">
                     <span class="git-status-code ${statusClass}">${this.escapeHtml(c.status)}</span>
-                    <span>${this.escapeHtml(c.file)}</span>
+                    <span>${this.escapeHtml(name)}</span>
                 </div>`;
             }).join('');
         } else {

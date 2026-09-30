@@ -735,7 +735,7 @@ class TestTelemetryAndExtensions:
                 return SimpleNamespace(returncode=0, stdout="https://git.corp.example/acme/pack\n", stderr="")
             return SimpleNamespace(returncode=0, stdout=f"{'b' * 40}\trefs/tags/v1.0\n", stderr="")
 
-        monkeypatch.setattr(pack_install.shutil, "which", lambda name: "git")
+        monkeypatch.setattr(pack_install.safe_git, "argv", lambda *args, **kwargs: ["git"])
         monkeypatch.setattr(pack_install.subprocess, "run", fake_run)
         _on("git.corp.example")
         assert pack_install.resolve("https://git.corp.example/acme/pack", "v1.0") == "b" * 40
@@ -812,7 +812,7 @@ class TestDictationAndSignIn:
         from lumi import auth_tokens, connections
 
         # azure-identity and the Azure CLI connect by themselves; neither may start.
-        monkeypatch.setattr(auth_tokens.shutil, "which", lambda name: pytest.fail("the Azure CLI must not run"))
+        monkeypatch.setattr(auth_tokens, "find_program", lambda name, **kwargs: pytest.fail("the Azure CLI must not run"))
         monkeypatch.setattr(auth_tokens.subprocess, "run", lambda *a, **k: pytest.fail("nothing may run"))
         monkeypatch.setitem(sys.modules, "azure.identity", None)  # an import of it fails at once
         monkeypatch.delenv("AZURE_AUTHORITY_HOST", raising=False)

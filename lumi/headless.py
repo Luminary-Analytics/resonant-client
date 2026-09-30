@@ -152,6 +152,10 @@ def scope_session(session: Any, settings: Any, project: str, *, tier: str, trust
 
     status = WorkspaceTrust().status(project)
     trusted = trust_project or status.trusted
+    if trust_project:
+        from .safe_git import trust_for_this_process
+
+        trust_for_this_process(project)  # Lumi's own Git here, too (lumi/safe_git.py)
     # --trust-project trusts whatever the policy says now, unless --policy-digest
     # names the version to trust; otherwise its allow rules must be the version
     # trusted in the app.

@@ -179,8 +179,48 @@ Python 3.11 or newer is required.
 
 Add an Anthropic key under **Settings > API keys**, or set `ANTHROPIC_API_KEY`,
 then use **Settings > Connections > Check connection & refresh models**. Lumi
-lists the models the key can use. The thinking selector sets an extended-thinking
-budget (off, low, med, high, max). Usage is billed to your Anthropic account.
+lists the models the key can use. Usage is billed to your Anthropic account.
+
+A thinking level (off, low, med, high or max, such as a role's under Models for
+roles, or the one a team takes from its conversation) goes to Claude in the
+shape the model takes (`lumi/claude_models.py`), on Bedrock and Vertex AI too:
+
+- **Current models** (Opus 4.6 and later, Sonnet 4.6 and later, Fable, Mythos)
+  get adaptive thinking at that effort ("med" is medium). Off sends nothing to
+  Opus 4.6 to 4.8 and Sonnet 4.6, which think only when asked. Sonnet 5.5 turns
+  off only the thinking before its answer (`between_tools`). On Opus 5 and
+  Sonnet 5, off is their lowest effort rather than disabled thinking, which
+  Anthropic advises against where tools are used. Opus 5.5, Fable and Mythos
+  always think, so off is their lowest effort too.
+- **Claude Haiku 4.5, Sonnet 4.5, Opus 4.5 and older, and Mythos Preview** get
+  a thinking budget (2,048 to 24,576 tokens), the only form they take.
+- **A model id naming a newer Claude model** (such as `claude-opus-6`) gets the
+  newest models' form, and so does any name Lumi doesn't know on the Anthropic
+  API itself. If Claude refuses it, Lumi sends the request again without
+  thinking settings and leaves them out from then on.
+- **Any other id Lumi doesn't recognize**, such as a Bedrock application
+  inference profile or a gateway's own alias, could be any Claude model, so it
+  gets no thinking settings at any level. On an Anthropic-compatible endpoint
+  of your own, such a name may not be Claude at all: it keeps the capabilities
+  its name suggests and the connection's settings.
+
+The provider default sends nothing; Opus 5 and later, Sonnet 5 and later, Fable
+and Mythos think anyway. Thinking counts toward the output limit. At a thinking
+level a request asks for room for it: 16,384 tokens at low and medium, 32,000 at
+high and 64,000 at max, but at most 32,000 on Bedrock, which sets the whole limit
+against your tokens-per-minute quota when a request starts. At the provider
+default, a model that thinks anyway gets Lumi's usual 16,384 even for a short
+request such as a session title. An output limit you set yourself (the terminal's
+`--max-tokens`) is sent as given, and Lumi says when it's below what the level
+may need.
+
+Claude's signed thinking goes back exactly as it came, and only while the
+conversation it was made in is unchanged: Opus 5.5, Fable 5.1 and Sonnet 5.5
+refuse it after the system prompt, the tools or an earlier message changed, for
+accounts created on or after August 31, 2026. If Claude still reports a block
+bound to a different conversation, Lumi sends the request once more without it
+and the thinking after it. A turn whose text your organization's rules changed
+goes back without its thinking.
 
 ### OpenAI
 

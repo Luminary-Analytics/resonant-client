@@ -5,9 +5,17 @@ API adapter (``KimiBackend._messages``), which already repairs orphaned tool
 calls and moves tool results next to their calls. This module translates that
 message list into Messages API content blocks.
 
+Lumi's thinking level goes out in the shape the model's family accepts
+(``lumi/claude_models.py``): adaptive thinking with an effort level on
+current models, a fixed thinking budget on the older ones that only take
+that, never a parameter the model refuses, and none to an id Lumi can't
+place. Bedrock and Vertex AI carry the same body fields.
+
 Signed thinking blocks travel in a tool call's ``reasoning_details`` and are
 replayed only to the model that produced them, as the Messages API requires
-within a tool-use loop.
+within a tool-use loop, in the order the model wrote them (``block_order``),
+and never once the conversation they're bound to has changed
+(``bound_thinking``).
 """
 
 from __future__ import annotations
@@ -39,12 +47,14 @@ from .backends import (
     EVENT_ERROR,
     EVENT_TEXT_DELTA,
     EVENT_TOOL_CALL,
+    ChosenMaxTokens,
     KimiBackend,
     _convert_tools_for_ollama,
     _new_call_id,
     _wait_with_cancel,
 )
 from .capabilities import ModelCapabilities, infer_model_capabilities
+from .claude_models import NEWEST, OTHER_MODEL, UNRECOGNIZED, ClaudeModel, claude_model
 from .executables import find_program
 
 logger = logging.getLogger(__name__)
@@ -59,16 +69,59 @@ DEFAULT_MODELS = (
     "claude-fable-5-1",
     "claude-haiku-4-5-20251001",
 )
-# Extended-thinking budget per Lumi thinking mode; "default" and "off" send none.
+# Lumi's thinking levels ("default" sends nothing; "off" is per family,
+# lumi/claude_models.py). Models that take adaptive thinking get the level as
+# its effort; models that take only a fixed budget get this many tokens.
+EFFORT_LEVELS = {"low": "low", "med": "medium", "medium": "medium", "high": "high", "max": "max"}
 THINKING_BUDGETS = {"low": 2048, "med": 6144, "medium": 6144, "high": 12288, "max": 24576}
 THINKING_MODES = {"", "default", "off", *THINKING_BUDGETS}
 DEFAULT_MAX_TOKENS = 16384
-MAX_OUTPUT_TOKENS = 32000
+# Thinking counts toward max_tokens, and adaptive thinking has no budget of its
+# own, so a request at a thinking level asks for at least this much room at
+# each effort (Anthropic suggests 64K at the highest levels). A smaller request
+# (a session title, a summary) would otherwise end inside the thinking. At the
+# default level, a model that thinks anyway gets DEFAULT_MAX_TOKENS.
+THINKING_ROOM = {"low": 16384, "medium": 16384, "high": 32000, "max": 64000}
+# Bedrock deducts a request's max_tokens from the tokens-per-minute quota when
+# it starts and refunds what went unused at the end (AWS, "How tokens are
+# counted in Amazon Bedrock"), so there the room stays within what Lumi asked
+# for before (a 24,576-token budget took 28,672).
+BEDROCK_THINKING_ROOM = 32000
 REASONING_PROVIDER = "anthropic"
+# A reasoning_details entry with what replaying a response's thinking needs:
+# where its blocks sat ("order", see block_order) and a digest of the request
+# that produced it ("prefix", see request_prefix).
+REPLAY_DETAIL = "replay"
+_THINKING_BLOCKS = frozenset({"thinking", "redacted_thinking"})
 _EPHEMERAL = {"type": "ephemeral"}
 _TOOL_ID = re.compile(r"[^A-Za-z0-9_-]")
 _DATA_URL = re.compile(r"data:(image/[A-Za-z0-9.+-]+);base64,(.*)", re.DOTALL)
 PLATFORMS = ("direct", "bedrock", "vertex")
+# A 400 naming these refused the request's thinking or effort settings; one
+# naming a signature or a modified block refused replayed thinking instead.
+_THINKING_TERMS = ("thinking", "budget_tokens", "output_config", "effort", "between_tools")
+_REPLAY_TERMS = ("signature", "cannot be modified")
+# Preserved thinking's 400 for a block whose conversation changed. Sending the
+# same body again never clears it; without that block and every thinking
+# block after it, the request goes through.
+_UNBOUND = "bound to a different conversation"
+_NAMED_BLOCK = re.compile(r"messages\.(\d+)\.content\.(\d+)")
+
+
+def describe_thinking(payload: dict) -> str:
+    """The thinking settings a request carries, in words, for error messages."""
+    thinking = payload.get("thinking") if isinstance(payload.get("thinking"), dict) else {}
+    effort = str((payload.get("output_config") or {}).get("effort") or "")
+    kind = thinking.get("type")
+    if kind == "enabled":
+        return f"a {int(thinking.get('budget_tokens') or 0):,}-token thinking budget"
+    if kind == "adaptive":
+        return f"adaptive thinking at {effort} effort" if effort else "adaptive thinking"
+    if kind == "disabled":
+        return "thinking disabled"
+    if kind == "between_tools":
+        return "no thinking before the answer (between_tools)"
+    return f"{effort} effort" if effort else ""
 
 
 def _tool_id(value: Any) -> str:
@@ -120,6 +173,174 @@ def _parse_arguments(raw: Any) -> dict:
     return parsed if isinstance(parsed, dict) else {"_value": parsed}
 
 
+def block_order(blocks: list[dict]) -> list[list] | None:
+    """Where a response's thinking, text and tool calls sat, when replay can't infer it.
+
+    History keeps a response's signed thinking (``reasoning_details``), its
+    text (``assistant_content``) and its tool calls apart, and a replayed turn
+    is rebuilt as every thinking block, then the text, then the calls: the
+    usual order. The API wants the assistant turn back exactly as it came (a
+    thinking block is bound to what preceded it), so a response in any other
+    order, such as a progress note before each of several calls or text before
+    a thinking block, records it: ``["thinking", i]`` is its i-th thinking
+    block, ``["text", n]`` the next n characters of its text and
+    ``["tool_use", j]`` its j-th call. ``None`` when there's nothing to record.
+    """
+    order: list[list] = []
+    counts = {"thinking": 0, "tool_use": 0}
+    for block in blocks:
+        kind = block.get("type")
+        if kind in _THINKING_BLOCKS:
+            order.append(["thinking", counts["thinking"]])
+            counts["thinking"] += 1
+        elif kind == "tool_use":
+            order.append(["tool_use", counts["tool_use"]])
+            counts["tool_use"] += 1
+        elif kind == "text" and block.get("text"):
+            order.append(["text", len(str(block["text"]))])
+    shape = "".join({"thinking": "t", "text": "x", "tool_use": "u"}[kind] for kind, _ in order)
+    if not counts["thinking"] or re.fullmatch(r"t*x?u*", shape):
+        return None
+    return order
+
+
+def _order_fits(order: Any, thinking: list[dict], text: str, tools: list[dict]) -> bool:
+    """Whether a recorded order still describes this turn (a redaction or older history may not)."""
+    try:
+        entries = [(str(kind), int(value)) for kind, value in order]
+    except (TypeError, ValueError):
+        return False
+    return (all(kind in {"thinking", "text", "tool_use"} and value >= 0 for kind, value in entries)
+            and [value for kind, value in entries if kind == "thinking"] == list(range(len(thinking)))
+            and [value for kind, value in entries if kind == "tool_use"] == list(range(len(tools)))
+            and sum(value for kind, value in entries if kind == "text") == len(text))
+
+
+def text_digest(text: str) -> str:
+    """A short digest of a response's text, to tell whether it changed since."""
+    return hashlib.sha256(str(text or "").encode("utf-8")).hexdigest()[:16]
+
+
+def _replayed_blocks(thinking: list[dict], text: str, tools: list[dict], order: Any = None,
+                     digest: str = "") -> list[dict]:
+    """An assistant turn's blocks, in the order the model wrote them (``block_order``).
+
+    ``digest`` is the text_digest of the response's text. A turn whose text
+    changed since (an organization's redaction rules, a secret scan) can't
+    put its thinking back where it sat, and the API refuses a thinking block
+    moved elsewhere, so that turn goes back without its thinking.
+    """
+    plain = [*([{"type": "text", "text": text}] if text.strip() else []), *tools]
+    if not order:
+        return [*thinking, *plain]
+    if not _order_fits(order, thinking, text, tools) or (digest and text_digest(text) != digest):
+        return plain
+    blocks: list[dict] = []
+    position = 0
+    for kind, value in order:
+        if kind == "thinking":
+            blocks.append(thinking[int(value)])
+        elif kind == "tool_use":
+            blocks.append(tools[int(value)])
+        else:
+            segment = text[position:position + int(value)]
+            position += int(value)
+            if segment.strip():
+                blocks.append({"type": "text", "text": segment})
+    return blocks
+
+
+def _without_cache_control(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {key: _without_cache_control(item) for key, item in value.items() if key != "cache_control"}
+    if isinstance(value, list):
+        return [_without_cache_control(item) for item in value]
+    return value
+
+
+def _canonical(value: Any) -> bytes:
+    """``value`` as bytes that change exactly when the API would see it changed (cache_control may move)."""
+    return json.dumps(_without_cache_control(value), sort_keys=True, separators=(",", ":")).encode("ascii")
+
+
+def _prefix_hash(system: Any, tools: Any) -> Any:
+    digest = hashlib.sha256()
+    digest.update(_canonical({"system": system or None, "tools": tools or None}))
+    return digest
+
+
+def _thinking_key(block: dict) -> str:
+    return str(block.get("signature") or block.get("data") or "")
+
+
+def request_prefix(payload: dict) -> str:
+    """A digest of what a response's thinking is bound to: the request's system prompt, tools and messages."""
+    digest = _prefix_hash(payload.get("system"), payload.get("tools"))
+    for message in payload.get("messages") or []:
+        digest.update(_canonical(message))
+    return digest.hexdigest()
+
+
+def bound_thinking(system: Any, tools: Any, messages: list[dict], prefixes: dict[str, str]) -> list[dict]:
+    """``messages`` without the thinking a model with preserved thinking would refuse.
+
+    Claude Opus 5.5, Fable 5.1 and Sonnet 5.5 bind each thinking block to the
+    system prompt, the tools and every message before it, as they were sent.
+    Lumi's system prompt carries each turn's recalled context, a
+    ``search_tools`` call adds tools and a nudge is sent once, so an earlier
+    block can be bound to a conversation that has since changed; replaying it
+    is a 400 for accounts created on or after 2026-08-31. A response's blocks
+    whose request (``prefixes``: its request_prefix digest by signature) no
+    longer matches what now precedes them are left out, and the model
+    continues without that reasoning. Blocks made after such a change, against
+    the conversation as sent since, still match and stay. A block without a
+    digest (older history) is left out too.
+    """
+    digest = _prefix_hash(system, tools)
+    checked: list[dict] = []
+    for message in messages:
+        if message.get("role") == "assistant":
+            keys = [_thinking_key(block) for block in message["content"] if block.get("type") in _THINKING_BLOCKS]
+            if keys and any(prefixes.get(key) != digest.hexdigest() for key in keys):
+                message = {**message, "content": [block for block in message["content"]
+                                                  if block.get("type") not in _THINKING_BLOCKS]}
+        checked.append(message)
+        digest.update(_canonical(message))
+    return checked
+
+
+def unbound_thinking(payload: dict, message: str) -> list[str]:
+    """The thinking blocks to leave out after preserved thinking's "bound to a different conversation" 400.
+
+    The API names the first block it refused (``messages.N.content.M``). That
+    block and every thinking block after it go: each block records the one
+    before it, so none after can stay once it's gone, while the blocks before
+    it are unaffected. Without a name, every block goes.
+    """
+    named = _NAMED_BLOCK.search(message)
+    start = (int(named[1]), int(named[2])) if named else (0, 0)
+    keys: list[str] = []
+    for i, entry in enumerate(payload.get("messages") or []):
+        content = entry.get("content") if isinstance(entry.get("content"), list) else []
+        for j, block in enumerate(content):
+            if isinstance(block, dict) and block.get("type") in _THINKING_BLOCKS and (i, j) >= start:
+                keys.append(_thinking_key(block))
+    return [key for key in keys if key]
+
+
+class ReplayedThinking(list):
+    """A response's signed thinking blocks, as sent back.
+
+    ``order`` is where they sat among its text and tool calls (block_order),
+    ``text`` the text_digest of its text when an order is recorded, and
+    ``prefix`` the digest of the request that produced them (request_prefix).
+    """
+
+    order: list | None = None
+    text: str = ""
+    prefix: str = ""
+
+
 def to_anthropic_messages(
     messages: list[dict],
     thinking_by_call: dict[str, list[dict]] | None = None,
@@ -128,7 +349,9 @@ def to_anthropic_messages(
 
     Consecutive messages with the same role merge, because the API requires
     strict user/assistant alternation. Tool results become ``tool_result``
-    blocks at the front of the following user message.
+    blocks at the front of the following user message. An assistant turn's
+    signed thinking (``thinking_by_call``) goes back in the order the model
+    wrote it (``ReplayedThinking.order``, see :func:`block_order`).
     """
     thinking_by_call = thinking_by_call or {}
     system_parts: list[str] = []
@@ -153,25 +376,20 @@ def to_anthropic_messages(
         elif role == "user":
             add("user", _content_blocks(message.get("content")))
         elif role == "assistant":
-            blocks: list[dict] = []
             calls = [call for call in message.get("tool_calls") or [] if isinstance(call, dict)]
-            for call in calls:
-                replay = thinking_by_call.get(str(call.get("id") or ""))
-                if replay:
-                    blocks.extend(replay)
-                    break
-            text = _text(message.get("content"))
-            if text.strip():
-                blocks.append({"type": "text", "text": text})
+            replay: list[dict] = next((thinking_by_call[str(call.get("id") or "")] for call in calls
+                                       if thinking_by_call.get(str(call.get("id") or ""))), [])
+            tools: list[dict] = []
             for call in calls:
                 function = call.get("function") if isinstance(call.get("function"), dict) else {}
-                blocks.append({
+                tools.append({
                     "type": "tool_use",
                     "id": _tool_id(call.get("id")),
                     "name": str(function.get("name") or "tool"),
                     "input": _parse_arguments(function.get("arguments")),
                 })
-            add("assistant", blocks)
+            add("assistant", _replayed_blocks(replay, _text(message.get("content")), tools,
+                                              getattr(replay, "order", None), getattr(replay, "text", "")))
         elif role == "tool":
             add("user", [{
                 "type": "tool_result",
@@ -493,12 +711,33 @@ class AnthropicBackend(KimiBackend):
         self._offered_tools: list[dict] = []
         self._credentials = credentials or (lambda: aws_credentials(self.aws_profile))
         self._access_token = access_token or google_access_token
-        profile = infer_model_capabilities(self.model)
+        self._claude = self._family()
+        # A name Lumi doesn't recognize on an Anthropic-compatible gateway may
+        # not be Claude (DeepSeek, GLM, Kimi): it keeps the capabilities its
+        # name suggests, and the connection's own settings. Everything else
+        # here is Claude, even an id that doesn't say so (a Bedrock inference
+        # profile ARN).
+        profile = (infer_model_capabilities(self.model) if self._claude is OTHER_MODEL
+                   else infer_model_capabilities(self.model, claude=self._claude))
         overrides = {
             key: value for key, value in (capability_overrides or {}).items()
             if key in {"context_window", "modalities"} and value
         }
         self._capabilities = ModelCapabilities(**{**profile.to_dict(), **overrides})
+        # A model with no thinking levels (one that can't think, or an
+        # organization's capability override saying "reasoning": false) is sent
+        # no thinking settings at any level.
+        self._thinking_controls = bool(self._capabilities.reasoning_levels)
+        # Set when the API refused the newest family's thinking fields for an
+        # id Lumi doesn't know: later requests go without them.
+        self._thinking_refused = False
+        # Thinking blocks the API said are bound to a different conversation
+        # (unbound_thinking), left out of every later request.
+        self._unbound: set[str] = set()
+        # An output limit the person chose that is smaller than this level's
+        # thinking may need (limit, needed), and whether they were told.
+        self._short_limit: tuple[int, int] | None = None
+        self._told_short_limit = False
         self._timeout = httpx.Timeout(
             connect=float(os.environ.get("LUMI_ANTHROPIC_CONNECT_TIMEOUT_SEC", "15")),
             read=float(os.environ.get("LUMI_ANTHROPIC_READ_TIMEOUT_SEC", "600")),
@@ -507,6 +746,22 @@ class AnthropicBackend(KimiBackend):
         )
 
     # ── Identity and capability ─────────────────────────────────────────
+
+    def _family(self) -> ClaudeModel:
+        """How this model takes thinking (lumi/claude_models.py), on this platform.
+
+        An id Lumi doesn't recognize could be any model. The Anthropic API
+        itself serves only Claude, and a new name there most likely takes the
+        newest family's shape (a refusal is retried without it, see stream).
+        Behind an unrecognized Bedrock or Vertex AI id (an application
+        inference profile, a provisioned throughput ARN) may sit any Claude
+        model, and behind an unrecognized name on another Anthropic-compatible
+        endpoint any model at all: neither is sent a thinking field.
+        """
+        family = claude_model(self.model)
+        if family is not UNRECOGNIZED or self.platform != "direct":
+            return family
+        return NEWEST if self.base_url == DEFAULT_BASE_URL else OTHER_MODEL
 
     def _default_base_url(self) -> str:
         if self.platform == "bedrock":
@@ -625,22 +880,70 @@ class AnthropicBackend(KimiBackend):
             )
         return {}
 
-    def _thinking_by_call(self, history: list) -> dict[str, list[dict]]:
-        """Signed thinking this model produced, keyed by the tool call it preceded."""
-        replay: dict[str, list[dict]] = {}
+    def _thinking_by_call(self, history: list) -> dict[str, ReplayedThinking]:
+        """Signed thinking this model produced, keyed by the tool call it preceded.
+
+        Each response's blocks carry where they sat (block_order), a digest
+        of its text and the digest of the request that produced them
+        (request_prefix). Blocks the API said are bound to a different
+        conversation stay out.
+        """
+        replay: dict[str, ReplayedThinking] = {}
         for turn in history:
             if turn.get("role") != "tool_call" or turn.get("provider_model") != self.model:
                 continue
-            blocks = [
-                {key: value for key, value in detail.items() if key != "provider"}
-                for detail in turn.get("reasoning_details") or []
-                if isinstance(detail, dict) and detail.get("provider") == REASONING_PROVIDER
-                and detail.get("type") in {"thinking", "redacted_thinking"}
-            ]
+            details = [detail for detail in turn.get("reasoning_details") or []
+                       if isinstance(detail, dict) and detail.get("provider") == REASONING_PROVIDER]
+            blocks = ReplayedThinking({key: value for key, value in detail.items() if key != "provider"}
+                                      for detail in details if detail.get("type") in _THINKING_BLOCKS
+                                      and _thinking_key(detail) not in self._unbound)
             if blocks:
+                meta = next((detail for detail in details if detail.get("type") == REPLAY_DETAIL), {})
+                blocks.order, blocks.prefix = meta.get("order"), str(meta.get("prefix") or "")
+                blocks.text = str(meta.get("text_digest") or "")
                 replay[_tool_id(turn.get("call_id"))] = blocks
                 replay[str(turn.get("call_id") or "")] = blocks
         return replay
+
+    def _thinking_request(self, budget: int) -> tuple[dict | None, str, int]:
+        """This request's ``thinking`` field, its effort, and the least max_tokens it needs.
+
+        Lumi's level in the shape this Claude family accepts
+        (lumi/claude_models.py): adaptive thinking at that effort where the
+        model has it, a fixed budget where that's all it takes. "off" sends
+        what stops thinking there (nothing, or Sonnet 5.5's "between_tools"),
+        or the lowest effort on a model that always thinks or shouldn't stop.
+        "default" sends nothing, and neither does any level for an id Lumi
+        can't place.
+
+        Thinking counts toward max_tokens, so a request that may think asks
+        for room for it: at a level, what that effort may use (on Bedrock no
+        more than BEDROCK_THINKING_ROOM); at the default level, on a model
+        that thinks anyway, Lumi's usual DEFAULT_MAX_TOKENS.
+
+        ``budget`` is the level's fixed budget, or 0 for a tool loop that
+        began without thinking, which the API refuses to continue with one;
+        adaptive thinking has no such rule, so only budget models use it.
+        """
+        family = self._claude
+        mode = self.thinking_mode
+        if family.thinking == "none" or self._thinking_refused:
+            return None, "", 0
+        if mode == "default" or not self._thinking_controls:
+            return None, "", DEFAULT_MAX_TOKENS if family.thinks_by_default else 0
+        thinking: dict | None = None
+        if mode == "off":
+            if family.off == "between_tools":
+                return {"type": "between_tools"}, "", 0
+            if family.off != "low_effort":
+                return None, "", 0
+            effort = "low"
+        elif family.thinking == "budget":
+            return ({"type": "enabled", "budget_tokens": budget}, "", budget + 4096) if budget else (None, "", 0)
+        else:
+            thinking, effort = {"type": "adaptive"}, EFFORT_LEVELS[mode]
+        room = THINKING_ROOM[effort]
+        return thinking, effort, (min(room, BEDROCK_THINKING_ROOM) if self.platform == "bedrock" else room)
 
     def _payload(self, user_msg, conversation_history, instructions, tools, max_tokens) -> dict:
         tool_defs = anthropic_tools(tools)
@@ -666,24 +969,43 @@ class AnthropicBackend(KimiBackend):
             # The API rejects a tool-use loop whose assistant turn started
             # without thinking (for example after switching models mid-loop).
             budget = 0
-        limit = int(max_tokens or DEFAULT_MAX_TOKENS)
-        if budget:
-            limit = max(limit, budget + 4096)
+        system_blocks = [{"type": "text", "text": system}] if system.strip() else []
+        if self._claude.binds_thinking:
+            prefixes = {_thinking_key(block): replay.prefix
+                        for replay in self._thinking_by_call(conversation_history).values() for block in replay}
+            messages = bound_thinking(system_blocks, tool_defs, messages, prefixes)
+        thinking, effort, room = self._thinking_request(budget)
+        if isinstance(max_tokens, ChosenMaxTokens):
+            # The person's own limit stands, however little room it leaves
+            # (stream says so). A fixed budget has to fit below it.
+            limit = int(max_tokens)
+            if thinking and thinking.get("type") == "enabled":
+                fitted = min(int(thinking["budget_tokens"]), limit - 4096)
+                thinking = {"type": "enabled", "budget_tokens": fitted} if fitted >= 1024 else None
+            self._short_limit = (limit, room) if room > limit else None
+        else:
+            limit = max(int(max_tokens or DEFAULT_MAX_TOKENS), room)
         payload: dict[str, Any] = {
             "model": self.model,
-            "max_tokens": min(limit, MAX_OUTPUT_TOKENS),
+            "max_tokens": min(limit, self._claude.max_output),
             "messages": messages,
             "stream": True,
         }
-        if system.strip():
-            payload["system"] = [{"type": "text", "text": system, "cache_control": dict(_EPHEMERAL)}]
+        if system_blocks:
+            payload["system"] = [{**system_blocks[0], "cache_control": dict(_EPHEMERAL)}]
         if tool_defs:
             tool_defs[-1] = {**tool_defs[-1], "cache_control": dict(_EPHEMERAL)}
             payload["tools"] = tool_defs
         if tool_choice:
             payload["tool_choice"] = tool_choice
-        if budget:
-            payload["thinking"] = {"type": "enabled", "budget_tokens": budget}
+        # Every request of a turn carries the same settings, apart from a
+        # budget left out above: the API keeps one thinking mode per assistant
+        # turn, and a change restarts the prompt cache. Lumi never sends
+        # temperature, top_p or top_k, which current models refuse.
+        if thinking:
+            payload["thinking"] = thinking
+        if effort:
+            payload["output_config"] = {"effort": effort}
         last_user = next((m for m in reversed(messages) if m["role"] == "user"), None)
         if last_user and last_user["content"]:
             last_user["content"][-1] = {**last_user["content"][-1], "cache_control": dict(_EPHEMERAL)}
@@ -734,9 +1056,41 @@ class AnthropicBackend(KimiBackend):
             after = 0
         return min(max(after, 1.5 * (2 ** attempt)), 30.0)
 
-    def _user_error_message(self, status_code: int, error_type: str, message: str) -> str:
+    def _repaired(self, payload: dict, message: str) -> str:
+        """Why a request the API refused with a 400 can go once more, or ''.
+
+        Preserved thinking's "bound to a different conversation": the named
+        block and every thinking block after it stay out of this request and
+        every later one (sending the same body again never clears it). The
+        newest family's thinking fields, sent to an id Lumi doesn't know and
+        refused: they stay out from now on.
+        """
+        lowered = message.lower()
+        if _UNBOUND in lowered:
+            keys = set(unbound_thinking(payload, message)) - self._unbound
+            if not keys:
+                return ""
+            self._unbound |= keys
+            return f"left out {len(keys)} thinking block(s) bound to a different conversation"
+        if (self._claude is NEWEST and not self._thinking_refused
+                and ("thinking" in payload or "output_config" in payload)
+                and any(term in lowered for term in _THINKING_TERMS)
+                and not any(term in lowered for term in _REPLAY_TERMS)):
+            self._thinking_refused = True
+            return f"{self.model} refused the newest Claude models' thinking settings ({describe_thinking(payload)})"
+        return ""
+
+    def _user_error_message(self, status_code: int, error_type: str, message: str, *, sent: str = "") -> str:
+        """What to tell the person about a refused request; ``sent`` describes its thinking settings."""
         label = self.PROVIDER_LABEL
         lowered = message.lower()
+        if (status_code == 400 and sent and any(term in lowered for term in _THINKING_TERMS)
+                and not any(term in lowered for term in _REPLAY_TERMS)):
+            # The model refused Lumi's thinking or effort settings: say what was
+            # sent and how to get going again, never just "request failed".
+            detail = message.strip().rstrip(".")
+            return (f"{label} refused the thinking settings Lumi sent for {self.model} ({sent}): {detail}. "
+                    "Set this model's thinking level to the provider default.")
         if status_code == 401 or "unrecognizedclient" in error_type or "authentication" in error_type:
             return f"{label} rejected the credentials. Check the key or sign-in for this connection."
         if status_code == 403:
@@ -807,6 +1161,19 @@ class AnthropicBackend(KimiBackend):
         except ValueError as exc:
             yield (EVENT_ERROR, {"message": str(exc)})
             return
+        if self._short_limit and not self._told_short_limit:
+            self._told_short_limit = True
+            limit, needed = self._short_limit
+            notice = (f"{self.model} thinks within the output limit you set ({limit:,} tokens), and at this "
+                      f"thinking level Lumi would allow it {needed:,}. Your limit stands, so an answer may stop "
+                      "early.")
+            logger.warning("%s: %s", self.PROVIDER_LABEL, notice)
+            yield (EVENT_BACKEND_STATUS, {"kind": "output_limit", "message": notice, "model": self.model,
+                                          "limit": limit, "needed": needed})
+        sent = describe_thinking(payload)
+        # What this response's thinking will be bound to (bound_thinking).
+        prefix = request_prefix(payload) if self._claude.binds_thinking else ""
+        repaired = False
         blocks: dict[int, dict] = {}
         usage: dict[str, Any] = {}
         response_id = ""
@@ -841,6 +1208,18 @@ class AnthropicBackend(KimiBackend):
                             logger.warning("%s request failed: status=%d type=%s retryable=%s model=%s",
                                            self.PROVIDER_LABEL, response.status_code, error_type or "unknown",
                                            retryable, self.model)
+                            why = "" if repaired or response.status_code != 400 else self._repaired(payload, message)
+                            if why:
+                                # Nothing was generated: the request goes once
+                                # more without what the API refused.
+                                logger.warning("%s: %s; sending the request again.", self.PROVIDER_LABEL, why)
+                                repaired = True
+                                payload = self._payload(user_msg, conversation_history, instructions, tools,
+                                                        max_tokens)
+                                body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+                                sent = describe_thinking(payload)
+                                prefix = request_prefix(payload) if self._claude.binds_thinking else ""
+                                continue
                             if retryable and attempt < attempts - 1:
                                 delay = (self._rate_limit_delay(response, attempt) if supervised
                                          else self._http_retry_delay(response, attempt))
@@ -854,7 +1233,8 @@ class AnthropicBackend(KimiBackend):
                                 attempt += 1
                                 continue
                             yield (EVENT_ERROR, {
-                                "message": self._user_error_message(response.status_code, error_type, message),
+                                "message": self._user_error_message(response.status_code, error_type, message,
+                                                                    sent=sent),
                                 # A number, safe to keep where provider text isn't (the guarded ledger).
                                 "status_code": response.status_code,
                                 # An overload refused the request before generating anything.
@@ -958,15 +1338,21 @@ class AnthropicBackend(KimiBackend):
         except ValueError as exc:
             yield (EVENT_ERROR, {"message": str(exc)})
             return
-        yield from self._finish(blocks, usage, response_id)
+        yield from self._finish(blocks, usage, response_id, prefix)
 
-    def _finish(self, blocks: dict[int, dict], usage: dict, response_id: str) -> Iterator[Tuple[str, dict]]:
+    def _finish(self, blocks: dict[int, dict], usage: dict, response_id: str,
+                prefix: str = "") -> Iterator[Tuple[str, dict]]:
+        """The response's tool calls, with its signed thinking to replay, then its usage.
+
+        ``prefix``: the request_prefix digest of the request, for a model that
+        binds thinking to the conversation before it.
+        """
         ordered = [blocks[index] for index in sorted(blocks)]
         thinking = [
             ({"type": "thinking", "thinking": block.get("thinking", ""), "signature": block.get("signature", "")}
              if block.get("type") == "thinking"
              else {"type": "redacted_thinking", "data": block.get("data", "")})
-            for block in ordered if block.get("type") in {"thinking", "redacted_thinking"}
+            for block in ordered if block.get("type") in _THINKING_BLOCKS
         ]
         assistant_content = "".join(block.get("text", "") for block in ordered if block.get("type") == "text")
         calls = []
@@ -985,7 +1371,17 @@ class AnthropicBackend(KimiBackend):
             })
         reasoning_text = "\n\n".join(item.get("thinking", "") for item in thinking if item.get("thinking"))
         stable_id = response_id or _new_call_id(self.model, assistant_content + reasoning_text, 0)
+        # Every thinking block goes back, including an empty one (the default
+        # display on current models returns no text, only the signature).
         details = [{**item, "provider": REASONING_PROVIDER} for item in thinking]
+        order = block_order(ordered)
+        # A recorded order comes with a digest of the text it placed, so a
+        # turn whose text changed since goes back without its thinking.
+        replay = {"order": order, "text_digest": text_digest(assistant_content) if order else "",
+                  "prefix": prefix if thinking else ""}
+        if any(replay.values()):
+            details.append({"type": REPLAY_DETAIL, "provider": REASONING_PROVIDER,
+                            **{key: value for key, value in replay.items() if value}})
         for call in calls:
             yield (EVENT_TOOL_CALL, {
                 "name": call["function"]["name"],

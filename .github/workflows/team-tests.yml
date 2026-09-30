@@ -22,6 +22,7 @@ on:
       - 'lumi/backends.py'
       # The adapters team participants run on (engine/swarming/connections.py).
       - 'lumi/anthropic_api.py'
+      - 'lumi/claude_models.py'
       - 'lumi/openai_api.py'
       - 'lumi/openrouter.py'
       - 'lumi/sonn.py'

@@ -638,6 +638,22 @@ def parse(data: Any, *, source: str, trusted_keys: dict[str, str] | None = None,
     settings = _section(document, "settings")
     if not all(isinstance(k, str) and "." in k for k in settings):
         raise PolicyError("'settings' must map 'section.key' names to values.")
+    # Which Lumi Cloud this computer uses, and the sign-in recorded for it, come only from the machine
+    # policy's own 'cloud' section (lumi/cloud.py): a lock that moved the address would take the
+    # person's account tokens to another Lumi Cloud. Tasks from chat may still be turned off.
+    cloud_locks = sorted(name for name in settings if name.startswith("cloud.") and name != "cloud.remote_tasks")
+    if cloud_locks:
+        raise PolicyError(f"'settings' can't lock '{cloud_locks[0]}': the Lumi Cloud address comes only from a "
+                          "machine policy's 'cloud' section (only 'cloud.remote_tasks' may be locked).")
+    if "cloud.remote_tasks" in settings and not isinstance(settings["cloud.remote_tasks"], bool):
+        raise PolicyError("'cloud.remote_tasks' must be true or false.")
+    from .feedback import validate_policy_settings as validate_feedback_settings
+
+    try:
+        # privacy.feedback, privacy.feedback_diagnostics and privacy.feedback_url (lumi/feedback.py)
+        validate_feedback_settings(settings)
+    except ValueError as exc:
+        raise PolicyError(str(exc)) from exc
     from .offline_rules import validate_policy_settings as validate_offline_settings
     from .update_channels import validate_policy_settings
 
@@ -687,7 +703,14 @@ def parse(data: Any, *, source: str, trusted_keys: dict[str, str] | None = None,
         raise PolicyError("mcp.allow_stdio must be true or false.")
     extensions = _section(document, "extensions")
     files = _section(document, "files")
-    _section(document, "cloud")  # read by load(); another type would silently skip enrollment
+    cloud_section = _section(document, "cloud")  # read by load(); another type would silently skip enrollment
+    if cloud_section.get("url") is not None:
+        from .cloud import CloudError, normalize_url
+
+        try:
+            normalize_url(str(cloud_section.get("url") or ""))
+        except CloudError as exc:
+            raise PolicyError(f"cloud.url: {exc}") from exc
     shell = _section(document, "shell")
     shell_rules = shell.get("rules") or []
     if not isinstance(shell_rules, list) or not all(isinstance(rule, dict) for rule in shell_rules):

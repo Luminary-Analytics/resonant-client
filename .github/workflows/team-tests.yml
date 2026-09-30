@@ -47,6 +47,9 @@ concurrency:
   group: team-tests-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
 jobs:
   team-pytest:
     # windows-latest, like tests.yml: the owned process trees, named job

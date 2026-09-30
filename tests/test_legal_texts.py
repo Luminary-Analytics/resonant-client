@@ -232,14 +232,14 @@ def test_the_release_workflow_tells_a_pre_release_the_same_way():
     as v0.20.0rc1 can't publish a non-prerelease GitHub Release (the PR #104 review)."""
     workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
     patterns = re.findall(r'"\$VERSION" =~ \^(.+?)\$ \]\]', workflow)
-    assert len(patterns) == 2 and len(set(patterns)) == 1  # the Windows and macOS jobs
+    assert len(patterns) == 3 and len(set(patterns)) == 1  # the Windows build and release jobs, and macOS's
     shell = re.compile(patterns[0].replace("[0-9]", r"\d"))
     for version in ("0.20.0", "0.20.0-beta.1", "0.20.0-rc.3", "0.20.0rc1", "0.20.0.dev0", "0.20.0-preview.1"):
         assert bool(shell.fullmatch(version)) is bool(legal_texts.RELEASE_VERSION.fullmatch(version)), version
     assert "contains(steps.version.outputs.version, '-')" not in workflow
     assert "prerelease: ${{ steps.version.outputs.prerelease == 'true' }}" in workflow
     assert workflow.count("if: ${{ steps.version.outputs.prerelease == 'false' }}") == 2  # the MSI and its signing
-    assert workflow.count('if [[ "$VERSION" == *-* ]]; then PRERELEASE=true; else PRERELEASE=false; fi') == 2
+    assert workflow.count('if [[ "$VERSION" == *-* ]]; then PRERELEASE=true; else PRERELEASE=false; fi') == 3
 
 
 def test_the_texts_carry_no_drafting_notes():

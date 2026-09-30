@@ -19,7 +19,8 @@ successful push alone is not deployment. See
    part of an existing release.
 3. Check Lumi's terms: `python packaging/legal_texts.py release-check --release
    --version X.Y.Z` must pass (see [Lumi's terms](#lumis-terms)). The release
-   workflow runs it first and fails while any fact is still to be provided.
+   workflow runs it in its `build` and `macos` jobs, before anything is built,
+   and fails while any fact is still to be provided.
 4. Run the checks below. Investigate failures rather than weakening gates.
 5. Build and smoke-test the final source. Record what was actually exercised,
    especially whether provider generation was live or mocked.
@@ -35,9 +36,11 @@ git diff --check
 ```
 
 On Windows, run `./scripts/build_clean.ps1`. It builds in a fresh environment
-from the hash-pinned `packaging/requirements-release.txt`, fetches verified
-ripgrep/web assets, writes the third-party notices (failing on unreviewed
-copyleft licenses), runs PyInstaller, and enforces the bundle policy. Add
+from the hash-pinned `packaging/requirements-release.txt` and nothing else
+(the pip that comes with the Python, and Lumi from the checkout with no index),
+fetches verified ripgrep/web assets, writes the third-party notices (failing
+on unreviewed copyleft licenses), runs PyInstaller, and enforces the bundle
+policy. Add
 `-SbomPath dist/lumi-sbom.cdx.json` for the CycloneDX SBOM; that needs the
 pinned tools (`python -m pip install --require-hashes -r
 packaging/tools-requirements.txt`) in the Python running the script. Do not
@@ -232,12 +235,19 @@ private key stays outside source control. WinSparkle tools are under
 `packaging/winsparkle/`.
 
 Every job that signs runs in the `release` environment. Restrict it to `v*`
-tags and keep the signing secrets there rather than in the repository, so
-only a tagged release can use them: pull requests run workflow files from
-their own branch, and a repository secret could be read out by one that
-names it. Settings › Environments › `release` › Deployment branches and tags ›
-*Selected branches and tags* › add the tag rule `v*`; then add each secret to
-the environment and delete the repository copy:
+tags, make the owner its required reviewer, and keep the signing secrets
+there rather than in the repository, so only a tagged release a person
+approved can use them: pull requests run workflow files from their own
+branch, and a repository secret could be read out by one that names it.
+Settings › Environments › `release` › Deployment branches and tags ›
+*Selected branches and tags* › add the tag rule `v*`; Required reviewers ›
+the owner. Add a tag ruleset too (Settings › Rules › Rulesets › *New tag
+ruleset*: target `v*`; *Restrict creations*, *Restrict updates* and *Restrict
+deletions*), so that only the owner can create, move or delete a release tag.
+Its bypass list takes roles, teams and apps, not people: give it only the
+Repository admin role while the owner is the only admin, or a team with the
+owner alone. The release jobs also refuse a tag whose commit isn't on main.
+Then add each secret to the environment and delete the repository copy:
 
 ```sh
 gh secret set EDDSA_PRIVATE_KEY --env release --repo Luminary-Analytics/resonant-client < eddsa_priv.key
@@ -253,14 +263,32 @@ EdDSA validates the installer bytes against the update feed. It is separate
 from Windows Authenticode publisher signing; do not describe an update-feed
 signature as a SmartScreen-trusted publisher certificate.
 
-Authenticode signing of `lumi.exe` and the installer runs through
-`packaging/sign_windows.ps1` when credentials are configured, and otherwise
-leaves a warning on the run; see
-[pipeline architecture](docs/release-pipeline.md#authenticode). Buying a
-certificate or a signing service is an account decision for the owner. Once
-signing works, set the repository variable `WINDOWS_SIGNING_REQUIRED` to
+Authenticode signing of `lumi.exe`, the MSI and the installer runs through
+`.github/actions/authenticode-sign` and `packaging/sign_windows.ps1` when a
+signer is configured, and otherwise leaves a warning on the run; see
+[pipeline architecture](docs/release-pipeline.md#authenticode). The signer
+Lumi means to use is **Azure Artifact Signing**, which stores no secret: the
+release job signs in to Azure with its short-lived GitHub OIDC token, the
+only job allowed to ask for one. The owner's setup, in this order, is in
+[Azure Artifact Signing](docs/release-pipeline.md#azure-artifact-signing):
+protect the `release` environment (the `v*` tag rule and the owner as
+required reviewer) and add the tag ruleset before anything trusts it; create
+the app registration;
+add its federated credential for
+`repo:Luminary-Analytics/resonant-client:environment:release` with audience
+`api://AzureADTokenExchange`; give it the "Artifact Signing Certificate
+Profile Signer" role on the certificate profile; and fill in the environment
+variables `ARTIFACT_SIGNING_ENDPOINT`, `ARTIFACT_SIGNING_ACCOUNT`,
+`ARTIFACT_SIGNING_PROFILE`, `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`,
+`AZURE_SUBSCRIPTION_ID` and `WINDOWS_SIGN_EXPECTED_SUBJECT` (the certificate's
+subject, exactly as Windows shows it: a signature by any other fails the
+release). A PFX certificate or another signer's command works too, one at a
+time, with the expected subject. The release publishes only the files it
+signed, checked unchanged just before each upload
+(`packaging/check_release_files.ps1`). Once signing works, set
+`WINDOWS_SIGNING_REQUIRED` to
 `true` (`gh variable set WINDOWS_SIGNING_REQUIRED --body true --repo
-Luminary-Analytics/resonant-client`), so a lost secret fails the release
+Luminary-Analytics/resonant-client`), so losing the signer fails the release
 instead of shipping unsigned files.
 
 The same `EDDSA_PRIVATE_KEY` signs the macOS disk image and the macOS feeds;

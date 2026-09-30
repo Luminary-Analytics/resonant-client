@@ -103,6 +103,291 @@ Validation on September 29, 2026, on this branch merged with `main` (PRs
 - Not run on this computer: Inno Setup, WiX, and the macOS and Linux builds;
   CI runs them.
 
+## September 27 Lumi Cloud: device requests stay with their enrollment, and a sign-in's tokens with their issuer (security fix, source only, not released)
+
+A second review of the sign-in fix below found the same kind of problem on
+the device side, and places where a check and its use could be separated.
+
+**What was wrong.**
+
+- **Device requests followed the address this computer uses now.** Device
+  tokens, check-ins, policy downloads, leaving the organization and tasks
+  from chat all went to the current address, never the one the computer
+  enrolled with. After a sign-in at another Lumi Cloud, or a machine policy
+  naming one, the enrollment's device token went there with the next
+  check-in, and a task that Lumi Cloud handed out ran here.
+- **A check and its use were apart.** A round of waiting feedback decided
+  the account when it started but asked for the token for each report, so a
+  sign-in at another Lumi Cloud during the round sent its token to the old
+  destination. A refresh that a sign-in elsewhere overtook sent the
+  refreshed token to the new Lumi Cloud and kept the old one's rotated
+  refresh token as the new one's. Oversight's account header and its
+  request had the same gap.
+
+**Fixes.**
+
+- **Device requests go only to the enrollment's address** (`device["url"]`,
+  recorded at enrollment). When this computer uses another Lumi Cloud, it
+  counts as enrolled elsewhere (`status()["device_elsewhere"]`): check-ins
+  and the organization's policy still come from where it enrolled, tasks
+  from chat wait with that reason, and Settings > Lumi account names the
+  enrollment's Lumi Cloud and offers **Leave … on this computer**. Everything
+  about a task goes back to the Lumi Cloud that handed it out, or nowhere
+  (`device_call`'s `expect`).
+- **A machine policy's `cloud.url` is authoritative for enrollment.** When
+  it names another address than the enrollment's, the next round ends the
+  old enrollment (the old Lumi Cloud is told, with its own device token) and,
+  with an `enrollment_token`, enrolls at the new address. A joined
+  enrollment ends the same way.
+- **The sign-in's issuer and tokens are read and written together**
+  (`CloudClient._credentials`, under one lock; every sign-in and sign-out
+  starts a new generation). A token is sent to the issuer it was read with,
+  never to an address read again. `account_token(destination, user_id=...)`
+  refuses a destination that isn't the issuer, or a person who isn't the one
+  signed in. A refresh a sign-in or sign-out overtook stores nothing, and the
+  refresh token it got is revoked where it was made; an ended refresh never
+  forgets a sign-in that completed meanwhile. One refresh runs at a time. A
+  completed sign-in replaces the earlier one in one step (`_adopt`), which
+  is then revoked where it was issued, also at the same Lumi Cloud.
+- **Feedback goes only with its writer's account.** A report written signed
+  in waits for its writer when they've signed out or someone else signed in,
+  never goes without the account or as someone else by itself, and goes
+  without it only by **Send without your account**. That keeps the report's
+  key, and Lumi Cloud keeps one report per key whatever install id a try
+  carries: if an earlier try with the account arrived, that one is kept and
+  no second copy is made. A report written without an address goes as the
+  account its button names ("as you@example.com" or "without an account"),
+  or not at all if that changed.
+- **Oversight names a person only to the Lumi Cloud that signed them in**:
+  a confirmation recorded while the sign-in is another Lumi Cloud's names no
+  account, and the account's token is asked for the enrollment's Lumi Cloud
+  only.
+- **The team library's copy belongs to its sign-in**: after a sign-in at
+  another Lumi Cloud, or as someone else, it isn't offered until a sync
+  replaces it.
+- **Addresses compare as addresses** (`same_address`): case, the default
+  port, a trailing slash and an internationalized name written either way
+  no longer sign people out.
+- **A sign-out Lumi Cloud couldn't be told about says so** (offline mode, or
+  unreachable): Settings shows that the sign-in stays valid there until it
+  expires, and the audit record says `revoked: false`. Nothing of it is kept
+  here.
+- **DLP at Send runs on the report before DLP.** A redaction rule named after
+  its own keyword used to find its marker in the reviewed report and send it
+  back for review each time, so it could never be sent. A kept report is
+  checked again only when the rules changed, and then on what was reviewed.
+- **The lock over shared files is waited for at most ten seconds on every
+  platform** (it waited for ever on macOS and Linux). Feedback then says the
+  reports are busy and touches nothing unlocked; the audit log goes on
+  unlocked, as before. A thread whose open or lock call on the file hasn't
+  returned doesn't take another thread with it.
+
+Validation: `tests/test_cloud.py` (11 new) with the real `CloudClient`
+against two fake Lumi Clouds: tokens only for their issuer, a refresh
+overtaken by a sign-in elsewhere (nothing reaches either Lumi Cloud, B's
+sign-in is kept and A's new refresh token revoked), an ended refresh that
+doesn't forget the new sign-in, device requests after a sign-in elsewhere
+(check-ins to A only, leaving tells A), a machine policy naming B with and
+without an enrollment token, requests from chat waiting, a task's reply
+refused when the enrollment moved, addresses written differently, signing in
+again at the same Lumi Cloud, and a sign-out offline mode keeps from Lumi
+Cloud. `tests/test_feedback.py` (8 new): a sign-in elsewhere during a round
+(by someone else, or with the same user id at the other Lumi Cloud), a
+report held after two 401s (not sent signed out or as someone else, then
+sent without the account by choice), the same choice after a try with the
+account arrived (the same key, acknowledged once), Send held as the button
+says, the redaction rule named after its keyword, a kept report checked
+again only when the rules changed, and another process holding the reports'
+lock (busy within the bound, nothing written). `tests/test_file_lock.py`
+(new, 3): a lock another process keeps waited for a bounded time, held and
+released, and a stuck call tying up one thread only.
+`tests/test_oversight.py` (1 new) and `tests/test_team_library.py` (1 new).
+`tests/feedback_view.test.cjs` (2 new): the labelled choices and the busy
+line. In headless Edge (`tests/feedback.browser.cjs`): a report written
+signed in, kept while Lumi Cloud was down, then signing out in Settings: it
+waits for its writer, Send now doesn't send it, and **Send without your
+account** (confirmed) sends it without the account under the same key; an
+enrollment elsewhere in Settings at 375 px, left by keyboard; a sign-out
+that couldn't reach its Lumi Cloud saying so.
+
+## September 27 Lumi Cloud sign-in: the account's tokens stay with the Lumi Cloud that issued them (security fix, source only, not released)
+
+**What was wrong.** `CloudClient` refreshed the sign-in, made account calls
+and revoked it at whatever Lumi Cloud address the computer used at that
+moment, and several things changed that address after the person signed in:
+a machine policy's managed enrollment (about 20 seconds after launch), a
+sign-in that was only started, and a `settings` lock on `cloud.url` in a
+machine or downloaded organization policy. The next account call, such as
+the team library sync the page asks for at startup, then posted the person's
+refresh token to the new address; its `invalid_grant` made Lumi forget the
+sign-in, and **Sign out** revoked it at the new address, so the token stayed
+valid where it was issued.
+
+- **The issuing address is recorded when the sign-in completes**
+  (`cloud.account_url`, read as saved with `SettingsManager.stored`, so no
+  policy lock stands in for it). Neither an enrollment nor a sign-in that's
+  started rewrites it, and a started sign-in no longer changes the address
+  until it completes.
+- **Refreshing, account calls (`account_call`, `account_token`,
+  `refresh_account`) and revoking go only to that address.** When the
+  computer uses another Lumi Cloud, the person counts as signed out for it
+  (`status()["signed_in_elsewhere"]`): nothing of the account is sent there,
+  the tokens are kept for the first one, and Settings > Lumi account says so,
+  with **Sign out of** that Lumi Cloud, which revokes where it was issued.
+  Signing in at another Lumi Cloud revokes the earlier sign-in where it was
+  issued.
+- **A policy's `settings` can no longer lock `cloud.*` keys** other than
+  `cloud.remote_tasks` (true or false): such a policy is invalid. The machine
+  policy's own `cloud` section stays the way to set the address.
+- **An address with a user name or password** (`https://name:secret@…`) is
+  refused everywhere one is accepted, and a policy whose `cloud.url` has one
+  is invalid; a saved one is neither used nor shown.
+- Feedback names the account only when its report goes to the issuing
+  address.
+- A sign-in made before this change has no recorded address and isn't used;
+  sign in again. (Lumi Cloud isn't deployed, so no released install has one.)
+
+Validation: `tests/test_cloud.py` (8 new tests) with the real `CloudClient`
+against two fake Lumi Clouds on one transport: after a machine policy
+enrolls the computer at the second one, and after its address changes in
+Settings, no request there carries the first one's access or refresh token,
+the sign-in isn't lost, and signing out revokes at the first one; signing in
+elsewhere revokes the earlier sign-in where it was issued; policies locking
+`cloud.url`, `cloud.account_url` and other `cloud.*` keys are refused, and a
+downloaded organization policy that locks `cloud.url` isn't applied; a
+started sign-in changes nothing until it completes; an address with a user
+name is refused, and a saved one neither used nor shown. The existing
+`tests/test_cloud.py`, `tests/test_remote_tasks.py`, `tests/test_oversight.py`
+and `tests/test_offline_features.py` pass.
+
+## September 27 sending feedback, first pass (source only, not released)
+
+**Send feedback** ([Sending feedback](feedback.md)): Help › Send Feedback…,
+the command palette, the profile menu and About Lumi open a dialog that sends
+a bug report, an idea or other feedback to a Lumi Cloud's staff-only
+feedback inbox (`POST /api/v1/feedback`).
+
+- **Where it goes** (`feedback.destination`): `privacy.feedback_url`
+  (Settings or locked by a policy), else the build's own address
+  (`BUILD_DESTINATION`, empty for now), else the Lumi Cloud this computer
+  uses. The dialog shows the address and, from `GET /api/v1/feedback/info`,
+  who reads reports there. A report is bound to its address when written and
+  goes nowhere else; one written with no address waits until the person
+  sends it to the address shown (`send_held`), never to one that appears
+  later. Addresses with a user name or password aren't used.
+- **The report** (`lumi/feedback.py`): the kind, a message of up to 5,000
+  characters as sent (counted the same way in the dialog, emoji as one, with
+  no `maxlength` in UTF-16 units) and an optional reply-to address; always
+  the app's version, update channel, operating system and architecture, and
+  an install id derived from a random secret, separately for each address
+  and for signed-out or each account's reports, matching who sends it at the
+  time it's sent.
+- **Diagnostics, off by default** and refused when the organization says
+  `privacy.feedback_diagnostics: never`: Python's version, the platform,
+  whether it's a packaged build, the provider type and model, offline mode,
+  and the end of the startup log (60 whole lines, 6,000 characters)
+  redacted before it's cut, with the home folder written as `~`. The dialog
+  says the log can hold parts of conversations and file names. It shows the
+  whole report first, and Send sends that report (`preview_id`) after checking
+  it again.
+- **Before it leaves**: the organization's switch (`privacy.feedback`),
+  said plainly in the dialog; offline mode, before anything is prepared or
+  DLP-checked, with Copy giving only what was typed; `secret_scan` with its
+  patterns on, the reply-to included; the organization's DLP rules (purpose
+  `feedback`, the message and reply-to as prompts, diagnostics as mixed
+  content every rule checks). Drafts are checked with local rules only
+  (`dlp.check_text(..., service=False)`, new); the DLP service sees a report
+  when it's sent, and one it changes, or one rules that arrived since the
+  review would change or block, is shown again or refused. Lumi Cloud's
+  byte limits (UTF-8: 64 KB, diagnostics 32 KB) are enforced before sending,
+  dropping the log's oldest lines when needed. What the checks changed is
+  returned with the outcome and shown on the done screen.
+- **The contract**: `Idempotency-Key: <report UUID>` on every try; delivered
+  only on 201 or 200 whose JSON `report` is the key (a captive portal's page,
+  202, 204 or a redirect aren't); a 401 for the token presented refreshes it
+  once at the issuing address, then waits for a new sign-in, never sent
+  anonymously; 429's `Retry-After` clamped to an hour, with jitter; 400, 413
+  and 404 keep a waiting report visible as couldn't be delivered, with Copy
+  and Discard.
+- **Waiting reports** (`feedback/queue.json`, 20 reports, 512 KB): every
+  read-modify-write under the lock all Lumi processes take, the replace
+  retried while another process has the file open, and the install secret
+  created exclusively, so two processes lose nothing. Backoff (10 minutes,
+  doubling to 6 hours) and `Retry-After` run on monotonic time within a run,
+  and a restart tries each report at its first round; expiry counts at most
+  ten minutes a round, so clock changes neither wipe nor strand the queue.
+  Expired, refused and DLP-blocked reports are held, not deleted. A damaged
+  entry is dropped and recorded without stopping the rest. The dialog lists
+  them with what they wait for, **Send now**, **Discard all** and each
+  report's own **Copy**, **Send to** and **Discard**.
+- **The record**: `feedback.sent`, `feedback.queued`, `feedback.held`
+  (new), `feedback.refused`, `feedback.dropped`, with the kind and size,
+  never the text.
+- **The dialog**: a refusal from the last time is cleared on reopening; an
+  outcome that arrives after it closed is announced in a polite live region.
+  The dialog's commands run as their own tasks, so the page's socket stays
+  live, and any failure still answers it (with a copy of only what was
+  typed).
+- `privacy.feedback`, `privacy.feedback_diagnostics` and
+  `privacy.feedback_url` are new settings a policy can lock (validated).
+  The About page's "What leaves this computer" mentions feedback.
+
+Validation:
+
+- `tests/test_feedback.py` (107) against an `httpx.MockTransport` Lumi Cloud
+  answering as the contract says: the fields and the key; only an
+  acknowledgment of this report counts (a captive portal's page, 202, 204, a
+  redirect, another report's id), and a retry keeps its key; install ids;
+  the form's checks and characters counted as sent; the byte limits; secrets
+  removed, the reply-to included; DLP blocking, redacting, a reply-to it
+  would change and diagnostics as mixed content; Send refusing a reviewed
+  report that rules arriving since, or a policy that became unusable, would
+  stop; the DLP service seeing only reports that are sent, and a report it
+  changes coming back for review; offline mode refusing before anything
+  looks, its copy only what was typed; the organization's switches and their
+  validation; the address from the build, the person and the policy; the
+  account only while signed in to the Lumi Cloud that issued it, as the
+  person is at send time; a refused token refreshed once, then held for a new
+  sign-in and sent after it; a report with no address held until sent to the
+  address shown; backoff, `Retry-After` clamped with jitter and honoured by
+  Send now; one failure ending a round; a damaged entry; 400, 413, 404 and
+  DLP-blocked reports held with Copy and Discard; clock changes forward and
+  back, and a restart; the bounds and the rate limit; Discard (also
+  mid-round); **two Lumi processes queueing 15 reports each at once, none
+  lost** (and the reviewer's two-process script: 40 of 40 kept, three runs);
+  the background thread; the preview and its expiry; the log redacted before
+  it's cut; the destination's info; the dialog's commands, their failures and
+  a live socket, and no token in anything the page is told. Seven deliberate
+  breakages (no re-check at Send, the service asked for drafts, any 200
+  counting, no refresh, wall-clock expiry, an anonymous fallback, no file
+  lock) each fail these tests.
+- `tests/feedback_view.test.cjs` (18): the checks and wording, characters
+  counted as sent, what each waiting report says, and the flow against a
+  stand-in page: focus, errors per field and announced, the organization's
+  switches, sending with the checks' notices on the done screen, stale
+  previews never sent, a report changed at Send shown again, refusals and
+  the copy, a refusal cleared on reopening, results after the dialog closed
+  announced, the waiting reports' own buttons, and Tab staying inside.
+- `tests/feedback.browser.cjs`, in headless Edge against the source app
+  (`tests/fixtures/feedback_ui_server.py`, a fake Lumi Cloud on loopback
+  answering as the contract says): opened from Help with the pointer, then
+  from the command palette, the profile menu and About by keyboard; "read by"
+  the operator; validation; the diagnostics preview with a token, a saved key
+  and the home folder removed, and the report received equal to the one
+  shown, with its key; the checks' notice on the done screen; queued while
+  Lumi Cloud answered 503 and sent with **Send now** under the same key;
+  refused in offline mode with a copy of only what was typed, also with
+  diagnostics checked; the organization turning feedback off and then
+  diagnostics; a report written with no address sent by keyboard to the
+  address shown; a 404 kept with Copy and Discard, also at 375 px; an
+  outcome after the dialog closed announced; Settings saying a sign-in is
+  another Lumi Cloud's, and signing out of it; contrast of at least 4.5:1 for
+  the report, its status and notices, the error, the counter, the
+  destination, the organization's switch and a waiting report in both themes;
+  at 375 px no sideways scrolling and targets of at least 24 px; Tab and
+  Escape.
+- **Not covered:** a real Lumi Cloud, the packaged app and the desktop
+  window's clipboard; a screen reader.
 ## September 29 Lumi's terms: the EULA, the alpha terms, a privacy notice, and accepting them (source only, not released)
 
 The owner decided on September 27: no MIT License for this build. The
@@ -557,6 +842,117 @@ sets `LUMI_OS_SCHEDULER=off` for the whole run, and subprocesses inherit it.
 With it, `lumi.schedules.registrar()` returns `NullRegistrar`: schedules are
 saved but never registered with Task Scheduler, launchd or cron. A test
 checks that saving, pausing and removing a schedule never runs `schtasks`.
+
+## September 27 Windows signing through Azure Artifact Signing (source only, not released)
+
+The release can Authenticode-sign `lumi.exe`, the MSI and the installer with
+Azure Artifact Signing (formerly Trusted Signing), with no stored secret. It
+stays off until the owner configures it; until then a release is unsigned,
+with a warning, exactly as before. See
+[Azure Artifact Signing](release-pipeline.md#azure-artifact-signing).
+
+- **A short-lived sign-in instead of a secret.** Before each file, the new
+  `.github/actions/authenticode-sign` exchanges the release job's GitHub OIDC
+  token for an Azure sign-in (`azure/login`, pinned), when the release
+  environment's `AZURE_CLIENT_ID` and `AZURE_TENANT_ID` variables are set; the
+  log says why when it isn't. `packaging/sign_windows.ps1` still decides and
+  checks: a third signer beside a PFX and a command, used when
+  `ARTIFACT_SIGNING_ENDPOINT`, `ARTIFACT_SIGNING_ACCOUNT` and
+  `ARTIFACT_SIGNING_PROFILE` are set. signtool signs through Microsoft's dlib
+  (`packaging/fetch_artifact_signing.ps1`: `Microsoft.ArtifactSigning.Client`
+  1.0.128, pinned by SHA-256), which may use only that Azure CLI sign-in, and
+  Microsoft's timestamp server.
+- **Really signed, by the right certificate.** Each file must carry no
+  signature before it's signed, and afterwards one that is `Valid`,
+  timestamped (an Artifact Signing certificate lasts about three days) and by
+  the subject in the new `WINDOWS_SIGN_EXPECTED_SUBJECT` variable, which
+  every signer needs. A signer that exits 0 without signing, on an unsigned
+  or an already-signed file, or that signs with another certificate, fails
+  the release.
+- **Configured means configured.** A signer set up in part, two signers at
+  once, an account without the sign-in (or the other way round), a signer
+  without the expected subject (or the subject without a signer), and a
+  failed or unstamped signature fail the release; `WINDOWS_SIGNING_REQUIRED`
+  still fails one with no signer at all.
+- **Only pinned inputs make what's signed.** The Windows release is three
+  jobs. `test` runs Ruff and pytest on packages from PyPI, and nothing it
+  makes is used. `build` makes the bundle in a fresh Python with only
+  hash-pinned packages and no pip cache: `build_clean.ps1`, `build_macos.sh`
+  and `build_linux.sh` no longer upgrade pip, and install Lumi from the
+  checkout with the pinned setuptools and no index. `release`, after both,
+  signs, packages and publishes, running only pinned code: WiX now comes from
+  its NuGet package checked against a pinned SHA-256 and installed from a
+  folder holding only that file (`packaging/fetch_wix.ps1`, which
+  build-check uses too), and in CI `sign_windows.ps1` refuses the
+  `WINDOWS_SIGNTOOL` and `ARTIFACT_SIGNING_DLIB` overrides and signs only
+  with the Windows SDK's signtool, checked as signed by Microsoft. The macOS
+  build job and the build check drop their pip cache too.
+- **Only the signing job can get an OIDC token.** `release`, in the
+  `release` environment, is the only job with `id-token: write`.
+  `tests/test_release_supply_chain.py` reads the workflows as YAML
+  (`write-all`, flow style, quoted keys, `.yaml` files, a key given twice)
+  and fails if another job, workflow or action can ask for a token, a
+  workflow leaves its token's permissions to the repository default (five
+  now say `contents: read`), a job whose output is released installs
+  anything at run time that isn't hash-checked (its steps, the local actions
+  they use and the scripts those run), or an action isn't pinned to a
+  commit.
+- **With Lumi's terms (#104).** The version rule (`vX.Y.Z` or
+  `vX.Y.Z-alpha.N`, `-beta.N`, `-rc.N`) and the pre-release flag are checked
+  in `build`, `release` and `macos`, and the terms' release check runs in
+  `build` and `macos` before anything is built. The handover carries the
+  installers' license page (`dist/legal`), which the EXE installer includes.
+  The WiX UI extension the MSI's license page needs is pinned by SHA-256 like
+  the tool (`fetch_wix.ps1`) and loaded by path; the install check now
+  refuses `wix extension add`, which fetched it from NuGet at build time.
+- **Only commits on main are released.** `build`, `release` and `macos` stop
+  unless the tag's commit is on main (`git merge-base --is-ancestor`, with the
+  history fetched without file contents), and the docs add a tag ruleset so
+  that only the owner can create, move or delete `v*` tags. The install check
+  is documented as a lint: it reads commands as text.
+- **Artifacts by ID, checked by digest.** Any job in a run can delete an
+  artifact and upload another under its name, `test` included. So `release`
+  and `publish-macos` download only the artifact ID that `build` and `macos`
+  pass on as job outputs, which no other job can change, and check the files
+  against the digest those jobs took before uploading
+  (`packaging/tree_digest.py`); download-artifact itself only warns on a
+  digest mismatch. `build-check.yml` rehearses the handover and the swap: a
+  replaced artifact fails the download by ID, and what a download by name
+  gets fails the digest. A test fails if a job that signs or publishes
+  downloads by name.
+- **Only what the job signed is published.** `release` takes only the
+  bundle, SBOM and notices from `build`'s artifact. `sign_windows.ps1`
+  records each file it signs with its SHA-256, and
+  `packaging/check_release_files.ps1` runs before the GitHub Release and
+  again before the Pages site: `dist/installer` must hold just the installer
+  and, for a stable tag, the MSI (a beta gets none), each unchanged and
+  signed as recorded. The release uploads the list it outputs, and
+  `push_pages.py --signed` checks the installers it stages for Pages against
+  the same record. `build_msi.ps1` no longer leaves a `.wixpdb` beside the
+  MSI.
+- **Protect the environment first.** The docs give the owner's steps in
+  order: the `v*` tag rule and the owner as required reviewer on `release`,
+  and the tag ruleset, before the app registration's federated credential
+  (`repo:Luminary-Analytics/resonant-client:environment:release`, audience
+  `api://AzureADTokenExchange`), then the "Artifact Signing Certificate
+  Profile Signer" role on the certificate profile, then the seven variables.
+  The subject to use after an opt-in to immutable OIDC subjects, or a
+  rename, is there too.
+- **Checked without credentials.** `build-check.yml`'s `signing-dry-run`
+  runs the same action and the same pre-publishing check as a pull request
+  can: it finds signtool and fetches the client as the release would and
+  checks both (`sign_windows.ps1 -CheckTools`), the sign-in is skipped with
+  its reason, the file is untouched and listed for publishing, and an
+  account without a sign-in, required signing with no signer, and a
+  signtool or dlib of one's own in CI each fail. `tests/test_sign_windows.py`
+  runs every signer's path and the pre-publishing check with a stand-in
+  signtool, in Windows PowerShell and PowerShell 7.
+
+Not verified: a real signature, and a tagged run of the new job layout (the
+tag check, the handover, the publishing list and WiX from its checked
+package inside `release`). Nothing has signed through Azure yet, because the
+account, its identity validation and the certificate profile are still
+being set up.
 
 ## September 27 macOS alpha: Sparkle updates and release publishing (source only, not released)
 

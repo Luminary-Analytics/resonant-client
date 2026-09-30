@@ -222,6 +222,18 @@ host enrollment and actual packaged/learned-benefit qualification remain open.
   feed needs the user's go-ahead. Signing secrets (EdDSA, Apple, Authenticode)
   go only to release.yml's jobs in the `release` environment, never to a
   workflow pull requests run; a Developer ID certificate is an update key too.
+  Authenticode goes through `.github/actions/authenticode-sign` and
+  `packaging/sign_windows.ps1`, which decides and checks (unsigned before;
+  then Valid, timestamped and by `WINDOWS_SIGN_EXPECTED_SUBJECT`). Azure
+  Artifact Signing signs with a short-lived OIDC sign-in: only release.yml's
+  `release` job may have `id-token: write`, and it runs only pinned code
+  (actions by commit, tools by SHA-256, nothing installed at run time). Tests
+  and PyPI installs stay in `test`; what's signed comes only from `build`'s
+  hash-pinned packages, and only tags on main are released. Publish only
+  what `packaging/check_release_files.ps1` lists. A job that signs or
+  publishes takes an artifact only by the ID in a job output, never by name,
+  and checks it with `packaging/tree_digest.py` against the digest the job
+  that made it passed on.
 - Offline mode (`offline.py`, docs/offline.md): every outbound connection Lumi
   makes goes through the central check, and only this computer and
   `offline.allowed_hosts` are reachable. Build HTTP clients with
@@ -249,7 +261,24 @@ host enrollment and actual packaged/learned-benefit qualification remain open.
   send versions, usage counts per model and turn outcome counts
   (`activity.py`), never prompts, code, paths or titles. A downloaded policy applies only when it verifies against machine
   keys, or keys pinned when the person joined, and a joined organization
-  never replaces a machine policy (`policy._with_cloud_policy`).
+  never replaces a machine policy (`policy._with_cloud_policy`). The
+  account's tokens go only to the Lumi Cloud that issued them
+  (`CloudClient.account_url`, recorded when a sign-in completes, never by an
+  enrollment or a lock): refresh, `account_call`, `account_token` and
+  revocation use it, and a computer that now uses another Lumi Cloud counts as
+  signed out there. Read the issuer and the token together
+  (`_credentials`, under `_lock`) and send the token to that issuer, never to
+  an address read again; `account_token(destination, user_id=...)` refuses
+  any other destination or person; a refresh a sign-in or sign-out overtook
+  stores nothing; `_adopt` swaps a completed sign-in in one step and the old
+  one is revoked where it was issued. Device requests (tokens, check-ins,
+  policy downloads, leaving, tasks from chat, oversight) go only to the
+  enrollment's address (`device["url"]`, `device_call`'s `expect`); a
+  computer using another Lumi Cloud counts as enrolled elsewhere, and a
+  machine policy's `cloud.url` that differs ends the old enrollment there
+  and enrolls at the new address. Compare addresses with `same_address`,
+  never as strings. A policy's `settings` never lock `cloud.*` keys other
+  than `cloud.remote_tasks`; Lumi Cloud addresses never carry a user name.
 - Organization oversight (`oversight.py`, `security_flags.py`) is the only
   path that sends people's turns to Lumi Cloud: off unless the policy's
   `oversight` section asks (a key or version Lumi doesn't know turns it off,
@@ -491,6 +520,29 @@ host enrollment and actual packaged/learned-benefit qualification remain open.
   Lumi's replies and one line per action, never tool results, after
   `secret_scan` removes saved keys and secret patterns. Keep new event kinds
   out of the copy unless they carry only what the person or Lumi said.
+- Feedback (`feedback.py`, `static/feedback_view.js`, docs/feedback.md) goes
+  to `feedback.destination` (`privacy.feedback_url`, the build's address,
+  else the Lumi Cloud in use) as `POST /api/v1/feedback` with an
+  `Idempotency-Key`, through `net.client_options`, after offline mode (which
+  refuses before anything is prepared; its copy is only what was typed),
+  `secret_scan` with patterns on and `dlp.check_text` (purpose `feedback`,
+  diagnostics as mixed). Drafts use only local rules (`service=False`);
+  Send checks the reviewed report again with the DLP service, and a changed
+  report goes back for review. Only Lumi Cloud's acknowledgment (the key
+  echoed) counts as delivered. A report is bound to its destination when
+  written and goes nowhere else; one written with none waits for
+  `send_held` (as the account its button names). The account token goes
+  only to the Lumi Cloud that issued it, asked for per report
+  (`account_token(url, user_id=writer)`); a 401 refreshes once, then waits
+  for a sign-in. A report written with the account goes only with its
+  writer's account; `send_without_account` is the person's explicit choice.
+  The check at Send re-runs DLP on the text before DLP (`Prepared.source`)
+  and compares; a kept report is checked again only when `_dlp_rules`
+  changed, and then on what was reviewed.
+  `privacy.feedback` and `privacy.feedback_diagnostics` are the
+  organization's switches. The queue's read-modify-writes take the lock every
+  Lumi process takes. Audit records name the kind and size, never the text,
+  reply-to or install id.
 - The team library (`team_library.py`) is the organization's published
   skills and prompts, synced from Lumi Cloud into `team/library.json` and
   deleted on sign-out. Team skills are listed for the agent like pack skills
@@ -581,7 +633,7 @@ python -m ruff check .
 python -m pytest -q
 node --check lumi/gui/static/app.js
 node --check lumi/gui/static/settings_view.js
-node --test tests/ui_recovery.test.cjs tests/appearance.test.cjs tests/autonomous_view.test.cjs tests/vscode_extension.test.cjs tests/voice_input.test.cjs tests/extension_panels.test.cjs
+node --test tests/ui_recovery.test.cjs tests/appearance.test.cjs tests/autonomous_view.test.cjs tests/vscode_extension.test.cjs tests/voice_input.test.cjs tests/extension_panels.test.cjs tests/feedback_view.test.cjs
 git diff --check
 ```
 

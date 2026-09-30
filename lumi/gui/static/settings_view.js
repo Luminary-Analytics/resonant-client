@@ -149,6 +149,10 @@ class LumiSettingsView {
         document.getElementById('account-connections')?.addEventListener('click', () => openSettings('provider_connections'));
         document.getElementById('account-usage')?.addEventListener('click', () => openSettings('sonn_account'));
         document.getElementById('account-pet')?.addEventListener('click', () => this._setCompanion(!this.settings?.general?.show_companion));
+        document.getElementById('account-feedback')?.addEventListener('click', () => {
+            this._closeAccountMenu();
+            this.openFeedbackDialog?.(trigger);
+        });
         document.getElementById('echo-hide')?.addEventListener('click', () => {
             this._setCompanion(false); trigger.focus();
         });
@@ -350,7 +354,9 @@ class LumiSettingsView {
         return [
             row(`Lumi ${esc(info.version)}`, `The coding agent by Luminary Analytics. ${managed}`),
             row('Free for individuals', 'The whole agent, every tool, provider and feature in this app, works without an account: with your own API keys, your ChatGPT sign-in, or models on your own computer.'),
-            row('What leaves this computer', `${oversight} The privacy notice below lists exactly what.`),
+            row('What leaves this computer', `${oversight} Feedback you choose to send goes to the Lumi Cloud you use. The privacy notice below lists exactly what.`),
+            `<div class="settings-row"><div class="settings-row-copy"><span class="settings-row-label">Feedback</span><div class="settings-row-hint">Report a problem or suggest an idea. You see what’s sent before it goes, and your keys never are.</div></div>
+                <div class="settings-row-value"><button type="button" class="btn-sm" id="about-send-feedback" aria-haspopup="dialog">Send feedback…</button></div></div>`,
             row('For teams and organizations', 'Lumi Cloud adds central policy, members, devices and usage reporting; if your organization uses it, sign in from Lumi account. Without it, organizations set policy on each computer (see docs/enterprise-policy.md).'),
             row('License', `© Luminary Analytics, LLC. All rights reserved. Licensed under the ${esc(info.license)}.${info.notices ? ` Third-party components and their licenses: <code>${esc(info.notices)}</code>` : ''}`),
             `<div class="settings-row"><div class="settings-row-copy"><span class="settings-row-label">Terms and notices</span><div class="settings-row-hint" id="about-terms-status">${this._termsAcceptanceText?.(terms) || ''}</div><div class="about-legal-documents">${documents}</div></div></div>`,
@@ -366,6 +372,8 @@ class LumiSettingsView {
         const parts = [];
         if (s.error) parts.push(`<p class="editor-error" role="alert">${esc(s.error)}</p>`);
         if (s.cloud_error) parts.push(`<p class="editor-error" role="alert">${esc(s.cloud_error)}</p>`);
+        // A sign-out the Lumi Cloud that issued it couldn't be told about (offline mode, say): still valid there.
+        if (s.notice) parts.push(`<p class="editor-help" role="status">${esc(s.notice)}</p>`);
         const device = s.device && s.device.id ? s.device : null;
         if (s.signing_in) {
             parts.push(row('Signing in…', 'Finish signing in in your browser. This page updates when you’re done.', button('cancel', 'Cancel')));
@@ -386,6 +394,15 @@ class LumiSettingsView {
                     canEnroll ? button('enroll', 'Use on this computer', `data-org="${esc(org.id)}" aria-label="Use ${esc(org.name)} on this computer"`) : ''));
             }
         } else {
+            if (s.signed_in_elsewhere) {
+                // The sign-in belongs to the Lumi Cloud that issued it (lumi/cloud.py): never sent to this one.
+                let issued = s.signed_in_elsewhere;
+                try { issued = new URL(s.signed_in_elsewhere).host; } catch (_err) { /* shown as saved */ }
+                const now = s.url ? `<code>${esc(s.url)}</code>${s.url_locked ? ', set by your organization’s policy' : ''}` : 'no Lumi Cloud';
+                parts.push(row(`Signed in to ${esc(issued)}${s.account && s.account.email ? ` as ${esc(s.account.email)}` : ''}`,
+                    `This computer now uses ${now}. Lumi keeps that sign-in for ${esc(issued)} and never sends it to another Lumi Cloud, so you count as signed out here. Sign in below to use this one, or sign out of ${esc(issued)}.`,
+                    button('sign_out', `Sign out of ${esc(issued)}`)));
+            }
             const address = this._cloudUrlDraft ?? s.url ?? '';
             const hint = s.url_locked ? 'Set by your organization’s policy.' : 'Your organization’s Lumi Cloud, such as https://cloud.example.com.';
             parts.push(`<div class="settings-row"><div class="settings-row-copy"><label class="settings-row-label" for="cloud-url">Lumi Cloud address</label><div class="settings-row-hint">${hint}</div></div>
@@ -395,9 +412,13 @@ class LumiSettingsView {
             const how = device.how === 'managed' ? 'managed by your organization' : 'joined in this app';
             const seen = s.last_checkin ? new Date(s.last_checkin).toLocaleString() : 'not yet';
             const version = s.policy_version ? `policy version ${esc(s.policy_version)} is in force` : 'no policy is published yet';
-            parts.push(row(`This computer: ${esc(device.organization_name)}`,
-                `Enrolled, ${how}. Last check-in: ${esc(seen)}; ${version}.`,
-                `${button('check_in', 'Check in now')}${device.how === 'managed' ? '' : ` ${button('unenroll', 'Leave on this computer')}`}`));
+            let enrolledAt = '';
+            try { enrolledAt = device.url ? new URL(device.url).host : ''; } catch (_err) { enrolledAt = ''; }
+            // Enrolled with another Lumi Cloud than the one Lumi uses now (lumi/cloud.py): its requests go there only.
+            const elsewhere = s.device_elsewhere ? ` ${esc(s.device_elsewhere)}` : '';
+            parts.push(row(`This computer: ${esc(device.organization_name)}${enrolledAt ? ` at ${esc(enrolledAt)}` : ''}`,
+                `Enrolled, ${how}. Last check-in: ${esc(seen)}; ${version}.${elsewhere}`,
+                `${button('check_in', 'Check in now')}${device.how === 'managed' ? '' : ` ${button('unenroll', `Leave ${esc(device.organization_name || 'the organization')} on this computer`)}`}`));
         } else if (s.managed_organization) {
             parts.push(row('This computer', 'Your organization’s policy enrolls this computer in Lumi Cloud automatically.'));
         }
@@ -2115,7 +2136,7 @@ class LumiSettingsView {
             {id:'model_evaluations', title:'Model evaluations', group:'Advanced', icon:'chart', description:'Compare models on your own tasks, and review model quality and runtime diagnostics.', sections:['model_comparisons', 'model_evaluations'], keywords:'compare comparison benchmark evaluate models tasks switch pass rate'},
             {id:'iteration_checkpoints', title:'Checkpoints & recovery', group:'Advanced', icon:'history', description:'Inspect saved iterations and recovery options.', sections:['iteration_checkpoints']},
             {id:'lumi_account', title:'Lumi account', group:'Personal', icon:'person', description:'Sign in to Lumi Cloud and use your organization’s policy on this computer.', sections:['lumi_account'], keywords:'lumi cloud organization team company sign in enroll device computer managed policy seat slack teams microsoft chat tasks remote requests'},
-            {id:'about', title:'About Lumi', group:'Personal', icon:'book', description:'What Lumi is, what it costs and what it sends where.', sections:['about'], keywords:'version license EULA terms agreement alpha beta test accept accepted copyright free plan pricing account privacy notice telemetry notices third-party'},
+            {id:'about', title:'About Lumi', group:'Personal', icon:'book', description:'What Lumi is, what it costs and what it sends where.', sections:['about'], keywords:'version license EULA terms agreement alpha beta test accept accepted copyright free plan pricing account privacy notice telemetry notices third-party feedback bug report idea'},
             {id:'updates', title:'Updates', group:'Advanced', icon:'history', description:'Choose how Lumi updates itself and which releases it takes.', sections:['updates','update_status','update_file'], keywords:'update upgrade version release beta channel pin stable automatic manual off file offline installer bundle air-gapped'},
         ];
     }
@@ -2877,6 +2898,7 @@ class LumiSettingsView {
             exclusions.focus();
         });
         document.getElementById('audit-verify')?.addEventListener('click', () => this.send({command: 'audit_status'}));
+        document.getElementById('about-send-feedback')?.addEventListener('click', event => this.openFeedbackDialog?.(event.currentTarget));
         this._bindUpdateCheck();
         this._bindUpdateFile();
         this._bindLumiAccount();

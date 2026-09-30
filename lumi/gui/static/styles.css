@@ -13886,6 +13886,55 @@ body.is-window-dragging * {
 .share-who { display: grid; gap: 6px; margin: 12px 0 0; padding: 0; border: 0; }
 .share-who label { display: flex; align-items: center; gap: 8px; }
 
+/* Send feedback (feedback_view.js, lumi/feedback.py). Fits a 375 px window:
+   the report scrolls inside its box, never the page sideways. */
+.feedback-dialog { width: 560px; max-width: calc(100vw - 24px); max-height: calc(100dvh - 24px); display: flex; flex-direction: column; }
+.feedback-dialog [hidden] { display: none !important; }
+.feedback-dialog .dialog-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.feedback-dialog .dialog-btn-close { display: inline-flex; align-items: center; justify-content: center; min-width: 32px; min-height: 32px; margin: -6px -8px -6px 0; border-radius: var(--radius-sm); }
+.feedback-dialog .dialog-body { overflow: auto; overscroll-behavior: contain; }
+.feedback-dialog .dialog-actions { flex-wrap: wrap; padding: 12px 0 0; }
+.feedback-kinds { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 18px; margin: 0 0 12px; padding: 0; border: 0; min-width: 0; }
+.feedback-kinds legend { float: left; width: 100%; padding: 0; }
+.feedback-kind { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
+.feedback-dialog textarea { padding: 8px; background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: var(--radius-sm); line-height: 1.5; }
+.feedback-message { min-height: 120px; }
+.feedback-field-foot { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px 12px; margin: 4px 0 12px; font-size: 12px; }
+.feedback-count { margin-left: auto; color: var(--muted); font-variant-numeric: tabular-nums; }
+.feedback-error { display: block; color: var(--err); font-size: 12px; overflow-wrap: anywhere; }
+.feedback-kinds .feedback-error { flex-basis: 100%; }
+.feedback-dialog .feedback-reply-to { display: block; width: 100%; min-width: 0; box-sizing: border-box; padding: 6px 8px; font-family: inherit; font-size: 13px; }
+.feedback-dialog [aria-invalid="true"] { border-color: var(--err); }
+.feedback-optional { color: var(--muted); font-weight: 400; }
+.feedback-hint { margin: 4px 0 12px; font-size: 12px; }
+.feedback-check { display: flex; align-items: center; gap: 8px; margin: 0; font-weight: 600; cursor: pointer; }
+.feedback-preview { margin: 0 0 12px; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius-sm); }
+.feedback-preview h3 { margin: 0 0 6px; }
+.feedback-preview .share-note { margin-bottom: 8px; overflow-wrap: anywhere; }
+.feedback-preview-body { max-height: 260px; margin: 0; padding: 8px 10px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; background: var(--bg-elem); border-radius: var(--radius-sm); color: var(--text); font-family: var(--font-mono); font-size: 11.5px; line-height: 1.45; }
+.feedback-preview-body.is-stale { opacity: .55; }
+.feedback-notices { margin: 8px 0 0; padding-left: 18px; color: var(--muted); font-size: 12px; }
+.feedback-notices:empty { display: none; }
+.feedback-queue { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 0 0 12px; padding: 8px 10px; border: 1px dashed var(--border); border-radius: var(--radius-sm); }
+.feedback-queue > span { flex: 1 1 200px; }
+.feedback-held { flex: 1 1 100%; display: flex; flex-direction: column; gap: 8px; margin: 4px 0 0; padding: 0; list-style: none; }
+.feedback-held li { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px 10px; padding-top: 8px; border-top: 1px solid var(--border); }
+.feedback-held-text { flex: 1 1 220px; min-width: 0; overflow-wrap: anywhere; }
+.feedback-held-actions { display: inline-flex; flex-wrap: wrap; gap: 6px; }
+.feedback-held-actions .btn-sm { min-height: 28px; }
+.feedback-count.is-over { color: var(--err); }
+.feedback-alert { margin: 0 0 8px; color: var(--err); line-height: 1.5; overflow-wrap: anywhere; }
+.feedback-copy-text { min-height: 120px; margin: 0 0 8px; font-family: var(--font-mono); font-size: 11.5px; }
+.feedback-progress { margin: 0; }
+.feedback-progress:empty { display: none; }
+.feedback-done-text { margin: 0; font-size: 14px; line-height: 1.5; overflow-wrap: anywhere; }
+.feedback-dialog input:focus-visible, .feedback-dialog textarea:focus-visible, .feedback-preview-body:focus-visible,
+.feedback-dialog .dialog-btn-close:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+@media (max-width: 480px) {
+    .feedback-dialog .dialog-body { padding: 14px; }
+    .feedback-dialog .dialog-actions .dialog-btn { flex: 1 1 auto; }
+}
+
 /* A plan's specialists under its card, one step each (app.js, "Plan activity").
    A step's line spans the card, so a long goal ends in an ellipsis before its status. */
 .plan-step > summary { display: flex; min-width: 0; }

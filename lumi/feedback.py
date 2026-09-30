@@ -52,6 +52,14 @@ account only when the person chooses that (``send_without_account``).
   issued the sign-in (``CloudClient.account_url``) and reports go there; and
   a report written with it keeps it (see above).
 
+**Lumi Cloud's limits.** A report is fitted, before it's shown and again
+before it goes, to the limits its Lumi Cloud publishes in
+``GET /api/v1/feedback/info`` (``limits``: the body and the diagnostics in
+bytes, with an account and without one), never beyond this app's own
+(MAX_BODY_BYTES, MAX_DIAGNOSTICS_BYTES). A Lumi Cloud that publishes none
+gets those, and a report sent without an account the smaller ANONYMOUS_*
+ones (``limits_for``). The log tail gives up its oldest lines first.
+
 Before anything leaves the computer, offline mode refuses the report unless
 the destination is allowed (``offline_refusal``, before anything else looks
 at it; Copy then gives only what the person typed). Then ``prepare`` runs
@@ -126,6 +134,10 @@ MAX_REPLY_TO = 254
 MAX_SENT_MESSAGE = 8000                  # redaction markers can make a message longer than what was typed
 MAX_BODY_BYTES = 64 * 1024               # the request body, UTF-8
 MAX_DIAGNOSTICS_BYTES = 32 * 1024        # the diagnostics object as JSON (Python's default separators), UTF-8
+# Without an account, when a Lumi Cloud doesn't publish its limits: what Lumi Cloud takes from anyone.
+ANONYMOUS_BODY_BYTES = 48 * 1024
+ANONYMOUS_DIAGNOSTICS_BYTES = 16 * 1024
+MIN_PUBLISHED_BYTES = 4 * 1024           # a published limit smaller than this is taken as a mistake, not obeyed
 MAX_SERVER_DIAGNOSTIC_TEXT = 16000       # characters in one diagnostic text
 LOG_TAIL_LINES = 60
 LOG_TAIL_CHARS = 6000
@@ -780,8 +792,51 @@ def _shorter(text: str) -> str:
     return rest if newline else text[len(text) // 2:]
 
 
-def _fit(body: dict) -> dict:
-    """``body`` within Lumi Cloud's byte limits: the log tail loses its oldest lines as needed.
+@dataclass(frozen=True)
+class Limits:
+    """The most a report may be: its body, and its diagnostics, in bytes (as Lumi Cloud counts them)."""
+
+    body: int = MAX_BODY_BYTES
+    diagnostics: int = MAX_DIAGNOSTICS_BYTES
+
+
+ANONYMOUS = Limits(ANONYMOUS_BODY_BYTES, ANONYMOUS_DIAGNOSTICS_BYTES)
+
+
+def _published(answer: Any) -> dict | None:
+    """The limits a Lumi Cloud's ``/info`` publishes, within this app's own; None when it names none (or badly)."""
+    raw = answer.get("limits") if isinstance(answer, dict) else None
+    if not isinstance(raw, dict):
+        return None
+    ceilings = {"body_bytes": MAX_BODY_BYTES, "diagnostics_bytes": MAX_DIAGNOSTICS_BYTES,
+                "anonymous_body_bytes": MAX_BODY_BYTES, "anonymous_diagnostics_bytes": MAX_DIAGNOSTICS_BYTES}
+    limits = {}
+    for name, ceiling in ceilings.items():
+        value = raw.get(name)
+        if isinstance(value, bool) or not isinstance(value, int) or value < MIN_PUBLISHED_BYTES:
+            return None
+        limits[name] = min(value, ceiling)
+    return limits
+
+
+def limits_for(url: str, account: str) -> Limits:
+    """What a report to ``url`` sent as ``account`` ("" without an account) is fitted to.
+
+    The limits ``url`` published when it was last asked (``info``), else this
+    app's own, and for a report without an account the smaller ANONYMOUS ones.
+    """
+    with _lock:
+        cached = _info.get(url)
+    published = cached[1].get("limits") if cached else None
+    if published:
+        if account:
+            return Limits(published["body_bytes"], published["diagnostics_bytes"])
+        return Limits(published["anonymous_body_bytes"], published["anonymous_diagnostics_bytes"])
+    return Limits() if account else ANONYMOUS
+
+
+def _fit(body: dict, limits: Limits = Limits()) -> dict:
+    """``body`` within ``limits``: the log tail loses its oldest lines as needed.
 
     FeedbackError ``invalid`` when the report is too large even so.
     """
@@ -789,16 +844,16 @@ def _fit(body: dict) -> dict:
     if isinstance(value, dict):
         value = {name: (text[-MAX_SERVER_DIAGNOSTIC_TEXT:] if isinstance(text, str) else text)
                  for name, text in value.items()}
-        while _diagnostics_bytes(value) > MAX_DIAGNOSTICS_BYTES and value.get("log_tail"):
+        while _diagnostics_bytes(value) > limits.diagnostics and value.get("log_tail"):
             value["log_tail"] = _shorter(value["log_tail"])
         body = {**body, "diagnostics": value}
-        while _size(body) > MAX_BODY_BYTES and value.get("log_tail"):
+        while _size(body) > limits.body and value.get("log_tail"):
             value = {**value, "log_tail": _shorter(value["log_tail"])}
             body = {**body, "diagnostics": value}
-        if _diagnostics_bytes(value) > MAX_DIAGNOSTICS_BYTES:
+        if _diagnostics_bytes(value) > limits.diagnostics:
             raise FeedbackError("The diagnostics are too large to send. Leave them out.", code="invalid",
                                 field="include_diagnostics")
-    if _size(body) > MAX_BODY_BYTES:
+    if _size(body) > limits.body:
         raise FeedbackError("The report is too large to send. Shorten the message, or leave diagnostics out.",
                             code="invalid", field="message")
     return body
@@ -828,8 +883,8 @@ def _scan_secrets(body: dict, settings: Any) -> tuple[dict, list[str]]:
     return scanned, notices
 
 
-def _checked(body: dict, settings: Any, *, service: bool = True) -> Prepared:
-    """``body`` after the secret scan (patterns on), the organization's DLP rules and Lumi Cloud's limits.
+def _checked(body: dict, settings: Any, *, service: bool = True, limits: Limits = Limits()) -> Prepared:
+    """``body`` after the secret scan (patterns on), the organization's DLP rules and Lumi Cloud's ``limits``.
 
     DLP's block refuses the report (FeedbackError ``dlp``); its redactions
     apply to what is sent. A reply-to address either would change is left
@@ -863,7 +918,7 @@ def _checked(body: dict, settings: Any, *, service: bool = True) -> Prepared:
     diagnostics_value = _map_strings(diagnostics_value, lambda text: text[-MAX_DIAGNOSTIC_TEXT:])
     if message != scanned["message"] or diagnostics_value != scanned.get("diagnostics"):
         notices.append("Your organization's data loss prevention rules redacted part of the report.")
-    fitted = _fit({**scanned, "message": message, "reply_to": reply_to, "diagnostics": diagnostics_value})
+    fitted = _fit({**scanned, "message": message, "reply_to": reply_to, "diagnostics": diagnostics_value}, limits)
     if isinstance(fitted.get("diagnostics"), dict) and fitted["diagnostics"] != diagnostics_value:
         notices.append("The oldest lines of the log were left out to keep the report within what Lumi Cloud takes.")
     return Prepared(fitted, notices, source=scanned)
@@ -897,7 +952,7 @@ def prepare(form: Form, *, settings: Any = None, provider: str = "", model: str 
         "install_id": install_id(url, account),
         "diagnostics": diagnostics(settings, provider=provider, model=model) if form.diagnostics else None,
     }
-    return _checked(body, settings, service=service)
+    return _checked(body, settings, service=service, limits=limits_for(url, account))
 
 
 # ── Copies ─────────────────────────────────────────────────────────────────
@@ -1052,15 +1107,22 @@ def info(cloud: Any, settings: Any = None) -> dict:
 
     Asked only when there is a destination, offline mode allows it and the
     organization hasn't turned feedback off; kept for INFO_SECONDS. The
-    answer: ``accepting`` and ``operator``, the name of who reads the reports.
+    answer: ``accepting`` and ``operator``, the name of who reads the reports,
+    and ``limits``, what reports to it are fitted to (None when it publishes
+    none: see ``limits_for``).
     """
+    target = destination(cloud, settings).url
+    if not target or disabled_reason(settings) or offline_refusal(target):
+        return {}
+    return _asked(target)
+
+
+def _asked(target: str) -> dict:
+    """``target``'s answer to ``GET /api/v1/feedback/info``, kept for INFO_SECONDS; {} when it can't be asked."""
     import httpx
 
     from .net import client_options
 
-    target = destination(cloud, settings).url
-    if not target or disabled_reason(settings) or offline_refusal(target):
-        return {}
     with _lock:
         cached = _info.get(target)
     if cached and _monotonic() - cached[0] < INFO_SECONDS:
@@ -1075,7 +1137,8 @@ def info(cloud: Any, settings: Any = None) -> dict:
         return {}
     operator = " ".join(clean_text(answer.get("operator") if isinstance(answer.get("operator"), str) else "")
                         .split())[:MAX_OPERATOR]
-    result = {"destination": _host(target), "accepting": answer.get("accepting") is not False, "operator": operator}
+    result = {"destination": _host(target), "accepting": answer.get("accepting") is not False, "operator": operator,
+              "limits": _published(answer)}
     with _lock:
         _info[target] = (_monotonic(), result)
     return dict(result)
@@ -1316,6 +1379,7 @@ def _flush(cloud: Any, settings: Any, *, force: bool, now: float, only: set | No
         return result
     marker = _signin_marker(cloud)
     rules = _dlp_rules()
+    _asked(url)  # the limits it publishes, fresh: each report is fitted to them again before it goes
     for item in items:
         if only is not None and item["id"] not in only:
             continue
@@ -1329,12 +1393,15 @@ def _flush(cloud: Any, settings: Any, *, force: bool, now: float, only: set | No
         stop = False
         body = item["body"]
         try:
+            # Fitted to the limits for the account it goes with: without one (the person's choice included,
+            # send_without_account) the smaller anonymous limits, so its log tail can lose more lines than shown.
+            limits = limits_for(url, item.get("account") or "")
             if item.get("rules") != rules:
                 # The DLP rules changed since it was checked: the ones in force now apply, to what the person
                 # reviewed, so it never carries more than they saw.
-                body = _checked(body, settings).body
+                body = _checked(body, settings, limits=limits).body
             else:
-                body = _fit(_scan_secrets(body, settings)[0])  # a key saved since is still taken out
+                body = _fit(_scan_secrets(body, settings)[0], limits)  # a key saved since is still taken out
             # Only as its writer (or without an account when it was written so): _send checks who's signed in.
             delivered = _send(cloud, url, body, item["id"], account=item.get("account") or "")
         except _Later as later:
@@ -1522,7 +1589,7 @@ def _reviewed(preview_id: str, form: Form, url: str, account: str, email: str, s
     # Again from the report as it was before DLP (source), with the service now: the same answer means nothing
     # changed. Checking the redacted report instead would find a rule's own marker when the rule is named
     # after its keyword, and never agree.
-    rechecked = _checked(item.prepared.source or item.prepared.body, settings)
+    rechecked = _checked(item.prepared.source or item.prepared.body, settings, limits=limits_for(url, account))
     if rechecked.body != item.prepared.body:
         again = rechecked
         new_id = _remember(form, again, url, account)

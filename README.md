@@ -507,14 +507,38 @@ lumi-smoke variance --spec wordcount --model your-model --n 3
 ## License
 
 Lumi is commercial software: © 2026 Luminary Analytics, all rights reserved,
-licensed under the Lumi End User License Agreement. See [LICENSE](LICENSE).
-Versions 0.6.3 through 0.19.x were published under the MIT License and remain
-under it.
+licensed under the [Lumi End User License Agreement](lumi/legal/EULA.md), with
+the [Alpha and Beta Test Terms](lumi/legal/ALPHA-TERMS.md) for pre-release
+builds. See [LICENSE](LICENSE). The [privacy notice](lumi/legal/PRIVACY.md)
+says what the app sends where.
 
-- The [Extension SDK](sdk/) and the [VS Code extension](lumi/code_editors/vscode/)
-  stay under the MIT License, so others can build and ship extensions.
-- Individuals use the app free today (see [Plans](docs/plans.md)). That is a
-  product decision, which the license text doesn't change.
+- **Accepting the terms.** Lumi asks each person to accept them at first
+  launch, and again when their version changes; until then nothing is sent to
+  a model. The installers show them on their license page. `lumi run` in CI
+  accepts them with `--accept-terms <value>` or `LUMI_ACCEPT_TERMS` naming
+  each document's version (`lumi terms` prints the value; a pre-release or
+  development build also needs the test terms, as in
+  `eula-1.0,alpha-terms-1.0`), and an organization can accept them for its
+  people in its machine policy only
+  ([Organization policy](docs/enterprise-policy.md#lumis-terms-for-your-organization)).
+- **Extensions.** The [Extension SDK](sdk/) is under the
+  [Lumi Extension SDK License](sdk/LICENSE), which lets developers use it to
+  build and ship extensions for Lumi. The
+  [VS Code extension](lumi/code_editors/vscode/) is part of Lumi, under the
+  End User License Agreement.
+- **Earlier copies under the MIT License.** The releases tagged v0.6.3a1
+  through v0.19.1 (as Resonant Client, Resonant and SONN Client), this
+  repository's source from commit c00f29c until commit beb2848 (May 15 to
+  September 27, 2026), and the SDK and the VS Code extension as published
+  here before their current licenses, remain under the MIT License
+  ([LICENSE](LICENSE)). Releases v0.2.0 through v0.6.2 weren't MIT, and
+  releases under the EULA start at 0.20.0.
+- Third-party components keep their own licenses: `THIRD_PARTY_NOTICES.txt`
+  in installed copies, which Settings > About Lumi opens.
+- The facts these texts depend on (Luminary's legal entity, the governing
+  law, the venue and the notices address) and each text's version live in one
+  file, `lumi/legal/terms.json` ([RELEASING.md](RELEASING.md#lumis-terms)).
+- Individuals use the app free during the alpha (see [Plans](docs/plans.md)).
 - Whether this repository stays public hasn't been decided.
 
 Managed previews, named acceptance checks, Kimi effort controls, and sourced project notes are described in [Priority improvements](docs/priority-improvements.md).

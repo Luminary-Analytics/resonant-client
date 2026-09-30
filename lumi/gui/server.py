@@ -409,6 +409,11 @@ def main():
     logging.basicConfig(
         level=logging.DEBUG if args.debug else logging.WARNING,
     )
+    # The app asks its person to accept Lumi's terms (or relies on the machine
+    # policy); LUMI_ACCEPT_TERMS is for runs without a UI (lumi/terms.py).
+    from .. import terms
+
+    terms.mark_app_process()
     # Count the app's own crashes for fleet health (lumi/activity.py).
     from .. import activity
 

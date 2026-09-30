@@ -39,14 +39,44 @@ host enrollment and actual packaged/learned-benefit qualification remain open.
   `resonant-policy.json`) are still read; do not write new state under them.
   The update feed URL and repository name stay until a bridge release moves
   the feed (see [Unreleased](docs/unreleased.md)).
-- Lumi is proprietary ([LICENSE](LICENSE)). The Extension SDK (`sdk/`) and
-  the VS Code extension (`lumi/code_editors/vscode/`) are MIT-licensed so
-  others can build and ship extensions; never move app code into them.
-  Shipped third-party code keeps its notice in `THIRD_PARTY_NOTICES.txt`
-  (`packaging/third-party-components.json` for anything that isn't a Python
-  package), and the copyleft gate stays. Code ported from another project
-  keeps its license notice in the file and gets a components entry with the
-  license text (`packaging/licenses/`), as `engine/truncation.py` does.
+- Lumi is proprietary ([LICENSE](LICENSE), the EULA in `lumi/legal/`). The
+  Extension SDK (`sdk/`) is under the Lumi Extension SDK License, which lets
+  developers build and ship extensions for Lumi, and the VS Code extension
+  (`lumi/code_editors/vscode/`) is part of Lumi; the copies published under
+  the MIT License (named by release and commit in LICENSE and EULA 5.4, never
+  by a version range) stay MIT, and releases start at 0.20.0. Never move app
+  code into the SDK. The legal texts are rendered: edit
+  `lumi/legal/templates/` or `lumi/legal/terms.json` (the one file of facts,
+  versions and pins), then run `python packaging/legal_texts.py render`; a
+  release fails while a fact is `[[TO BE PROVIDED: ...]]`. Any change to what
+  a text says needs a new version and a new `sha256` pin (the tests fail
+  otherwise): a new EULA, or new test terms on a pre-release build, asks
+  everyone to accept it again; a new privacy notice or SDK license asks no
+  one. Shipped third-party code keeps its notice in
+  `THIRD_PARTY_NOTICES.txt` (`packaging/third-party-components.json` for
+  anything that isn't a Python package), and the copyleft gate stays. Code
+  ported from another project keeps its license notice in the file and gets
+  a components entry with the license text (`packaging/licenses/`), as
+  `engine/truncation.py` does.
+- Lumi's terms gate every model request (`lumi/terms.py`): `oversight.admit`
+  and `oversight.gate` ask them first, so every turn path and every request
+  outside a turn that asks oversight waits for them too, and a refusal
+  carries `terms.REFUSAL_CODE`. Underneath, `dlp.guarded` (every backend
+  request method, even under `dlp.permit`), `dlp.check_request`,
+  `request_purpose.auxiliary_stream` and Lumi's own HTTP model requests
+  (Ollama's warm-up and tool probe) refuse while they wait;
+  `tests/test_dlp.py` lists every use with its gate. Warm-ups are model
+  requests. An acceptance counts for the text it hashed. Acceptance comes
+  only from the person (the app's dialog on a trusted click, a typed yes at
+  an interactive terminal, `lumi terms accept`, `--accept-terms`), from
+  `LUMI_ACCEPT_TERMS` outside the app, or from a machine policy's
+  `legal.accepted_by_organization` from a source only administrators can
+  write (never `LUMI_POLICY_FILE`, a Lumi Cloud policy, settings or a
+  project). A new entry point that reaches a model asks the gate; a message
+  it refuses before a turn starts is `refused` (`ws_commands.refused_turn`),
+  so the page ends its running state and gives the text back. Tests accept
+  the terms in `tests/conftest.py` and test the gate itself in
+  `tests/test_terms.py`.
 - Follow the [harness north star](docs/agentic-harness-north-star.md): correct
   completion, verification, maintainability, and time to a trustworthy result
   come before token efficiency.

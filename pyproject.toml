@@ -4,11 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "lumi"
-version = "0.19.2.dev11"
+version = "0.20.0.dev0"
 description = "Provider-adaptive multimodal coding agent for local and hosted models"
 readme = "README.md"
-# Proprietary since September 2026: see LICENSE. Versions 0.6.3 through
-# 0.19.x were published under the MIT License. The table form, not a
+# Proprietary since September 2026: see LICENSE, which names the earlier
+# releases and source published under the MIT License (Resonant Client,
+# Resonant and SONN Client, v0.6.3a1 through v0.19.1, and main before commit
+# beb2848). Versions start at 0.20.0 so none is theirs. The table form, not a
 # PEP 639 SPDX string, keeps the build working with setuptools>=68 and
 # allows the License classifier below.
 license = {text = "Proprietary"}
@@ -190,4 +192,6 @@ include = ["lumi*"]
 # .exe, and without this a `pip install` silently omits the extension and tabs
 # stop being grouped with no error anywhere.
 # The VS Code extension that `lumi editor vscode` packs into a .vsix.
-"lumi" = ["browser_extension/*", "code_editors/vscode/*"]
+# Lumi's terms, privacy notice and terms.json (lumi/terms.py): without them
+# nothing can reach a model, so every install carries them.
+"lumi" = ["browser_extension/*", "code_editors/vscode/*", "legal/*.md", "legal/terms.json"]

@@ -1105,6 +1105,46 @@ def print_banner(backend=None, health_info: dict = None, session: Session = None
     console.print()
 
 
+def confirm_terms() -> bool:
+    """Ask for a typed yes to Lumi's terms before anything reaches a model (lumi/terms.py).
+
+    True when nothing is waiting (accepted in the app, here before, with ``lumi terms accept``, by the
+    organization's machine policy or ``LUMI_ACCEPT_TERMS``) or the person typed yes; the acceptance is
+    recorded. Session.run refuses every turn until then anyway; this is where the person can say yes.
+    """
+    from . import oversight, terms
+
+    waiting = terms.pending()
+    if not waiting:
+        return True
+    console.print()
+    _print(f"  [{C_WARN}]Lumi's terms[/{C_WARN}]  [{C_TEXT}]Accept them before Lumi sends anything to a model:[/{C_TEXT}]")
+    for line in terms.terminal_summary(waiting):
+        _print(f"  [{C_DIM}]{_esc(line.strip())}[/{C_DIM}]")
+    try:
+        answer = pt_prompt(HTML(f'<style fg="#{C_WARN[1:]}">  Type yes to accept them: </style>'))
+    except (EOFError, KeyboardInterrupt):
+        answer = ""
+    if not oversight.is_yes(answer):
+        _print(f"  [{C_DIM}]Nothing was sent; Lumi's terms weren't accepted.[/{C_DIM}]")
+        return False
+    if not terms.accept({doc.id: doc.version for doc in waiting}, "terminal"):
+        _print_refusal("Lumi's terms changed while you read them; nothing was sent.")
+        return False
+    return True
+
+
+def _warm_up(backend, model: str) -> None:
+    """Load ``model`` before the first turn: a model request, so none while the gate refuses (Lumi's terms or
+    the organization's notice, oversight.gate); the backend refuses it itself too (lumi/dlp.py)."""
+    from . import oversight
+
+    if oversight.gate("terminal")[0]:
+        return
+    _print(f"  [{C_DIM}]{G_THINK} Warming up {_esc(model)}[/{C_DIM}]")
+    backend.warm_up()
+
+
 def confirm_oversight(settings) -> bool:
     """Ask for a typed yes to the organization's oversight notice before anything reaches a model.
 
@@ -1368,9 +1408,10 @@ def run_embedded(session: Session, user_msg: str, images: list = None):
         """Prompt user for choice selection."""
         return _render_choices(options)
 
-    # A notice confirmation forgotten meanwhile (the app signed out of Lumi
-    # Cloud) is asked for again before the turn, rather than only refused.
-    if not confirm_oversight(getattr(session, "_settings_ref", None)):
+    # Lumi's terms (a new version since the last turn) and a notice
+    # confirmation forgotten meanwhile (the app signed out of Lumi Cloud) are
+    # asked for again before the turn, rather than only refused.
+    if not confirm_terms() or not confirm_oversight(getattr(session, "_settings_ref", None)):
         return
 
     # Someone is at the terminal, so there is always a prompt. The tier
@@ -1599,6 +1640,12 @@ Examples:
     except Exception as exc:  # noqa: BLE001 - never run a session without the rules Settings hold
         _print_refusal(f"Lumi couldn't apply its settings: {exc}")
         return
+    # Lumi's terms (lumi/terms.py), then the organization's oversight notice
+    # (lumi/oversight.py), right after the policy: before anything reaches a
+    # model, the warm-up below included.
+    if not confirm_terms() or not confirm_oversight(settings):
+        console.print(f"  [{C_DIM}]Goodbye[/{C_DIM}]")
+        return
     mode_notice = "" if mode == requested_mode else \
         f"{current_policy().organization}'s policy doesn't allow {requested_mode}"
     settings_data = settings.get_all()
@@ -1713,8 +1760,7 @@ Examples:
             model = _select_model_interactive(models)
         backend = create_backend("ollama", ollama_info["url"], model=model)
         health_info = backend.health()
-        _print(f"  [{C_DIM}]{G_THINK} Warming up {_esc(model)}[/{C_DIM}]")
-        backend.warm_up()
+        _warm_up(backend, model)
     elif chosen == "claude":
         claude_info = available["claude"]
         model = args.model
@@ -1758,10 +1804,6 @@ Examples:
         _print_refusal(f"The session couldn't be set up: {exc}")
         return
     print_banner(backend=backend, health_info=health_info, session=session, mode=mode, notice=mode_notice)
-    # The organization's oversight notice, confirmed before the first turn (lumi/oversight.py).
-    if not confirm_oversight(settings):
-        console.print(f"  [{C_DIM}]Goodbye[/{C_DIM}]")
-        return
     from . import oversight
 
     if oversight.for_terminal(unattended=False).recorded:
@@ -1879,8 +1921,7 @@ Examples:
                             new_be = create_backend("ollama", be.base_url, model=new_model)
                             session.set_backend(new_be, reset_history=True)  # explicit user command — preserve "conversation cleared" UX
                             health_info = new_be.health()
-                            _print(f"  [{C_DIM}]{G_THINK} Warming up {_esc(new_model)}[/{C_DIM}]")
-                            new_be.warm_up()
+                            _warm_up(new_be, new_model)
                             _print(f"  [{C_OK}]{G_CHECK} Switched to {_esc(f'{new_model} · conversation cleared')}[/{C_OK}]")
                         else:
                             _print(f"  [{C_DIM}]Keeping {_esc(be.model)}[/{C_DIM}]")

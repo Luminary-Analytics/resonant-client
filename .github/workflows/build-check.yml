@@ -17,16 +17,21 @@ name: Build check
 #   - Writes the third-party notices (license gate included) and the CycloneDX
 #     SBOM, and uploads both, so they are exercised before any release
 #   - Runs `lumi.exe --version` to confirm the frozen exe boots
-#   - Builds the MSI (packaging/lumi.wxs), installs it silently on the runner,
+#   - Builds the MSI (packaging/lumi.wxs) with its license page (Lumi's terms,
+#     rendered by packaging/legal_texts.py), installs it silently on the runner,
 #     checks the installed app, the policy file property, the locked
 #     %ProgramData%\Lumi it makes (taking over a folder a person made first),
 #     that a policy file others can change fails closed until the documented
-#     icacls recipe locks it, and that updates are left to device management,
-#     then uninstalls it
+#     icacls recipe locks it, that updates are left to device management and
+#     that the machine policy's legal.accepted_by_organization accepts Lumi's
+#     terms, upgrades it with a second build that doesn't name POLICYFILE
+#     (the PolicyFile value must stay), then uninstalls it
+#   - Compiles packaging/installer.iss without writing the installer (/O-), so
+#     its [Code] and the license versions it includes fail here, not in a release
 #
 # What this does NOT do:
 #   - Sign the bundle (no Authenticode or EdDSA, no secrets needed)
-#   - Wrap it into an Inno Setup installer (saves ~40 sec)
+#   - Write the Inno Setup installer itself (saves ~40 sec)
 #   - Publish anywhere
 #
 # Runtime budget: ~4-5 min. Worth it on every PR.
@@ -211,6 +216,25 @@ jobs:
               }
           }
 
+      # The EXE installer is built only by the release, but its script compiles here:
+      # [Code] (the license page shown once per version of the terms) and the
+      # license-versions.iss that build_clean.ps1 rendered. /O- writes no installer.
+      - name: Compile the Inno Setup script
+        shell: pwsh
+        run: |
+          $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) {
+              $iscc = (Get-ChildItem "C:\" -Filter "ISCC.exe" -Recurse -ErrorAction SilentlyContinue -Depth 5 | Select-Object -First 1).FullName
+          }
+          if (-not $iscc) { throw "Inno Setup's ISCC.exe isn't on this runner" }
+          $init = Get-Content lumi/__init__.py -Raw
+          if ($init -notmatch '__version__\s*=\s*"([^"]+)"') { throw "No __version__ in lumi/__init__.py" }
+          $version = $Matches[1]
+          Get-Content dist/legal/license-versions.iss
+          & $iscc /O- "/DAppVersion=$version" "packaging/installer.iss"
+          if ($LASTEXITCODE -ne 0) { throw "ISCC couldn't compile packaging/installer.iss (exit $LASTEXITCODE)" }
+          Write-Host "✓ packaging/installer.iss compiles for $version"
+
       # The .NET WiX tool, pinned; NuGet verifies the package signature.
       - name: Install WiX
         run: dotnet tool install --global wix --version 5.0.2
@@ -218,6 +242,32 @@ jobs:
       - name: Build the MSI
         shell: pwsh
         run: ./packaging/build_msi.ps1
+
+      # A second build of the same version: a new product code, so installing it is
+      # the major upgrade device management runs (AllowSameVersionUpgrades).
+      - name: Build a second MSI for the upgrade check
+        shell: pwsh
+        run: ./packaging/build_msi.ps1 -OutDir dist/installer-upgrade
+
+      # The license page an installation with the MSI's UI shows: WixUI_Minimal's
+      # scrolling text holds the RTF packaging/legal_texts.py rendered.
+      - name: Check the MSI's license page
+        shell: pwsh
+        run: |
+          $msi = (Get-ChildItem "dist/installer/*.msi" | Select-Object -First 1).FullName
+          $installer = New-Object -ComObject WindowsInstaller.Installer
+          $database = $installer.GetType().InvokeMember("OpenDatabase", "InvokeMethod", $null, $installer, @($msi, 0))
+          $query = "SELECT ``Text`` FROM ``Control`` WHERE ``Dialog_`` = 'WelcomeEulaDlg' AND ``Control`` = 'LicenseText'"
+          $view = $database.GetType().InvokeMember("OpenView", "InvokeMethod", $null, $database, @($query))
+          $view.GetType().InvokeMember("Execute", "InvokeMethod", $null, $view, $null) | Out-Null
+          $record = $view.GetType().InvokeMember("Fetch", "InvokeMethod", $null, $view, $null)
+          if (-not $record) { throw "The MSI has no license page (WelcomeEulaDlg's LicenseText)" }
+          $text = $record.GetType().InvokeMember("StringData", "GetProperty", $null, $record, @(1))
+          if ($text -notmatch "Lumi End User License Agreement") { throw "The MSI's license page doesn't show Lumi's terms" }
+          if (-not $text.StartsWith("{\rtf1")) { throw "The MSI's license page isn't RTF" }
+          # An MSI reads [name] in this text as a property; legal_texts.py writes brackets as RTF escapes.
+          if ($text.Contains("[") -or $text.Contains("]")) { throw "The MSI's license text has a bracket it would read as a property" }
+          Write-Host "✓ The MSI's license page shows Lumi's terms ($($text.Length) characters of RTF)"
 
       # The runner is an administrator without UAC prompts, like a device
       # management agent, so this is the silent per-machine install IT runs.
@@ -231,14 +281,18 @@ jobs:
           $policyDir = Join-Path $env:ProgramData "LumiMsiCheck"
           New-Item -ItemType Directory -Force -Path $policyDir | Out-Null
           $policy = Join-Path $policyDir "policy.json"
-          '{"schema": "lumi.policy/v1", "organization": "CI", "settings": {"updates.channel": "beta"}}' |
+          '{"schema": "lumi.policy/v1", "organization": "CI", "settings": {"updates.channel": "beta"}, "legal": {"accepted_by_organization": "CI"}}' |
               Set-Content -Encoding utf8 $policy
           $machineDir = Join-Path $env:ProgramData "Lumi"
           if (Test-Path $machineDir) { throw "$machineDir exists before the install" }
           $log = Join-Path $env:RUNNER_TEMP "msi-install.log"
 
-          function Install-Msi([string[]]$Extra) {
-              $arguments = @("/i", "`"$msi`"", "/qn", "/norestart", "/l*v", "`"$log`"")
+          # The same version built again (the upgrade check below).
+          $upgrade = (Get-ChildItem "dist/installer-upgrade/*.msi" | Select-Object -First 1).FullName
+          if (-not $upgrade) { throw "No second MSI was built" }
+
+          function Install-Msi([string[]]$Extra, [string]$Package = $msi) {
+              $arguments = @("/i", "`"$Package`"", "/qn", "/norestart", "/l*v", "`"$log`"")
               if ($Extra) { $arguments += $Extra }
               $install = Start-Process msiexec.exe -Wait -PassThru -ArgumentList $arguments
               if ($install.ExitCode -ne 0) {
@@ -246,8 +300,8 @@ jobs:
                   throw "msiexec /i exited $($install.ExitCode)"
               }
           }
-          function Uninstall-Msi {
-              $remove = Start-Process msiexec.exe -Wait -PassThru -ArgumentList @("/x", "`"$msi`"", "/qn", "/norestart")
+          function Uninstall-Msi([string]$Package = $msi) {
+              $remove = Start-Process msiexec.exe -Wait -PassThru -ArgumentList @("/x", "`"$Package`"", "/qn", "/norestart")
               if ($remove.ExitCode -ne 0) { throw "msiexec /x exited $($remove.ExitCode)" }
           }
           # %ProgramData%\Lumi, locked: owned by Administrators, SYSTEM and Administrators full
@@ -327,9 +381,38 @@ jobs:
           if ($status.channel -ne "beta" -or $status.managed_by -ne "CI") { throw "The policy file named by POLICYFILE wasn't applied" }
           Write-Host "✓ The installed app leaves updates to device management and applies the policy"
 
-          Uninstall-Msi
+          # A machine policy accepts Lumi's terms for everyone on the computer (lumi/terms.py).
+          $out = Join-Path $env:RUNNER_TEMP "lumi-terms.json"
+          $err = Join-Path $env:RUNNER_TEMP "lumi-terms.err"
+          $run = Start-Process -FilePath $exe -ArgumentList "terms" -Wait -PassThru `
+              -RedirectStandardOutput $out -RedirectStandardError $err
+          if ($run.ExitCode -ne 0) { throw "lumi terms exited $($run.ExitCode): $(Get-Content $err -Raw)" }
+          $terms = Get-Content $out -Raw | ConvertFrom-Json
+          Write-Host "lumi terms: pending=$($terms.pending) organization=$($terms.organization) value=$($terms.acceptance_value)"
+          if ($terms.pending -or $terms.organization -ne "CI") { throw "The machine policy's legal.accepted_by_organization didn't accept Lumi's terms" }
+          Write-Host "✓ The machine policy accepts Lumi's terms for the computer's people"
+
+          # Device management upgrades without naming POLICYFILE again: the package
+          # remembers it (packaging/lumi.wxs), so the machine keeps its policy.
+          Install-Msi @() -Package $upgrade
+          $value = (Get-ItemProperty $policyKey -ErrorAction SilentlyContinue).PolicyFile
+          if ($value -ne $policy) { throw "The upgrade dropped PolicyFile: it is '$value', expected '$policy'" }
+          $remembered = (Get-ItemProperty "HKLM:\SOFTWARE\Luminary Analytics\Lumi\Msi" -ErrorAction SilentlyContinue).PolicyFile
+          if ($remembered -ne $policy) { throw "The upgrade didn't remember POLICYFILE: '$remembered'" }
+          $run = Start-Process -FilePath $exe -ArgumentList "terms" -Wait -PassThru `
+              -RedirectStandardOutput $out -RedirectStandardError $err
+          $terms = Get-Content $out -Raw | ConvertFrom-Json
+          if ($run.ExitCode -ne 0 -or $terms.pending -or $terms.organization -ne "CI") {
+              throw "After the upgrade the machine policy no longer accepts Lumi's terms: $(Get-Content $out -Raw)"
+          }
+          Write-Host "✓ An upgrade without POLICYFILE keeps the PolicyFile value and its policy"
+
+          Uninstall-Msi $upgrade
           if (Test-Path $exe) { throw "lumi.exe is still there after uninstalling" }
           if ((Get-ItemProperty $policyKey -ErrorAction SilentlyContinue).PolicyFile) { throw "The PolicyFile value was left behind" }
+          if ((Get-ItemProperty "HKLM:\SOFTWARE\Luminary Analytics\Lumi\Msi" -ErrorAction SilentlyContinue).PolicyFile) {
+              throw "The remembered POLICYFILE was left behind"
+          }
           if (Test-Path $shortcut) { throw "The Start menu shortcut was left behind" }
           if (Test-Path $machineDir) { throw "The empty $machineDir was left behind" }
           Write-Host "✓ Uninstalled cleanly"

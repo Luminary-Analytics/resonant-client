@@ -97,6 +97,12 @@ try {
         --manifest (Join-Path $repo $ManifestPath)
     if ($LASTEXITCODE -ne 0) { throw "Bundle policy gate failed" }
 
+    # The installer's license page (packaging/installer.iss): Lumi's terms for
+    # lumi/__init__.py's version, with the Alpha and Beta Test Terms when it's
+    # a pre-release (packaging/legal_texts.py).
+    & $python (Join-Path $repo "packaging/legal_texts.py") rtf --out (Join-Path $dist "legal")
+    if ($LASTEXITCODE -ne 0) { throw "Rendering Lumi's terms for the installer failed" }
+
     if ($SbomPath) {
         $sbom = [IO.Path]::GetFullPath((Join-Path $repo $SbomPath))
         # The generator runs from the calling Python so it isn't listed in the

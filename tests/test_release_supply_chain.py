@@ -198,9 +198,93 @@ class TestNotices:
 
     def test_cli_writes_the_file(self, tmp_path, monkeypatch):
         monkeypatch.setattr(notices.metadata, "distributions", _some_distributions)
+        _built_with_pyinstaller(monkeypatch)
+        _with_fetched_license_files(monkeypatch, tmp_path)
         out = tmp_path / "licenses" / "THIRD_PARTY_NOTICES.txt"
         assert notices.main(["--out", str(out)]) == 0
-        assert "ripgrep 15.2.0 — MIT OR Unlicense" in out.read_text(encoding="utf-8")
+        text = out.read_text(encoding="utf-8")
+        assert "ripgrep 15.2.0 — MIT OR Unlicense" in text
+        assert f"Python {notices.platform.python_version()} — PSF-2.0" in text
+        assert "PyInstaller bootloader 6.22.3 — GPL-2.0-or-later WITH Bootloader-exception" in text
+        assert "No license file is distributed" not in text
+
+
+def _built_with_pyinstaller(monkeypatch, version="6.22.3"):
+    """The build environment's PyInstaller (packaging/requirements-release.txt), which tests don't install."""
+    real = notices.distribution_license
+
+    def distribution_license(name):
+        if name == "pyinstaller":
+            return version, [("COPYING.txt", "GNU GENERAL PUBLIC LICENSE Version 2 ... Bootloader Exception")]
+        return real(name)
+
+    monkeypatch.setattr(notices, "distribution_license", distribution_license)
+
+
+def _with_fetched_license_files(monkeypatch, tmp_path):
+    """Stand-ins for the license files the build fetches (ripgrep's, Sparkle's), which a checkout may not have."""
+    fetched = {"packaging/ripgrep/LICENSE-MIT", "packaging/ripgrep/UNLICENSE", "packaging/sparkle/LICENSE"}
+    real = notices.component_texts
+
+    def component_texts(component):
+        texts = real(component)
+        missing = [name for name in component.get("license_files", []) if name in fetched
+                   and not (notices.ROOT / name).is_file()]
+        return texts + [(Path(name).name, f"{name} as the build fetches it") for name in missing]
+
+    monkeypatch.setattr(notices, "component_texts", component_texts)
+
+
+class TestLicenseTexts:
+    """Every bundled component ships its real license text, for the version that ships (PR #104 review item 11:
+    Python, the PyInstaller bootloader, marked, highlight.js, DOMPurify and Inter had none)."""
+
+    def test_the_web_assets_and_font_have_their_license_files_pinned_to_their_version(self):
+        components = {item["name"]: item for item in notices.load_components()}
+        for name, start in (("marked", "# License information"), ("highlight.js", "BSD 3-Clause License"),
+                            ("DOMPurify", "DOMPurify\nCopyright 2023 Dr.-Ing. Mario Heiderich, Cure53"),
+                            ("Inter", "Copyright 2020 The Inter Project Authors")):
+            component = components[name]
+            [relative] = component["license_files"]
+            # The file name carries the version it is the text of; a version bump needs the new text.
+            assert f"-{component['version']}-" in Path(relative).name, (name, relative)
+            [(_filename, text)] = notices.component_texts(component)
+            assert text.startswith(start), name
+        texts = {name: notices.component_texts(components[name])[0][1]
+                 for name in ("marked", "highlight.js", "DOMPurify", "Inter")}
+        assert "Permission is hereby granted" in texts["marked"] and "John Gruber" in texts["marked"]
+        assert "Apache License" in texts["DOMPurify"] and "Mozilla Public License" in texts["DOMPurify"]
+        assert "SIL OPEN FONT LICENSE Version 1.1" in texts["Inter"]
+
+    def test_python_and_the_bootloader_come_from_the_build(self, monkeypatch):
+        python = next(item for item in notices.load_components() if item["name"] == "Python")
+        # The Python running the build is the one PyInstaller embeds: its version and the LICENSE.txt it ships.
+        assert notices.resolved(python)["version"] == notices.platform.python_version()
+        [(filename, text)] = notices.component_texts(python)
+        assert filename == "LICENSE.txt" and "PYTHON SOFTWARE FOUNDATION LICENSE VERSION 2" in text
+        bootloader = next(item for item in notices.load_components() if item["name"] == "PyInstaller bootloader")
+        _built_with_pyinstaller(monkeypatch)
+        assert notices.resolved(bootloader)["version"] == "6.22.3"
+        assert notices.component_texts(bootloader)[0][0] == "COPYING.txt"
+        # Any patch release of the pinned minor (the release jobs set up Python 3.13) and major is the pin.
+        monkeypatch.setattr(notices.platform, "python_version", lambda: "3.13.9")
+        assert notices.version_problems(notices.load_components()) == []
+
+    def test_a_component_without_its_text_or_on_another_version_fails_the_build(self, tmp_path, monkeypatch,
+                                                                                capsys):
+        monkeypatch.setattr(notices.metadata, "distributions", _some_distributions)
+        _with_fetched_license_files(monkeypatch, tmp_path)
+        out = tmp_path / "THIRD_PARTY_NOTICES.txt"
+        # No PyInstaller in the environment: its bootloader's text is missing.
+        monkeypatch.setattr(notices, "distribution_license", lambda name: ("", []))
+        assert notices.main(["--out", str(out)]) == 1
+        assert "PyInstaller bootloader 6 has no license text" in capsys.readouterr().err and not out.exists()
+        # A build on another Python minor or PyInstaller major than the components file pins.
+        _built_with_pyinstaller(monkeypatch, version="7.0.0")
+        monkeypatch.setattr(notices.platform, "python_version", lambda: "3.14.1")
+        assert notices.main(["--out", str(out)]) == 1
+        err = capsys.readouterr().err
+        assert "Python 3.14.1 isn't 3.13" in err and "PyInstaller bootloader 7.0.0 isn't 6" in err
 
 
 class TestSbom:

@@ -1127,6 +1127,86 @@ def test_diagnostics_go_only_after_the_person_saw_that_report(inbox, settings, c
         feedback.submit(Cloud(), form(include_diagnostics=True), settings=settings, preview_id=fresh["preview_id"])
 
 
+# ── Lumi Cloud's limits ────────────────────────────────────────────────────
+
+# A log tail of 50 lines of 100 four-byte characters: about 20 KB of diagnostics, over the 16 KB Lumi Cloud takes
+# without an account and within the 32 KB it takes with one.
+WIDE_LOG = "".join(chr(0x1F600) * 100 + "\n" for _ in range(50))
+PUBLISHED = {"body_bytes": 40 * 1024, "diagnostics_bytes": 12 * 1024, "anonymous_body_bytes": 24 * 1024,
+             "anonymous_diagnostics_bytes": 8 * 1024, "message_characters": 8000}
+
+
+def _sent_with_diagnostics(cloud: Cloud, settings) -> dict:
+    """Preview and send a report with diagnostics, as the dialog does; the body Lumi Cloud got."""
+    shown = feedback.preview(cloud, form(include_diagnostics=True), settings=settings)
+    outcome = feedback.submit(cloud, form(include_diagnostics=True), settings=settings,
+                              preview_id=shown["preview_id"])
+    assert outcome.status == "sent", outcome
+    return shown["body"]
+
+
+def test_without_published_limits_a_report_without_an_account_is_fitted_to_the_smaller_ones(inbox, settings):
+    """An older Lumi Cloud publishes no limits: Lumi Cloud takes 48 KB, with 16 KB of diagnostics, from anyone."""
+    _write_log(WIDE_LOG)
+    assert feedback.info(Cloud(), settings)["limits"] is None
+    anonymous = _sent_with_diagnostics(Cloud(), settings)
+    assert feedback._diagnostics_bytes(anonymous["diagnostics"]) <= feedback.ANONYMOUS_DIAGNOSTICS_BYTES
+    assert feedback._size(anonymous) <= feedback.ANONYMOUS_BODY_BYTES
+    assert anonymous["diagnostics"]["log_tail"].endswith(chr(0x1F600) * 100)  # the newest lines stay
+    assert inbox.bodies()[-1] == anonymous  # what was shown is what went
+    signed_in = _sent_with_diagnostics(Cloud(user_id="usr_ada"), settings)
+    assert feedback._diagnostics_bytes(signed_in["diagnostics"]) > feedback.ANONYMOUS_DIAGNOSTICS_BYTES
+    assert signed_in["diagnostics"]["log_tail"] == feedback.clean_text(WIDE_LOG).rstrip("\n")  # all of it
+
+
+def test_reports_are_fitted_to_the_limits_their_lumi_cloud_publishes(inbox, settings):
+    _write_log(WIDE_LOG)
+    inbox.info = {**inbox.info, "limits": PUBLISHED}
+    assert feedback.info(Cloud(), settings)["limits"] == {name: PUBLISHED[name] for name in (
+        "body_bytes", "diagnostics_bytes", "anonymous_body_bytes", "anonymous_diagnostics_bytes")}
+    anonymous = _sent_with_diagnostics(Cloud(), settings)
+    assert feedback._diagnostics_bytes(anonymous["diagnostics"]) <= 8 * 1024
+    assert feedback._size(anonymous) <= 24 * 1024
+    signed_in = _sent_with_diagnostics(Cloud(user_id="usr_ada"), settings)
+    assert 8 * 1024 < feedback._diagnostics_bytes(signed_in["diagnostics"]) <= 12 * 1024
+
+
+def test_published_limits_never_raise_this_apps_own_and_odd_ones_are_ignored(inbox, settings):
+    huge = {name: 10 ** 9 for name in PUBLISHED}
+    inbox.info = {**inbox.info, "limits": huge}
+    feedback.info(Cloud(), settings)
+    assert feedback.limits_for(URL, "usr_ada") == feedback.Limits(feedback.MAX_BODY_BYTES,
+                                                                   feedback.MAX_DIAGNOSTICS_BYTES)
+    assert feedback.limits_for(URL, "") == feedback.Limits(feedback.MAX_BODY_BYTES, feedback.MAX_DIAGNOSTICS_BYTES)
+    for odd in ({**PUBLISHED, "anonymous_body_bytes": "24576"}, {**PUBLISHED, "body_bytes": True},
+                {**PUBLISHED, "diagnostics_bytes": 12}, {"body_bytes": 40960}, ["body_bytes"], "limits"):
+        feedback.reset_for_tests()
+        feedback.set_transport_for_tests(httpx.MockTransport(inbox))
+        inbox.info = {"accepting": True, "operator": "Luminary Analytics", "limits": odd}
+        assert feedback.info(Cloud(), settings)["limits"] is None, odd
+        assert feedback.limits_for(URL, "") == feedback.ANONYMOUS and feedback.limits_for(URL, "usr_ada") == \
+            feedback.Limits()
+
+
+def test_sending_without_the_account_fits_the_report_to_the_anonymous_limits(inbox, settings):
+    """Written with the account and its 20 KB of diagnostics, then sent without it by choice: fitted again."""
+    _write_log(WIDE_LOG)
+    ada = Cloud(user_id="usr_ada")
+    shown = feedback.preview(ada, form(include_diagnostics=True), settings=settings)
+    inbox.answers = [down()]
+    outcome = feedback.submit(ada, form(include_diagnostics=True), settings=settings, preview_id=shown["preview_id"])
+    assert outcome.status == "queued"
+    [item] = queue()
+    assert feedback._diagnostics_bytes(item["body"]["diagnostics"]) > feedback.ANONYMOUS_DIAGNOSTICS_BYTES
+    ada.user_id = ""  # signed out: it waits for Ada, until she chooses to send it without her account
+    assert feedback.send_without_account(ada, None, item["id"])["sent"] == 1
+    sent = inbox.bodies()[-1]
+    assert "authorization" not in inbox.requests[-1].headers
+    assert feedback._diagnostics_bytes(sent["diagnostics"]) <= feedback.ANONYMOUS_DIAGNOSTICS_BYTES
+    assert feedback._size(sent) <= feedback.ANONYMOUS_BODY_BYTES
+    assert sent["diagnostics"]["log_tail"].endswith(chr(0x1F600) * 100)
+
+
 def test_diagnostic_texts_hold_nothing_lumi_cloud_refuses(settings):
     esc, rlo = chr(0x1B), chr(0x202E)
     _write_log(f"{esc}[31mred{esc}[0m and {rlo}reversed\nnext\x00line\n")
@@ -1174,7 +1254,8 @@ def test_the_copies(settings):
 
 def test_who_reads_reports_is_asked_only_when_it_may_be(inbox, settings):
     about = feedback.info(Cloud(), settings)
-    assert about == {"destination": "cloud.example.test", "accepting": True, "operator": "Luminary Analytics"}
+    assert about == {"destination": "cloud.example.test", "accepting": True, "operator": "Luminary Analytics",
+                     "limits": None}  # an older Lumi Cloud publishes none
     assert len(inbox.info_requests) == 1 and feedback.info(Cloud(), settings) == about  # kept a while
     assert len(inbox.info_requests) == 1 and inbox.requests == []
     feedback.reset_for_tests()

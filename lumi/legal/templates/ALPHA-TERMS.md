@@ -14,10 +14,11 @@ Words defined in the EULA mean the same here. For Pre-Release Builds, where
 these Alpha Terms and the EULA conflict, these Alpha Terms control.
 
 You accept these Alpha Terms, together with the EULA, when you accept them in
-Lumi or in its installer; when you type "yes" where Lumi's command-line tools
-show them to you; when you run `lumi terms accept`, or use Lumi's
-`--accept-terms` option or `LUMI_ACCEPT_TERMS` setting, naming this version;
-or when you install or use a Pre-Release Build. An organization can accept
+Lumi or in its installer; when you answer yes (typing yes or y) where Lumi's
+command-line tools ask whether you accept them; when you run
+`lumi terms accept`, or use Lumi's `--accept-terms` option or the
+`LUMI_ACCEPT_TERMS` environment variable, naming this version; or when you
+install or use a Pre-Release Build. An organization can accept
 them for the people who use Lumi on its computers only through Lumi's machine
 policy, as section 2.4 of the EULA describes, and is then bound by them for
 those people.

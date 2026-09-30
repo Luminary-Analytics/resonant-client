@@ -17,8 +17,11 @@
     uninstall. The package remembers it (WiX's remember-property pattern: a
     copy under its own key, read back by AppSearch), so an upgrade that
     doesn't name POLICYFILE again keeps the value instead of removing it with
-    the version it replaces; one that names it changes it. A PolicyFile Lumi
-    can't read, or that others can change, fails closed (lumi/policy.py).
+    the version it replaces; one that names it changes it. The copy is used
+    only while the PolicyFile value still equals it: an administrator who
+    deleted the value (or had Group Policy change it) has it stay that way,
+    and the next upgrade forgets the copy. A PolicyFile Lumi can't read, or
+    that others can change, fails closed (lumi/policy.py).
   - %ProgramData%\Lumi, the machine policy folder, is created locked:
     owned by Administrators, full control for SYSTEM and Administrators, read
     and execute for Users, nothing inherited. Lumi uses a policy or license
@@ -40,7 +43,7 @@
 -->
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs" xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui">
   <Package Name="Lumi"
-           Manufacturer="Luminary Analytics"
+           Manufacturer="Luminary Analytics, LLC"
            Version="$(var.Version)"
            UpgradeCode="{144A302C-54FB-441F-B742-7B597A6A3F4A}"
            Scope="perMachine"
@@ -71,15 +74,21 @@
 
     <!-- POLICYFILE, remembered (see above). Secure, so a value given with the license dialog's
          UI reaches the elevated install. AppSearch reads the copy the installed version wrote,
-         before an upgrade removes that version; SetPOLICYFILE uses it only when this install
-         names no POLICYFILE, in whichever sequence runs (the UI's, then the install's). -->
+         and the PolicyFile value in force, before an upgrade removes that version;
+         SetPOLICYFILE uses the copy only when this install names no POLICYFILE and the value
+         in force is still the copy (so a deleted or changed value isn't brought back), in
+         whichever sequence runs (the UI's, then the install's). -->
     <Property Id="POLICYFILE" Secure="yes" />
     <Property Id="REMEMBERED_POLICYFILE" Secure="yes">
       <RegistrySearch Id="RememberedPolicyFile" Root="HKLM" Bitness="always64" Type="raw"
                       Key="SOFTWARE\Luminary Analytics\Lumi\Msi" Name="PolicyFile" />
     </Property>
+    <Property Id="LIVE_POLICYFILE" Secure="yes">
+      <RegistrySearch Id="LivePolicyFile" Root="HKLM" Bitness="always64" Type="raw"
+                      Key="SOFTWARE\Policies\Luminary Analytics\Lumi" Name="PolicyFile" />
+    </Property>
     <SetProperty Id="POLICYFILE" Value="[REMEMBERED_POLICYFILE]" After="AppSearch" Sequence="both"
-                 Condition="NOT POLICYFILE AND REMEMBERED_POLICYFILE" />
+                 Condition="NOT POLICYFILE AND REMEMBERED_POLICYFILE AND REMEMBERED_POLICYFILE = LIVE_POLICYFILE" />
 
     <StandardDirectory Id="ProgramFiles64Folder">
       <Directory Id="INSTALLFOLDER" Name="Lumi">

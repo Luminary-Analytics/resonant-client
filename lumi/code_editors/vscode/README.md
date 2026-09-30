@@ -32,5 +32,5 @@ Install it from Lumi's **Settings > Code editors**, or run
 
 Part of Lumi, © Luminary Analytics, LLC, licensed under the Lumi End User
 License Agreement (`LICENSE.txt`). The extension was never part of a Lumi
-release; the copies published in Lumi's repository under the MIT License
-before this license replaced it (version 0.1.0) remain under it.
+release; its copies in every commit of Lumi's repository where its license
+file is the MIT License (version 0.1.0) remain under it.

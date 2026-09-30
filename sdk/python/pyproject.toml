@@ -3,13 +3,15 @@ name = "lumi-extension"
 version = "1.1.0"
 description = "Write Lumi extensions in Python: model providers and a test kit (Extension SDK v1)"
 readme = "README.md"
-license = {text = "Lumi Extension SDK License (see LICENSE)"}
-classifiers = ["License :: Other/Proprietary License"]
+# PEP 639: the license by reference, and the file that holds it, which the
+# wheel and sdist carry in their metadata (License-File).
+license = "LicenseRef-Lumi-Extension-SDK-License"
+license-files = ["lumi_extension/LICENSE"]
 requires-python = ">=3.10"
 dependencies = []
 
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
@@ -17,10 +19,9 @@ packages = ["lumi_extension"]
 
 # The SDK is under the Lumi Extension SDK License (LICENSE, rendered by
 # packaging/legal_texts.py), which lets developers build and ship Lumi
-# extensions with it. The copies published in Lumi's repository under the MIT
-# License before it replaced that license (1.0.0; never part of a release)
-# remain MIT. The license
-# file sits inside the package, so it travels with every copy: installed, or
-# copied into a pack by sdk/new_pack.py.
+# extensions with it. Its copies in every commit of Lumi's repository where
+# its license file is the MIT License (1.0.0; never part of a release) remain
+# MIT. The license file sits inside the package, so it travels with every
+# copy: installed, or copied into a pack by sdk/new_pack.py.
 [tool.setuptools.package-data]
 lumi_extension = ["LICENSE"]

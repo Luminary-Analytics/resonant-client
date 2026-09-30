@@ -43,18 +43,22 @@ host enrollment and actual packaged/learned-benefit qualification remain open.
   Extension SDK (`sdk/`) is under the Lumi Extension SDK License, which lets
   developers build and ship extensions for Lumi, and the VS Code extension
   (`lumi/code_editors/vscode/`) is part of Lumi; the copies published under
-  the MIT License (named by release and commit in LICENSE and EULA 5.4, never
-  by a version range) stay MIT, and releases start at 0.20.0. Never move app
+  the MIT License (every commit whose license file is the MIT License, as
+  LICENSE and EULA 5.4 describe them, never by a version or commit range)
+  stay MIT, and releases start at 0.20.0. Never move app
   code into the SDK. The legal texts are rendered: edit
   `lumi/legal/templates/` or `lumi/legal/terms.json` (the one file of facts,
   versions and pins), then run `python packaging/legal_texts.py render`; a
   release fails while a fact is `[[TO BE PROVIDED: ...]]`. Any change to what
-  a text says needs a new version and a new `sha256` pin (the tests fail
-  otherwise): a new EULA, or new test terms on a pre-release build, asks
+  a text says needs a new version and a new `sha256` pin, recorded in
+  `packaging/legal-published-pins.json`, whose entries never change (the
+  tests fail otherwise): a new EULA, or new test terms on a pre-release build, asks
   everyone to accept it again; a new privacy notice or SDK license asks no
   one. Shipped third-party code keeps its notice in
   `THIRD_PARTY_NOTICES.txt` (`packaging/third-party-components.json` for
-  anything that isn't a Python package), and the copyleft gate stays. Code
+  anything that isn't a Python package, and for one that ships no license
+  text of its own; the build fails for any part without one), and the
+  copyleft gate stays. Code
   ported from another project keeps its license notice in the file and gets
   a components entry with the license text (`packaging/licenses/`), as
   `engine/truncation.py` does.
@@ -72,7 +76,9 @@ host enrollment and actual packaged/learned-benefit qualification remain open.
   `LUMI_ACCEPT_TERMS` outside the app, or from a machine policy's
   `legal.accepted_by_organization` from a source only administrators can
   write (never `LUMI_POLICY_FILE`, a Lumi Cloud policy, settings or a
-  project). A new entry point that reaches a model asks the gate; a message
+  project). While such a machine policy can't be used, the gate answers with
+  its error (`policy_blocked`) before the terms, and no personal acceptance
+  is recorded. A new entry point that reaches a model asks the gate; a message
   it refuses before a turn starts is `refused` (`ws_commands.refused_turn`),
   so the page ends its running state and gives the text back. Tests accept
   the terms in `tests/conftest.py` and test the gate itself in

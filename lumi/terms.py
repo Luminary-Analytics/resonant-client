@@ -40,7 +40,8 @@ Acceptance counts when one of these holds:
   document, its version, the SHA-256 of the text, when, how, and which Lumi), and a record whose SHA-256 no
   longer matches the shipped text counts as pending. A new version asks again; so does a changed text,
   which tests/test_legal_texts.py makes come with a new version (each version's hash is pinned in
-  ``terms.json``). A new published date alone doesn't;
+  ``terms.json``, and packaging/legal-published-pins.json keeps every published one). The published
+  date is part of the hashed text, so a new date is a changed text too;
 * the machine policy accepts for the organization's people (``legal.accepted_by_organization``,
   ``policy.terms_accepted_by``): only from a source only an administrator can write (the HKLM Group Policy
   key or the file its ``PolicyFile`` names, a configuration profile, the machine policy file where only
@@ -74,6 +75,9 @@ logger = logging.getLogger(__name__)
 ENVIRONMENT = "LUMI_ACCEPT_TERMS"
 # The error code of a turn or a request refused until the terms are accepted (Session.run, the app).
 REFUSAL_CODE = "terms_not_accepted"
+# The code of a refusal while an administrator's machine policy can't be used (policy.machine_error),
+# which comes before the terms: the same code as the policy's other refusals.
+POLICY_CODE = "policy_blocked"
 RECORD_KIND = "lumi.terms-acceptance/v1"
 # The documents a person accepts, in the order they're shown. The privacy notice is a notice: it's read, not accepted.
 ACCEPTED_DOCUMENTS = ("eula", "alpha_terms")
@@ -323,6 +327,32 @@ def _names(documents: list[Document]) -> str:
     return described[0] if len(described) == 1 else ", ".join(described[:-1]) + " and " + described[-1]
 
 
+def machine_policy_error() -> str:
+    """The error of an administrator's machine policy that can't be used (policy.machine_error), or ''.
+
+    Until it's fixed, Lumi can't tell whether the organization accepted its terms for this computer's
+    people, so it says this instead of asking for the terms, and records no acceptance (``accept``).
+    Never raises: a check that fails counts as such an error.
+    """
+    try:
+        from . import policy
+
+        return policy.machine_error()
+    except Exception as exc:
+        logger.exception("Lumi couldn't read the organization policy")
+        return f"Lumi couldn't read the organization policy ({exc}), so nothing is sent to a model."
+
+
+def gate(place: str = "app", version: str | None = None) -> tuple[str, str]:
+    """(refusal, code): an unusable machine policy's error (``POLICY_CODE``), else ``refusal``'s answer
+    (``REFUSAL_CODE``); ('', '') when neither stops anything. Never raises."""
+    error = machine_policy_error()
+    if error:
+        return error, POLICY_CODE
+    reason = refusal(place, version)
+    return reason, (REFUSAL_CODE if reason else "")
+
+
 def refusal(place: str = "app", version: str | None = None) -> str:
     """Why nothing may reach a model until the terms are accepted; '' once they are. Never raises.
 
@@ -360,11 +390,12 @@ def refusal(place: str = "app", version: str | None = None) -> str:
 
 
 def request_refusal() -> str:
-    """Why a model request can't be sent now because the terms wait, or ''; for the checks underneath every
-    request (lumi/dlp.py, the backends' own HTTP requests). Never raises; cheap once accepted."""
+    """Why a model request can't be sent now because the terms wait, or an unusable machine policy's error;
+    '' otherwise. For the checks underneath every request (lumi/dlp.py, the backends' own HTTP requests).
+    Never raises; cheap once accepted."""
     if _assumed is True:
         return ""
-    return refusal("request")
+    return gate("request")[0]
 
 
 # ── Accepting ────────────────────────────────────────────────────────────────
@@ -407,6 +438,11 @@ def accept(versions: dict[str, str], surface: str, *, version: str | None = None
     """
     if surface not in SURFACES:
         raise ValueError(f"Unknown surface {surface!r}")
+    error = machine_policy_error()
+    if error:
+        # The organization may have accepted for this person: that policy decides, once it can be read.
+        raise TermsError(f"{error} Until it's fixed, Lumi can't tell whether your organization accepted its "
+                         "terms for you, so it records no acceptance.")
     from . import audit
     from .file_lock import exclusive
 
@@ -514,6 +550,8 @@ def status(version: str | None = None) -> dict:
             "acceptance_value": acceptance_value(documents),
             "environment": ENVIRONMENT,
             "refusal": refusal("app", version) if waiting else "",
+            # An administrator's policy that can't be used: the app shows this, not the terms.
+            "policy_error": machine_policy_error(),
         }
     except Exception as exc:
         logger.exception("Lumi couldn't read its terms")
@@ -562,7 +600,7 @@ def main(argv: list[str] | None = None) -> int:
         info = status()
         print(json.dumps({key: info.get(key) for key in (
             "lumi_version", "prerelease", "pending", "pending_documents", "required", "organization",
-            "organization_source", "acceptance_value", "error") if key in info}, indent=2))
+            "organization_source", "acceptance_value", "policy_error", "error") if key in info}, indent=2))
         return 0
     if command == "show" and len(args) <= 2:
         try:

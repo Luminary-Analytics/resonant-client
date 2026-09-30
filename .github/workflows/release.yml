@@ -202,8 +202,9 @@ jobs:
       # Lumi's terms ship with every installer and ask for acceptance in the
       # app: a release fails while lumi/legal/terms.json still holds a fact
       # [[TO BE PROVIDED: ...]], while a text isn't what
-      # packaging/legal_texts.py renders, or for a version below 0.20.0 (0.19.x
-      # was published under the MIT License). RELEASING.md. Here, in the job
+      # packaging/legal_texts.py renders, or for a version below 0.20.0 (the
+      # releases through v0.19.1 were published under the MIT License, and
+      # v0.2.0 through v0.6.2 under none). RELEASING.md. Here, in the job
       # that builds what's released, before anything is built; `release`
       # needs this job, so nothing is signed either (standard library only).
       - name: Legal texts are complete

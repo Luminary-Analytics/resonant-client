@@ -65,12 +65,25 @@ def mtime() -> int:
         return 0
 
 
+# A release's pre-release label (0.20.0-alpha.1) as PEP 440 spells it (0.20.0a1).
+_PEP440_LABELS = {"alpha": "a", "beta": "b", "rc": "rc"}
+
+
 def package_version(version: str) -> str:
     """A Python version as Debian and RPM order it: pre-releases and dev builds sort before the release.
 
     ``0.19.2.dev11`` becomes ``0.19.2~dev11`` and ``0.20.0rc1`` becomes
     ``0.20.0~rc1``: both formats sort ``~`` before anything, even the end.
+    A release's own spelling (``0.20.0-alpha.1``, ``-beta.N``, ``-rc.N``, as
+    RELEASING.md tags them and lumi/__init__.py then holds) is read as its
+    PEP 440 short form, so ``0.20.0-alpha.1`` becomes ``0.20.0~a1``: neither
+    format takes a hyphen in its version field (dpkg would read one as the
+    Debian revision), and alpha, beta and rc keep their order.
     """
+    release = re.fullmatch(r"(\d+\.\d+\.\d+)-(alpha|beta|rc)\.(\d+)", version)
+    if release:
+        base, label, number = release.groups()
+        version = base + _PEP440_LABELS[label] + number
     match = re.fullmatch(r"(\d+(?:\.\d+)*)(?:(a|b|rc)(\d+))?(?:\.post(\d+))?(?:\.dev(\d+))?", version)
     if not match:
         raise SystemExit(f"Not a release version: {version!r}")

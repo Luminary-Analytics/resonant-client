@@ -54,10 +54,13 @@ def _tar(data: bytes) -> tarfile.TarFile:
 
 def test_versions_sort_like_python_releases():
     cases = {"0.19.2.dev11": "0.19.2~dev11", "0.20.0": "0.20.0", "0.20.0rc1": "0.20.0~rc1",
-             "1.2.3a4.dev5": "1.2.3~a4~dev5", "0.21.0.post1": "0.21.0+post1"}
+             "1.2.3a4.dev5": "1.2.3~a4~dev5", "0.21.0.post1": "0.21.0+post1",
+             # A release's own spelling (RELEASING.md), as lumi/__init__.py holds it for a pre-release.
+             "0.20.0-alpha.1": "0.20.0~a1", "0.21.0-beta.2": "0.21.0~b2", "0.21.0-rc.3": "0.21.0~rc3"}
     assert {version: linux_packages.package_version(version) for version in cases} == cases
-    with pytest.raises(SystemExit, match="Not a release version"):
-        linux_packages.package_version("0.20.0-beta")
+    for version in ("0.20.0-beta", "0.20.0-preview.1", "0.20.0-alpha.1.dev2", "v0.20.0-alpha.1"):
+        with pytest.raises(SystemExit, match="Not a release version"):
+            linux_packages.package_version(version)
 
 
 def test_the_deb_installs_lumi_under_opt_for_the_package_manager(bundle, tmp_path):

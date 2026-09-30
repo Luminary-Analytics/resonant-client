@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "lumi"
-version = "0.20.0.dev0"
+version = "0.20.0-alpha.1"
 description = "Provider-adaptive multimodal coding agent for local and hosted models"
 readme = "README.md"
 # Proprietary since September 2026: see LICENSE, which describes the earlier

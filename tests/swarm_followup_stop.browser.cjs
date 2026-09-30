@@ -74,6 +74,18 @@ for(const disconnect of [false,true]) test(disconnect
         await page.getByLabel('Follow-up readable folders',{exact:true}).fill('');
         await page.getByRole('button',{name:'Request follow-up plan',exact:true}).click();
         await page.waitForFunction(()=>delayedSwarm.planner!==null);
+        // The planner answers at once here, so it commits newer revisions while
+        // its launch reply is still held: the case the panel refreshes before
+        // Stop for. Press Stop once it has finished (the service's own view,
+        // not the held page); pressed while it still committed, the Stop raced
+        // those commits and was refused.
+        for(let i=0;;i++) {
+            const run=(await (await fetch(info.url+'/__fixture__/evidence')).json()).runs[0]?.run;
+            const planners=(run?.attempts||[]).filter(row=>row.kind==='coordinator');
+            if(planners.length===2 && planners.every(row=>row.process_state==='stopped'))break;
+            assert.ok(i<150,'The follow-up planner never finished: '+JSON.stringify(planners));
+            await new Promise(resolve=>setTimeout(resolve,100));
+        }
         const stop=page.getByRole('button',{name:'Stop team',exact:true});
         assert.equal(await stop.isEnabled(),true,'Stop must remain available behind the delayed planner reply');
         await stop.focus();

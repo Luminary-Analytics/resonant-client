@@ -314,8 +314,9 @@ def test_argument_digest_mismatch_is_not_admitted(fixture):
 
 def test_only_known_revision_conflict_refreshes_a_command(fixture):
     guard, _ = fixture
-    # Another admitted control command changes revision after guard construction.
-    command(guard.supervisor, guard.authority, "renew")
+    # Another admitted control command changes revision after guard construction
+    # (a person's, here; a lease renewal no longer does).
+    command(guard.supervisor, guard.authority, "set_concurrency", {"max_workers": 1})
     request_id = completed_request(guard)
     assert rows(guard, "model_requests")[0]["id"] == request_id
     assert len(rows(guard, "model_requests")) == 1

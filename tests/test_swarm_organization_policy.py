@@ -120,8 +120,8 @@ def view(service, capture, run_id):
 def act(service, capture, run_id, action, **payload):
     """One owner action on the team, at its current revision.
 
-    A lease renewal can advance the revision between the view and the action;
-    the action is then refused before anything commits, and the owner
+    The team's own work can advance the revision between the view and the
+    action; the action is then refused before anything commits, and the owner
     refreshes and sends it again (see test_swarm_desktop_writers.operate).
     """
     request_id = f"{action}-{time.monotonic()}"

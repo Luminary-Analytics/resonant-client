@@ -2472,6 +2472,49 @@ def _bundled_ripgrep(*, trusted_only: bool = False) -> Optional[str]:
 _GREP_LINE_PATH = re.compile(r"^((?:[A-Za-z]:)?[^:]*):\d+:")
 
 
+def _file_name(raw: bytes) -> str:
+    """A path a search tool printed, as the file system names it (UTF-8 on Windows)."""
+    try:
+        return os.fsdecode(raw)
+    except UnicodeDecodeError:
+        return raw.decode("utf-8", errors="replace")
+
+
+def _null_records(data: bytes) -> list[tuple[str, str]]:
+    """``--null`` search output (ripgrep's, or grep's off Windows) as (path, ``:line:text``).
+
+    Each match is its path, a NUL, then the line number and the matched line
+    as the file's own bytes. The path is UTF-8 (ripgrep's on Windows too; the
+    file system's encoding elsewhere); the text is whatever the file holds, on
+    Windows often the ANSI code page. Decoded as one line, a match whose text
+    wasn't UTF-8 had its path read as cp1252 too ("Jöhn" came back as "JÃ¶hn"),
+    so it no longer matched the project or any exclusion rule, and an excluded
+    file's text was shown. So the path is decoded on its own and the text
+    alone as the file's (decode_output, the ANSI code page on a tie). A
+    carriage return inside the text stays in its match, as a space: a line
+    break there started a line with no path, which no exclusion rule matches.
+    A line without a NUL isn't a match and is never shown.
+    """
+    records: list[tuple[str, str]] = []
+    for line in data.split(b"\n"):
+        name, nul, rest = line.partition(b"\0")
+        if not nul:
+            continue
+        number, _, text = rest.partition(b":")
+        text = decode_output(text.removesuffix(b"\r"), prefer="ansi").replace("\n", " ")
+        records.append((_file_name(name), f":{number.decode('ascii', errors='replace')}:{text}"))
+    return records
+
+
+def _path_records(lines: Sequence[str]) -> list[tuple[Optional[str], str]]:
+    """``path:line:text`` lines as (path, ``:line:text``), or (None, line) when no path starts one."""
+    records: list[tuple[Optional[str], str]] = []
+    for line in lines:
+        match = _GREP_LINE_PATH.match(line)
+        records.append((match.group(1), line[match.end(1):]) if match else (None, line))
+    return records
+
+
 def _findstr_lines(data: bytes, root: str) -> list[str]:
     """findstr's matches as ``path:line:text``, one per match.
 
@@ -2501,7 +2544,9 @@ def _findstr_lines(data: bytes, root: str) -> list[str]:
         for index, found in enumerate(starts):
             end = starts[index + 1].start() if index + 1 < len(starts) else len(data)
             path = (prefix + found.group(1)).decode(page, errors="replace")
-            text = decode_output(data[found.end():end], prefer="ansi").rstrip("\n")
+            # One line per match, as for ripgrep: a carriage return inside
+            # the text would otherwise show as a line with no path.
+            text = decode_output(data[found.end():end], prefer="ansi").rstrip("\n").replace("\n", " ")
             matches.append(f"{path}:{found.group(2).decode('ascii')}:{text}")
         return matches
     # The root isn't spelled in any of those code pages (a character the
@@ -2596,6 +2641,9 @@ def _build_grep_command(pattern: str, path: str, file_glob: str, *, trusted_only
             # no node_modules noise); only the VCS internals are force-excluded.
             "--hidden",
             "--glob", "!.git/",
+            # A NUL after each path: it is UTF-8 and the text is the file's
+            # own bytes, so each is decoded on its own (_null_records).
+            "--null",
         ]
         if file_glob:
             cmd.extend(["--glob", file_glob])
@@ -2611,7 +2659,8 @@ def _build_grep_command(pattern: str, path: str, file_glob: str, *, trusted_only
 
     # Extended syntax, so the alternation, `+` and groups models write mean
     # what they do in ripgrep (basic grep treats them as literal characters).
-    cmd = [system_program("grep"), "-rnE"]
+    # `--null` (GNU and BSD grep; BSD's -Z means something else) as for ripgrep.
+    cmd = [system_program("grep"), "-rnE", "--null"]
     if file_glob:
         cmd.extend([f"--include={file_glob}"])
     cmd.extend(["--", pattern, path])
@@ -2662,48 +2711,43 @@ def _exec_grep(
             metadata={"pattern": pattern, "timed_out": True},
         )
 
-    # Matched text is each file's own bytes, in whatever encoding it has, and
-    # findstr writes paths in the console's code page: decode per line
-    # (lumi.processes.decode_output), and findstr's matches as findstr
-    # wrote them (_findstr_lines).
+    # Each match as (its file's path, ":line:text"). Matched text is the
+    # file's own bytes, in whatever encoding it has, while each tool writes
+    # the path its own way: ripgrep and grep in UTF-8 before a NUL
+    # (_null_records), findstr in the console's code page (_findstr_lines).
     raw = stdout if isinstance(stdout, bytes) else str(stdout or "").encode("utf-8")
     # rg, findstr or grep, by the full path _build_grep_command resolved.
     searcher = os.path.splitext(os.path.basename(cmd[0]))[0].lower()
-    if searcher == "findstr" and os.path.isdir(path):
-        lines = _findstr_lines(raw, path)
+    if searcher in ("rg", "grep"):
+        records: list[tuple[Optional[str], str]] = list(_null_records(raw))
+    elif searcher == "findstr" and os.path.isdir(path):
+        records = _path_records(_findstr_lines(raw, path))
     else:
         decoded = decode_output(raw, prefer="ansi").strip()  # files' own text
-        lines = decoded.split("\n") if decoded else []
+        records = _path_records(decoded.split("\n") if decoded else [])
     hidden = 0
-    if exclusions and lines:
-        # Every backend prints path:line:content; a Windows path starts
-        # with a drive letter and colon.
-        kept_lines = []
+    if exclusions and records:
+        # The rules apply to each match's own path, as decoded above.
         excluded = exclusions.checker()
-        for line in lines:
-            match = _GREP_LINE_PATH.match(line)
-            if match and excluded(match.group(1)):
-                hidden += 1
-            else:
-                kept_lines.append(line)
-        lines = kept_lines
+        kept = [record for record in records if not (record[0] and excluded(record[0]))]
+        hidden = len(records) - len(kept)
+        records = kept
     old_index = 0
-    if lines:
+    lines: list[str] = []
+    if records:
         # Paths relative to the project, as the files are spelled, and not
         # Lumi's old codebase index (only ripgrep's .gitignore handling or
         # nothing at all would skip it otherwise).
         root = project_path or (path if os.path.isdir(path) else os.path.dirname(path))
         skip_index = not _names_lumi_folder(root, path, file_glob)
-        shown_lines = []
-        for line in lines:
-            match = _GREP_LINE_PATH.match(line)
-            if match and skip_index and _is_old_index(match.group(1), root):
+        for found, rest in records:
+            if found and skip_index and _is_old_index(found, root):
                 old_index += 1
                 continue
-            if match and project_path:
-                line = _project_display_path(match.group(1), project_path) + line[match.end(1):]
-            shown_lines.append(line)
-        lines = shown_lines
+            if found is None:
+                lines.append(rest)
+            else:
+                lines.append((_project_display_path(found, project_path) if project_path else found) + rest)
     output = ""  # only what survived the filters above is ever shown
     count = len(lines)
     # Cap each match line at 500 chars so a single minified-JS hit can't

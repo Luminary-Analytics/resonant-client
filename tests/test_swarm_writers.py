@@ -137,7 +137,7 @@ def test_a_writer_cancelled_while_its_result_waits_for_the_repository_commits_no
             while runtime.inspect(context.attempt_id)["state"] != "waiting_for_repository":
                 assert time.monotonic() < deadline, explain(runtime)
                 time.sleep(.01)
-            for attempt in range(3):  # a lease renewal can refuse it first, before anything commits
+            for attempt in range(3):  # the team's own work can refuse it first, before anything commits
                 try:
                     runtime.cancel_worker(context.attempt_id, context.epoch, command_id="cancel",
                                           expected_revision=snapshot(fixture)["run"]["revision"])

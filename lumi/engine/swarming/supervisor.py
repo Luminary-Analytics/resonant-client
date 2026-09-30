@@ -187,7 +187,13 @@ class SwarmSupervisor:
                 raise RevisionConflict("Run revision changed; refresh the snapshot")
             result = handlers[command.kind](connection, run, **semantics["payload"])
             self._control_checkpoint(connection, run["id"])
-            connection.execute("UPDATE runs SET revision=revision+1 WHERE id=?", (run["id"],))
+            # A lease renewal (every few seconds while a team runs) changes only
+            # the lease, nothing a person's Stop or decision rests on: it keeps
+            # the revision, unless its checkpoint moved the run on (stopping to
+            # cancelled). Advancing it refused whatever a person sent from the
+            # view they had just read ("Run revision changed").
+            if command.kind != "renew" or self._run_state(connection, run["id"]) != run["state"]:
+                connection.execute("UPDATE runs SET revision=revision+1 WHERE id=?", (run["id"],))
             self.store._event(connection, run["id"], f"command_{command.kind}",
                               {"command_id": command.command_id, "result": result})
             updated = connection.execute("SELECT revision,event_sequence,state FROM runs WHERE id=?", (run["id"],)).fetchone()
@@ -1230,8 +1236,12 @@ class SwarmSupervisor:
         connection.execute("UPDATE runs SET state='running' WHERE id=?", (run["id"],))
         return {"retry_work_items": retry_work_items}
 
+    @staticmethod
+    def _run_state(connection: sqlite3.Connection, run_id: str) -> str:
+        return connection.execute("SELECT state FROM runs WHERE id=?", (run_id,)).fetchone()[0]
+
     def _control_checkpoint(self, connection: sqlite3.Connection, run_id: str) -> None:
-        state = connection.execute("SELECT state FROM runs WHERE id=?", (run_id,)).fetchone()[0]
+        state = self._run_state(connection, run_id)
         if state == "pausing":
             active = connection.execute("SELECT 1 FROM model_requests r JOIN attempts a ON a.id=r.attempt_id "
                                         "WHERE a.run_id=? AND r.state IN ('started','uncertain')", (run_id,)).fetchone()

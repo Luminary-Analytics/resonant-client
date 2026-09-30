@@ -57,6 +57,24 @@ def test_policyfile_writes_the_value_the_policy_reader_uses(package):
         "HKLM", policy.REGISTRY_KEY, "PolicyFile", "[POLICYFILE]")
 
 
+def test_it_creates_the_machine_policy_folder_locked(package):
+    # Any user may create folders under ProgramData, and one made there inherits every user's
+    # right to add files, so the package makes %ProgramData%\Lumi itself: owned by Administrators,
+    # SYSTEM and Administrators full control, Users read and execute, nothing inherited.
+    folder = package.find(f".//{WIX}StandardDirectory[@Id='CommonAppDataFolder']/{WIX}Directory")
+    assert folder.get("Name") == "Lumi"  # C:\ProgramData\Lumi, beside lumi/policy.machine_policy_file
+    component = folder.find(f"{WIX}Component[@Id='MachinePolicyFolder']")
+    sddl = component.find(f"{WIX}CreateFolder/{WIX}PermissionEx").get("Sddl")
+    assert sddl == "O:BAD:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;0x1200a9;;;BU)"
+    assert component.find(f"{WIX}RegistryValue").get("KeyPath") == "yes"
+    assert package.find(f".//{WIX}Feature/{WIX}ComponentRef[@Id='MachinePolicyFolder']") is not None
+    if sys.platform == "win32":
+        # The folder it makes is one Lumi trusts (lumi/admin_files.py).
+        from lumi import admin_files
+
+        assert admin_files.descriptor_problem(admin_files.descriptor_from_sddl(sddl), "folder") == ""
+
+
 def test_the_marker_the_build_writes_turns_updates_off(package, tmp_path):
     marker = package.find(f".//{WIX}Component[@Id='InstallMarker']/{WIX}File")
     assert marker.get("Source").endswith("\\lumi-install.json")

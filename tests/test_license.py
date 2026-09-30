@@ -97,9 +97,14 @@ class TestVerification:
         assert info["valid"] is trusted
         assert trusted or "doesn't trust" in info["error"]
 
-    def test_windows_reads_keys_only_from_the_registry(self):
+    def test_windows_reads_keys_only_from_the_registry(self, machine, monkeypatch):
         # Any user may create C:\ProgramData\Lumi where no administrator did.
-        assert lumi_license._key_file_trusted() is (sys.platform != "win32")
+        (machine / "license-keys.json").write_text("{}", encoding="utf-8")
+        monkeypatch.setattr(sys, "platform", "win32")
+        assert lumi_license._key_file_trusted() is False
+        # Elsewhere a key file counts when only root can have written it (tests/test_machine_policy_trust.py).
+        monkeypatch.setattr(sys, "platform", "linux")
+        assert lumi_license._key_file_trusted() is True
 
     def test_tampered_or_untrusted_licenses_are_refused(self, machine, key):
         document = _signed(key)

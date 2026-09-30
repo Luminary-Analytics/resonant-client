@@ -86,6 +86,25 @@ plist that can't be read, or a `Policy` that is empty, isn't text or a
 dictionary, isn't valid JSON or isn't a valid policy. Preferences without a
 `Policy` key set no policy. Lumi reads the policy when it starts.
 
+macOS writes managed preferences as root. Lumi uses the plist only while root
+owns it and `/Library/Managed Preferences`, and neither is writable by its
+group or others. The same goes for `policy.json`, `policy-keys.json`,
+`license.json` and `license-keys.json` in `/Library/Application Support/Lumi`.
+The `Lumi` folder must be owned by root with mode 755, and the files by root
+with mode 644. Install them with `sudo`, for example
+`sudo install -d -o root -g wheel -m 755 "/Library/Application Support/Lumi"`
+and `sudo install -o root -g wheel -m 644 policy.json "/Library/Application Support/Lumi/"`.
+A file others could have written is ignored and shown in Settings, as
+described in
+[the file rules](enterprise-policy.md#only-files-only-administrators-can-change-count).
+
+`/Library/Application Support` itself is `root:admin` with mode 775, so any
+member of the admin group can remove or rename the `Lumi` folder inside it
+without `sudo`. That can take the organization's files away, but it can't get
+Lumi to trust files of their own: those aren't root's. Admin-group accounts are
+administrators, so give people standard accounts, or deliver the policy
+through a configuration profile.
+
 `packaging/policy/lumi-policy.mobileconfig` is a hand-written example of the
 same profile.
 

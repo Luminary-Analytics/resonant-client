@@ -134,8 +134,19 @@ jobs:
             sudo tee /etc/lumi/policy.json > /dev/null
           lumi updates | tee policy.json
           python3 -c 'import json; s = json.load(open("policy.json")); assert (s["managed_by"], s["channel"]) == ("CI Org", "beta"), s'
-          sudo rm -rf /etc/lumi
           echo "✓ /etc/lumi/policy.json applies"
+
+          # Only a file only root can change counts (docs/enterprise-policy.md): root's policy
+          # that others may change fails closed, and one a person owns is ignored, visibly.
+          sudo chmod 666 /etc/lumi/policy.json
+          if lumi policy > policy-status.json; then echo "A policy others can change must fail closed"; exit 1; fi
+          python3 -c 'import json; s = json.load(open("policy-status.json")); assert not s["active"] and "writable by non-administrators" in s["blocked"] and s["ignored"][0]["kind"] == "policy", s'
+          sudo chown "$(id -u)" /etc/lumi/policy.json
+          sudo chmod 644 /etc/lumi/policy.json
+          lumi policy > policy-status.json
+          python3 -c 'import json; s = json.load(open("policy-status.json")); assert not s["active"] and not s["blocked"] and "not by root" in s["ignored"][0]["reason"], s'
+          sudo rm -rf /etc/lumi
+          echo "✓ A policy others can change fails closed, and one a person owns is ignored"
 
           sudo apt-get remove -y lumi
           if [ -e /opt/lumi/lumi ] || [ -e /usr/bin/lumi ]; then echo "Files left after removal"; exit 1; fi

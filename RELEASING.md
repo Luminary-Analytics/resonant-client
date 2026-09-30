@@ -84,6 +84,36 @@ Verify:
 - Bundled skills install and startup logs have no unexplained errors.
 - Relevant desktop/compact layouts and keyboard controls remain usable.
 
+## The build's feedback address
+
+Send feedback sends reports to the address a person or their organization
+sets (`privacy.feedback_url`, Settings › Privacy & security), else to the
+address the build was made with, else to the Lumi Cloud the computer uses
+([sending feedback](docs/feedback.md#where-it-goes)). The build's address
+comes from the repository **variable** (not a secret) `LUMI_FEEDBACK_URL`,
+empty until Luminary's Lumi Cloud is live. release.yml passes it to the
+Windows and macOS builds as `LUMI_BUILD_FEEDBACK_URL`, and
+`packaging/build_config.py` writes it into `lumi/_build_config.py` before
+Lumi is installed and bundled, so setting it takes no code change:
+
+```sh
+gh variable set LUMI_FEEDBACK_URL --body https://<Lumi Cloud address> --repo Luminary-Analytics/resonant-client
+```
+
+It must be `https`, with a host, in ASCII, and without a user name, password,
+query or fragment; anything else stops the build. A local build takes it from
+its environment the same way (`$env:LUMI_BUILD_FEEDBACK_URL = "https://..."`
+before `./scripts/build_clean.ps1`). Without it a build has no address of its
+own, like a source checkout, and the builds remove `lumi/_build_config.py`
+when they finish. Reports written before an address existed stay on each
+computer until the person sends them there; meanwhile the dialog offers to
+copy them and email them to Luminary support.
+
+Before the first release with an address, check that the privacy notice
+still says where feedback goes: its **Where** bullet names Settings, the
+organization's policy and the Lumi Cloud in use, not a build's own address,
+and changing it takes a new version and pin (see [Lumi's terms](#lumis-terms)).
+
 ## Lumi's terms
 
 Lumi ships its [End User License Agreement](lumi/legal/EULA.md),

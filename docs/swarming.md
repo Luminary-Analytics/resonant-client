@@ -420,7 +420,13 @@ Writers need Git (Git for Windows on Windows): without it a team with
 writable folders is refused at once ("Writer teams need Git for Windows ...");
 read-only teams never run Git and work without it.
 Writer setup requires a clean, committed Git checkout at the repository root
-on a branch. A project opened at a repository subdirectory cannot start writers;
+on a branch. A checkout with uncommitted changes is refused before anything
+starts, naming up to ten of the changed files: commit or stash them, then
+start the team again; nothing in the project is touched. The team's commits
+read `Lumi team: <objective>` (a writer's own task, or the team's objective
+for the combined change applying lands, on one line and shortened), with the
+run, the combined change and the writers' ids in the commit body.
+A project opened at a repository subdirectory cannot start writers;
 the client does not widen its workspace. The team
 captures its base revision and target branch before dispatch. Enable **Allow
 scoped file changes**, declare the team's writable roots, and define trusted
@@ -587,7 +593,7 @@ disclosure. Images, audio, video and binary artifacts are identified without a
 text preview or a claim of visual interpretation. Owner access to these records
 does not grant workers new access or execution authority.
 
-**Export run report** downloads a local `SONN-swarm-<run-id>.json` file for the
+**Export run report** downloads a local `lumi-team-<run-id>.json` file for the
 captured run. It contains metadata and evidence references, request allowances,
 known/unknown usage and review/check outcomes. It omits message bodies,
 transcripts and prompts. This is a local download, not an upload or an external

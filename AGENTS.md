@@ -531,6 +531,8 @@ host enrollment and actual packaged/learned-benefit qualification remain open.
   out of the copy unless they carry only what the person or Lumi said.
 - Feedback (`feedback.py`, `static/feedback_view.js`, docs/feedback.md) goes
   to `feedback.destination` (`privacy.feedback_url`, the build's address,
+  which `packaging/build_config.py` writes into the never-committed
+  `lumi/_build_config.py` from the repository variable `LUMI_FEEDBACK_URL`,
   else the Lumi Cloud in use) as `POST /api/v1/feedback` with an
   `Idempotency-Key`, through `net.client_options`, after offline mode (which
   refuses before anything is prepared; its copy is only what was typed),

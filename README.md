@@ -433,15 +433,16 @@ now that browsing works out of the box.
 | `GOOGLE_APPLICATION_CREDENTIALS` | none | Service account for Claude on Vertex AI connections |
 | `LUMI_ANTHROPIC_READ_TIMEOUT_SEC` / `LUMI_OPENAI_READ_TIMEOUT_SEC` | `600` | Stream read timeouts for the Anthropic and OpenAI adapters |
 | `MOONSHOT_BASE_URL` | `https://api.moonshot.ai/v1` | Kimi-compatible API URL |
-| `LUMI_OLLAMA_NUM_CTX` | capability-derived | Ollama context override |
+| `LUMI_OLLAMA_NUM_CTX` | capability-derived | Ollama context override, when Settings › Ollama runtime sets none |
 | `LUMI_OLLAMA_NUM_BATCH` | Ollama default | Optional batch override |
 | `LUMI_OLLAMA_NUM_GPU` | Ollama default | Optional GPU layer override |
-| `LUMI_OLLAMA_KEEP_ALIVE` | `120m` | Ollama keep-alive |
+| `LUMI_OLLAMA_KEEP_ALIVE` | `120m` | Ollama keep-alive, when Settings › Ollama runtime sets none |
 | `LUMI_OLLAMA_HTTP_TIMEOUT_SEC` | `360` | Ollama request timeout |
 | `LUMI_OLLAMA_HTTP_READ_TIMEOUT_SEC` | `300` | Ollama stream read timeout |
 | `HTTPS_PROXY` / `HTTP_PROXY` / `NO_PROXY` | none | Proxy for outbound traffic and hosts that bypass it; a proxy set in Settings takes precedence |
 | `LUMI_KEYCHAIN` | `on` | `off` keeps API keys in `settings.json` instead of the OS credential store |
 | `LUMI_KEYCHAIN_SERVICE` | `Lumi` | Service name for keys in the OS credential store |
+| `LUMI_DEVELOPER_TOOLS` | off | `1` shows Lumi's own developer tools in Settings (the GLM / DeepSeek model evaluations), as `general.developer_tools` in `settings.json` does |
 
 Persistent configuration lives in `~/.lumi/settings.json` and is managed
 through the desktop Settings view. Each save keeps the file as it was in

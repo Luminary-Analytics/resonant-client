@@ -39,11 +39,18 @@ The dialog works from the keyboard:
 
 Reports go to the **feedback address**:
 
-1. `privacy.feedback_url`, which your organization's policy can lock, or you
-   can set in `settings.json`;
+1. `privacy.feedback_url`: **Settings › Privacy & security › Feedback
+   address**, which your organization's policy can lock (it then shows as
+   managed). It takes a Lumi Cloud address such as
+   `https://cloud.example.com`: `https` (`http` only for one on this
+   computer), without a user name, password, `?` or `#`; Settings refuses
+   anything else, as a policy does;
 2. otherwise the address this build of Lumi was made with
-   (`feedback.BUILD_DESTINATION`: none yet; alpha builds will send to
-   Luminary's Lumi Cloud once it exists);
+   (`feedback.BUILD_DESTINATION`, from `lumi/_build_config.py`, which the
+   release build writes from the repository variable `LUMI_FEEDBACK_URL`: see
+   [RELEASING.md](../RELEASING.md#the-builds-feedback-address).
+   It's `https` only, and a build with anything else fails. None while that
+   variable is empty, and none when Lumi runs from source);
 3. otherwise the Lumi Cloud this computer uses (**Settings › Lumi account**,
    or your organization's policy).
 
@@ -59,7 +66,11 @@ it with **Send to** that address **as** the account signed in there now (or
 **without an account**), and it goes only when you choose that, and only as
 the button said: if who's signed in changed meanwhile, nothing is sent. It
 never goes by itself to an address that appears later, such as one an
-employer's policy sets.
+employer's policy sets. Meanwhile the dialog offers **Copy** and says where
+to email it instead: Luminary Analytics support,
+rich.bellantoni@luminaryanalytics.com (`feedback.SUPPORT_EMAIL`, the
+address Lumi's terms give for notices and support). It says so when you
+send one (with its own Copy) and beside each such report in the list.
 
 **Your account goes only while you're signed in** to the Lumi Cloud that
 issued your sign-in, and only when reports go there. The request then
@@ -312,13 +323,15 @@ Lock these in the policy's `settings` ([organization policy](enterprise-policy.m
 | --- | --- |
 | `privacy.feedback` | `"on"` (default) or `"off"`: whether people can send feedback from Lumi at all |
 | `privacy.feedback_diagnostics` | `"allowed"` (default) or `"never"` |
-| `privacy.feedback_url` | `""` (the build's address, else the Lumi Cloud the computer uses) or a Lumi Cloud address (`https`, no user name or password), such as your own Lumi Cloud's inbox |
+| `privacy.feedback_url` | `""` (the build's address, else the Lumi Cloud the computer uses) or a Lumi Cloud address (`https`, no user name or password), such as your own Lumi Cloud's inbox. Locked, the Feedback address field in Settings › Privacy & security shows it as managed |
 
 ## Not built yet
 
-- **No feedback address in this build.** Without one in settings, a policy
-  or the build, reports go to the Lumi Cloud this computer uses, and with no
-  Lumi Cloud either, they wait until you send them somewhere.
+- **No feedback address in builds yet.** The release builds take theirs from
+  `LUMI_FEEDBACK_URL`, which stays empty until Luminary's Lumi Cloud is
+  live. Until then, without an address in Settings or a policy, reports go to
+  the Lumi Cloud this computer uses, and with no Lumi Cloud either, they wait
+  until you send them somewhere (or copy them and email them to Luminary).
 - **Attachments and screenshots.** A report is text.
 - **Answers in the app.** Staff reply by email, to the reply-to address.
 - **Keyboard access to the application menu.** Its items take the pointer;

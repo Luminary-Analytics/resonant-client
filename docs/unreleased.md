@@ -8,6 +8,91 @@ The heartbeat remains paused. Documentation maintenance does not resume work,
 spending or grants, and changes no native implementation or installed bundle.
 The dated September 15/18 records below are historical.
 
+## September 30 Alpha polish: feedback can reach Luminary, alphas follow the beta channel, clearer errors (source only, not released)
+
+The final pre-alpha pass on the packaged build found these.
+
+- **Feedback can reach Luminary.** Release builds take their feedback address
+  from the repository variable `LUMI_FEEDBACK_URL` (a variable, not a secret;
+  empty until Luminary's Lumi Cloud is live): release.yml passes it to the
+  Windows and macOS builds as `LUMI_BUILD_FEEDBACK_URL`, and
+  `packaging/build_config.py` writes it into `lumi/_build_config.py` (never
+  committed; every build removes it when it finishes), which
+  `feedback.BUILD_DESTINATION` reads. An address that isn't `https`, or holds
+  a user name, password, query or fragment, stops the build. Settings and an
+  organization's lock (`privacy.feedback_url`) still win. RELEASING.md says
+  how to set it.
+- **Settings › Privacy & security › Feedback address** sets
+  `privacy.feedback_url`, checked as a policy's address is
+  (`feedback.check_address`: https, http only for a Lumi Cloud on this
+  computer, no user name, password, `?` or `#`), shown as managed when a
+  policy locks it, and saying where reports go while it's empty.
+- **A report kept for lack of an address** says where to email it: "Or copy it
+  and email it to rich.bellantoni@luminaryanalytics.com", with Copy, when it's
+  saved and beside each such report in the dialog's list
+  (`feedback.SUPPORT_EMAIL`, the notices and support address in Lumi's terms).
+- **An alpha, beta or release candidate follows the beta channel** until
+  someone chooses one: pre-releases are published only to the beta feeds, and
+  every new install started on Stable, so alpha testers were never offered the
+  next alpha. `settings.json` now starts with `updates.channel` `""` (not
+  chosen), and `update_channels.default_channel` picks beta for a pre-release
+  version, for WinSparkle and Sparkle alike. A saved channel (a file that
+  already says `stable` included) and a policy lock still win; stable builds
+  are unchanged. Settings › Updates shows the channel in effect and says when a
+  pre-release follows beta by default.
+- **glob leaves out what grep does.** `glob **/*` listed every object and hook
+  under `.git` first. It now leaves out Git's folder and what's inside folders
+  the project root's `.gitignore` excludes (a file with a negated pattern
+  isn't followed), unless the pattern or path names the folder, and says how
+  many paths it left out.
+- **A stopped Ollama says what to do.** "[WinError 10061] No connection could
+  be made because the target machine actively refused it" is now "Lumi
+  couldn't reach Ollama at http://127.0.0.1:11434. Start Ollama there, or
+  check Settings › Connections." The same for a connection that times out, for
+  EXO, and for a custom connection on this computer; offline mode's own
+  reason still comes first.
+- **Settings › Ollama runtime works.** Its context window and keep-alive were
+  saved and never read. Each Ollama backend now takes them (before
+  `LUMI_OLLAMA_NUM_CTX`, which the Large-context profile sets, and
+  `LUMI_OLLAMA_KEEP_ALIVE`), checked when saved, and the open conversation's
+  next request carries them. Its "Ollama host" field, which nothing read, and
+  Network's second "Ollama URL" field are gone: Ollama's address is the
+  Connections card's (`network.ollama_url`).
+- **Saving the Ollama card is quicker.** Save probed every provider twice (the
+  settings change, then again after its own check), and each probe waits for a
+  provider that isn't running: Windows takes two seconds to refuse a
+  connection on this computer. It probes once now: 5.3 s in the final pass's
+  fixture, about 2.7 s in the same setup now.
+- **SONN only for SONN users.** A team's commits read "Lumi team: <objective>"
+  (a writer's task, or the team's objective for the change applying lands, on
+  one line and shortened), with the run, change and writer ids in the body,
+  instead of "SONN combined candidate integration_…" and "SONN swarm writer
+  …"; nothing parsed the old subjects. The run report downloads as
+  `lumi-team-<run>.json`. The profile menu's hidden "SONN account & credits"
+  showed anyway (a `display: flex` rule beat `hidden`); it and Settings' page
+  of that name show only with SONN, the arrow keys skip it, and the Connections
+  card for SONN says it's by invitation until its address or key is set.
+- **Lumi's own evaluations are a developer tool.** Model evaluations' "GLM /
+  DeepSeek Evaluations" panel, with models and specs built in for Lumi's own
+  releases, shows and starts only with `general.developer_tools` in
+  settings.json or `LUMI_DEVELOPER_TOOLS=1`.
+- **A dirty checkout's refusal names the files.** A writer team on a project
+  with uncommitted changes said "Writer baseline requires a clean committed
+  checkout; existing work is preserved". It now names up to ten changed files
+  and says to commit or stash them, then start the team again.
+- **Smaller things.** About and Privacy describe how an administrator installs
+  a policy instead of pointing at a repository path; counts say "1 model",
+  "1 line", "1 match" and "1 tool"; a final newline no longer counts as a line
+  (file_write, file_read's total and the activity row), so a page ending at a
+  file's last line offers no empty page after it; a stopped turn's collapsed
+  row says "Stopped after 12s" (live and after a reload) instead of "Work
+  details"; the macOS build check passes its random GUI token as
+  `--token=…`, which argparse otherwise misreads one run in 64.
+- **Not changed:** the privacy notice's "Where" bullet for feedback names
+  Settings, a policy and the Lumi Cloud in use, not a build's own address;
+  before a build with an address ships, that text needs a new version and pin
+  (RELEASING.md).
+
 ## September 27 A new Windows computer: Lumi works without Git, Python or Node.js (source only, not released)
 
 The packaged build of `main` was run the way an alpha tester would: a fresh

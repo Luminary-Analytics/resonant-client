@@ -11,16 +11,35 @@ A request without the fixture key (``x-api-key``, ``api-key`` or a bearer
 token) is refused with 401, and a Messages request whose history holds tool
 calls but defines no tools with 400, as the providers would.
 
+``tool_choice`` is checked too: a value the API doesn't define, or one sent
+without tools, is refused with 400, and a reply that calls a tool under
+``none`` is a scripting error (``errors``), since no model could send it. A
+``Reply.error`` streams an error in place of the response's end (Anthropic's
+``error`` event, OpenAI's ``response.failed``), after the reply's content or,
+with none, before any output.
+
+Claude on Amazon Bedrock is answered too, at ``/model/<id>/invoke-with-response-stream``:
+the same Messages events, framed as Bedrock's ``application/vnd.amazon.eventstream``
+(``lumi.anthropic_api.encode_event_frame``), with an in-stream error as an
+exception frame. The fixture accepts ``tool_choice`` ``none`` there as the
+Messages API does; AWS's InvokeModel documentation lists only ``auto``,
+``any`` and ``tool``, and no live Bedrock request has confirmed ``none``
+(docs/known-issues.md).
+
 NOT a test file: test files import it.
 """
 from __future__ import annotations
 
+import base64
 from dataclasses import dataclass, field, replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import threading
 import time
 from typing import Callable
+from urllib.parse import unquote
+
+from lumi.anthropic_api import encode_event_frame
 
 KEY = "fixture-provider-key"
 # Every reply reports the same usage, so a test can price it.
@@ -57,6 +76,10 @@ class Reply:
     hold: threading.Event | None = None
     status: int = 200
     extra: dict = field(default_factory=dict)
+    # An error streamed in place of the response's end, after this reply's
+    # content (none: before any output): (Anthropic error type, OpenAI error
+    # code or Bedrock exception type, message).
+    error: tuple[str, str] | None = None
 
 
 def _anthropic_turn(body: dict) -> Turn:
@@ -148,6 +171,50 @@ def _openai_events(reply: Reply, number: int) -> list[dict]:
     return events
 
 
+def _failed(protocol: str, events: list[dict], error: tuple[str, str]) -> list[dict]:
+    """``events`` with the response's end replaced by an in-stream error, as each API streams one."""
+    kind, message = error
+    if protocol == "openai":
+        response_id = events[0]["response"]["id"]
+        return [event for event in events if event["type"] != "response.completed"] + [
+            {"type": "response.failed", "response": {"id": response_id, "status": "failed",
+                                                     "error": {"code": kind, "message": message}}}]
+    return ([event for event in events if event["type"] not in {"message_delta", "message_stop"}]
+            + [{"type": "error", "error": {"type": kind, "message": message}}])
+
+
+def _bedrock_frame(event: dict) -> bytes:
+    """One Messages event as Bedrock streams it: a chunk frame, or an exception frame for an error."""
+    if event["type"] == "error":
+        return encode_event_frame({":message-type": "exception", ":exception-type": event["error"]["type"]},
+                                  json.dumps({"message": event["error"]["message"]}).encode())
+    return encode_event_frame({":event-type": "chunk", ":message-type": "event"}, json.dumps(
+        {"bytes": base64.b64encode(json.dumps(event).encode()).decode()}).encode())
+
+
+def _tool_choice_refusal(protocol: str, body: dict) -> str:
+    """Why the API refuses the request's ``tool_choice``, or ''."""
+    choice = body.get("tool_choice")
+    if choice is None:
+        return ""
+    if protocol == "openai":
+        valid = choice in {"auto", "none", "required"} or (
+            isinstance(choice, dict) and choice.get("type") == "function" and bool(choice.get("name")))
+    else:
+        valid = isinstance(choice, dict) and choice.get("type") in {"auto", "any", "tool", "none"} and (
+            choice.get("type") != "tool" or bool(choice.get("name")))
+    if not valid:
+        return "tool_choice: the value is not one this API defines."
+    if not body.get("tools"):
+        return "tool_choice may only be specified while providing tools."
+    return ""
+
+
+def _forbids_tools(body: dict) -> bool:
+    choice = body.get("tool_choice")
+    return choice == "none" or (isinstance(choice, dict) and choice.get("type") == "none")
+
+
 class _Handler(BaseHTTPRequestHandler):
     server: ScriptedProviders
 
@@ -165,7 +232,8 @@ class _Handler(BaseHTTPRequestHandler):
     def do_POST(self):  # noqa: N802 - http.server naming
         body = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"{}")
         path = self.path.split("?", 1)[0]
-        protocol = "anthropic" if path.endswith("/messages") else "openai" if path.endswith("/responses") else ""
+        protocol = ("anthropic" if path.endswith("/messages") else "openai" if path.endswith("/responses")
+                    else "bedrock" if path.endswith("/invoke-with-response-stream") else "")
         headers = {name.lower(): value for name, value in self.headers.items()}
         with self.server.lock:
             self.server.requests.append({"path": self.path, "protocol": protocol, "headers": headers, "body": body})
@@ -174,19 +242,35 @@ class _Handler(BaseHTTPRequestHandler):
         if not protocol or not credentials & {KEY, f"Bearer {KEY}"}:
             self._error(401 if protocol else 404, "authentication_error", "invalid x-api-key")
             return
-        if protocol == "anthropic" and not body.get("tools") and any(
+        if protocol in {"anthropic", "bedrock"} and not body.get("tools") and any(
                 block.get("type") in {"tool_use", "tool_result"}
                 for message in body.get("messages") or [] for block in message.get("content") or []):
             # As the Messages API answers a history with tool calls and no tool definitions.
             self._error(400, "invalid_request_error",
                         "Requests which include `tool_use` or `tool_result` blocks must define tools.")
             return
-        turn = (_anthropic_turn if protocol == "anthropic" else _openai_turn)(body)
+        if protocol == "bedrock" and (body.get("anthropic_version") != "bedrock-2023-05-31"
+                                      or {"model", "stream"} & set(body)):
+            # Bedrock takes the model from the path and streams by endpoint.
+            self._error(400, "validation_exception", "The fixture expects Bedrock's own request body.")
+            return
+        refusal = _tool_choice_refusal(protocol, body)
+        if refusal:
+            self._error(400, "invalid_request_error", refusal)
+            return
+        turn = (_openai_turn if protocol == "openai" else _anthropic_turn)(body)
+        if protocol == "bedrock":
+            turn = replace(turn, protocol="bedrock", model=unquote(path.rsplit("/", 2)[-2]))
         try:
             reply = self.server.script(turn)
         except Exception as exc:  # noqa: BLE001 - an unscripted request says so to the test
             self.server.errors.append(f"request {number}: {type(exc).__name__}: {exc}")
             self._error(400, "invalid_request_error", "The fixture has no reply scripted for this request")
+            return
+        if reply.tool and _forbids_tools(body):
+            # No model calls a tool under tool_choice none: the script is wrong.
+            self.server.errors.append(f"request {number}: a tool call scripted under tool_choice none")
+            self._error(400, "invalid_request_error", "The fixture's reply calls a tool under tool_choice none")
             return
         if not reply.thinking and (body.get("thinking") or body.get("reasoning")):
             # A request that asks for thinking (Claude) or reasoning (GPT) gets
@@ -196,10 +280,17 @@ class _Handler(BaseHTTPRequestHandler):
             self._error(reply.status, "overloaded_error" if reply.status == 529 else "api_error", "fixture refusal")
             return
         self.send_response(200)
-        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Content-Type", "application/vnd.amazon.eventstream" if protocol == "bedrock"
+                         else "text/event-stream")
         self.end_headers()  # No length: the stream ends when the connection closes (HTTP/1.0).
-        events = (_anthropic_events(reply, number, turn.model) if protocol == "anthropic"
-                  else _openai_events(reply, number))
+        events = (_openai_events(reply, number) if protocol == "openai"
+                  else _anthropic_events(reply, number, turn.model))
+        if reply.error is not None:
+            events = _failed(protocol, events, reply.error)
+        if protocol == "bedrock":
+            # Held replies aren't framed for Bedrock; the whole stream goes out at once.
+            self._send(b"".join(_bedrock_frame(event) for event in events))
+            return
         if reply.hold is not None:
             # A long response: the first event, then keep-alive pings until released.
             if not self._send(_sse(events[0])):
@@ -228,7 +319,8 @@ def _sse(event: dict) -> bytes:
 
 
 class ScriptedProviders(ThreadingHTTPServer):
-    """Both APIs on one loopback address: ``/v1/messages`` and ``/v1/responses`` (or ``/openai/v1/responses``)."""
+    """The APIs on one loopback address: ``/v1/messages``, ``/v1/responses`` (or ``/openai/v1/responses``)
+    and Bedrock's ``/model/<id>/invoke-with-response-stream``."""
 
     daemon_threads = True
 

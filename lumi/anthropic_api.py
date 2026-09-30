@@ -433,6 +433,9 @@ class AnthropicBackend(KimiBackend):
     supports_dynamic_tool_catalog = True
     dynamic_tool_catalog_via_history = False
     supports_remote_cancel = False
+    # stream() takes the conversation's own tool definitions (``offered_tools``)
+    # for a request that offers none (engine/session.py).
+    accepts_offered_tools = True
 
     def __init__(
         self,
@@ -489,8 +492,6 @@ class AnthropicBackend(KimiBackend):
             raise ValueError("Claude thinking must be off, low, med, high or max.")
         self.thinking_mode = mode or "default"
         self._transport = transport
-        # The tool definitions this conversation last offered (_payload).
-        self._offered_tools: list[dict] = []
         self._credentials = credentials or (lambda: aws_credentials(self.aws_profile))
         self._access_token = access_token or google_access_token
         profile = infer_model_capabilities(self.model)
@@ -642,7 +643,7 @@ class AnthropicBackend(KimiBackend):
                 replay[str(turn.get("call_id") or "")] = blocks
         return replay
 
-    def _payload(self, user_msg, conversation_history, instructions, tools, max_tokens) -> dict:
+    def _payload(self, user_msg, conversation_history, instructions, tools, max_tokens, offered_tools=None) -> dict:
         tool_defs = anthropic_tools(tools)
         chat = KimiBackend._messages(
             self, conversation_history, instructions, user_msg,
@@ -650,16 +651,16 @@ class AnthropicBackend(KimiBackend):
         )
         system, messages = to_anthropic_messages(chat, self._thinking_by_call(conversation_history))
         tool_choice = None
-        if tool_defs:
-            self._offered_tools = list(tool_defs)
-        elif self._offered_tools and any(block.get("type") in {"tool_use", "tool_result"}
-                                         for message in messages for block in message["content"]):
-            # A request that offers no tools after this conversation's earlier
-            # ones did (a team participant's last request, engine/session.py):
-            # the API refuses tool calls in the history without their
-            # definitions, and a thinking block's signature binds the tool set.
-            # The same definitions go out, and tool_choice none lets none run.
-            tool_defs = list(self._offered_tools)
+        if not tool_defs and offered_tools and any(block.get("type") in {"tool_use", "tool_result"}
+                                                   for message in messages for block in message["content"]):
+            # A request that offers no tools (plan mode, or a team
+            # participant's last request, engine/session.py) in a conversation
+            # whose history holds tool calls: the API refuses those without
+            # their definitions, and a thinking block's signature binds the
+            # tool set. The conversation's own definitions (``offered_tools``,
+            # passed by its session, never remembered here: one backend serves
+            # many conversations) go out, and tool_choice none lets none run.
+            tool_defs = anthropic_tools(offered_tools)
             tool_choice = {"type": "none"}
         budget = THINKING_BUDGETS.get(self.thinking_mode, 0)
         if budget and self._open_tool_loop_lacks_thinking(messages):
@@ -799,9 +800,10 @@ class AnthropicBackend(KimiBackend):
         tools: list,
         max_tokens: int | None = None,
         cancel_event=None,
+        offered_tools: list | None = None,
     ) -> Iterator[Tuple[str, dict]]:
         try:
-            payload = self._payload(user_msg, conversation_history, instructions, tools, max_tokens)
+            payload = self._payload(user_msg, conversation_history, instructions, tools, max_tokens, offered_tools)
             body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
             url = self._endpoint()
         except ValueError as exc:
@@ -910,11 +912,16 @@ class AnthropicBackend(KimiBackend):
                                 message = str(error.get("message") or "Unknown provider error")
                                 lowered = error_type.lower()
                                 overload = error_type == "overloaded_error" or "throttl" in lowered or "unavailable" in lowered
-                                # Nothing was generated while no content block (text,
-                                # thinking or a tool call) has started.
-                                before_output = not blocks
+                                # Nothing was generated only when the provider refused to
+                                # serve the request (an overload, throttling or a rate
+                                # limit) before any content block (text, thinking or a
+                                # tool call) started. Any other error, an api_error or
+                                # Bedrock's internalServerException included, may have
+                                # come after generation began, so it stays uncertain.
+                                refused = not blocks and (overload or error_type == "rate_limit_error"
+                                                          or self._is_transient_overload(message))
                                 if supervised:
-                                    again = before_output and (overload or self._is_transient_overload(message))
+                                    again = refused
                                     delay = min(30.0, 5.0 * (2 ** attempt))
                                 else:
                                     again = overload or error_type == "api_error"
@@ -936,9 +943,9 @@ class AnthropicBackend(KimiBackend):
                                     break
                                 yield (EVENT_ERROR, {"message": f"{self.PROVIDER_LABEL} generation failed: {message}",
                                                      "discard_partial_output": False,
-                                                     # The guarded ledger settles an error before
-                                                     # any output as known: nothing was generated.
-                                                     "before_output": before_output})
+                                                     # The guarded ledger settles only such a
+                                                     # refusal as known: nothing was generated.
+                                                     "before_output": refused})
                                 return
                     if restart:
                         continue

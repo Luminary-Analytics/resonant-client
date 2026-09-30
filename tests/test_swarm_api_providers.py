@@ -50,6 +50,8 @@ READ_FINAL = {"summary": "The API rejects empty names and the UI escapes HTML; b
               "use_team": False, "work_items": []}
 AZURE = {"id": "azure", "name": "Azure OpenAI", "type": "azure-openai", "models": [AZURE_DEPLOYMENT],
          "api_version": "2025-04-01-preview"}
+BEDROCK_MODEL = "us.anthropic.claude-sonnet-5-v1:0"
+BEDROCK_PATH = "/model/us.anthropic.claude-sonnet-5-v1%3A0/invoke-with-response-stream"
 
 
 def planning(turn):
@@ -120,6 +122,19 @@ def keyed_settings(tmp_path, providers, **keys):
         settings.set("api_keys", name, KEY)
     settings.set("connections", None, [{**AZURE, "base_url": providers.url + "/openai/v1"}])
     return settings
+
+
+def bedrock_settings(tmp_path, providers, *, saved_key=True):
+    """Claude on Bedrock at the scripted server, with a Bedrock API key saved for it or not."""
+    settings = keyed_settings(tmp_path, providers, **({"conn_bedrock": True} if saved_key else {}))
+    settings.set("connections", None, [{"id": "bedrock", "name": "Claude on Bedrock", "type": "anthropic-bedrock",
+                                        "region": "us-east-1", "base_url": providers.url, "models": [BEDROCK_MODEL],
+                                        "auth": "bearer"}])
+    return settings
+
+
+def bedrock_spec():
+    return BackendSpec("conn-bedrock", BEDROCK_MODEL, api_key_source="settings", api_key_setting="conn_bedrock")
 
 
 def start(service, capture, **setup):
@@ -311,22 +326,27 @@ def test_a_claude_orchestrator_with_workers_on_an_azure_openai_connection(tmp_pa
     assert {row["model"] for row in rows if row["provider"] == "anthropic"} == {CLAUDE}
 
 
-@pytest.mark.parametrize("protocol", ["anthropic", "openai"])
+@pytest.mark.parametrize("protocol", ["anthropic", "openai", "bedrock"])
 def test_a_participants_last_request_keeps_its_tools_and_lets_none_run(tmp_path, providers, records, protocol):
     # A participant's last request offers no tools, so the model answers
     # (engine/session.py). The APIs still need the definitions its history
     # refers to (the Messages API refuses tool calls without them), and a Claude
-    # thinking block's signature binds the tool set: the same definitions go
-    # out again, with tool_choice none.
+    # thinking block's signature binds the tool set: the conversation's own
+    # definitions go out again, with tool_choice none. On Bedrock that is the
+    # request Lumi sends; no live Bedrock request has confirmed that Bedrock
+    # accepts none (docs/known-issues.md), and the scripted server assumes it.
     root = project(tmp_path)
     providers.script = lambda turn: (Reply(tool=("file_read", {"path": "src/api.py"})) if turn.step == 0
                                      else Reply(text="src/api.py rejects empty names."))
-    settings = keyed_settings(tmp_path, providers, **{protocol: True})
+    if protocol == "bedrock":
+        settings, spec = bedrock_settings(tmp_path, providers), bedrock_spec()
+    else:
+        settings = keyed_settings(tmp_path, providers, **{protocol: True})
+        spec = (BackendSpec("anthropic", CLAUDE, base_url=providers.url, api_key_source="settings",
+                            api_key_setting="anthropic") if protocol == "anthropic" else
+                BackendSpec("openai", GPT, base_url=providers.url + "/v1", api_key_source="settings",
+                            api_key_setting="openai"))
     service = runtime(tmp_path, settings)
-    spec = (BackendSpec("anthropic", CLAUDE, base_url=providers.url, api_key_source="settings",
-                        api_key_setting="anthropic") if protocol == "anthropic" else
-            BackendSpec("openai", GPT, base_url=providers.url + "/v1", api_key_source="settings",
-                        api_key_setting="openai"))
     capture = CapturedSession(Scope.personal("fixture-owner", "project", "session"), str(root), spec)
 
     def settled():
@@ -344,7 +364,7 @@ def test_a_participants_last_request_keeps_its_tools_and_lets_none_run(tmp_path,
     assert providers.errors == []
     first, last = providers.of(protocol)
     assert last["body"]["tools"] == first["body"]["tools"] and first["body"]["tools"]
-    assert last["body"]["tool_choice"] == ({"type": "none"} if protocol == "anthropic" else "none")
+    assert last["body"]["tool_choice"] == ("none" if protocol == "openai" else {"type": "none"})
     assert first["body"].get("tool_choice") in (None, "auto")
     assert [row["state"] for row in view["run"]["model_requests"]] == ["completed", "completed"]
     submission, = view["run"]["submissions"]
@@ -425,6 +445,85 @@ def test_stop_ends_a_worker_streaming_from_the_anthropic_api(tmp_path, providers
     assert [row["state"] for row in view["run"]["model_requests"]] == ["uncertain"]
     assert view["run"]["run"]["stop_requested"] and view["run"]["run"]["state"] == "stopping"
     assert team_usage(records) == []
+
+
+def _one_reader_orchestrator(protocol):
+    one_reader = {**READ_PLAN, "summary": "One reader inspects the API.", "work_items": READ_PLAN["work_items"][:1]}
+
+    def orchestrator(turn):
+        assert turn.protocol == protocol
+        if "This is your closing turn" in turn.prompt:
+            return Reply(text=json.dumps(READ_FINAL))
+        return Reply(text=json.dumps(one_reader))
+    return orchestrator
+
+
+@pytest.mark.parametrize("in_process", [True, False], ids=["in-process", "own-processes"])
+def test_an_orchestrated_team_on_claude_on_bedrock(tmp_path, providers, records, monkeypatch, in_process):
+    # Bedrock streams the Messages API's events in AWS's event-stream framing,
+    # at the model's own path, with the Bedrock API key as a bearer token. In
+    # its own process a participant gets that key in its start message: its
+    # environment carries no AWS_BEARER_TOKEN_BEDROCK (worker_environment), so
+    # the key the app read from the environment reaches it only that way.
+    root = project(tmp_path)
+    if in_process:
+        monkeypatch.delenv("AWS_BEARER_TOKEN_BEDROCK", raising=False)
+    else:
+        monkeypatch.setenv("AWS_BEARER_TOKEN_BEDROCK", KEY)
+    providers.script = read_script(_one_reader_orchestrator("bedrock"), reader)
+    service = runtime(tmp_path, bedrock_settings(tmp_path, providers, saved_key=in_process), in_process=in_process)
+    capture = CapturedSession(Scope.personal("fixture-owner", "project", "session"), str(root), bedrock_spec())
+    try:
+        run_id = start(service, capture, objective="Check how input is handled", autonomy={"rounds": 1})
+        view = finished(service, capture, run_id, timeout=90 if in_process else 240)
+        events = service.operate(capture, {"request_id": "events", "action": "events", "run_id": run_id})
+    finally:
+        service.close()
+    run = view["run"]
+    assert providers.errors == []
+    assert run["run"]["state"] == "completed" and view["autonomy"]["final_report"] == READ_FINAL["summary"]
+    # The plan, the reader's two requests and the report: one HTTP request each.
+    calls = providers.of("bedrock")
+    assert len(providers.requests) == len(calls) == 4
+    assert [row["state"] for row in run["model_requests"]] == ["completed"] * 4
+    for call in calls:
+        assert call["path"] == BEDROCK_PATH and call["headers"]["authorization"] == f"Bearer {KEY}"
+        assert call["body"]["anthropic_version"] == "bedrock-2023-05-31"
+        assert "model" not in call["body"] and "stream" not in call["body"]
+    assert KEY not in json.dumps(view, default=str) and KEY not in json.dumps(events, default=str)
+    assert len(team_usage(records)) == 4
+    if not in_process:
+        assert {row["state"] for row in run["process_observations"]} == {"stopped"}
+
+
+@pytest.mark.parametrize("error, settled, sent", [
+    (("api_error", "Internal server error"), "uncertain", 1),  # may have come after generation began
+    (("overloaded_error", "Overloaded"), "completed", 4),  # refused before generating: waited out, then known
+])
+def test_a_workers_in_stream_error_before_output_is_known_only_when_the_provider_refused(
+        tmp_path, providers, records, monkeypatch, error, settled, sent):
+    monkeypatch.setattr("lumi.anthropic_api._wait_with_cancel", lambda *_: False)
+    root = project(tmp_path)
+    providers.script = lambda turn: Reply(error=error)
+    service = runtime(tmp_path, keyed_settings(tmp_path, providers, anthropic=True))
+    capture = CapturedSession(Scope.personal("fixture-owner", "project", "session"), str(root),
+                              BackendSpec("anthropic", CLAUDE, base_url=providers.url, api_key_source="settings",
+                                          api_key_setting="anthropic"))
+
+    def ended():
+        view = service.operate(capture, {"request_id": f"view-{uuid.uuid4().hex}", "run_id": run_id})
+        workers = view["run"]["workers"]
+        return view if workers and all(row["termination_recorded"] for row in workers) else None
+    try:
+        service.operate(capture, {"action": "configure", "request_id": "enable", "enabled": True})
+        run_id = service.operate(capture, {"request_id": "manual", "action": "start", "objective": "Inspect",
+                                           "tasks": [{"objective": "Inspect src/api.py", "read_roots": ["src"]}],
+                                           "request_limit": 2, "max_workers": 1})["run"]["run"]["id"]
+        view = until(ended, timeout=60)
+    finally:
+        service.close()
+    assert providers.errors == [] and len(providers.of("anthropic")) == sent
+    assert [row["state"] for row in view["run"]["model_requests"]] == [settled]
 
 
 def test_a_team_on_claude_on_bedrock_needs_its_bedrock_api_key(tmp_path, monkeypatch):

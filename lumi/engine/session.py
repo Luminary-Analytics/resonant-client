@@ -2923,13 +2923,22 @@ class Session:
                 # read and submitted nothing), so the model has to answer.
                 final_request = (self._execution_boundary is not None and self.max_model_requests is not None
                                  and model_requests >= self.max_model_requests)
+                offers_none = is_planning or final_request
+                # The Messages and Responses APIs need the definitions of the tool
+                # calls in the history even when a request offers no tools; their
+                # adapters send this conversation's own ones with tool choice none,
+                # so none runs. Passed with each request, never kept by the
+                # backend, which the app shares between conversations.
+                offered = ({"offered_tools": self.provider_tools}
+                           if offers_none and getattr(type(self.backend), "accepts_offered_tools", False) else {})
                 model_stream = self._model_stream(
                     user_msg=current_msg,
                     conversation_history=self.conversation_history,
                     instructions=instructions,
-                    tools=[] if is_planning or final_request else self.provider_tools,
+                    tools=[] if offers_none else self.provider_tools,
                     max_tokens=self.max_tokens,
                     cancel_event=self._cancel_event,
+                    **offered,
                 )
                 for event_type, data in model_stream:
                     if self.cancel_requested:

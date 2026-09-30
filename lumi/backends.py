@@ -2711,9 +2711,12 @@ class KimiBackend:
                                         self._is_retryable_stream_error(message)
                                         and (content_parts or reasoning_parts)
                                     ),
-                                    # The guarded ledger settles this as known:
-                                    # the provider failed before any output.
-                                    "before_output": before_output,
+                                    # The guarded ledger settles this as known
+                                    # only when the provider refused to serve the
+                                    # request (busy, rate limited) before any
+                                    # output; any other error may have come after
+                                    # generation began, so it stays uncertain.
+                                    "before_output": before_output and self._is_transient_overload(message),
                                 })
                                 return
                             if isinstance(event.get("usage"), dict):

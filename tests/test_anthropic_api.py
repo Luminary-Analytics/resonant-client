@@ -68,19 +68,33 @@ def test_tool_loop_translates_to_alternating_blocks_with_sanitized_ids():
     assert payload["tools"][0]["input_schema"]["required"] == ["path"]
 
 
-def test_a_request_offering_no_tools_after_a_tool_loop_keeps_them_and_lets_none_run():
-    # A team participant's last request offers no tools. The API still needs
-    # the definitions the history's tool calls refer to, and a thinking block's
-    # signature binds the tool set, so the same ones go out with tool_choice none.
+def test_a_request_offering_no_tools_after_a_tool_loop_sends_its_conversations_tools_and_lets_none_run():
+    # Plan mode and a team participant's last request offer no tools. The API
+    # still needs the definitions the history's tool calls refer to, and a
+    # thinking block's signature binds the tool set, so the conversation's own
+    # (offered_tools, from its session) go out with tool_choice none.
     backend = AnthropicBackend("key", "claude-a")
     offered = backend._payload("Read a.py", [], "Be helpful.", TOOLS, None)
     assert "tool_choice" not in offered
-    closing = backend._payload("", _tool_loop_history(), "Be helpful.", [], None)
+    closing = backend._payload("", _tool_loop_history(), "Be helpful.", [], None, TOOLS)
     assert closing["tools"] == offered["tools"] and closing["tool_choice"] == {"type": "none"}
-    # Nothing to keep: a conversation without tool calls, or tools never offered here.
-    assert "tools" not in backend._payload("Hi", [], "Be helpful.", [], None)
-    fresh = AnthropicBackend("key", "claude-a")._payload("", _tool_loop_history(), "", [], None)
-    assert "tools" not in fresh and "tool_choice" not in fresh
+    # Nothing to send: a conversation without tool calls.
+    assert "tools" not in backend._payload("Hi", [], "Be helpful.", [], None, TOOLS)
+
+
+def test_a_backend_never_sends_one_conversations_tools_in_another():
+    # The app reuses one backend for every conversation on the same model
+    # (gui/app.py restore_session_runtime). Project X's conversation offered its
+    # own MCP tool; project Y's plan request must carry only project Y's tools.
+    deploy = {"type": "function", "function": {"name": "mcp__projectx__deploy", "description": "Deploy Project X",
+                                               "parameters": {"type": "object", "properties": {}}}}
+    backend = AnthropicBackend("key", "claude-a")
+    backend._payload("Deploy it", [], "Project X", [deploy], None)
+    plan = backend._payload("Plan the next change", _tool_loop_history(), "Project Y", [], None, TOOLS)
+    assert [tool["name"] for tool in plan["tools"]] == ["file_read"] and plan["tool_choice"] == {"type": "none"}
+    # A caller that passes none gets none: the backend keeps nothing between requests.
+    alone = backend._payload("Plan the next change", _tool_loop_history(), "Project Y", [], None)
+    assert "tools" not in alone and "tool_choice" not in alone
 
 
 def test_thinking_is_replayed_only_to_the_model_that_produced_it():

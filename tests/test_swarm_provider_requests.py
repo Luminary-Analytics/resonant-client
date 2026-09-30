@@ -393,6 +393,92 @@ def _bedrock_stream(*events):
                           content=b"".join(chunk(event) for event in events))
 
 
+def _exception_frame(kind):
+    return encode_event_frame({":message-type": "exception", ":exception-type": kind},
+                              json.dumps({"message": f"fixture {kind}"}).encode())
+
+
+def _bedrock_failure(*events, kind):
+    stream = _bedrock_stream(*events)
+    return httpx.Response(200, headers=stream.headers, content=stream.content + _exception_frame(kind))
+
+
+SERVER_ERRORS = {
+    "anthropic": lambda: _anthropic_sse(A_START, {"type": "error", "error": {"type": "api_error",
+                                                                             "message": "Internal server error"}}),
+    "anthropic-connection": lambda: _anthropic_sse(A_START, {"type": "error", "error": {
+        "type": "api_error", "message": "Internal server error"}}),
+    "openai": lambda: _anthropic_sse(O_CREATED, {"type": "response.failed", "response": {
+        "id": "resp_fixture", "error": {"code": "server_error", "message": "The server had an error"}}}),
+    "azure": lambda: _anthropic_sse(O_CREATED, {"type": "response.failed", "response": {
+        "id": "resp_fixture", "error": {"code": "server_error", "message": "The server had an error"}}}),
+    "bedrock": lambda: _bedrock_failure(A_START, kind="internalServerException"),
+}
+
+
+@pytest.mark.parametrize("provider", sorted(SERVER_ERRORS))
+def test_an_in_stream_server_error_before_output_stays_uncertain(provider, monkeypatch):
+    # Only a refusal to serve the request (an overload, throttling or a rate
+    # limit) says nothing was generated. A server error in the stream may have
+    # come after generation began, as an HTTP 500 may: it isn't sent again and
+    # keeps its allowance until reconciled.
+    calls, waits, guard, stream = _api_guarded(provider, [SERVER_ERRORS[provider](), _stream_of(
+        "anthropic", "start", "text", "end")], monkeypatch)
+    with pytest.raises(ExecutionGuardError):
+        list(stream)
+    assert len(calls) == 1 and waits == []
+    ends = _ends(guard)
+    assert len(ends) == 1 and ends[0]["outcome"] == "uncertain"
+    assert not ends[0]["error"].startswith("Provider refused")
+
+
+def test_an_in_stream_error_on_a_chat_completions_connection_is_known_only_when_the_server_was_busy(monkeypatch):
+    # The same rule on the Chat Completions adapter (NVIDIA NIM, vLLM, a gateway).
+    calls, waits, guard, stream = _guarded([_sse({"error": {"message": "Internal server error"}})], monkeypatch)
+    with pytest.raises(ExecutionGuardError):
+        list(stream)
+    assert len(calls) == 1 and waits == [] and _ends(guard)[0]["outcome"] == "uncertain"
+
+
+@pytest.mark.parametrize("provider", ANTHROPIC_FAMILY)
+def test_an_in_stream_rate_limit_before_output_is_waited_out_and_settled_as_known(provider, monkeypatch):
+    if provider == "bedrock":
+        limited = _bedrock_failure(A_START, kind="throttlingException")
+    else:
+        limited = _anthropic_sse(A_START, {"type": "error", "error": {"type": "rate_limit_error",
+                                                                     "message": "Number of requests exceeded"}})
+    calls, waits, guard, stream = _api_guarded(provider, [limited], monkeypatch)
+    with pytest.raises(ExecutionGuardError):
+        list(stream)
+    assert len(calls) == 4 and waits == [5.0, 10.0, 20.0]
+    assert _ends(guard)[0]["outcome"] == "completed"
+    assert _ends(guard)[0]["error"] == "Provider refused the request before generating"
+
+
+OPENAI_OVERLOADED = {"error": {"message": "The engine is currently overloaded, please try again later",
+                               "type": "server_error", "param": None, "code": None}}
+
+
+@pytest.mark.parametrize("provider", OPENAI_FAMILY)
+def test_an_openai_503_that_says_it_is_overloaded_is_waited_out_like_anthropics_529(provider, monkeypatch):
+    # It comes before any stream starts, so nothing was generated: waited out
+    # (Retry-After, else 5, 10, 20 s), then settled as refused, like a 429.
+    overloaded = httpx.Response(503, json=OPENAI_OVERLOADED)
+    calls, waits, guard, stream = _api_guarded(provider, [overloaded], monkeypatch)
+    with pytest.raises(ExecutionGuardError):
+        list(stream)
+    assert len(calls) == 4 and waits == [5.0, 10.0, 20.0]
+    assert _ends(guard)[0]["outcome"] == "completed"
+    assert _ends(guard)[0]["error"] == "Provider refused the request before generating; provider status 503"
+    # Once it answers, that is still one generation.
+    calls, waits, guard, stream = _api_guarded(provider, [httpx.Response(503, headers={"retry-after": "2"},
+                                                                         json=OPENAI_OVERLOADED),
+                                                          _stream_of(provider, "start", "text", "end")], monkeypatch)
+    events = list(stream)
+    assert any(kind == "text.delta" for kind, _ in events)
+    assert len(calls) == 2 and waits == [2.0] and _ends(guard)[0]["outcome"] == "completed"
+
+
 def test_a_guarded_bedrock_throttle_before_output_is_waited_out_and_its_api_key_is_the_bearer(monkeypatch):
     throttled = encode_event_frame({":message-type": "exception", ":exception-type": "throttlingException"},
                                    json.dumps({"message": "Too many requests"}).encode())

@@ -151,6 +151,9 @@ class OpenAIResponsesBackend(KimiBackend):
     supports_dynamic_tool_catalog = True
     dynamic_tool_catalog_via_history = False
     supports_remote_cancel = False
+    # stream() takes the conversation's own tool definitions (``offered_tools``)
+    # for a request that offers none (engine/session.py).
+    accepts_offered_tools = True
 
     def __init__(
         self,
@@ -198,8 +201,6 @@ class OpenAIResponsesBackend(KimiBackend):
             raise ValueError("Reasoning effort must be off, low, med, high or max.")
         self.thinking_mode = mode or "default"
         self._transport = transport
-        # The tool definitions this conversation last offered (_payload).
-        self._offered_tools: list[dict] = []
         profile = infer_model_capabilities(self.model)
         overrides = {
             key: value for key, value in (capability_overrides or {}).items()
@@ -293,7 +294,7 @@ class OpenAIResponsesBackend(KimiBackend):
                 replay[str(turn.get("call_id") or "")] = items
         return replay
 
-    def _payload(self, user_msg, conversation_history, instructions, tools, max_tokens) -> dict:
+    def _payload(self, user_msg, conversation_history, instructions, tools, max_tokens, offered_tools=None) -> dict:
         tool_defs = response_tools(tools)
         chat = KimiBackend._messages(
             self, conversation_history, instructions, user_msg,
@@ -304,17 +305,17 @@ class OpenAIResponsesBackend(KimiBackend):
         if system.strip():
             payload["instructions"] = system
         if tool_defs:
-            self._offered_tools = list(tool_defs)
             payload["tools"] = tool_defs
             payload["tool_choice"] = "auto"
             payload["parallel_tool_calls"] = True
-        elif self._offered_tools and any(item.get("type") in {"function_call", "function_call_output"}
-                                         for item in items):
-            # A request that offers no tools after this conversation's earlier
-            # ones did (a team participant's last request, engine/session.py):
-            # the same definitions go out, which the calls in the input refer
-            # to and the prompt cache keeps, and tool_choice none lets none run.
-            payload["tools"] = list(self._offered_tools)
+        elif offered_tools and any(item.get("type") in {"function_call", "function_call_output"} for item in items):
+            # A request that offers no tools (plan mode, or a team
+            # participant's last request, engine/session.py) in a conversation
+            # whose input holds tool calls: the conversation's own definitions
+            # (``offered_tools``, passed by its session, never remembered here:
+            # one backend serves many conversations) go out, which the calls
+            # refer to and the prompt cache keeps, and tool_choice none lets none run.
+            payload["tools"] = response_tools(offered_tools)
             payload["tool_choice"] = "none"
         if is_reasoning_model(self.model):
             reasoning: dict[str, Any] = {"summary": "auto"}
@@ -373,8 +374,9 @@ class OpenAIResponsesBackend(KimiBackend):
         tools: list,
         max_tokens: int | None = None,
         cancel_event=None,
+        offered_tools: list | None = None,
     ) -> Iterator[Tuple[str, dict]]:
-        payload = self._payload(user_msg, conversation_history, instructions, tools, max_tokens)
+        payload = self._payload(user_msg, conversation_history, instructions, tools, max_tokens, offered_tools)
         headers = self._request_headers()
         items: dict[int, dict] = {}
         final_output: list[dict] = []
@@ -403,8 +405,12 @@ class OpenAIResponsesBackend(KimiBackend):
                     with client.stream("POST", self._url("responses"), headers=headers, json=payload) as response:
                         if response.status_code >= 400:
                             error_type, message = self._error_details(response)
+                            # OpenAI sheds load with a 503 that says it is overloaded,
+                            # answered before any stream starts, like Anthropic's 529.
+                            overloaded = response.status_code == 503 and (
+                                error_type == "server_is_overloaded" or self._is_transient_overload(message))
                             retryable = self._is_retryable_error(response.status_code, error_type, message) and (
-                                not supervised or response.status_code == 429)
+                                not supervised or response.status_code == 429 or overloaded)
                             logger.warning("%s request failed: status=%d type=%s retryable=%s model=%s",
                                            self.PROVIDER_LABEL, response.status_code, error_type or "unknown",
                                            retryable, self.model)
@@ -424,6 +430,8 @@ class OpenAIResponsesBackend(KimiBackend):
                                 "message": self._user_error_message(response.status_code, error_type, message),
                                 # A number, safe to keep where provider text isn't (the guarded ledger).
                                 "status_code": response.status_code,
+                                # An overload refused the request before generating anything.
+                                **({"before_output": True} if overloaded else {}),
                             })
                             return
                         for line in response.iter_lines():
@@ -471,12 +479,16 @@ class OpenAIResponsesBackend(KimiBackend):
                                 error = error if isinstance(error, dict) else {}
                                 message = str(error.get("message") or "Unknown provider error")
                                 code = str(error.get("code") or "")
-                                # Nothing was generated while no output item (a
-                                # message, reasoning or a function call) has started.
-                                before_output = not (items or reasoning_text or emitted_text)
+                                # Nothing was generated only when the provider refused to
+                                # serve the request (an overload or a rate limit) before any
+                                # output item (a message, reasoning or a function call)
+                                # started. Any other error, a server_error included, may
+                                # have come after generation began, so it stays uncertain.
+                                refused = not (items or reasoning_text or emitted_text) and (
+                                    code in {"rate_limit_exceeded", "server_is_overloaded"}
+                                    or self._is_transient_overload(message))
                                 if supervised:
-                                    again = before_output and (code in {"rate_limit_exceeded", "server_is_overloaded"}
-                                                               or self._is_transient_overload(message))
+                                    again = refused
                                     delay = min(30.0, 5.0 * (2 ** attempt))
                                 else:
                                     again = code in {"server_error", "rate_limit_exceeded"}
@@ -497,9 +509,9 @@ class OpenAIResponsesBackend(KimiBackend):
                                     restart = True
                                     break
                                 yield (EVENT_ERROR, {"message": f"{self.PROVIDER_LABEL} generation failed: {message}",
-                                                     # The guarded ledger settles an error before
-                                                     # any output as known: nothing was generated.
-                                                     "before_output": before_output})
+                                                     # The guarded ledger settles only such a
+                                                     # refusal as known: nothing was generated.
+                                                     "before_output": refused})
                                 return
                             now = time.monotonic()
                             if phase and now - last_status >= 2:

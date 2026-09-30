@@ -55,7 +55,9 @@ jobs:
     # windows-latest, like tests.yml: the owned process trees, named job
     # objects and path checks these tests exercise behave differently elsewhere.
     runs-on: windows-latest
-    timeout-minutes: 40
+    # The suite takes 30–36 minutes on a typical runner; slower ones hit a 40-minute
+    # limit at 97% (2026-09-29). Leave headroom rather than fail on runner speed.
+    timeout-minutes: 60
 
     steps:
       - name: Checkout

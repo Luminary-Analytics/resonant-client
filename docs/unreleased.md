@@ -8,6 +8,111 @@ The heartbeat remains paused. Documentation maintenance does not resume work,
 spending or grants, and changes no native implementation or installed bundle.
 The dated September 15/18 records below are historical.
 
+## September 30 Team review fixes: one unambiguous plan, keys checked wherever a team starts, server errors stay uncertain, tools per conversation (source only, not released)
+
+A review of the change below (Team on Anthropic, OpenAI, Azure OpenAI and
+Bedrock keys) after it merged found these. Each is fixed here.
+
+- **A plan is read only when it is unambiguous.** The parser read the one
+  plan object in a reply's prose, but it didn't look past a fenced block or at
+  where a plan sat. A fenced plan followed by a second ("Alternatively: {…}")
+  ran the first; a plan quoted mid-sentence (such as one a worker's finding
+  carried from a project file), drafted inside an inline `<think>` block or
+  put in single backticks was read; so was a complete plan followed by an
+  alternative cut short; and a fenced example ahead of the real plan was read
+  as the plan (that one before the change too). Under an orchestrator the
+  owner lets run the team, such a plan dispatches without their review. Now
+  exactly one object in the whole reply, fenced or not, may look like a plan
+  (it has `summary`, `use_team` or `work_items`, or holds an object that does,
+  even one cut short), and it must start a line of its own; `<think>…</think>`
+  blocks are dropped first, and a thinking tag without its pair refuses the
+  reply (`engine/swarming/planning.py`). A fence, prose on the lines before the
+  plan, whatever follows it (template tags and stray braces included) and a
+  missing last brace are still tolerated. A plan after prose on its own line
+  ("Here is my plan: {…}"), which the change below read, is refused; a retried
+  turn is told why.
+- **A shared-work team on Claude on Bedrock without its key is refused before
+  it exists.** Preparing a collaboration team checked the model but not the key
+  (only starting a team did), so a Bedrock conversation without a Bedrock API
+  key got a running team, and work it accepted failed in the worker process as
+  "Native worker failed (ValueError)" after 0 model requests. Preparing now
+  checks the key before any team state (`collaboration_desktop.prepare`), and
+  continuing a recovered team checks it before it starts anything, for an
+  organization-managed team before a new epoch attaches
+  (`SwarmRuntime._recovery_participants`). The Worker model list leaves out a
+  Bedrock connection without a key (`team_providers`). A worker process that
+  refuses to run now says why in Lumi's words (`worker_child._Refused`); other
+  failures still report only their type, since their text may carry a
+  credential.
+- **An error in the stream before any output stays uncertain unless the
+  provider refused.** Any in-stream error before output was settled as
+  "refused before generating" (known, nothing to reconcile): Anthropic's
+  `api_error`, OpenAI's `server_error` and Bedrock's `internalServerException`
+  (uncertain before the change below) included, while an HTTP 500 stayed
+  uncertain. Only a refusal to serve the request (an overload, throttling or a
+  rate limit) before any output now counts as nothing generated, in the
+  Messages, Responses and Chat Completions adapters alike; any other server
+  error stays uncertain until reconciled, as docs/swarming.md says.
+- **OpenAI's 503 that says it is overloaded is waited out like Anthropic's
+  529.** It arrives before any stream starts, so nothing was generated: a
+  participant's request waits it out (Retry-After, else 5, 10 and 20 s) and,
+  if it persists, settles as refused. A 503 without that message stays
+  uncertain, like any other 5xx. Chats keep their retries.
+- **Tool definitions come from the conversation, never from the backend.** The
+  Anthropic and OpenAI adapters remembered the tools a request offered and sent
+  them again, with tool choice `none`, on a later request that offered none.
+  The app shares one backend between conversations on the same model
+  (`gui/app.py`), so plan mode (the terminal UI's `/plan`) or a team
+  participant's last request could send another conversation's tools, another
+  project's MCP tools say. The session now passes its own definitions with
+  each such request (`offered_tools`, `engine/session.py`), and the adapters
+  keep nothing between requests. Plan mode after a tool loop still sends them
+  with tool choice `none`, which the Messages API requires.
+- **A participant's process holds only its own model key.** It inherited the
+  app's whole environment, AWS and Google credentials and other providers' keys
+  included. It now starts without cloud sign-in settings (`AWS_*`, `GOOGLE_*`,
+  `GCLOUD_*`, `CLOUDSDK_*`, `AZURE_*`), `*_API_KEY` or any other variable named
+  like a key, token, secret, password or credential
+  (`process_worker.worker_environment`); PATH, the system, temporary, home and
+  profile folders, locale, proxy and certificate settings and `LUMI_*` stay.
+  The app reads a Bedrock API key from `AWS_BEARER_TOKEN_BEDROCK` itself and
+  sends it in the start message.
+- **An adapter must declare the supervised request contract.**
+  `participant_refusal` let through an adapter that said nothing about it (it
+  checked `supervised_requests is False`); it now requires `True`. The tests'
+  scripted backend declares it.
+- **Docs:** a Bedrock connection must be set to Bedrock API key
+  authentication; one set to AWS sign-in is refused even when
+  `AWS_BEARER_TOKEN_BEDROCK` is set. Whether Bedrock accepts `tool_choice`
+  `none` (a participant's last request) is unconfirmed: a live Bedrock request
+  must confirm it before Team on Claude on Bedrock is called supported
+  ([known issues](known-issues.md)).
+- **A local test failure explained:**
+  `test_swarm_process_workers.py::test_malformed_child_protocol_cannot_invoke_arbitrary_host_methods[early-eof]`
+  failed on this machine at the change below and before it, while CI's Team
+  tests passed. In a Windows virtual environment `sys.executable` is a launcher
+  that starts the real interpreter and keeps its own copy of the child's
+  pipes, so a child that closes its output but keeps running never reaches the
+  host as end of file; CI's Python has no launcher. That test's
+  standard-library child now runs on the base interpreter. The app itself is
+  unaffected: its worker's output closes when the process exits, and a
+  packaged build has no launcher.
+- **Checked** against the scripted servers only (no provider key was used):
+  every reply shape the review found, refused, and the legitimate ones still
+  read (`tests/test_swarm_planning.py`); a key-less Bedrock shared-work team
+  refused before it exists, a managed continuation refused before it attaches,
+  the Worker model list, and a worker process saying why it refused though the
+  app's environment has `AWS_BEARER_TOKEN_BEDROCK` (`tests/test_swarm_connections.py`);
+  in-stream server errors, rate limits and OpenAI's overloaded 503 on every
+  adapter (`tests/test_swarm_provider_requests.py`); plan mode after a tool
+  loop, and two conversations sharing one backend, through `Session.run`
+  (`tests/test_conversation_tools.py`); a participant process's environment
+  (`tests/test_swarm_process_workers.py`); and whole teams on Claude on
+  Bedrock, in the app and in worker processes, over Bedrock's event-stream
+  framing, with in-stream errors (`tests/test_swarm_api_providers.py`). The
+  scripted server now also checks `tool_choice` and streams in-stream errors
+  and Bedrock (`tests/api_provider_stub.py`).
+
 ## September 30 Team runs on Anthropic and OpenAI keys, Azure OpenAI and Claude on Bedrock; Codex and Claude Code are refused plainly (source only, not released)
 
 Team ran only on OpenRouter, Ollama, EXO, Kimi, SONN and OpenAI-compatible
@@ -40,8 +145,9 @@ ChatGPT subscription (Codex) or Claude Code, couldn't use it.
   model answers instead of spending it on one more call (`engine/session.py`).
   The Messages API refuses tool calls in the history without their
   definitions, and binds signed thinking to the tool set, so both adapters send
-  the definitions the conversation last offered again, with tool choice
-  `none`, which lets no tool run.
+  the conversation's definitions again, with tool choice `none`, which lets no
+  tool run. (The adapters first remembered the last ones offered; the review
+  fixes above pass them from the session instead.)
 - **What a team runs on now,** as orchestrator and as workers alike:
   Anthropic and OpenAI keys, and connections of type OpenAI, Azure OpenAI (its
   key), Anthropic, and Claude on Bedrock with a Bedrock API key (the key, or
@@ -66,9 +172,10 @@ ChatGPT subscription (Codex) or Claude Code, couldn't use it.
   or a sign-in connection.
 - **Plans with prose around the JSON are read.** Chat models such as Claude and
   GPT tend to write a sentence before or after the JSON even when told not to.
-  A reply without a fence is read when exactly one object in it has the plan's
-  fields, and a fenced block followed by prose is read like prose before it;
-  two plans, or none, still refuse it (`planning._embedded_plan`).
+  Prose around the one plan in a reply is dropped. (As first written this read
+  a fenced plan despite a second plan after it, and quoted plans; the review
+  fixes above read a plan only when it is the one in the reply and starts a
+  line of its own.)
 - **CI:** `team-tests.yml` also runs on changes to the adapters teams run on
   (`anthropic_api.py`, `openai_api.py`, `openrouter.py`, `sonn.py`,
   `connections.py`) and the new provider stub.

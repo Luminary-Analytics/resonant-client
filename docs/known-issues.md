@@ -4,6 +4,23 @@ Living catalog of known bugs surfaced during real usage. Each entry has reproduc
 
 > **Convention:** issues are numbered chronologically across all sources (dogfood passes, release pipeline, post-release reports). Numbers are stable — even after a fix lands, the issue number stays in this doc as a historical record.
 
+## Team on Claude on Bedrock: tool choice `none` is unconfirmed (2026-09-30, open)
+
+A team participant's last request offers no tools, so the model answers; on
+the Messages API Lumi then sends the conversation's own tool definitions with
+`tool_choice: {"type": "none"}`, since the API refuses tool calls in a history
+without their definitions (`lumi/anthropic_api.py`). Plan mode after a tool
+loop sends the same. A Claude on Bedrock connection sends the same body.
+AWS's InvokeModel parameters page for Claude lists `auto`, `any` and `tool` as
+tool choices, and Anthropic's API reference documents `none` for the Messages
+API without saying whether Bedrock accepts it. No live Bedrock request has
+been made: the scripted Bedrock server in the tests
+(`tests/api_provider_stub.py`) accepts `none` by assumption. A live Bedrock
+request must confirm it before Team on Claude on Bedrock is called supported.
+If Bedrock refuses it, the participant's last request fails with HTTP 400 (a
+refusal, settled as known), and so does plan mode after a tool loop in a
+Bedrock conversation.
+
 ## Claude thinking levels on current models (2026-09-30, open)
 
 A thinking level (low, med, high or max) chosen for a conversation on Claude

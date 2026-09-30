@@ -32,9 +32,10 @@ them so far:
   guarded worker refuses them, unlike chats and plan specialists.
 - **Providers.** The orchestrator and workers run on Anthropic, OpenAI,
   OpenRouter, Ollama, EXO, Kimi or SONN, or on a connection that uses a key:
-  OpenAI-compatible, OpenAI, Azure OpenAI, Anthropic, or Claude on Bedrock with
-  a Bedrock API key. Not on Codex or Claude Code, and not on a connection that
-  signs in with your account. See [Which models a team runs on](#which-models-a-team-runs-on).
+  OpenAI-compatible, OpenAI, Azure OpenAI, Anthropic, or Claude on Bedrock set
+  to Bedrock API key authentication, with its key. Not on Codex or Claude
+  Code, and not on a connection that signs in with your account. See
+  [Which models a team runs on](#which-models-a-team-runs-on).
 - **Usage and budgets.** Each participant's model request is checked against
   your spending limits and the organization's before it's sent, and recorded
   once in usage and the audit log by the app, with purpose `team`, the
@@ -119,9 +120,10 @@ in their own processes send their usage to the app, which records it.
 policy's `privacy.secret_scan`), every worker removes known credential formats
 from what it sends to its model, whether it runs in the app or in its own
 process. A worker in its own process also removes its own model key and its
-connection's header values, and the provider keys in its environment, but it
-doesn't know the app's other saved keys. The app refuses any tool result that
-carries a key the team's workers hold before it reaches a model.
+connection's header values, but it doesn't know the app's other saved keys;
+its environment carries none (see [Which models a team runs on](#which-models-a-team-runs-on)).
+The app refuses any tool result that carries a key the team's workers hold
+before it reaches a model.
 
 **Audit log.** The team's start, stop and completion, each participant's start
 and end (kind, model, outcome), each integration step's outcome (combining,
@@ -156,8 +158,10 @@ turn) runs on one of these, with the same rules whichever it is:
   - OpenAI-compatible (Chat Completions), such as NVIDIA NIM, vLLM or a gateway;
   - OpenAI (the Responses API), and Azure OpenAI with its key;
   - Anthropic (the Messages API), a gateway included;
-  - Claude on Amazon Bedrock with a Bedrock API key: the connection's key, or
-    `AWS_BEARER_TOKEN_BEDROCK`.
+  - Claude on Amazon Bedrock set to **Bedrock API key** authentication, with
+    the key saved for the connection or in `AWS_BEARER_TOKEN_BEDROCK`. Without
+    either, a team (a shared-work team included) is refused before it starts,
+    and the Worker model list doesn't offer the connection.
 
 A team can't run on these, and the Team panel says so, naming the models above:
 
@@ -169,20 +173,41 @@ A team can't run on these, and the Team panel says so, naming the models above:
   allows none of that. Switch the conversation to one of the models above to
   start a team, and keep using Codex or Claude Code in the chat.
 - **Connections that sign in with your account:** Claude on Vertex AI (your
-  Google credentials), Claude on Bedrock without a Bedrock API key (your AWS
-  credentials), Azure OpenAI with Entra ID and any OAuth sign-in. A participant
-  runs in its own process and holds a model key only, never your cloud
-  identity. Connections with a client certificate aren't available either.
+  Google credentials), Claude on Bedrock set to AWS sign-in (your AWS
+  credentials, even when `AWS_BEARER_TOKEN_BEDROCK` is set: switch the
+  connection to Bedrock API key authentication), Azure OpenAI with Entra ID
+  and any OAuth sign-in. Connections with a client certificate aren't
+  available either.
 - **A capability pack's provider**, which runs its own process.
 
+A participant runs in its own process and holds its model key only, never your
+cloud identity or the app's other keys. The key comes in its private start
+message (for Bedrock, the app reads `AWS_BEARER_TOKEN_BEDROCK` for it), and the
+process starts with the app's environment without credentials
+(`process_worker.worker_environment`): no `AWS_*`, `GOOGLE_*`, `GCLOUD_*`,
+`CLOUDSDK_*` or `AZURE_*` variable, no `*_API_KEY`, no other variable named like
+a key, token, secret, password or credential (such as `GITHUB_TOKEN` or
+`HF_TOKEN`), and no `PYTHON*` setting. It keeps everything else: `PATH`, the
+system, temporary, home and profile folders, locale, proxy and certificate
+settings (`HTTPS_PROXY`, `SSL_CERT_FILE`) and Lumi's own `LUMI_*` settings. A
+participant that can't run says why in the panel, in Lumi's words (for a
+Bedrock connection without its key, "Add <connection>'s Bedrock API key in
+Settings > Connections: …").
+
 Whatever the model, one admitted request is one generation
-(`supervised_requests` in `lumi/backends.py`). A rate limit (429), or an
-overload before anything was generated (Anthropic's 529, an overload in the
-stream), is waited out (Retry-After, else 5, 10 and 20 s) and sent again,
-since nothing was generated. A server error (5xx) or an error after output
-started is never sent again: the request stays uncertain and keeps its
-allowance until reconciled, and so does an Anthropic or OpenAI response that
-ends before the provider's end event. Stop ends a worker mid-response; its
+(`supervised_requests` in `lumi/backends.py`). Only a provider's refusal to
+serve the request before anything was generated is waited out (Retry-After,
+else 5, 10 and 20 s) and sent again: a rate limit (a 429, or a rate-limit or
+throttling error in the stream) or an overload (Anthropic's 529, OpenAI's 503
+that says it is overloaded, or an overload in the stream), each before any
+output. If it persists, the request is settled as refused: nothing was
+generated, so nothing is left to reconcile. Any other server error is never
+sent again, and the request stays uncertain and keeps its allowance until
+reconciled: a 5xx response, or an error in the stream, even before any output
+(such as Anthropic's `api_error`, OpenAI's `server_error` or Bedrock's
+`internalServerException`), since generation may already have begun. So does
+an error after output started, and an Anthropic or OpenAI response that ends
+before the provider's end event. Stop ends a worker mid-response; its
 interrupted request stays uncertain. Each request is priced once under its
 participant's model: the bundled prices cover Anthropic's and OpenAI's own
 model names, while an Azure deployment name or a Bedrock model id is recorded
@@ -191,6 +216,10 @@ unpriced (never $0) unless you set its price under Settings > Usage & cost.
 Team has run live only on NVIDIA NIM so far. Anthropic, OpenAI, Azure OpenAI
 and Bedrock teams have run against scripted servers that stream as those APIs
 do (`tests/test_swarm_api_providers.py`), not against the providers themselves.
+A participant's last request offers no tools and resends its conversation's
+tool definitions with `tool_choice` `none`; no live Bedrock request has
+confirmed that Bedrock accepts `none`, so Team on Claude on Bedrock isn't
+called supported until one does ([known issues](known-issues.md)).
 
 ## Start a team
 
@@ -279,12 +308,21 @@ then works like this:
   "Accepted under the owner's autonomy grant, not reviewed". It never claims
   your review.
 - A failed task, or an orchestrator turn without a usable plan, is retried once.
-  A retried turn is told why its plan was refused. The plan parser accepts
-  a few near misses: one fenced block, chat-template tags after the JSON,
-  stray closing braces after it, or its last closing brace missing (all made
-  by live models on NVIDIA NIM), and prose before or after the JSON, which
-  chat models such as Claude and GPT tend to add, as long as exactly one
-  object in the reply has the plan's fields. Anything else refuses the plan.
+  A retried turn is told why its plan was refused. A reply is read only when
+  its plan is unambiguous (`engine/swarming/planning.py`): exactly one object
+  in the whole reply, fenced or not, looks like a plan (it has `summary`,
+  `use_team` or `work_items`, or holds an object that does, and one cut short
+  counts too), and that object starts a line of its own. A second one anywhere
+  (an example, an alternative, a draft) refuses the reply, and so does a plan
+  quoted inside a sentence or in backticks: an injected plan a worker's
+  findings carried looks just like one. Around that one plan the parser drops
+  a fence, prose on the lines before it and whatever follows it: chat models
+  such as Claude and GPT tend to add a sentence, and live models on NVIDIA NIM
+  added chat-template tags and stray closing braces. `<think>…</think>`
+  blocks, which some OpenAI-compatible servers leave in the text, are dropped
+  first, and a thinking tag without its pair refuses the reply. A plan missing
+  only its last closing brace (another NIM near miss) is completed. Anything
+  else refuses the plan.
 - When a running worker asks the orchestrator a question or reports a blocker,
   the orchestrator answers in the same round: a short answer turn replies with
   `swarm_send` from the objective, the team's work and its findings. It has no
@@ -350,7 +388,10 @@ allowance. No result is complete merely because its request allowance ended.
 
 Open **Share with another personal conversation** in the Team panel. For an
 idle receiving team, enter its objective and total request allowance, then
-choose **Prepare collaboration team**. This starts no model. Prepare a separate
+choose **Prepare collaboration team**. This starts no model, but work it
+accepts later would, so a conversation a team can't run on, or a connection
+without a key for its participants (Claude on Bedrock without its Bedrock API
+key), is refused here, before the team exists. Prepare a separate
 team in another saved conversation in the same project, using its own saved
 native model. Saved navigation remains available while prepared teams have no
 active or uncertain work; ordinary chat and provider changes stay gated.
@@ -593,6 +634,8 @@ final ownership decision.
   support that conclusion. There is no automatic refund.
 - Choose exactly which failed or cancelled tasks should be retried. **Continue
   reviewed team** also includes already-ready work and respects dependencies.
+  It checks the team's models and their keys first, as starting does (for an
+  organization-managed team, before it attaches a new epoch).
   Unknown effects and held allowances can prevent continuation. During owned
   recovery, Stop clears retry selection; **Finish stopped team** drains the
   stopped run without starting replacement workers.

@@ -378,8 +378,10 @@ host enrollment and actual packaged/learned-benefit qualification remain open.
   The host's execution guard checks every request against the budgets before
   reserving it (`RequestRefused` is a known outcome) and records its usage
   (`team`) under the grant's model; a guarded session neither checks budgets
-  nor records usage itself. A worker process gets the app's secret-scan switch
-  and scans for its own credentials. Team events go to the audit log.
+  nor records usage itself. A worker process gets its model key only in its
+  start message, starts with an environment without credentials
+  (`process_worker.worker_environment`), gets the app's secret-scan switch and
+  scans for its own credentials. Team events go to the audit log.
   `service.policy_refusal` still refuses sharing and organization-managed teams
   under a policy, apart from reading, stopping, revoking and recovery
   (including `recover`). A new place that starts team participants must check
@@ -388,9 +390,12 @@ host enrollment and actual packaged/learned-benefit qualification remain open.
   through the child contract, and refuse hooks. Participants run only on
   adapters that declare `supervised_requests` (`lumi/backends.py`: one
   `stream()` is one generation under `_supervised_single_request`, and an
-  error says whether anything was generated; an adapter that overrides
-  `stream()` keeps that itself) and hold a model key, never a sign-in
-  (`engine/swarming/connections.py`); never Codex or Claude Code, whose own
+  error says whether anything was generated, which only a provider's refusal
+  before any output (a rate limit or an overload) establishes; an adapter that
+  overrides `stream()` keeps that itself) and hold a model key, never a
+  sign-in (`engine/swarming/connections.py`; every place that creates or
+  continues a team, shared-work teams and recovery included, checks the key
+  before it creates state or attaches); never Codex or Claude Code, whose own
   tool loops a team can't scope or count. A worker child keeps its host channel off
   standard input and output (`process_worker.stdio_pipes`), and code it runs
   must not rely on an inherited stdin. `@team:<run>` attaches only the

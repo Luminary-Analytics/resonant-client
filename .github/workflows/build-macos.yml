@@ -183,7 +183,7 @@ jobs:
           echo "✓ WS /ws  403 without the token, 101 with it"
 
           # What Settings > Updates shows, asked over the page's own socket.
-          python3 packaging/smoke_gui.py --port 8975 --token "$token" update_status | tee update_status.json
+          python3 packaging/smoke_gui.py --port 8975 --token="$token" update_status | tee update_status.json
           sparkle_version=$(sed -n 's/^SPARKLE_VERSION="\(.*\)"$/\1/p' packaging/fetch_sparkle.sh)
           SPARKLE_VERSION="$sparkle_version" python3 - <<'PY'
           import json, os
@@ -219,7 +219,7 @@ jobs:
 
           # Check for updates, as the button does: the socket's worker thread
           # hands Sparkle the check on the main thread, and Sparkle shows its window.
-          python3 packaging/smoke_gui.py --port 8975 --token "$token" check_updates --event status_msg --containing Checking
+          python3 packaging/smoke_gui.py --port 8975 --token="$token" check_updates --event status_msg --containing Checking
           sleep 5
           screencapture -x "$RUNNER_TEMP/lumi-check-for-updates.png" || true
           kill -0 "$pid"

@@ -179,6 +179,13 @@ notarize() {  # $1: a signed DMG or PKG; submits it, waits, and staples the tick
   echo "Notarized and stapled $1"
 }
 
+# Lumi's terms (packaging/legal_texts.py): the End User License Agreement, and
+# for a pre-release the Alpha and Beta Test Terms. The PKG shows license.rtf on
+# its license page. A disk image has no step to accept them in, so the DMG
+# carries the texts beside the app; Lumi asks for them at first launch.
+LEGAL="$WORK/legal"
+python3 packaging/legal_texts.py rtf --out "$LEGAL" --version "$VERSION"
+
 mkdir -p dist/installer
 DMG="dist/installer/lumi-$VERSION.dmg"
 rm -f "$DMG"
@@ -186,6 +193,10 @@ STAGE="$WORK/dmg"
 mkdir -p "$STAGE"
 cp -R dist/Lumi.app "$STAGE/"
 ln -s /Applications "$STAGE/Applications"
+cp "$LEGAL/eula.rtf" "$STAGE/License Agreement.rtf"
+if [[ -f "$LEGAL/alpha-terms.rtf" ]]; then
+  cp "$LEGAL/alpha-terms.rtf" "$STAGE/Alpha and Beta Test Terms.rtf"
+fi
 hdiutil create -volname "Lumi $VERSION" -srcfolder "$STAGE" -ov -format UDZO "$DMG"
 
 # Sparkle's update is this disk image; the release signs its final bytes with
@@ -221,13 +232,16 @@ python3 packaging/macos_pkg.py component "$PKG_WORK/component.plist"
 pkgbuild --root "$PKG_ROOT" --component-plist "$PKG_WORK/component.plist" \
   --identifier com.luminaryanalytics.lumi --version "$VERSION" --install-location / \
   "$PKG_WORK/lumi-component.pkg"
+PKG_RESOURCES="$WORK/pkg-resources"
+mkdir -p "$PKG_RESOURCES"
+cp "$LEGAL/license.rtf" "$PKG_RESOURCES/license.rtf"
 python3 packaging/macos_pkg.py distribution --version "$VERSION" --arch "$(uname -m)" \
-  --out "$PKG_WORK/distribution.xml"
+  --license license.rtf --out "$PKG_WORK/distribution.xml"
 PKG="dist/installer/lumi-$VERSION.pkg"
 rm -f "$PKG"
 if [[ -n "${MACOS_INSTALLER_IDENTITY:-}" && -n "${MACOS_SIGN_P12_BASE64:-}" ]]; then
   productbuild --distribution "$PKG_WORK/distribution.xml" --package-path "$PKG_WORK" \
-    --sign "$MACOS_INSTALLER_IDENTITY" "$PKG"
+    --resources "$PKG_RESOURCES" --sign "$MACOS_INSTALLER_IDENTITY" "$PKG"
   pkgutil --check-signature "$PKG"
   if [[ ${#NOTARY[@]} -gt 0 ]]; then
     notarize "$PKG"
@@ -235,7 +249,8 @@ if [[ -n "${MACOS_INSTALLER_IDENTITY:-}" && -n "${MACOS_SIGN_P12_BASE64:-}" ]]; 
     echo "WARNING: no notarytool credentials; the PKG isn't notarized" >&2
   fi
 else
-  productbuild --distribution "$PKG_WORK/distribution.xml" --package-path "$PKG_WORK" "$PKG"
+  productbuild --distribution "$PKG_WORK/distribution.xml" --package-path "$PKG_WORK" \
+    --resources "$PKG_RESOURCES" "$PKG"
   echo "WARNING: MACOS_INSTALLER_IDENTITY isn't configured; the PKG is unsigned (see docs/deploy-macos.md)" >&2
 fi
 echo "PKG: $PKG ($(du -h "$PKG" | cut -f1))"

@@ -198,9 +198,93 @@ class TestNotices:
 
     def test_cli_writes_the_file(self, tmp_path, monkeypatch):
         monkeypatch.setattr(notices.metadata, "distributions", _some_distributions)
+        _built_with_pyinstaller(monkeypatch)
+        _with_fetched_license_files(monkeypatch, tmp_path)
         out = tmp_path / "licenses" / "THIRD_PARTY_NOTICES.txt"
         assert notices.main(["--out", str(out)]) == 0
-        assert "ripgrep 15.2.0 — MIT OR Unlicense" in out.read_text(encoding="utf-8")
+        text = out.read_text(encoding="utf-8")
+        assert "ripgrep 15.2.0 — MIT OR Unlicense" in text
+        assert f"Python {notices.platform.python_version()} — PSF-2.0" in text
+        assert "PyInstaller bootloader 6.22.3 — GPL-2.0-or-later WITH Bootloader-exception" in text
+        assert "No license file is distributed" not in text
+
+
+def _built_with_pyinstaller(monkeypatch, version="6.22.3"):
+    """The build environment's PyInstaller (packaging/requirements-release.txt), which tests don't install."""
+    real = notices.distribution_license
+
+    def distribution_license(name):
+        if name == "pyinstaller":
+            return version, [("COPYING.txt", "GNU GENERAL PUBLIC LICENSE Version 2 ... Bootloader Exception")]
+        return real(name)
+
+    monkeypatch.setattr(notices, "distribution_license", distribution_license)
+
+
+def _with_fetched_license_files(monkeypatch, tmp_path):
+    """Stand-ins for the license files the build fetches (ripgrep's, Sparkle's), which a checkout may not have."""
+    fetched = {"packaging/ripgrep/LICENSE-MIT", "packaging/ripgrep/UNLICENSE", "packaging/sparkle/LICENSE"}
+    real = notices.component_texts
+
+    def component_texts(component):
+        texts = real(component)
+        missing = [name for name in component.get("license_files", []) if name in fetched
+                   and not (notices.ROOT / name).is_file()]
+        return texts + [(Path(name).name, f"{name} as the build fetches it") for name in missing]
+
+    monkeypatch.setattr(notices, "component_texts", component_texts)
+
+
+class TestLicenseTexts:
+    """Every bundled component ships its real license text, for the version that ships (PR #104 review item 11:
+    Python, the PyInstaller bootloader, marked, highlight.js, DOMPurify and Inter had none)."""
+
+    def test_the_web_assets_and_font_have_their_license_files_pinned_to_their_version(self):
+        components = {item["name"]: item for item in notices.load_components()}
+        for name, start in (("marked", "# License information"), ("highlight.js", "BSD 3-Clause License"),
+                            ("DOMPurify", "DOMPurify\nCopyright 2023 Dr.-Ing. Mario Heiderich, Cure53"),
+                            ("Inter", "Copyright 2020 The Inter Project Authors")):
+            component = components[name]
+            [relative] = component["license_files"]
+            # The file name carries the version it is the text of; a version bump needs the new text.
+            assert f"-{component['version']}-" in Path(relative).name, (name, relative)
+            [(_filename, text)] = notices.component_texts(component)
+            assert text.startswith(start), name
+        texts = {name: notices.component_texts(components[name])[0][1]
+                 for name in ("marked", "highlight.js", "DOMPurify", "Inter")}
+        assert "Permission is hereby granted" in texts["marked"] and "John Gruber" in texts["marked"]
+        assert "Apache License" in texts["DOMPurify"] and "Mozilla Public License" in texts["DOMPurify"]
+        assert "SIL OPEN FONT LICENSE Version 1.1" in texts["Inter"]
+
+    def test_python_and_the_bootloader_come_from_the_build(self, monkeypatch):
+        python = next(item for item in notices.load_components() if item["name"] == "Python")
+        # The Python running the build is the one PyInstaller embeds: its version and the LICENSE.txt it ships.
+        assert notices.resolved(python)["version"] == notices.platform.python_version()
+        [(filename, text)] = notices.component_texts(python)
+        assert filename == "LICENSE.txt" and "PYTHON SOFTWARE FOUNDATION LICENSE VERSION 2" in text
+        bootloader = next(item for item in notices.load_components() if item["name"] == "PyInstaller bootloader")
+        _built_with_pyinstaller(monkeypatch)
+        assert notices.resolved(bootloader)["version"] == "6.22.3"
+        assert notices.component_texts(bootloader)[0][0] == "COPYING.txt"
+        # Any patch release of the pinned minor (the release jobs set up Python 3.13) and major is the pin.
+        monkeypatch.setattr(notices.platform, "python_version", lambda: "3.13.9")
+        assert notices.version_problems(notices.load_components()) == []
+
+    def test_a_component_without_its_text_or_on_another_version_fails_the_build(self, tmp_path, monkeypatch,
+                                                                                capsys):
+        monkeypatch.setattr(notices.metadata, "distributions", _some_distributions)
+        _with_fetched_license_files(monkeypatch, tmp_path)
+        out = tmp_path / "THIRD_PARTY_NOTICES.txt"
+        # No PyInstaller in the environment: its bootloader's text is missing.
+        monkeypatch.setattr(notices, "distribution_license", lambda name: ("", []))
+        assert notices.main(["--out", str(out)]) == 1
+        assert "PyInstaller bootloader 6 has no license text" in capsys.readouterr().err and not out.exists()
+        # A build on another Python minor or PyInstaller major than the components file pins.
+        _built_with_pyinstaller(monkeypatch, version="7.0.0")
+        monkeypatch.setattr(notices.platform, "python_version", lambda: "3.14.1")
+        assert notices.main(["--out", str(out)]) == 1
+        err = capsys.readouterr().err
+        assert "Python 3.14.1 isn't 3.13" in err and "PyInstaller bootloader 7.0.0 isn't 6" in err
 
 
 class TestSbom:
@@ -380,7 +464,8 @@ def test_no_action_holds_permissions_or_asks_for_a_token_itself():
 
 # Tools a step would fetch as it runs, from wherever they resolve then.
 RUNTIME_INSTALL = re.compile(
-    r"\bdotnet(?:\.exe)?\s+(?:tool\s+(?:install|update|restore)|add\s+(?:\S+\s+)?package"
+    r"\bwix(?:\.exe)?\s+extension\s+add\b"
+    r"|\bdotnet(?:\.exe)?\s+(?:tool\s+(?:install|update|restore)|add\s+(?:\S+\s+)?package"
     r"|workload\s+(?:install|update|restore)|new\s+install)\b"
     r"|\bdnx\b|\bnuget(?:\.exe)?\s+(?:install|restore|update)\b"
     r"|\b(?:npm|pnpm|yarn|bun)(?:\.cmd|\.exe)?\s+\w|\b(?:npx|bunx|pnpx|uvx|pipx)\b"
@@ -481,6 +566,7 @@ def _code_a_job_runs(job: dict) -> list[tuple[str, str, str]]:
     "choco install innosetup",
     "winget install Microsoft.DotNet.SDK.8",
     "Install-Module ArtifactSigning -Force",
+    '& wix extension add -g "WixToolset.UI.wixext/5.0.2"',
     "curl -fsSL https://example.com/install.sh | bash",
     "iwr https://example.com/tool.ps1 | iex",
     "& $python -m pip install --no-deps $repo",
@@ -522,18 +608,52 @@ def test_the_jobs_whose_output_is_released_install_nothing_unchecked():
     assert any(where.startswith(".github/actions/authenticode-sign/action.yml") for where in reached)
 
 
-def test_wix_is_installed_only_from_its_checked_package():
+def test_wix_is_installed_only_from_its_checked_packages():
+    # The tool and the UI extension the MSI's license page needs (PR #104), each pinned by SHA-256.
     script = (PACKAGING / "fetch_wix.ps1").read_text(encoding="utf-8")
     assert re.search(r'^\$Sha256 = "[0-9a-f]{64}"$', script, re.M)
-    check = script.index("if ($actual -ne $Sha256)")
-    install = script.index("& dotnet tool install")
-    assert script.index("$actual = Get-Sha256 $kept") < check < install
+    assert re.search(r'^\$UiExtensionSha256 = "[0-9a-f]{64}"$', script, re.M)
+    check = script.index("if ($actual -ne $Expected)")
+    assert script.index("$actual = Get-Sha256 $kept") < check
     assert "throw" in script[check:script.index("}", check)]
-    # Its only package source is a folder that holds just the checked package.
+    tool = script.index("$toolPackage = Get-CheckedPackage")
+    extension = script.index("$extensionPackage = Get-CheckedPackage")
+    install = script.index("& dotnet tool install")
+    extract = script.index("ExtractToFile($entry, $uiExtension")
+    assert script.index("function Get-CheckedPackage") < tool < extension < install < extract
+    # The tool's only package source is a folder that holds just its checked package.
     assert "<clear />" in script and "--configfile $config" in script[install:script.index("\n", install)]
-    release = _workflows()["release.yml"]["jobs"]["release"]
-    msi = next(step for step in release["steps"] if step.get("name") == "Build the MSI")
-    assert "./packaging/fetch_wix.ps1" in msi["run"] and "-Wix $wix" in msi["run"]
+    # The extension is loaded by its path, never installed from NuGet as the MSI builds.
+    msi_script = (PACKAGING / "build_msi.ps1").read_text(encoding="utf-8")
+    assert "-ext $UiExtension" in msi_script and not _unchecked_installs(msi_script, ".ps1")
+    for workflow, job, name in (("release.yml", "release", "Build the MSI"), ("build-check.yml", "smoke-build", "Build the MSI")):
+        step = next(item for item in _workflows()[workflow]["jobs"][job]["steps"] if item.get("name") == name)
+        assert "./packaging/fetch_wix.ps1" in step["run"], workflow
+        assert "-Wix $wix.Wix -UiExtension $wix.UiExtension" in step["run"], workflow
+
+
+def test_the_version_and_the_terms_are_checked_where_releases_are_built():
+    # PR #104's rules in this workflow's split: every job that reads the tag's version refuses one
+    # that isn't X.Y.Z(-(alpha|beta|rc).N), and says whether it's a pre-release (no MSI, a
+    # pre-release on GitHub); the terms are checked where what's released is built, before building.
+    jobs = _workflows()["release.yml"]["jobs"]
+    rule = "^[0-9]+\\.[0-9]+\\.[0-9]+(-(alpha|beta|rc)\\.[0-9]+)?$"
+    for name in ("build", "release", "macos"):
+        version = next(step for step in jobs[name]["steps"] if step.get("id") == "version")
+        assert rule in version["run"] and 'echo "prerelease=$PRERELEASE" >> "$GITHUB_OUTPUT"' in version["run"], name
+    for name, before in (("build", "Build PyInstaller bundle"), ("macos", "Build Lumi.app, the DMG and the PKG")):
+        names = [step.get("name") for step in jobs[name]["steps"]]
+        check = jobs[name]["steps"][names.index("Legal texts are complete")]
+        assert "packaging/legal_texts.py release-check --release --version" in check["run"], name
+        assert names.index("Legal texts are complete") < names.index(before), name
+    for name in ("test", "release", "publish-macos"):
+        assert not any("legal_texts.py release-check" in step.get("run", "") for step in jobs[name]["steps"]), name
+    # The release job's MSI and GitHub Release read its own pre-release flag.
+    steps = {step.get("name"): step for step in jobs["release"]["steps"]}
+    for name in ("Build the MSI", "Authenticode-sign the MSI"):
+        assert steps[name]["if"] == "${{ steps.version.outputs.prerelease == 'false' }}", name
+    assert steps["Create GitHub Release with installer"]["with"]["prerelease"] == \
+        "${{ steps.version.outputs.prerelease == 'true' }}"
 
 
 @pytest.mark.parametrize("script", ["scripts/build_clean.ps1", "packaging/build_macos.sh", "packaging/build_linux.sh"])
@@ -658,6 +778,21 @@ def _handover_jobs() -> list[tuple[str, str, dict, dict]]:
             if name == "release.yml" or job.get("environment") == "release":
                 found.append((name, job_name, job, workflow))
     return found
+
+
+def test_build_hands_over_what_the_release_expects():
+    # The upload, the digest and check_release_files.ps1 -Handover name the same entries of dist:
+    # the bundle, the installers' license page (packaging/installer.iss includes it), SBOM, notices.
+    build = {step.get("id"): step for step in _workflows()["release.yml"]["jobs"]["build"]["steps"]}
+    uploaded = [line.strip().removeprefix("dist/").rstrip("/").replace("${{ steps.version.outputs.version }}", "$v")
+                for line in build["upload"]["with"]["path"].splitlines() if line.strip()]
+    digest = re.search(r"tree_digest\.py dist (.+)", build["handover"]["run"]).group(1).replace('"', "").split()
+    script = (PACKAGING / "check_release_files.ps1").read_text(encoding="utf-8")
+    handover = re.search(r'Assert-Holds \$Dist @\(("lumi"[^)]*)\)', script).group(1)
+    expected = [item.strip().strip('"') for item in handover.split(",")]
+    names = {"$sbom": "lumi-$v-sbom.cdx.json", "$notices": "lumi-$v-THIRD_PARTY_NOTICES.txt"}
+    assert sorted(uploaded) == sorted(digest) == sorted(names.get(item, item) for item in expected)
+    assert "legal" in expected
 
 
 def test_signing_jobs_take_artifacts_only_by_id_and_check_their_digest():

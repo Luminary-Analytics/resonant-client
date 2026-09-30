@@ -78,6 +78,7 @@ from .ws_commands import (  # noqa: F401  (re-exported public surface)
     _save_resonant_md,
     _skill_list_payload,
     _skill_view_payload,
+    refused_turn,
 )
 from .sessions import ProjectManager
 from .settings import SettingsManager
@@ -2575,6 +2576,9 @@ class AppState:
             # beside the message box (lumi/oversight.py). The page shows
             # it before anything is recorded.
             "oversight": _oversight_status(),
+            # Lumi's terms and whether this person accepted them (lumi/terms.py):
+            # the page asks for them at first launch and when their version changes.
+            "terms": _terms_status(),
         }
 
 
@@ -2582,6 +2586,12 @@ def _oversight_status() -> dict:
     from .. import oversight
 
     return oversight.status()
+
+
+def _terms_status() -> dict:
+    from .. import terms
+
+    return terms.status()
 
 
 state = AppState()
@@ -2791,17 +2801,17 @@ async def _process_chat_message(ws: WebSocket, msg: dict[str, Any]) -> None:
     if swarm_busy(state):
         await ws.send_json({"event": "error", "message": "Finish or stop the active team before starting another operation."})
         return
-    # Organization oversight (lumi/oversight.py): nothing reaches a model, and
-    # nothing is saved or titled, before the person confirms the notice. Every
-    # queued or steered message (and employee task) passes here; Session.run
-    # refuses as well.
+    # Lumi's terms (lumi/terms.py), then organization oversight (lumi/oversight.py):
+    # nothing reaches a model, and nothing is saved or titled, before the person
+    # accepts the terms and confirms the notice. Every queued or steered message
+    # (and employee task) passes here; Session.run refuses as well.
     from .. import oversight
 
     if msg.get('command') == 'employee_task' or str(msg.get("text") or "").strip():
-        refusal = await asyncio.to_thread(oversight.refusal, "app")
+        refusal, code = await asyncio.to_thread(oversight.gate, "app")
         if refusal:
-            await ws.send_json({"event": "oversight_status", "data": await asyncio.to_thread(oversight.status)})
-            await ws.send_json({"event": "error", "message": refusal, "code": oversight.REFUSAL_CODE})
+            await ws.send_json(await asyncio.to_thread(ws_commands.gate_status_event, code))
+            await ws.send_json(refused_turn(msg, refusal, code=code))
             return
     if msg.get('command') == 'employee_task':
         from .employee_tasks import command as task_command
@@ -2811,10 +2821,15 @@ async def _process_chat_message(ws: WebSocket, msg: dict[str, Any]) -> None:
     if not text:
         return
     if not state.session:
-        await ws.send_json({
-            "event": "error",
-            "message": state.runtime_unavailable_reason(),
-        })
+        await ws.send_json(refused_turn(msg, state.runtime_unavailable_reason()))
+        return
+    # The organization's policy refuses every turn while it can't be used, or
+    # for a model it doesn't allow (Session.run refuses too). Said before the
+    # message is saved or titled, so it goes back to the message box.
+    policy_refusal = getattr(state.session, "policy_refusal", None)
+    refusal = await asyncio.to_thread(policy_refusal) if callable(policy_refusal) else ""
+    if isinstance(refusal, str) and refusal:
+        await ws.send_json(refused_turn(msg, refusal, code="policy_blocked"))
         return
 
     images = None

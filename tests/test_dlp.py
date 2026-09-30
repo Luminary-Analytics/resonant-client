@@ -1366,40 +1366,60 @@ def test_every_model_backend_guards_its_request_methods():
 
 
 # The second line: every use of a backend's request methods in lumi/ (called,
-# passed on, or looked up with getattr), counted per function, and why it's
-# covered. A new use, even in a function listed here, changes a count and
-# must be reviewed.
+# passed on, or looked up with getattr), counted per function, why it's
+# covered, and how it waits for Lumi's terms (GATES). A new use, even in a
+# function listed here, changes a count and must be reviewed.
+#
+# The gate: until Lumi's terms are accepted (lumi/terms.py), nothing is sent.
+GATES = {
+    # A guarded request method: dlp.guarded refuses while the terms wait, under dlp.send and dlp.permit too.
+    "guarded": "dlp.guarded",
+    # dlp.check_request or dlp.check_text first, which refuses while the terms wait.
+    "checked": "dlp.check_request",
+    # The function asks dlp.terms_refusal (or refuse_until_terms_accepted) itself before its request.
+    "asks": "the function itself",
+}
 COVERED_USES = {
-    ("lumi/engine/session.py", "should_plan", "classify"): (3, "prompt passed dlp.check_text; sent under dlp.permit"),
-    ("lumi/engine/session.py", "invoke", "stream"): (1, "dlp.send of the request _model_stream checked"),
-    ("lumi/engine/session.py", "_model_stream", "stream"): (1, "the execution boundary around that checked request"),
-    ("lumi/engine/request_purpose.py", "send_checked", "stream"): (1, "dlp.send, after dlp.check_request"),
-    ("lumi/engine/request_purpose.py", "send_checked", "stream_auxiliary"): (1, "dlp.send, after dlp.check_request"),
-    ("lumi/engine/execution_guard.py", "classify", "classify"): (1, "reached from should_plan's permit"),
+    ("lumi/engine/session.py", "should_plan", "classify"): (
+        3, "prompt passed dlp.check_text; sent under dlp.permit", "guarded"),
+    ("lumi/engine/session.py", "invoke", "stream"): (1, "dlp.send of the request _model_stream checked", "guarded"),
+    ("lumi/engine/session.py", "_model_stream", "stream"): (
+        1, "the execution boundary around that checked request", "guarded"),
+    ("lumi/engine/request_purpose.py", "send_checked", "stream"): (1, "dlp.send, after dlp.check_request", "guarded"),
+    ("lumi/engine/request_purpose.py", "send_checked", "stream_auxiliary"): (
+        1, "dlp.send, after dlp.check_request", "guarded"),
+    ("lumi/engine/execution_guard.py", "classify", "classify"): (1, "reached from should_plan's permit", "guarded"),
     ("lumi/orchestration/runner.py", "_repair_structured_output", "generate_structured"): (
-        1, "prompt passed dlp.check_text; sent with dlp.send"),
-    ("lumi/backends.py", "warm_up", "stream"): (1, "EXO warm-up: fixed text, under dlp.permit"),
-    ("lumi/backends.py", "classify", "stream"): (2, "CLI adapters' classify (guarded) runs their own stream"),
-    ("lumi/backends.py", "stream", "stream"): (1, "EXO's stream calling its parent's, as it runs under the permit"),
-    ("lumi/engine/provider_extensions.py", "classify", "stream"): (1, "classify (guarded) runs its own stream"),
-    ("lumi/sonn.py", "stream_auxiliary", "stream"): (1, "stream_auxiliary (guarded) runs a copy's stream"),
-    ("lumi/sonn.py", "stream", "stream"): (1, "SONN's stream calling its parent's, as it runs"),
-    ("lumi/smoke/flaky.py", "stream", "stream"): (1, "test wrapper (guarded) around a Session's backend"),
-    ("lumi/sonn_tasks.py", "_request", "stream"): (1, "httpx transport; the advice question passes dlp.check_text"),
+        1, "prompt passed dlp.check_text; sent with dlp.send", "guarded"),
+    ("lumi/backends.py", "warm_up", "stream"): (1, "EXO warm-up: fixed text, under dlp.permit", "asks"),
+    ("lumi/backends.py", "classify", "stream"): (
+        2, "CLI adapters' classify (guarded) runs their own stream", "guarded"),
+    ("lumi/backends.py", "stream", "stream"): (
+        1, "EXO's stream calling its parent's, as it runs under the permit", "guarded"),
+    ("lumi/engine/provider_extensions.py", "classify", "stream"): (
+        1, "classify (guarded) runs its own stream", "guarded"),
+    ("lumi/sonn.py", "stream_auxiliary", "stream"): (1, "stream_auxiliary (guarded) runs a copy's stream", "guarded"),
+    ("lumi/sonn.py", "stream", "stream"): (1, "SONN's stream calling its parent's, as it runs", "guarded"),
+    ("lumi/smoke/flaky.py", "stream", "stream"): (
+        1, "test wrapper (guarded) around a Session's backend", "guarded"),
+    ("lumi/sonn_tasks.py", "_request", "stream"): (
+        1, "httpx transport; the advice question passes dlp.check_text", "checked"),
 }
 # Functions whose code names a model API endpoint: a direct HTTP call to a
-# model has no backend method to guard, so each is listed with its reason.
+# model has no backend method to guard, so each is listed with its reason and
+# its gate.
 COVERED_ENDPOINTS = {
-    ("lumi/backends.py", "_open_chat_stream_with_retry"): "OllamaBackend.stream's request (guarded)",
-    ("lumi/backends.py", "stream"): "the backends' own guarded stream methods",
-    ("lumi/backends.py", "classify"): "OllamaBackend.classify (guarded)",
-    ("lumi/backends.py", "generate_structured"): "OllamaBackend.generate_structured (guarded)",
-    ("lumi/backends.py", "warm_up"): "Ollama warm-up: the fixed text \"hi\"",
-    ("lumi/backends.py", "_detect_tool_support"): "Ollama tool-support probe: fixed text",
-    ("lumi/anthropic_api.py", "_endpoint"): "AnthropicBackend.stream's address (guarded)",
-    ("lumi/openai_api.py", "stream"): "OpenAIResponsesBackend.stream (guarded)",
-    ("lumi/orchestration/acceptance_check.py", "_call_ollama"): "VisionRunner.ask checks the question first",
-    ("lumi/sonn_tasks.py", "ask_advice"): "the question passes dlp.check_text first",
+    ("lumi/backends.py", "_open_chat_stream_with_retry"): ("OllamaBackend.stream's request (guarded)", "guarded"),
+    ("lumi/backends.py", "stream"): ("the backends' own guarded stream methods", "guarded"),
+    ("lumi/backends.py", "classify"): ("OllamaBackend.classify (guarded)", "guarded"),
+    ("lumi/backends.py", "generate_structured"): ("OllamaBackend.generate_structured (guarded)", "guarded"),
+    ("lumi/backends.py", "warm_up"): ("Ollama warm-up: the fixed text \"hi\"", "asks"),
+    ("lumi/backends.py", "_detect_tool_support"): ("Ollama tool-support probe: fixed text", "asks"),
+    ("lumi/anthropic_api.py", "_endpoint"): ("AnthropicBackend.stream's address (guarded)", "guarded"),
+    ("lumi/openai_api.py", "stream"): ("OpenAIResponsesBackend.stream (guarded)", "guarded"),
+    ("lumi/orchestration/acceptance_check.py", "_call_ollama"): (
+        "VisionRunner.ask checks the question first", "checked"),
+    ("lumi/sonn_tasks.py", "ask_advice"): ("the question passes dlp.check_text first", "checked"),
 }
 _ENDPOINT_MARKERS = ("/api/chat", "/api/generate", "/chat/completions", "/v1/messages")
 
@@ -1461,5 +1481,43 @@ def test_every_use_of_a_model_request_is_listed_with_its_check():
         name = path.relative_to(ROOT).as_posix()
         uses.update({(name, function, method): count for (function, method), count in visitor.uses.items()})
         endpoints |= {(name, function) for function in visitor.endpoints}
-    assert uses == {key: count for key, (count, _why) in COVERED_USES.items()}
+    assert uses == {key: count for key, (count, _why, _gate) in COVERED_USES.items()}
     assert endpoints == set(COVERED_ENDPOINTS)
+
+
+def _functions(name: str, function: str) -> list[ast.AST]:
+    tree = ast.parse((ROOT / name).read_text(encoding="utf-8"))
+    return [node for node in ast.walk(tree)
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == function]
+
+
+def _calls(node: ast.AST) -> set[str]:
+    return {(call.func.attr if isinstance(call.func, ast.Attribute) else getattr(call.func, "id", ""))
+            for call in ast.walk(node) if isinstance(call, ast.Call)}
+
+
+def test_every_model_request_waits_for_lumis_terms():
+    """Every listed use and endpoint names its gate for Lumi's terms (lumi/terms.py), and each gate holds: a
+    guarded method is in REQUEST_METHODS (or only a guarded method reaches it), a checked one calls the DLP
+    check, and one that asks for itself asks before anything else."""
+    entries = [(name, function, gate) for (name, function, _method), (_count, _why, gate) in COVERED_USES.items()]
+    entries += [(name, function, gate) for (name, function), (_why, gate) in COVERED_ENDPOINTS.items()]
+    reached_from_guarded = {"_open_chat_stream_with_retry", "_endpoint", "invoke", "_model_stream", "send_checked",
+                            "should_plan", "_repair_structured_output"}
+    for name, function, gate in entries:
+        assert gate in GATES, (name, function, gate)
+        found = _functions(name, function)
+        assert found, (name, function)
+        if gate == "asks":
+            # Every function of that name in the file (both backends' warm_up) asks the terms first.
+            for node in found:
+                assert _calls(node) & {"terms_refusal", "refuse_until_terms_accepted"}, (name, function, node.lineno)
+        elif gate == "checked":
+            text = (ROOT / name).read_text(encoding="utf-8")
+            assert "check_text(" in text or "check_request(" in text, (name, function)
+        else:
+            assert function in dlp.REQUEST_METHODS or function in reached_from_guarded, (name, function)
+    # The guard itself asks the terms before the permit: a warm-up under dlp.permit waits too.
+    guard = _functions("lumi/dlp.py", "guarded")[0]
+    call = next(node for node in ast.walk(guard) if isinstance(node, ast.FunctionDef) and node.name == "call")
+    assert isinstance(call.body[0], ast.Expr) and _calls(call.body[0]) == {"refuse_until_terms_accepted"}

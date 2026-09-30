@@ -6,12 +6,14 @@
 .DESCRIPTION
     release.yml's release job runs this twice. With -Handover, right after it
     downloads the build job's artifact: dist must hold exactly the bundle
-    (dist/lumi), the SBOM and the third-party notices, so nothing else, an MSI
-    for one, can come from the job that built them.
+    (dist/lumi), the installers' license page (dist/legal), the SBOM and the
+    third-party notices, so nothing else, an MSI for one, can come from the
+    job that built them.
 
     Without it, just before each upload (the GitHub Release, then the Pages
     site), and publishing only what this job produced and signed:
-      - dist holds the bundle, the SBOM, the notices and dist/installer;
+      - dist holds the bundle, the license page, the SBOM, the notices and
+        dist/installer;
         dist/installer holds the installer and, for a stable version, the MSI,
         and nothing else (a beta gets no MSI: an MSI version is three numbers);
       - packaging/sign_windows.ps1 -Verify checks each of those installers
@@ -50,15 +52,17 @@ $notices = "lumi-$Version-THIRD_PARTY_NOTICES.txt"
 if (-not (Test-Path -LiteralPath $Dist -PathType Container)) { throw "No folder at $Dist" }
 
 if ($Handover) {
-    Assert-Holds $Dist @("lumi", $sbom, $notices) "The build job hands over the bundle, the SBOM and the notices, and nothing else."
-    Write-Output "The build job handed over dist/lumi, $sbom and $notices."
+    Assert-Holds $Dist @("lumi", "legal", $sbom, $notices) ("The build job hands over the bundle, the license " +
+        "page, the SBOM and the notices, and nothing else.")
+    Write-Output "The build job handed over dist/lumi, dist/legal, $sbom and $notices."
     return
 }
 
 $installers = Join-Path $Dist "installer"
 $names = @("lumi-setup-$Version.exe")
 if ($stable) { $names += "lumi-$Version.msi" }
-Assert-Holds $Dist @("installer", "lumi", $sbom, $notices) "Only this job's installers are published beside the build's SBOM and notices."
+Assert-Holds $Dist @("installer", "legal", "lumi", $sbom, $notices) ("Only this job's installers are published " +
+    "beside the build's SBOM and notices.")
 Assert-Holds $installers $names $(if ($stable) { "" } else { "A beta gets no MSI." })
 
 $signed = @($names | ForEach-Object { Join-Path $installers $_ })

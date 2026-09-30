@@ -6,7 +6,10 @@ def auxiliary_stream(backend, purpose: str, *, usage_context: dict | None = None
 
     ``purpose`` names the request in the usage records (lumi/usage.py);
     ``usage_context`` adds the session, project and agent when known.
-    requests are recorded by the host that admits them. A provider offline
+    requests are recorded by the host that admits them. Until Lumi's terms are
+    accepted (lumi/terms.py) it answers with their refusal
+    (``terms.REFUSAL_CODE``) and sends nothing, whoever asked (a title, a
+    summary, a background request of the app). A provider offline
     mode can't reach answers with its reason instead (lumi/offline.py), as a
     turn does, before anything else looks at the request. Otherwise the
     organization's DLP rules (lumi/dlp.py) check it: it is sent with their
@@ -14,6 +17,9 @@ def auxiliary_stream(backend, purpose: str, *, usage_context: dict | None = None
     """
     from .. import dlp
 
+    refused = _terms_refusal()
+    if refused is not None:
+        return refused
     refused = _offline_refusal(backend)
     if refused is not None:
         return refused
@@ -22,6 +28,15 @@ def auxiliary_stream(backend, purpose: str, *, usage_context: dict | None = None
         model=str(getattr(backend, "model", "") or ""), audit_fields=usage_context,
     )
     return send_checked(backend, purpose, usage_context=usage_context, record=record, **checked.request)
+
+
+def _terms_refusal():
+    """An answer carrying the refusal of Lumi's terms while they wait to be accepted, else None."""
+    from .. import dlp
+    from ..terms import REFUSAL_CODE
+
+    refusal = dlp.terms_refusal()
+    return iter([("error", {"message": refusal, "code": REFUSAL_CODE})]) if refusal else None
 
 
 def _offline_refusal(backend):

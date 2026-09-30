@@ -2,9 +2,9 @@
   "name": "lumi-vscode",
   "displayName": "Lumi",
   "description": "Add your selection or files to your message in Lumi, and see what Lumi changed beside your files.",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "publisher": "luminary-analytics",
-  "license": "MIT",
+  "license": "SEE LICENSE IN LICENSE.txt",
   "repository": {
     "type": "git",
     "url": "https://github.com/Luminary-Analytics/resonant-client"

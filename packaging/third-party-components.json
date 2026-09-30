@@ -1,5 +1,5 @@
 {
-  "_comment": "Third-party parts of the Lumi installer that are not Python packages, including code ported into Lumi's own modules (kind \"Ported source code\", with the original's license file). packaging/third_party_notices.py adds them to THIRD_PARTY_NOTICES.txt and the release SBOM. Keep versions in step with the fetch scripts and the spec; tests/test_release_supply_chain.py checks that they agree.",
+  "_comment": "Third-party parts of the Lumi installer that are not Python packages, including code ported into Lumi's own modules (kind \"Ported source code\", with the original's license file). packaging/third_party_notices.py adds them to THIRD_PARTY_NOTICES.txt and the release SBOM, each with its license text: license_files names committed copies, pinned to the version (the file name carries it); license_from takes the text from the build itself, \"python\" from the Python it embeds and \"distribution:<name>\" from that installed package, so it is the shipped version's. A component without a license text fails the build. Keep versions in step with the fetch scripts and the spec; tests/test_release_supply_chain.py checks that they agree.",
   "not_shipped": {
     "_comment": "Installed as dependencies but excluded from the bundle (packaging/lumi.spec reads this list). The notices leave them out.",
     "mouseinfo": "GPL-3.0-or-later. A PyAutoGUI dependency for its mouseInfo() tool, which Lumi never calls; PyAutoGUI works without it.",
@@ -16,14 +16,16 @@
       "license": "PSF-2.0",
       "url": "https://www.python.org/",
       "cyclonedx_type": "platform",
-      "note": "The Python runtime embedded by PyInstaller. The minor version is the build's; see the executable for the exact release."
+      "note": "The Python runtime embedded by PyInstaller. The notices name the build's exact version, and its license text is the one that Python ships (LICENSE.txt), with the licenses of the software it includes.",
+      "license_from": "python"
     },
     {
       "name": "PyInstaller bootloader",
       "version": "6",
       "license": "GPL-2.0-or-later WITH Bootloader-exception",
       "url": "https://pyinstaller.org/",
-      "note": "The bootloader's exception permits distributing it with programs under any license."
+      "note": "The bootloader's exception permits distributing it with programs under any license. The notices name the version, and give the license text (COPYING.txt), of the PyInstaller the build ran (packaging/requirements-release.txt).",
+      "license_from": "distribution:pyinstaller"
     },
     {
       "name": "ripgrep",
@@ -63,7 +65,8 @@
       "license": "MIT",
       "url": "https://github.com/markedjs/marked",
       "purl": "pkg:npm/marked@12.0.2",
-      "note": "The copyright notice is kept at the top of marked.min.js."
+      "license_files": ["packaging/licenses/marked-12.0.2-LICENSE.md"],
+      "note": "Its license file also carries the original Markdown license."
     },
     {
       "name": "highlight.js",
@@ -71,7 +74,8 @@
       "license": "BSD-3-Clause",
       "url": "https://github.com/highlightjs/highlight.js",
       "purl": "pkg:npm/highlight.js@11.9.0",
-      "note": "Includes the github-dark-dimmed theme. The notice is kept at the top of highlight.min.js."
+      "license_files": ["packaging/licenses/highlight.js-11.9.0-LICENSE.txt"],
+      "note": "Includes the github-dark-dimmed theme."
     },
     {
       "name": "DOMPurify",
@@ -79,7 +83,8 @@
       "license": "Apache-2.0 OR MPL-2.0",
       "url": "https://github.com/cure53/DOMPurify",
       "purl": "pkg:npm/dompurify@3.0.6",
-      "note": "The license notice is kept at the top of purify.min.js."
+      "license_files": ["packaging/licenses/dompurify-3.0.6-LICENSE.txt"],
+      "note": "Dual licensed: both licenses follow."
     },
     {
       "name": "Inter",
@@ -87,6 +92,7 @@
       "license": "OFL-1.1",
       "url": "https://github.com/rsms/inter",
       "purl": "pkg:npm/%40fontsource/inter@5.0.17",
+      "license_files": ["packaging/licenses/inter-5.0.17-OFL.txt"],
       "note": "Latin subset, weights 400 to 700, from the @fontsource/inter package."
     },
     {

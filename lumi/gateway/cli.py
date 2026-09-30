@@ -14,6 +14,11 @@ agent asks in the chat before changing anything; ``auto-edit`` edits files
 and asks about the rest; ``bypass`` asks nothing. A project's own
 instructions apply only if it is trusted in the app: the gateway never
 trusts one itself. See docs/chat-gateway.md.
+
+Lumi's terms (lumi/terms.py) are accepted before the gateway starts: by the
+person running it (earlier in the app, at this terminal, or with
+``--accept-terms``/``LUMI_ACCEPT_TERMS``), or by the organization's machine
+policy. A chat can't accept them.
 """
 
 from __future__ import annotations
@@ -137,6 +142,45 @@ def build_service(args: argparse.Namespace, settings: SettingsManager, adapter) 
                           oversight_signer=CloudClient(settings).sign_as_device)
 
 
+def accept_terms(value: str = "", *, stdin=None, stderr=None) -> bool:
+    """Lumi's terms before the gateway starts: accepted already, named by ``--accept-terms`` or
+    ``LUMI_ACCEPT_TERMS`` (recorded), or a typed yes at an interactive terminal. False, having said how to
+    accept them, when none of those holds."""
+    from .. import oversight, terms
+
+    stdin, stderr = stdin or sys.stdin, stderr or sys.stderr
+    if not terms.pending(use_environment=False):
+        return True
+    environment = os.environ.get(terms.ENVIRONMENT, "").strip()
+    try:
+        if value or environment:
+            terms.accept_value(value or environment, "flag" if value else "environment")
+            return True
+    except terms.TermsError as exc:
+        print(f"lumi gateway: {exc}", file=stderr)
+        return False
+    try:
+        interactive = stdin.isatty() and stderr.isatty()
+    except (AttributeError, OSError, ValueError):
+        interactive = False
+    waiting = terms.pending()
+    if not interactive:
+        print(f"lumi gateway: {terms.refusal('headless')}", file=stderr)
+        return False
+    print("Before Lumi runs requests from chats, accept its terms:", file=stderr)
+    for line in terms.terminal_summary(waiting):
+        print(line, file=stderr)
+    print("Type yes to accept them and start the gateway: ", end="", file=stderr, flush=True)
+    try:
+        answer = stdin.readline()
+    except (OSError, ValueError):
+        answer = ""
+    if not oversight.is_yes(answer) or not terms.accept({doc.id: doc.version for doc in waiting}, "terminal"):
+        print("lumi gateway: not started; Lumi's terms weren't accepted.", file=stderr)
+        return False
+    return True
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(
         prog="lumi gateway",
@@ -157,6 +201,9 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--approval-minutes", type=float, default=0,
                         help="How long to wait for an approval before refusing (default 10)")
     parser.add_argument("--max-tokens", type=int, default=None)
+    parser.add_argument("--accept-terms", default="", metavar="VALUE",
+                        help="accept Lumi's terms for this computer user, naming each document's version as "
+                             "`lumi terms` shows it (for example eula-1.0); LUMI_ACCEPT_TERMS does the same")
     args = parser.parse_args(argv)
 
     logging.basicConfig(
@@ -182,6 +229,10 @@ def main(argv: list[str] | None = None) -> None:
         print(f"Could not start the gateway: {exc}", file=sys.stderr)
         raise SystemExit(1)
 
+    # Lumi's terms (lumi/terms.py): the person running the gateway accepts them for its chats, before any
+    # chat can reach a model. Each chat's turn asks again (Session.run), so a new version stops them too.
+    if not accept_terms(args.accept_terms):
+        raise SystemExit(1)
     print(f"Gateway starting on {adapter.name}.\n{service._describe()}")
     from .. import oversight
 

@@ -128,9 +128,12 @@ whether an item has since shipped before treating it as open work.
 ## Project direction (2026-05, set at v0.6.3)
 
 > **Superseded in September 2026:** Lumi is now commercial software under a
-> proprietary license (see [LICENSE](LICENSE)); only the Extension SDK and the
-> VS Code extension stay under the MIT License. The open-source goal below is
-> historical.
+> proprietary license (see [LICENSE](LICENSE)) and the
+> [Lumi End User License Agreement](lumi/legal/EULA.md). The Extension SDK is
+> under the [Lumi Extension SDK License](sdk/LICENSE), which lets developers
+> build extensions for Lumi, and the VS Code extension is part of Lumi.
+> Versions published under the MIT License remain under it. The open-source
+> goal below is historical.
 
 **Goal: an open-source flagship for local-first, self-improving autonomous coding.** Relicensed MIT at v0.6.3. The project is used personally today; the intent is a public flagship.
 

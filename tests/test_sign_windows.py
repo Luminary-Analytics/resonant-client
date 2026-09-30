@@ -423,6 +423,8 @@ class TestReleaseFiles:
         dist = signing.tmp_path / "dist"
         (dist / "lumi").mkdir(parents=True)
         (dist / "lumi" / "lumi.exe").write_bytes(b"MZ")
+        (dist / "legal").mkdir()
+        (dist / "legal" / "license.rtf").write_text("{\\rtf1 Lumi's terms}", encoding="utf-8")
         (dist / f"lumi-{version}-sbom.cdx.json").write_text("{}", encoding="utf-8")
         (dist / f"lumi-{version}-THIRD_PARTY_NOTICES.txt").write_text("Notices", encoding="utf-8")
         (dist / "installer").mkdir()
@@ -520,7 +522,8 @@ class TestReleaseFiles:
         dist = self.dist(signing, "1.2.3", msi=True)
         result = self.check(signing, "1.2.3", dist, handover=True)
         assert result.returncode != 0
-        assert said(result, "The build job hands over the bundle, the SBOM and the notices, and nothing else")
+        assert said(result, "The build job hands over the bundle, the license page, the SBOM and the notices, "
+                            "and nothing else")
         shutil.rmtree(dist / "installer")
         result = self.check(signing, "1.2.3", dist, handover=True)
         assert result.returncode == 0, output(result)

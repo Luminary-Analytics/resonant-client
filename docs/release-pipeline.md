@@ -13,12 +13,23 @@ three jobs, so that only pinned inputs produce the bytes that get signed:
 - `test` installs the test dependencies from PyPI (within `pyproject.toml`'s
   ranges) and runs Ruff and pytest. Nothing it makes is used; the release only
   waits for it to pass.
-- `build` checks that the tag's commit is on main and matches `__version__`,
-  then runs `scripts/build_clean.ps1` in a fresh Python from `setup-python`,
-  with no pip cache and only hash-pinned packages, and hands the bundle, the
-  SBOM and the notices on as an artifact. It runs no tests.
-- `release`, once both passed, signs, packages and publishes
-  ([Authenticode](#authenticode)).
+- `build` checks that the tag's commit is on main and that the tag is a
+  release version: `vX.Y.Z`, or `vX.Y.Z-alpha.N`, `-beta.N` or `-rc.N` (the
+  hyphen is how GitHub's pre-release flag, the feeds and the installers tell a
+  pre-release), matching `__version__`. It fails while Lumi's terms still have
+  facts to be provided or a text doesn't match its pinned version
+  (`packaging/legal_texts.py release-check --release`;
+  [RELEASING.md](../RELEASING.md#lumis-terms)), before anything is built.
+  Then it runs `scripts/build_clean.ps1` in a fresh Python from
+  `setup-python`, with no pip cache and only hash-pinned packages, which also
+  renders the installers' license page (`dist/legal/license.rtf`, and the
+  versions it holds in `license-versions.iss`, which the EXE installer records
+  so it shows the page once for each version of the terms). It hands the
+  bundle, the license page, the SBOM and the notices on as an artifact. It
+  runs no tests.
+- `release`, once both passed, checks the tag the same way, then signs,
+  packages and publishes ([Authenticode](#authenticode)). The `macos` job
+  checks the tag, the version and the terms as `build` does.
 
 `test` and `build` have no secret, no OIDC token and no environment.
 
@@ -136,13 +147,17 @@ Only pinned code runs in the `release` job, which holds the Azure sign-in and
 the EdDSA key: this repository's scripts at the tagged commit, actions pinned
 by commit, and tools pinned by SHA-256. Microsoft's Artifact Signing client
 and WiX (`packaging/fetch_wix.ps1`: the `wix` 5.0.2 NuGet package, installed
-from a folder that holds only the checked file) are both fetched that way; in
+from a folder that holds only the checked file, and `WixToolset.UI.wixext`
+5.0.2, whose WixUI_Minimal dialogs show the MSI's license page, loaded by the
+path of its checked DLL rather than installed from NuGet with `wix extension
+add`) are fetched that way; in
 CI (`GITHUB_ACTIONS=true`) `sign_windows.ps1` refuses the `WINDOWS_SIGNTOOL`
 and `ARTIFACT_SIGNING_DLIB` overrides and signs only with the Windows SDK's
 signtool, checked as validly signed by Microsoft.
 
-**Publishing only what was signed.** `release` takes only the bundle, SBOM
-and notices from `build`'s artifact ([the handover](#source-to-installer),
+**Publishing only what was signed.** `release` takes only the bundle, its
+license page (`dist/legal`, which the EXE installer includes), SBOM and
+notices from `build`'s artifact ([the handover](#source-to-installer),
 then `packaging/check_release_files.ps1 -Handover`). `sign_windows.ps1`
 records each file it signs, with its SHA-256, and `check_release_files.ps1`
 runs again just before the GitHub Release and before the Pages site:
@@ -530,9 +545,10 @@ ordinary CI. Keep mocked wire-contract tests distinct from live model evidence.
 | `packaging/check_release_files.ps1` | What the release takes from `build`, and publishes: only the files it signed, unchanged |
 | `packaging/tree_digest.py` | The digest of the files one release job hands the next, checked on arrival |
 | `packaging/check_bundle.py`, `packaging/bundle-policy.json` | Bundle contents and size gate |
-| `packaging/installer.iss` | Windows installer (EXE) |
-| `packaging/lumi.wxs`, `packaging/build_msi.ps1` | MSI for device management |
-| `packaging/fetch_wix.ps1` | WiX 5, the MSI's build tool, pinned by SHA-256 and installed from its checked package alone |
+| `packaging/installer.iss` | Windows installer (EXE), with Lumi's terms on its license page |
+| `packaging/lumi.wxs`, `packaging/build_msi.ps1` | MSI for device management, with the license page |
+| `packaging/fetch_wix.ps1` | WiX 5 and its UI extension (the MSI's license page), each pinned by SHA-256 and installed from its checked package alone |
+| `lumi/legal/`, `packaging/legal_texts.py` | Lumi's terms, privacy notice and licenses: one file of facts, rendered texts, the installers' RTF, the release check |
 | `packaging/update_appcast.py` | Stable, beta and release-line update feeds, for Windows and macOS |
 | `lumi/updater.py`, `lumi/update_channels.py` | WinSparkle client and verification key; update mode, channel, pin and platform |
 | `packaging/build_macos.sh`, `packaging/fetch_sparkle.sh` | macOS app, DMG and PKG; pinned Sparkle; Apple signing and notarization |

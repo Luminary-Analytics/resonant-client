@@ -398,6 +398,16 @@
                              user pressed send, leaving only a model name and a
                              contradictory error. -->
                         <div id="runtime-banner" class="runtime-banner" hidden role="status" aria-live="polite"></div>
+                        <!-- Lumi's terms (lumi/terms.py, terms_view.js): until
+                             this person accepts them, nothing is sent to a model
+                             and the message box is locked. The dialog asks at
+                             first launch and when their version changes; after
+                             Decline, this notice opens it again. -->
+                        <section id="terms-notice" class="terms-notice" aria-labelledby="terms-notice-title" tabindex="-1" hidden>
+                            <h2 id="terms-notice-title" class="sr-only">Lumi’s terms</h2>
+                            <p id="terms-notice-text" class="terms-notice-text" role="status">Lumi won’t send anything to a model until you accept its terms.</p>
+                            <button type="button" id="terms-notice-review" class="terms-notice-review" aria-describedby="terms-notice-text">Review terms</button>
+                        </section>
                         <!-- Organization oversight (lumi/oversight.py): while an
                              organization's policy has Lumi share activity,
                              messages or security flags, this names the
@@ -660,6 +670,34 @@
         </main>
     </div>
 
+    <!-- ═══ Lumi's terms (terms_view.js) ═══
+         Accept mode: the terms in force, Decline and Accept; Accept counts only
+         as the person's own click or key press. Read mode (About Lumi): one of
+         the texts Lumi ships, with Close. -->
+    <div id="terms-dialog" class="dialog-overlay terms-dialog-overlay" data-start-hidden role="dialog" aria-modal="true" aria-labelledby="terms-dialog-title" aria-describedby="terms-dialog-intro">
+        <div class="dialog terms-dialog">
+            <div class="dialog-header terms-dialog-header">
+                <h2 id="terms-dialog-title" class="terms-dialog-title">Lumi’s terms</h2>
+                <button type="button" id="terms-dialog-close" class="dialog-btn-close" aria-label="Close">×</button>
+            </div>
+            <p id="terms-dialog-intro" class="terms-dialog-intro"></p>
+            <div id="terms-dialog-body" class="terms-dialog-body" tabindex="0" role="region" aria-labelledby="terms-dialog-title"></div>
+            <p id="terms-dialog-error" class="editor-error terms-dialog-error" role="alert" hidden></p>
+            <div class="terms-dialog-footer">
+                <p id="terms-dialog-consent" class="terms-dialog-consent"></p>
+                <div class="terms-dialog-links">
+                    <button type="button" id="terms-dialog-back" class="terms-dialog-link" hidden>Back to the terms</button>
+                    <button type="button" id="terms-dialog-privacy" class="terms-dialog-link">Privacy notice</button>
+                </div>
+                <div class="dialog-actions terms-dialog-actions">
+                    <button type="button" id="terms-dialog-decline" class="dialog-btn deny">Decline</button>
+                    <button type="button" id="terms-dialog-accept" class="dialog-btn allow">Accept</button>
+                    <button type="button" id="terms-dialog-done" class="dialog-btn allow" hidden>Close</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <!-- ═══ Permission Dialog ═══ -->
     <div id="permission-dialog" class="dialog-overlay" data-start-hidden role="dialog" aria-modal="true" aria-label="Tool permission" tabindex="-1">
         <div class="dialog diff-review-dialog">
@@ -823,6 +861,7 @@
          missing, rather than failing later at call time. -->
     <script src="/static/autonomous_view.js?v={{ asset_version }}"></script>
     <script src="/static/settings_view.js?v={{ asset_version }}"></script>
+    <script src="/static/terms_view.js?v={{ asset_version }}"></script>
     <script src="/static/voice_input.js?v={{ asset_version }}"></script>
     <script src="/static/swarm_view.js?v={{ asset_version }}"></script>
     <script src="/static/collaboration_view.js?v={{ asset_version }}"></script>

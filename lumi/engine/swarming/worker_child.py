@@ -245,6 +245,9 @@ def main(*, backend_factory=None) -> int:
             backend = spec.create_backend()
         if (getattr(backend, "name", None), getattr(backend, "model", None)) != (spec.backend_type, spec.model):
             raise ValueError("Constructed provider differs from the captured model")
+        refusal = team_connections.participant_refusal(backend)
+        if refusal:
+            raise ValueError(refusal)
         backend._supervised_single_request = True
         bind_sonn_conversation(backend, initial["workspace"], initial["conversation_key"])
         guard = _RemoteGuard(channel, initial["write_tools"])

@@ -300,6 +300,10 @@ class ExtensionBackend:
 
     supports_dynamic_tool_catalog = False
     supports_remote_cancel = False
+    # The pack's process answers requests its own way; nothing yet shows that
+    # one stream() is one generation (lumi/backends.py, KimiBackend), so Team
+    # participants don't run on it.
+    supervised_requests = False
 
     def __init__(self, connection: dict, model: str, api_key: str = "", *, settings: Any = None) -> None:
         from ..connections import backend_key

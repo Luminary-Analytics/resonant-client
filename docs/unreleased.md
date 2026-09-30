@@ -8,6 +8,87 @@ The heartbeat remains paused. Documentation maintenance does not resume work,
 spending or grants, and changes no native implementation or installed bundle.
 The dated September 15/18 records below are historical.
 
+## September 30 Team runs on Anthropic and OpenAI keys, Azure OpenAI and Claude on Bedrock; Codex and Claude Code are refused plainly (source only, not released)
+
+Team ran only on OpenRouter, Ollama, EXO, Kimi, SONN and OpenAI-compatible
+connections, so most alpha testers, who bring an Anthropic or OpenAI key, a
+ChatGPT subscription (Codex) or Claude Code, couldn't use it.
+
+- **Why.** The team admitted providers from a fixed list
+  (`engine/swarming/policy.py`: Ollama, EXO, Kimi, OpenRouter, SONN) and
+  connections of type OpenAI-compatible only (`engine/swarming/connections.py`).
+  Underneath the list, the Anthropic (Messages API) and OpenAI (Responses API)
+  adapters, which also serve Azure OpenAI, Bedrock and Vertex, override
+  `stream()` and ignored the team's one-generation rule: they retried 5xx
+  responses, and restarted a stream after an overload even once output had
+  begun, a hidden second generation inside one counted request; and their HTTP
+  errors carried no status, so a refused request (a 401, or a 429 that
+  persisted) was left uncertain, holding its allowance.
+- **Capability, not a list.** An adapter declares that it keeps the contract
+  with `supervised_requests` (`lumi/backends.py`); the team's providers are the
+  native ones whose adapters do (Anthropic, OpenAI, OpenRouter, Ollama, EXO,
+  Kimi, SONN), and a connection qualifies by its adapter and its
+  authentication. The Codex and Claude Code adapters declare they don't.
+- **The Anthropic and OpenAI adapters keep the contract under a team.** Only a
+  429, or an overload that generated nothing (Anthropic's 529 or an in-stream
+  overload before any output), is waited out (Retry-After, else 5, 10, 20 s)
+  and sent again; errors carry `status_code` and `before_output`, so a refusal
+  is settled as known; a response that ends before the provider's end event
+  stays uncertain instead of becoming a finished turn. Chats keep their
+  retries.
+- **A participant's last request keeps its tools.** It offers none, so the
+  model answers instead of spending it on one more call (`engine/session.py`).
+  The Messages API refuses tool calls in the history without their
+  definitions, and binds signed thinking to the tool set, so both adapters send
+  the definitions the conversation last offered again, with tool choice
+  `none`, which lets no tool run.
+- **What a team runs on now,** as orchestrator and as workers alike:
+  Anthropic and OpenAI keys, and connections of type OpenAI, Azure OpenAI (its
+  key), Anthropic, and Claude on Bedrock with a Bedrock API key (the key, or
+  `AWS_BEARER_TOKEN_BEDROCK`), besides the providers before. Connections that
+  sign in with the person's account (Vertex AI's Google credentials, Bedrock's
+  AWS credential chain, Entra ID, OAuth), client certificates and capability
+  pack providers are refused with the reason: a participant holds a model key,
+  never the person's cloud identity. A participant's backend that would sign
+  in is refused where it's built, in the app and in the worker process
+  (`participant_refusal`).
+- **Codex and Claude Code are refused, saying what works.** They run their own
+  tool loops: a turn is many model calls and tool calls, shell included, that
+  Lumi only sees afterwards, so a team can't hold them to a task's folders and
+  tools, count their requests or pause them between steps. Neither an
+  orchestrator-only text handoff nor CLI workers could keep the team's
+  guarantees (the orchestrator reads the project within its scope too), so
+  the Team panel now says "Team can't run on Codex: …" with the list of
+  models a team runs on and "Switch this conversation to one of them".
+- **The Team panel's Worker model list** comes from the server
+  (`team_providers` in the view), not a list in `swarm_view.js`, so it offers
+  Anthropic, OpenAI and qualifying connections and never Codex, Claude Code
+  or a sign-in connection.
+- **Plans with prose around the JSON are read.** Chat models such as Claude and
+  GPT tend to write a sentence before or after the JSON even when told not to.
+  A reply without a fence is read when exactly one object in it has the plan's
+  fields, and a fenced block followed by prose is read like prose before it;
+  two plans, or none, still refuse it (`planning._embedded_plan`).
+- **CI:** `team-tests.yml` also runs on changes to the adapters teams run on
+  (`anthropic_api.py`, `openai_api.py`, `openrouter.py`, `sonn.py`,
+  `connections.py`) and the new provider stub.
+- **Checked** with scripted loopback servers that stream as the Messages and
+  Responses APIs do (`tests/api_provider_stub.py`,
+  `tests/test_swarm_api_providers.py`): an Anthropic orchestrator plans with a
+  file read and signed thinking, its writer writes, the check passes, the
+  change is applied and accepted under the grant, and the closing report is
+  read; an OpenAI orchestrator runs two readers over two rounds with encrypted
+  reasoning replayed; a Claude orchestrator runs workers on an Azure OpenAI
+  connection (its deployment endpoint and `api-key` header, recorded unpriced);
+  a participant's last request on either API, which the scripted Messages
+  server refuses, as the API does, when its history's tool calls come without
+  tool definitions; every participant of an Anthropic team in its own process;
+  Stop mid-stream; and each request priced once from the catalog. Controlled
+  HTTP and in-stream failure checks cover Anthropic direct, an Anthropic
+  connection, Bedrock, OpenAI and Azure (`tests/test_swarm_provider_requests.py`).
+  No Anthropic, OpenAI, Azure or AWS key was used: live runs on these providers
+  are still to do. See [Which models a team runs on](swarming.md#which-models-a-team-runs-on).
+
 ## September 30 Clean-machine follow-ups: search results keep excluded files out, team controls survive lease renewals (source only, not released)
 
 The final review of the clean-machine fixes (#102) left these.

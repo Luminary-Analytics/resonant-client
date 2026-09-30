@@ -489,6 +489,8 @@ class AnthropicBackend(KimiBackend):
             raise ValueError("Claude thinking must be off, low, med, high or max.")
         self.thinking_mode = mode or "default"
         self._transport = transport
+        # The tool definitions this conversation last offered (_payload).
+        self._offered_tools: list[dict] = []
         self._credentials = credentials or (lambda: aws_credentials(self.aws_profile))
         self._access_token = access_token or google_access_token
         profile = infer_model_capabilities(self.model)
@@ -521,6 +523,19 @@ class AnthropicBackend(KimiBackend):
     @property
     def capability_profile(self) -> ModelCapabilities:
         return self._capabilities
+
+    @property
+    def uses_sign_in(self) -> bool:
+        """Whether requests authenticate with a sign-in rather than a key.
+
+        Vertex AI always uses Google credentials; Bedrock without a Bedrock
+        API key signs each request with the AWS credential chain; a gateway
+        can sign in with OAuth. Team participants use keys only
+        (engine/swarming/connections.py).
+        """
+        if self._token_provider is not None or self.platform == "vertex":
+            return True
+        return self.platform == "bedrock" and not (self.api_key or os.environ.get("AWS_BEARER_TOKEN_BEDROCK", ""))
 
     @classmethod
     def list_available_models(
@@ -634,6 +649,18 @@ class AnthropicBackend(KimiBackend):
             declared_tool_names={tool["name"] for tool in tool_defs},
         )
         system, messages = to_anthropic_messages(chat, self._thinking_by_call(conversation_history))
+        tool_choice = None
+        if tool_defs:
+            self._offered_tools = list(tool_defs)
+        elif self._offered_tools and any(block.get("type") in {"tool_use", "tool_result"}
+                                         for message in messages for block in message["content"]):
+            # A request that offers no tools after this conversation's earlier
+            # ones did (a team participant's last request, engine/session.py):
+            # the API refuses tool calls in the history without their
+            # definitions, and a thinking block's signature binds the tool set.
+            # The same definitions go out, and tool_choice none lets none run.
+            tool_defs = list(self._offered_tools)
+            tool_choice = {"type": "none"}
         budget = THINKING_BUDGETS.get(self.thinking_mode, 0)
         if budget and self._open_tool_loop_lacks_thinking(messages):
             # The API rejects a tool-use loop whose assistant turn started
@@ -653,6 +680,8 @@ class AnthropicBackend(KimiBackend):
         if tool_defs:
             tool_defs[-1] = {**tool_defs[-1], "cache_control": dict(_EPHEMERAL)}
             payload["tools"] = tool_defs
+        if tool_choice:
+            payload["tool_choice"] = tool_choice
         if budget:
             payload["thinking"] = {"type": "enabled", "budget_tokens": budget}
         last_user = next((m for m in reversed(messages) if m["role"] == "user"), None)
@@ -783,6 +812,15 @@ class AnthropicBackend(KimiBackend):
         response_id = ""
         emitted_text = False
         last_status = 0.0
+        # Under a team's supervision (engine/execution_guard.py) one stream()
+        # is one generation (backends.KimiBackend.supervised_requests): only a
+        # refusal that generated nothing, a rate limit or an overload before
+        # any output, is waited out and sent again, and every error says
+        # whether anything was generated. Otherwise overloads and server
+        # errors are retried as before.
+        supervised = getattr(self, "_supervised_single_request", False)
+        attempts = 4 if supervised else 3
+        stopped = False
         try:
             with httpx.Client(**net.client_options(timeout=self._timeout, transport=self._transport,
                                                    verify=self._tls, feature=self.PROVIDER_LABEL)) as client:
@@ -795,12 +833,17 @@ class AnthropicBackend(KimiBackend):
                     with client.stream("POST", url, headers=headers, content=body) as response:
                         if response.status_code >= 400:
                             error_type, message = self._error_details(response)
-                            retryable = self._is_retryable_error(response.status_code, error_type, message)
+                            # Anthropic sheds load with 529 (overloaded_error)
+                            # before it processes a request, like a rate limit.
+                            overloaded = response.status_code == 529 or error_type == "overloaded_error"
+                            retryable = self._is_retryable_error(response.status_code, error_type, message) and (
+                                not supervised or response.status_code == 429 or overloaded)
                             logger.warning("%s request failed: status=%d type=%s retryable=%s model=%s",
                                            self.PROVIDER_LABEL, response.status_code, error_type or "unknown",
                                            retryable, self.model)
-                            if retryable and attempt < 2:
-                                delay = self._http_retry_delay(response, attempt)
+                            if retryable and attempt < attempts - 1:
+                                delay = (self._rate_limit_delay(response, attempt) if supervised
+                                         else self._http_retry_delay(response, attempt))
                                 yield (EVENT_BACKEND_STATUS, {
                                     "kind": self.RETRY_EVENT_KIND, "status_code": response.status_code,
                                     "attempt": attempt + 1, "max": 3, "model": self.model,
@@ -810,8 +853,13 @@ class AnthropicBackend(KimiBackend):
                                     return
                                 attempt += 1
                                 continue
-                            yield (EVENT_ERROR, {"message": self._user_error_message(
-                                response.status_code, error_type, message)})
+                            yield (EVENT_ERROR, {
+                                "message": self._user_error_message(response.status_code, error_type, message),
+                                # A number, safe to keep where provider text isn't (the guarded ledger).
+                                "status_code": response.status_code,
+                                # An overload refused the request before generating anything.
+                                **({"before_output": True} if overloaded else {}),
+                            })
                             return
                         for event in self._events(response):
                             if cancel_event is not None and cancel_event.is_set():
@@ -854,15 +902,24 @@ class AnthropicBackend(KimiBackend):
                             elif kind == "message_delta":
                                 usage.update(event.get("usage") or {})
                             elif kind == "message_stop":
+                                stopped = True
                                 break
                             elif kind == "error":
                                 error = event.get("error") or {}
                                 error_type = str(error.get("type") or "")
                                 message = str(error.get("message") or "Unknown provider error")
-                                transient = error_type in {"overloaded_error", "api_error"} or "throttl" in error_type.lower() \
-                                    or "unavailable" in error_type.lower()
-                                if transient and attempt < 2:
+                                lowered = error_type.lower()
+                                overload = error_type == "overloaded_error" or "throttl" in lowered or "unavailable" in lowered
+                                # Nothing was generated while no content block (text,
+                                # thinking or a tool call) has started.
+                                before_output = not blocks
+                                if supervised:
+                                    again = before_output and (overload or self._is_transient_overload(message))
+                                    delay = min(30.0, 5.0 * (2 ** attempt))
+                                else:
+                                    again = overload or error_type == "api_error"
                                     delay = 1.5 * (2 ** attempt)
+                                if again and attempt < attempts - 1:
                                     yield (EVENT_BACKEND_STATUS, {
                                         "kind": self.RETRY_EVENT_KIND, "status_code": 0,
                                         "attempt": attempt + 1, "max": 3, "model": self.model,
@@ -878,11 +935,19 @@ class AnthropicBackend(KimiBackend):
                                     restart = True
                                     break
                                 yield (EVENT_ERROR, {"message": f"{self.PROVIDER_LABEL} generation failed: {message}",
-                                                     "discard_partial_output": False})
+                                                     "discard_partial_output": False,
+                                                     # The guarded ledger settles an error before
+                                                     # any output as known: nothing was generated.
+                                                     "before_output": before_output})
                                 return
                     if restart:
                         continue
                     break
+            if supervised and not stopped:
+                # A stream cut short isn't a complete response: whatever it
+                # held stays uncertain rather than becoming a finished turn.
+                yield (EVENT_ERROR, {"message": f"{self.PROVIDER_LABEL} response ended before it was complete."})
+                return
         except httpx.TimeoutException:
             yield (EVENT_ERROR, {"message": self._timeout_error_message()})
             return

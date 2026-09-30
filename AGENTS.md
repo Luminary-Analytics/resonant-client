@@ -385,8 +385,13 @@ host enrollment and actual packaged/learned-benefit qualification remain open.
   (including `recover`). A new place that starts team participants must check
   `dispatch_refusal` first and give the runner its governance. Workers get the
   project's file exclusions (`SwarmRuntime.exclusions_for`), in-process and
-  through the child contract, refuse hooks and use only native providers or
-  OpenAI-compatible connections. A worker child keeps its host channel off
+  through the child contract, and refuse hooks. Participants run only on
+  adapters that declare `supervised_requests` (`lumi/backends.py`: one
+  `stream()` is one generation under `_supervised_single_request`, and an
+  error says whether anything was generated; an adapter that overrides
+  `stream()` keeps that itself) and hold a model key, never a sign-in
+  (`engine/swarming/connections.py`); never Codex or Claude Code, whose own
+  tool loops a team can't scope or count. A worker child keeps its host channel off
   standard input and output (`process_worker.stdio_pipes`), and code it runs
   must not rely on an inherited stdin. `@team:<run>` attaches only the
   conversation's own personal team, read-only, as model-written context with

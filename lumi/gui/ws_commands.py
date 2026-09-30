@@ -4087,7 +4087,9 @@ def show_in_folder_command(path: str) -> list[str]:
     repository's ``explorer.exe`` or ``explorer.bat`` would run. Explorer
     comes from the Windows folder, the Finder's ``open`` from /usr/bin, and
     ``xdg-open`` only from the system folders.
-    TODO(#110): use ``executables.show_in_folder`` once it lands.
+    TODO(#110): use ``executables.show_in_folder`` once it lands, without
+    background_process_kwargs()'s STARTUPINFO: with SW_HIDE, Explorer opens
+    the folder window hidden (checked on Windows 11, September 29, 2026).
     """
     target = os.fspath(path)
     if not os.path.isabs(target):

@@ -9,25 +9,28 @@ import subprocess
 import threading
 import time
 
+from ...executables import find_program
 from ...processes import background_process_kwargs, close_windows_job, popen_in_kill_job
 from .models import Conflict
 
 
 def trusted_git_executable(project: Path, runtime_root: Path) -> str:
-    """Pin an absolute host binary without cwd or repository PATH shadowing."""
-    name = "git.exe" if os.name == "nt" else "git"
-    for entry in os.get_exec_path():
-        folder = Path(entry)
-        if not folder.is_absolute():
-            continue
+    """Pin an absolute host binary without cwd or repository PATH shadowing.
+
+    The shared resolver (lumi/executables.py) skips the working folder,
+    relative PATH entries and both folders. The pinned binary is checked
+    again here, where a home-folder project counts too.
+    """
+    found = find_program("git", exclude=[project, runtime_root])
+    if found:
         try:
-            candidate = (folder / name).resolve(strict=True)
+            candidate = Path(found).resolve(strict=True)
         except OSError:
-            continue
-        if (candidate.is_relative_to(project) or candidate.is_relative_to(runtime_root)
-                or not candidate.is_file() or not os.access(candidate, os.X_OK)):
-            continue
-        return str(candidate)
+            candidate = None
+        if (candidate is not None and not candidate.is_relative_to(project)
+                and not candidate.is_relative_to(runtime_root) and candidate.is_file()
+                and os.access(candidate, os.X_OK)):
+            return str(candidate)
     raise Conflict("Supervised integration requires a host Git executable outside the project and runtime worktrees")
 
 

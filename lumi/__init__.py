@@ -1,7 +1,7 @@
 """Lumi — durable agentic coding runtime and desktop client (formerly Resonant)."""
 import os
 
-__version__ = "0.19.2.dev11"
+__version__ = "0.20.0.dev0"
 
 
 def _mirror_legacy_environment() -> None:
@@ -16,3 +16,11 @@ def _mirror_legacy_environment() -> None:
 
 
 _mirror_legacy_environment()
+
+# Every entry point (the app, the terminal UI, `lumi run`, workers, the
+# gateway, scheduled runs) imports this package before it starts any
+# process: from here on Windows never looks for a program in the working
+# folder, which may be a repository (lumi/executables.py).
+from . import executables as _executables  # noqa: E402
+
+_executables.harden_process()

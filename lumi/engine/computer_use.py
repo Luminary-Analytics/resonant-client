@@ -31,10 +31,14 @@ Key features:
 import base64
 import io
 import logging
+import os
+import re
+import sys
 import time
 from dataclasses import dataclass
 from typing import Optional
 
+from lumi.executables import find_program, is_absolute, opens_as_program, program, system_program
 from lumi.processes import background_process_kwargs
 
 from .tools import ToolResult
@@ -235,7 +239,7 @@ def _list_windows_macos() -> list[dict]:
     try:
         import subprocess
         result = subprocess.run(
-            ["osascript", "-e", '''
+            [system_program("osascript"), "-e", '''
                 tell application "System Events"
                     set windowList to {}
                     repeat with p in (every process whose visible is true)
@@ -271,7 +275,7 @@ def _list_windows_linux() -> list[dict]:
     try:
         import subprocess
         result = subprocess.run(
-            ["wmctrl", "-lG"],
+            [program("wmctrl"), "-lG"],
             capture_output=True, text=True, timeout=5,
         )
         windows = []
@@ -437,7 +441,7 @@ def _focus_window_macos(title: str) -> str:
     try:
         import subprocess
         result = subprocess.run(
-            ["osascript", "-e", _FOCUS_SCRIPT, title],
+            [system_program("osascript"), "-e", _FOCUS_SCRIPT, title],
             capture_output=True, text=True, timeout=5,
         )
         if result.returncode == 0:
@@ -451,7 +455,7 @@ def _focus_window_linux(title: str) -> str:
     try:
         import subprocess
         result = subprocess.run(
-            ["wmctrl", "-a", title],
+            [program("wmctrl"), "-a", title],
             capture_output=True, text=True, timeout=5,
         )
         if result.returncode == 0:
@@ -703,7 +707,7 @@ $result = $engine.RecognizeAsync($bitmap).GetAwaiter().GetResult()
 Write-Output $result.Text
 """
                 result = subprocess.run(
-                    ["powershell", "-NoProfile", "-Command", ps_script],
+                    [system_program("powershell"), "-NoProfile", "-Command", ps_script],
                     capture_output=True, text=True, timeout=15,
                     **background_process_kwargs(),
                 )
@@ -733,6 +737,73 @@ Write-Output $result.Text
         return ToolResult(f"OCR error: {e}", is_error=True, elapsed=time.time() - start)
 
 
+_SCHEME = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]+:")  # ms-settings:, mailto: (not a drive's C:)
+# The addresses open_application hands to Windows: web pages, mail, Settings
+# pages and installed apps by their id. Not file: or a network share, nor any
+# other handler an address can name.
+_ALLOWED_ADDRESS = re.compile(r"(?i)^(?:https?://\S+|mailto:\S*|ms-settings:\S*|shell:AppsFolder\\\S+)$")
+
+
+def _app_paths_program(name: str) -> str:
+    """The program installers register for ``name`` under App Paths (chrome, excel), or ""."""
+    import winreg
+
+    key_name = name if name.lower().endswith(".exe") else name + ".exe"
+    for root in (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE):
+        try:
+            with winreg.OpenKey(root, rf"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\{key_name}") as key:
+                value, _ = winreg.QueryValueEx(key, "")
+        except OSError:
+            continue
+        value = os.path.expandvars(str(value).strip().strip('"'))
+        if is_absolute(value) and os.path.isfile(value):
+            return value
+    return ""
+
+
+def _full_path_problem(name: str) -> str:
+    """Why open_application won't open the file at ``name``, or ""."""
+    if name.startswith(("\\\\", "//")):
+        return "Files on a network share don't open from open_application."
+    kind = opens_as_program(name)
+    if kind:
+        # As when the person clicks such a file in Lumi (lumi/executables.py):
+        # opening it would run it.
+        return (f"{os.path.basename(name.rstrip('/'))} is {kind}, and opening it would run it. "
+                "Name an installed application instead (notepad, chrome)"
+                + (", or its app id as shell:AppsFolder\\<id>." if sys.platform == "win32" else "."))
+    return ""
+
+
+def _windows_application(name: str) -> str:
+    """What ShellExecute opens for ``name``: never a program in Lumi's working folder.
+
+    ShellExecute looks in the working folder first, and
+    NoDefaultCurrentDirectoryInExePath doesn't stop it, so a bare name is
+    looked up here: on PATH (lumi/executables.py), then in App Paths. An
+    address goes as it is when it's a web page, mail, a Settings page or an
+    installed app's id (``_ALLOWED_ADDRESS``). A full path opens only a
+    document or folder, never a file that would run. No cmd.exe: it would
+    read `&` and quotes in the name as commands.
+    """
+    if is_absolute(name):
+        problem = _full_path_problem(name)
+        if problem:
+            raise ValueError(problem)
+        return name
+    if _SCHEME.match(name):
+        if not _ALLOWED_ADDRESS.match(name):
+            raise ValueError("open_application opens web pages (https:), mail (mailto:), Settings pages "
+                             "(ms-settings:) and installed apps (shell:AppsFolder\\<id>), not other addresses.")
+        return name
+    if "/" in name or "\\" in name:
+        raise ValueError("Name the application, or give its full path.")
+    found = find_program(name) or _app_paths_program(name)
+    if not found:
+        raise FileNotFoundError(f"{name} isn't on PATH or registered in App Paths")
+    return found
+
+
 def exec_open_application(args: dict, start: float) -> ToolResult:
     """Open an application by name."""
     import subprocess
@@ -744,24 +815,20 @@ def exec_open_application(args: dict, start: float) -> ToolResult:
 
     try:
         if sys.platform == "win32":
-            # Try Start-Process first, then os.startfile
-            try:
-                subprocess.Popen(
-                    ["cmd", "/c", "start", "", app_name],
-                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                    **background_process_kwargs(),
-                )
-            except Exception:
-                import os
-                os.startfile(app_name)
+            os.startfile(_windows_application(str(app_name)))  # type: ignore[attr-defined]
         elif sys.platform == "darwin":
+            if is_absolute(str(app_name)) or "/" in str(app_name):
+                raise ValueError("Name the application (Safari, TextEdit); open_application doesn't open paths.")
+            # LaunchServices finds the installed application by name; `open` is the system's.
             subprocess.Popen(
-                ["open", "-a", app_name],
+                [system_program("open"), "-a", str(app_name)],
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             )
         else:
+            if is_absolute(str(app_name)) or "/" in str(app_name):
+                raise ValueError("Name the application (firefox, gedit); open_application doesn't open paths.")
             subprocess.Popen(
-                [app_name],
+                [program(str(app_name))],
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             )
 

@@ -27,6 +27,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Callable, Iterable, Optional
 
+from lumi.executables import system_program
 from lumi.processes import (
     background_process_kwargs,
     close_windows_job,
@@ -238,6 +239,9 @@ def _run_command(
     exits on its own; and writing the event to standard input isn't timed
     at all. A hung hook held the turn until it finished.
     """
+    # A hook is the person's own shell command, run in the project by design
+    # with the person's environment (secrets_store.child_env): like a command
+    # they typed, not one of Lumi's own launches (lumi/executables.py).
     process = subprocess.Popen(
         command,
         shell=True,
@@ -297,7 +301,7 @@ def _stop_tree(process: subprocess.Popen, job) -> None:
             terminate_windows_job(job)
         elif sys.platform == "win32":
             subprocess.run(
-                ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                [system_program("taskkill"), "/PID", str(process.pid), "/T", "/F"],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 timeout=5,

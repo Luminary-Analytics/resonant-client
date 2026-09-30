@@ -26,13 +26,28 @@ if str(PROJECT_ROOT) not in sys.path:
 # in-memory keyring explicitly.
 os.environ["LUMI_KEYCHAIN"] = "off"
 
+# Nor may they register real scheduled tasks (Task Scheduler, launchd, cron).
+# Those outlive the test run: on 2026-09-28 at 02:30, 183 leftover
+# "Lumi\<id>" tasks ran `python -m lumi schedule run` against the developer's
+# real home and renamed ~/.resonant to ~/.lumi. Schedules are still saved, in
+# the test's own home; subprocesses inherit the switch.
+os.environ["LUMI_OS_SCHEDULER"] = "off"
+
 # Nor may an organization policy installed on the machine (registry, managed
 # preferences, ProgramData) change what the tests see. Policy tests install
 # their own through lumi.policy.set_for_tests.
 os.environ.pop("LUMI_POLICY_FILE", None)
 import lumi.policy as _lumi_policy  # noqa: E402
+import lumi.terms as _lumi_terms  # noqa: E402
 
 _lumi_policy.set_for_tests(None)
+
+# Lumi's terms (lumi/terms.py) must be accepted before anything reaches a
+# model. In this process the autouse fixture below treats them as accepted;
+# the processes tests start (lumi run, Team workers) accept them the way CI
+# does, through LUMI_ACCEPT_TERMS naming the versions in force. Tests of the
+# gate itself turn both off (tests/test_terms.py).
+os.environ[_lumi_terms.ENVIRONMENT] = _lumi_terms.acceptance_value()
 
 
 @pytest.fixture(autouse=True)
@@ -46,6 +61,7 @@ def _no_organization_policy():
 
     def reset():
         _lumi_policy.set_for_tests(None)
+        _lumi_terms.set_for_tests(True)
         # Offline mode is process-wide too: a test that turns it on must not
         # refuse the next test's requests. The license is read once per process.
         offline.reset_for_tests()
@@ -80,6 +96,31 @@ def _no_organization_policy():
 
 _SESSION_TEST_HOME = Path(tempfile.mkdtemp(prefix="resonant-tests-home-"))
 Path.home = staticmethod(lambda: _SESSION_TEST_HOME)  # type: ignore[method-assign]
+
+
+# ── Machine files in temporary folders (autouse) ───────────────────
+# Tests stand in for C:\ProgramData\Lumi, /etc/lumi and a Group Policy
+# PolicyFile with temporary folders the test's own user owns, which the real
+# check (lumi/admin_files.py) rightly refuses. Files there count as an
+# administrator's; anywhere else the real check still runs.
+# tests/test_machine_policy_trust.py tests the real check itself.
+
+@pytest.fixture(autouse=True)
+def _temporary_machine_files_count_as_administrators(tmp_path_factory):
+    from lumi import admin_files
+
+    # realpath on both sides: a runner's TEMP can be an 8.3 short name.
+    folders = tuple(os.path.normcase(os.path.realpath(folder)).rstrip("\\/") + os.sep
+                    for folder in (tmp_path_factory.getbasetemp(), _SESSION_TEST_HOME))
+
+    def check(path, root):
+        if os.path.normcase(os.path.realpath(path)).startswith(folders):
+            return admin_files.Trust(True, admin_owned=True)
+        return admin_files.real_check(path, root)
+
+    admin_files.set_for_tests(check)
+    yield
+    admin_files.set_for_tests(None)
 
 
 # ── Home isolation (autouse) ───────────────────────────────────────

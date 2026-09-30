@@ -39,14 +39,44 @@ host enrollment and actual packaged/learned-benefit qualification remain open.
   `resonant-policy.json`) are still read; do not write new state under them.
   The update feed URL and repository name stay until a bridge release moves
   the feed (see [Unreleased](docs/unreleased.md)).
-- Lumi is proprietary ([LICENSE](LICENSE)). The Extension SDK (`sdk/`) and
-  the VS Code extension (`lumi/code_editors/vscode/`) are MIT-licensed so
-  others can build and ship extensions; never move app code into them.
-  Shipped third-party code keeps its notice in `THIRD_PARTY_NOTICES.txt`
-  (`packaging/third-party-components.json` for anything that isn't a Python
-  package), and the copyleft gate stays. Code ported from another project
-  keeps its license notice in the file and gets a components entry with the
-  license text (`packaging/licenses/`), as `engine/truncation.py` does.
+- Lumi is proprietary ([LICENSE](LICENSE), the EULA in `lumi/legal/`). The
+  Extension SDK (`sdk/`) is under the Lumi Extension SDK License, which lets
+  developers build and ship extensions for Lumi, and the VS Code extension
+  (`lumi/code_editors/vscode/`) is part of Lumi; the copies published under
+  the MIT License (named by release and commit in LICENSE and EULA 5.4, never
+  by a version range) stay MIT, and releases start at 0.20.0. Never move app
+  code into the SDK. The legal texts are rendered: edit
+  `lumi/legal/templates/` or `lumi/legal/terms.json` (the one file of facts,
+  versions and pins), then run `python packaging/legal_texts.py render`; a
+  release fails while a fact is `[[TO BE PROVIDED: ...]]`. Any change to what
+  a text says needs a new version and a new `sha256` pin (the tests fail
+  otherwise): a new EULA, or new test terms on a pre-release build, asks
+  everyone to accept it again; a new privacy notice or SDK license asks no
+  one. Shipped third-party code keeps its notice in
+  `THIRD_PARTY_NOTICES.txt` (`packaging/third-party-components.json` for
+  anything that isn't a Python package), and the copyleft gate stays. Code
+  ported from another project keeps its license notice in the file and gets
+  a components entry with the license text (`packaging/licenses/`), as
+  `engine/truncation.py` does.
+- Lumi's terms gate every model request (`lumi/terms.py`): `oversight.admit`
+  and `oversight.gate` ask them first, so every turn path and every request
+  outside a turn that asks oversight waits for them too, and a refusal
+  carries `terms.REFUSAL_CODE`. Underneath, `dlp.guarded` (every backend
+  request method, even under `dlp.permit`), `dlp.check_request`,
+  `request_purpose.auxiliary_stream` and Lumi's own HTTP model requests
+  (Ollama's warm-up and tool probe) refuse while they wait;
+  `tests/test_dlp.py` lists every use with its gate. Warm-ups are model
+  requests. An acceptance counts for the text it hashed. Acceptance comes
+  only from the person (the app's dialog on a trusted click, a typed yes at
+  an interactive terminal, `lumi terms accept`, `--accept-terms`), from
+  `LUMI_ACCEPT_TERMS` outside the app, or from a machine policy's
+  `legal.accepted_by_organization` from a source only administrators can
+  write (never `LUMI_POLICY_FILE`, a Lumi Cloud policy, settings or a
+  project). A new entry point that reaches a model asks the gate; a message
+  it refuses before a turn starts is `refused` (`ws_commands.refused_turn`),
+  so the page ends its running state and gives the text back. Tests accept
+  the terms in `tests/conftest.py` and test the gate itself in
+  `tests/test_terms.py`.
 - Follow the [harness north star](docs/agentic-harness-north-star.md): correct
   completion, verification, maintainability, and time to a trustworthy result
   come before token efficiency.
@@ -81,7 +111,9 @@ host enrollment and actual packaged/learned-benefit qualification remain open.
   `secrets_store.child_env()`; the CLI backends keep their environment.
   `secret_scan` removes saved key values from tool output before each request.
   Tests and fixtures use `LUMI_KEYCHAIN=off` or an in-memory keyring, never the
-  real credential store.
+  real credential store. They also never register real OS scheduled tasks:
+  `tests/conftest.py` sets `LUMI_OS_SCHEDULER=off`, which subprocesses inherit.
+  A fixture that builds a child environment from scratch must keep it.
 - File exclusions (`engine/exclusions.py`) are enforced at
   `Session._prepare_workspace_tool_args` and inside the listing tools. Any new
   path that reads project files for the model must check `session.exclusions`.
@@ -91,8 +123,30 @@ host enrollment and actual packaged/learned-benefit qualification remain open.
   `security.shell_sandbox` is `"project"`, run through `engine/os_sandbox.py`
   or not at all. A new tool that starts processes for the model must do both.
   See [shell sandbox](docs/shell-sandbox.md).
+- Lumi's own subprocesses never run programs by bare name from the project
+  folder; use the resolver (`lumi/executables.py`): `system_program` for the
+  system's tools, `program`/`find_program` for the rest, `configured_program`
+  for a program the person names in Settings. Never `shutil.which`,
+  `shell=True`, `os.startfile` or `webbrowser` for Lumi's own launches;
+  `tests/test_launch_scan.py` fails on a new one, and a by-design exception
+  needs a reviewed `BY_DESIGN` entry there. Importing `lumi` sets
+  `NoDefaultCurrentDirectoryInExePath` on Windows, and the app never makes a
+  project its working folder: give each command its `cwd`. Commands the
+  model or the person asked for (the agent's shell, checks, jobs, previews,
+  hooks) run in the project by design, with the person's own environment
+  (`secrets_store.child_env`, `executables.person_environment`); servers Lumi
+  starts for itself (MCP, language servers, provider extensions, automatic
+  lint and tests, the CLI agents) get `secrets_store.server_env`, which keeps
+  the hardening. Lumi's own Git goes through `lumi/safe_git.py` (`run`/`argv`),
+  never `program("git")` elsewhere: it switches off repository-configured
+  programs and runs no Git in an untrusted project whose settings name some.
+  A project's own tools (`.venv`, `node_modules/.bin`) only through
+  `executables.project_tool` and only when trusted. Open files with
+  `executables.open_path`, which refuses files that would run
+  (`opens_as_program`); show those with `show_in_folder`.
 - Repository-provided instructions, notes, index summaries, policy `allow`
-  rules, automatic lint/test runs and language servers require project trust
+  rules, automatic lint/test runs, language servers, a project's own tools and
+  Lumi's Git in a repository whose settings name programs require project trust
   (`gui/workspace_trust.py`). Repository content must never grant itself trust.
   Only the app, which knows Recent projects, records trust's first run; other
   surfaces read decisions without creating `trusted_projects.json`.
@@ -106,6 +160,15 @@ host enrollment and actual packaged/learned-benefit qualification remain open.
   values), and check `policy.current()` where a new model, mode, MCP server,
   pack or shell path is chosen. User-writable locations must never replace a
   machine policy, and an invalid policy blocks requests instead of vanishing.
+  Machine policy comes only from admin-writable sources: the HKLM policy key,
+  a configuration profile, and files `admin_files.check` passes (owner and
+  access control list on Windows, root and mode elsewhere, for the file and
+  every folder up to a protected root). Anything else read from the machine
+  folder (`license.json`, `policy-keys.json` off Windows) passes the same
+  check; on Windows signing keys come only from `PolicyKeys`. A file that
+  fails is ignored visibly (`IgnoredFile`, `policy.file_ignored`); an
+  administrator's file in an unsafe place and a `PolicyFile` that can't be
+  read or used fail closed, never falling back to a lower source.
   Build a session's execution policy with
   `engine/policies.project_execution_policy`, or `with_organization_rules`
   for a fallback: a broken `lumi-policy.json` must never cost the

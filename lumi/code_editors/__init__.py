@@ -12,7 +12,6 @@ from __future__ import annotations
 import json
 import os
 import re
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -20,6 +19,7 @@ import zipfile
 from pathlib import Path
 from xml.sax.saxutils import escape, quoteattr
 
+from ..executables import find_program
 from ..processes import background_process_kwargs
 
 VSCODE_DIR = Path(__file__).with_name("vscode")
@@ -104,7 +104,7 @@ def vscode_editors() -> list[dict]:
     """The editors in the VS Code family whose command line is on PATH."""
     found = []
     for command, name in VSCODE_FAMILY.items():
-        path = shutil.which(command)
+        path = find_program(command, scripts=True)
         if path:
             found.append({"command": command, "name": name, "path": path})
     return found
@@ -114,7 +114,9 @@ def install_vscode(command: str = "code") -> str:
     """Install the extension with ``<command> --install-extension``; returns what the editor printed."""
     if command not in VSCODE_FAMILY:
         raise ValueError(f"Choose one of: {', '.join(VSCODE_FAMILY)}.")
-    executable = shutil.which(command)
+    # The editor's command line (a batch file on Windows: the arguments are
+    # Lumi's own), never one in Lumi's working folder (lumi/executables.py).
+    executable = find_program(command, scripts=True)
     if not executable:
         raise RuntimeError(
             f"{VSCODE_FAMILY[command]}'s `{command}` command isn't on PATH. In {VSCODE_FAMILY[command]}, run "
@@ -151,10 +153,14 @@ _JETBRAINS_DIR = re.compile(r"^[A-Za-z]+\d{4}\.\d+$")
 
 
 def lumi_command() -> tuple[str, str]:
-    """(program, arguments before ``editor``) that start this installation's Lumi."""
+    """(program, arguments before ``editor``) that start this installation's Lumi.
+
+    An editor runs it in the project's folder: ``-P`` keeps Python from
+    importing a ``lumi`` (or any module) from there.
+    """
     if getattr(sys, "frozen", False):
         return sys.executable, ""
-    return sys.executable, "-m lumi"
+    return sys.executable, "-P -m lumi"
 
 
 def jetbrains_tools_xml() -> str:

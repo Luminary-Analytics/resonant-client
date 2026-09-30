@@ -35,6 +35,49 @@ The match is on the command's text: `rm -rf ./build` and `echo shutdown`
 run, and a command written to hide from the list can get past it. The list
 catches mistakes. The shell sandbox is what limits where commands can write.
 
+## Programs Lumi starts itself
+
+Lumi also starts programs for its own work: Git for the status bar,
+checkpoints and hand-offs, ripgrep for search, Explorer, the system's tools,
+editors' command lines, language and MCP servers, Codex and Claude Code. None
+of these ever comes from the project (`lumi/executables.py`):
+
+- Each is started by its full path: the system's own tools from the Windows
+  and system folders, everything else from PATH's full folders, skipping the
+  working folder, empty and relative entries (`.`, `bin`) and any folder
+  inside the open project.
+- On Windows every Lumi process sets `NoDefaultCurrentDirectoryInExePath`
+  when it starts, so Windows and cmd.exe don't look in the working folder
+  either, and the app never makes a project its working folder.
+- A program you name in Settings (a language or MCP server, a test command)
+  may be a full path or a path relative to the project; a bare name comes
+  from PATH as above. Once you trust a project, automatic lint and tests,
+  language servers and sprint mode's Python look in its `.venv`, `venv` and
+  `node_modules/.bin` first, and say so ("from the project's .venv").
+- Servers Lumi starts (MCP and language servers, provider extensions,
+  automatic lint and tests, the Codex and Claude Code CLIs) keep
+  `NoDefaultCurrentDirectoryInExePath`, so a launcher script such as npm's
+  `tool.cmd`, which runs `node` by bare name, never finds it in the project.
+- Git for Lumi's own work (`lumi/safe_git.py`) switches off what a
+  repository's settings can start: fsmonitor, hooks (except for a commit or
+  push you ask for in a trusted project), external diff and textconv drivers,
+  signature checks and `ext::` remotes. In a project you haven't trusted whose
+  Git settings still name programs (filters, merge drivers, ssh, askpass, gpg,
+  credential helpers, including through `include`, `includeIf` and
+  submodules), Lumi runs no Git until you trust it, and says so.
+- Clicking a file opens a document; a file that opening would run (programs,
+  scripts, shortcuts, installers) is shown in its folder instead, after you
+  confirm. Computer use's open application takes installed applications and,
+  on Windows, `https:`, `mailto:`, `ms-settings:` and `shell:AppsFolder`
+  addresses and documents; never `file:`, network shares or files that run.
+
+Commands the agent runs (`bash`, `check_run`, jobs, previews, the composer's
+`!` commands), your hooks and the Codex and Claude Code tool loops are
+different by design: they run in the project with your own environment, as
+in your terminal (the CLI agents' own launch keeps the hardening above), and
+can run the project's scripts, Git with its hooks included. The guardrails, the
+permission mode and the shell sandbox are what limit them.
+
 ## The shell sandbox
 
 **Settings > Privacy & security > Shell sandbox** chooses where the agent's

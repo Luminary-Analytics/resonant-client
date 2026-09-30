@@ -9,7 +9,11 @@ packages the bundle is built from:
 Python packages come from the environment's metadata, with the license texts
 they ship. Everything else Lumi bundles (ripgrep, WinSparkle, the vendored web
 assets and fonts, the Python runtime and PyInstaller's bootloader) is listed in
-packaging/third-party-components.json.
+packaging/third-party-components.json, each with its license text: a copy
+committed for its version, or, for the Python runtime and PyInstaller's
+bootloader, the text this build's own Python and PyInstaller ship, with their
+exact versions. Writing the notices fails when any component would ship
+without its text, or the build's Python or PyInstaller isn't the pinned one.
 
 With --sbom, the same non-Python components are appended to an existing
 CycloneDX JSON document (made by `cyclonedx-py environment`), so the SBOM names
@@ -22,8 +26,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import platform
 import re
 import sys
+import sysconfig
 from importlib import metadata
 from pathlib import Path
 
@@ -147,13 +153,74 @@ def copyleft_problems(packages: list[dict], path: Path = COMPONENTS) -> list[str
     ]
 
 
+def python_license() -> list[tuple[str, str]]:
+    """The license Python ships, from the Python running this script: the build's, which PyInstaller embeds.
+
+    LICENSE.txt sits in the installation's root on Windows and beside the standard library elsewhere; it
+    holds the PSF license and the licenses of the software Python includes.
+    """
+    candidates = [Path(sys.base_prefix) / "LICENSE.txt", Path(sysconfig.get_paths()["stdlib"]) / "LICENSE.txt"]
+    for path in candidates:
+        if path.is_file():
+            return [(path.name, path.read_text(encoding="utf-8", errors="replace").strip())]
+    return []
+
+
+def distribution_license(name: str) -> tuple[str, list[tuple[str, str]]]:
+    """(version, license texts) of an installed package, such as PyInstaller for its bootloader; ('', [])
+    when it isn't installed."""
+    try:
+        dist = metadata.distribution(name)
+    except metadata.PackageNotFoundError:
+        return "", []
+    return dist.version, license_texts(dist)
+
+
 def component_texts(component: dict) -> list[tuple[str, str]]:
+    """A component's license texts: its committed ``license_files``, or with ``license_from`` the build's own
+    copy (``python``: the running Python's; ``distribution:<name>``: that installed package's)."""
     texts = []
     for relative in component.get("license_files", []):
         file = ROOT / relative
         if file.is_file():
             texts.append((file.name, file.read_text(encoding="utf-8", errors="replace").strip()))
+    source = str(component.get("license_from") or "")
+    if source == "python":
+        texts += python_license()
+    elif source.startswith("distribution:"):
+        texts += distribution_license(source.split(":", 1)[1])[1]
     return texts
+
+
+def resolved(component: dict) -> dict:
+    """``component`` with the exact version the build ships, for one whose text comes from the build
+    (``license_from``): the running Python's (``3.13.7``) or the installed package's. The file's version is
+    the pin: a build on another Python minor, or another major of the package, fails (``version_problems``)."""
+    source = str(component.get("license_from") or "")
+    if source == "python":
+        return {**component, "version": platform.python_version()}
+    if source.startswith("distribution:"):
+        version = distribution_license(source.split(":", 1)[1])[0]
+        return {**component, "version": version} if version else dict(component)
+    return dict(component)
+
+
+def version_problems(components: list[dict]) -> list[str]:
+    """Components whose version in the build isn't the one the components file pins."""
+    problems = []
+    for component in components:
+        if not component.get("license_from"):
+            continue
+        actual = resolved(component)["version"]
+        pinned = str(component["version"])
+        if actual != pinned and not actual.startswith(pinned + "."):
+            problems.append(f"{component['name']} {actual} isn't {pinned} (packaging/third-party-components.json)")
+    return problems
+
+
+def missing_texts(components: list[dict]) -> list[str]:
+    """The components that would ship without their license text (EULA 5.1 promises every one)."""
+    return [f"{item['name']} {resolved(item)['version']}" for item in components if not component_texts(item)]
 
 
 def render(packages: list[dict], components: list[dict]) -> str:
@@ -173,7 +240,7 @@ def render(packages: list[dict], components: list[dict]) -> str:
     entries = [
         {**item, "kind": "Python package"} for item in packages
     ] + [
-        {**item, "kind": item.get("kind", "Bundled component"), "texts": component_texts(item)}
+        {**resolved(item), "kind": item.get("kind", "Bundled component"), "texts": component_texts(item)}
         for item in components
     ]
     for entry in entries:
@@ -198,7 +265,7 @@ def add_to_sbom(sbom_path: Path, components: list[dict]) -> int:
     listed = sbom.setdefault("components", [])
     refs = {item.get("bom-ref") for item in listed}
     added = 0
-    for component in components:
+    for component in (resolved(item) for item in components):
         ref = component.get("purl") or f"lumi-bundled:{normalize(component['name'])}@{component['version']}"
         if ref in refs:
             continue
@@ -252,6 +319,14 @@ def main(argv: list[str] | None = None) -> int:
                 "a review under license_reviews.",
                 file=sys.stderr,
             )
+            return 1
+        # Every bundled component ships its license text (the EULA says so), from the version that ships.
+        problems = version_problems(components) + [
+            f"{name} has no license text" for name in missing_texts(components)]
+        if problems:
+            print("The third-party notices would be incomplete: " + "; ".join(problems) + ". Add the text "
+                  "(license_files or license_from in packaging/third-party-components.json) or build with the "
+                  "pinned versions.", file=sys.stderr)
             return 1
         args.out.parent.mkdir(parents=True, exist_ok=True)
         args.out.write_text(render(packages, components), encoding="utf-8")

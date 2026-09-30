@@ -34,13 +34,14 @@ temporary folder.
 from __future__ import annotations
 
 import os
-import shutil
 import subprocess
 import sys
 import tempfile
 import threading
 from dataclasses import dataclass
 from typing import Any, Iterable
+
+from ..executables import ProgramNotFound, find_program, program, system_program
 
 MODES = ("off", "project")
 
@@ -112,9 +113,9 @@ def _probe_soon() -> None:
 def _probe() -> Availability:
     try:
         if sys.platform == "darwin":
-            exe = shutil.which("sandbox-exec") or ("/usr/bin/sandbox-exec"
-                                                   if os.path.exists("/usr/bin/sandbox-exec") else "")
-            if not exe:
+            try:
+                exe = system_program("sandbox-exec")  # the system's, never one from a project
+            except ProgramNotFound:
                 return Availability(False, reason="sandbox-exec isn't on this Mac.")
             result = subprocess.run([exe, "-p", seatbelt_profile([]), "/usr/bin/true"],
                                     capture_output=True, timeout=10)
@@ -122,7 +123,7 @@ def _probe() -> Availability:
                 return Availability(True, "seatbelt", exe)
             return Availability(False, reason="sandbox-exec couldn't start a sandbox.")
         if sys.platform.startswith("linux"):
-            exe = shutil.which("bwrap")
+            exe = find_program("bwrap")
             if not exe:
                 return Availability(False, reason="Install bubblewrap (the bwrap command) to use the shell sandbox.")
             result = subprocess.run([exe, *_bwrap_base(), "/bin/true"], capture_output=True, timeout=10)
@@ -203,8 +204,8 @@ def _prefix(roots: Iterable[str], cwd: str) -> list[str]:
     writable = writable_roots(roots)
     info = availability()
     if info.kind == "seatbelt":
-        return [info.executable or "sandbox-exec", "-p", seatbelt_profile(writable)]
-    args = [info.executable or "bwrap", *_bwrap_base()]
+        return [info.executable or system_program("sandbox-exec"), "-p", seatbelt_profile(writable)]
+    args = [info.executable or program("bwrap"), *_bwrap_base()]
     for root in writable:
         args += ["--bind", root, root]
     for root in writable:

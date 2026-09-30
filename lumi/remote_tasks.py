@@ -15,12 +15,13 @@ reply, or what went wrong, goes back to the chat.
 An organization can turn it off by locking ``cloud.remote_tasks`` in its
 policy. A managed computer never takes anyone's requests, and none are taken
 while this computer uses another Lumi Cloud than the one it enrolled with
-(``CloudClient.device_elsewhere``). Every call about a request goes to the
-Lumi Cloud that handed it out, and stops if the enrollment moves meanwhile
-(``device_call``'s ``expect``). Under an
-organization's oversight (lumi/oversight.py) a request runs only once this
-computer's person has confirmed the notice; until then ``Session.run``
-refuses it and the chat is told why.
+(``CloudClient.device_elsewhere``). Until this computer's person has accepted
+Lumi's terms (lumi/terms.py), no request is taken: they wait in Lumi Cloud
+(``blocked``). Every call about a request goes to the Lumi Cloud that handed
+it out, and stops if the enrollment moves meanwhile (``device_call``'s
+``expect``). Under an organization's oversight (lumi/oversight.py) a request
+runs only once this computer's person has confirmed the notice; until then
+``Session.run`` refuses it and the chat is told why.
 """
 
 from __future__ import annotations
@@ -64,7 +65,13 @@ class RemoteTasks:
                 "mode": mode if mode in MODES else "ask"}
 
     def blocked(self) -> str:
-        """Why requests can't be taken now, or ""."""
+        """Why requests can't be taken now, or "".
+
+        While Lumi's terms wait to be accepted (lumi/terms.py), requests aren't even claimed: they wait in
+        Lumi Cloud until this computer's person accepts them in the app, rather than each being taken and
+        answered with a refusal.
+        """
+        from . import terms
         from .policy import blocked_reason
 
         options = self.options()
@@ -81,7 +88,7 @@ class RemoteTasks:
             return reason
         if not os.path.isdir(options["project"]):
             return "Choose the project folder requests run in."
-        return blocked_reason() or ""
+        return terms.refusal("chat_task") or blocked_reason() or ""
 
     def status(self) -> dict:
         return {**self.options(), "blocked": self.blocked(), "running": bool(self.current), "last": self.last}

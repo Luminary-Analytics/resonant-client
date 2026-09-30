@@ -10,6 +10,8 @@ on:
       - '.dockerignore'
       - 'lumi/headless.py'
       - 'lumi/__main__.py'
+      - 'lumi/terms.py'
+      - 'lumi/legal/**'
       - 'pyproject.toml'
       - '.github/workflows/container.yml'
   push:
@@ -20,6 +22,8 @@ on:
       - '.dockerignore'
       - 'lumi/headless.py'
       - 'lumi/__main__.py'
+      - 'lumi/terms.py'
+      - 'lumi/legal/**'
       - 'pyproject.toml'
   workflow_dispatch:
 
@@ -41,10 +45,29 @@ jobs:
           docker run --rm lumi:ci --version
           docker run --rm lumi:ci run --help
 
-      - name: A run without a provider explains itself and exits 2
+      # Lumi's terms ship in the image (package data) and are readable there.
+      - name: The image carries Lumi's terms
+        run: |
+          docker run --rm lumi:ci terms show eula | head -1 | grep -qx "# Lumi End User License Agreement"
+          docker run --rm lumi:ci terms > terms.json
+          python3 -c 'import json; s = json.load(open("terms.json")); assert s["pending"] and s["acceptance_value"].startswith("eula-"), s'
+          echo "LUMI_ACCEPT_TERMS=$(python3 -c 'import json; print(json.load(open("terms.json"))["acceptance_value"])')" >> "$GITHUB_ENV"
+
+      - name: Without the terms accepted, a run says how to accept them and exits 2
         run: |
           set +e
           docker run --rm -v "$PWD:/work" lumi:ci run "Say hello" > out.txt 2> err.txt
+          code=$?
+          set -e
+          cat err.txt
+          test "$code" = "2"
+          grep -q -- "--accept-terms $LUMI_ACCEPT_TERMS" err.txt
+          grep -q "LUMI_ACCEPT_TERMS=$LUMI_ACCEPT_TERMS" err.txt
+
+      - name: A run without a provider explains itself and exits 2
+        run: |
+          set +e
+          docker run --rm -v "$PWD:/work" -e LUMI_ACCEPT_TERMS lumi:ci run "Say hello" > out.txt 2> err.txt
           code=$?
           set -e
           cat err.txt

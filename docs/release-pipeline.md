@@ -8,8 +8,16 @@ not permanent thresholds or guarantees.
 
 `.github/workflows/tests.yml` checks pushed/PR source; `build-check.yml` checks
 Windows packaging. A `v*.*.*` tag starts `release.yml` on a Windows runner.
-The release workflow checks the tag against `__version__`, installs test
-dependencies, runs Ruff and pytest, then invokes `scripts/build_clean.ps1`.
+The release workflow refuses a tag that isn't `vX.Y.Z` or `vX.Y.Z-alpha.N`,
+`-beta.N` or `-rc.N` (the hyphen is how GitHub's pre-release flag, the feeds
+and the installers tell a pre-release), checks the tag against `__version__`,
+fails while Lumi's terms still have facts to be provided or a text doesn't
+match its pinned version (`packaging/legal_texts.py release-check --release`;
+[RELEASING.md](../RELEASING.md#lumis-terms)), installs test dependencies, runs
+Ruff and pytest, then invokes `scripts/build_clean.ps1`, which also renders
+the installers' license page (`dist/legal/license.rtf`, and the versions it
+holds in `license-versions.iss`, which the EXE installer records so it shows
+the page once for each version of the terms).
 
 The clean build creates a temporary virtual environment, installs
 `packaging/requirements-release.txt` with `--require-hashes` and then the local
@@ -332,8 +340,9 @@ ordinary CI. Keep mocked wire-contract tests distinct from live model evidence.
 | `packaging/third_party_notices.py`, `packaging/third-party-components.json` | Notices, license gate, SBOM additions |
 | `packaging/sign_windows.ps1` | Authenticode signing when configured |
 | `packaging/check_bundle.py`, `packaging/bundle-policy.json` | Bundle contents and size gate |
-| `packaging/installer.iss` | Windows installer (EXE) |
-| `packaging/lumi.wxs`, `packaging/build_msi.ps1` | MSI for device management |
+| `packaging/installer.iss` | Windows installer (EXE), with Lumi's terms on its license page |
+| `packaging/lumi.wxs`, `packaging/build_msi.ps1` | MSI for device management, with the license page |
+| `lumi/legal/`, `packaging/legal_texts.py` | Lumi's terms, privacy notice and licenses: one file of facts, rendered texts, the installers' RTF, the release check |
 | `packaging/update_appcast.py` | Stable, beta and release-line update feeds, for Windows and macOS |
 | `lumi/updater.py`, `lumi/update_channels.py` | WinSparkle client and verification key; update mode, channel, pin and platform |
 | `packaging/build_macos.sh`, `packaging/fetch_sparkle.sh` | macOS app, DMG and PKG; pinned Sparkle; Apple signing and notarization |

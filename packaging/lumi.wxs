@@ -14,11 +14,31 @@
     (lumi/update_channels.py).
   - POLICYFILE="\\server\share\lumi-policy.json" writes the machine policy's
     PolicyFile registry value (docs/enterprise-policy.md), removed again on
-    uninstall.
+    uninstall. The package remembers it (WiX's remember-property pattern: a
+    copy under its own key, read back by AppSearch), so an upgrade that
+    doesn't name POLICYFILE again keeps the value instead of removing it with
+    the version it replaces; one that names it changes it. A PolicyFile Lumi
+    can't read, or that others can change, fails closed (lumi/policy.py).
+  - %ProgramData%\Lumi, the machine policy folder, is created locked:
+    owned by Administrators, full control for SYSTEM and Administrators, read
+    and execute for Users, nothing inherited. Lumi uses a policy or license
+    file only where nobody but administrators can change it, and any user may
+    create folders under ProgramData, where a folder also inherits every
+    user's right to add files. Uninstalling removes the folder only when it's
+    empty, so files an administrator put there stay.
   - The EXE installer and this package would share Program Files\Lumi, so
     this package refuses to install over an EXE installation.
+  - Lumi's terms: an installation with its UI shows the license page
+    (WixUI_Minimal, from WiX's UI extension) with license.rtf, which
+    packaging/legal_texts.py renders for this version, and can't go on until
+    the person accepts. A silent installation (/qn: Intune, Configuration
+    Manager, Group Policy) shows no UI: the organization deploying Lumi accepts
+    the agreement for its people under its agreement with Luminary Analytics,
+    and its machine policy can say so on every computer
+    (legal.accepted_by_organization), which spares each person the prompt at
+    first launch (docs/deploy-windows.md).
 -->
-<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs" xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui">
   <Package Name="Lumi"
            Manufacturer="Luminary Analytics"
            Version="$(var.Version)"
@@ -33,7 +53,12 @@
     <Icon Id="LumiIcon" SourceFile="!(bindpath.brand)\lumi.ico" />
     <Property Id="ARPPRODUCTICON" Value="LumiIcon" />
     <Property Id="ARPURLINFOABOUT" Value="https://luminary-analytics.github.io/resonant-client/" />
-    <Property Id="ARPNOMODIFY" Value="1" />
+
+    <!-- The license page (see above): build_msi.ps1 passes the rendered license.rtf.
+         WixUI_Minimal also sets ARPNOMODIFY to 1 (no Modify in Apps & features),
+         so the package doesn't set it again. -->
+    <ui:WixUI Id="WixUI_Minimal" />
+    <WixVariable Id="WixUILicenseRtf" Value="$(var.LicenseRtf)" />
 
     <!-- The EXE installer's uninstall entry (Inno Setup AppId in packaging/installer.iss). -->
     <Property Id="EXEINSTALL">
@@ -44,6 +69,18 @@
     <Launch Condition="Installed OR NOT EXEINSTALL"
             Message="Lumi is already installed from its EXE installer. Uninstall that copy first (Apps &amp; features, or unins000.exe /VERYSILENT in its folder), then install this package." />
 
+    <!-- POLICYFILE, remembered (see above). Secure, so a value given with the license dialog's
+         UI reaches the elevated install. AppSearch reads the copy the installed version wrote,
+         before an upgrade removes that version; SetPOLICYFILE uses it only when this install
+         names no POLICYFILE, in whichever sequence runs (the UI's, then the install's). -->
+    <Property Id="POLICYFILE" Secure="yes" />
+    <Property Id="REMEMBERED_POLICYFILE" Secure="yes">
+      <RegistrySearch Id="RememberedPolicyFile" Root="HKLM" Bitness="always64" Type="raw"
+                      Key="SOFTWARE\Luminary Analytics\Lumi\Msi" Name="PolicyFile" />
+    </Property>
+    <SetProperty Id="POLICYFILE" Value="[REMEMBERED_POLICYFILE]" After="AppSearch" Sequence="both"
+                 Condition="NOT POLICYFILE AND REMEMBERED_POLICYFILE" />
+
     <StandardDirectory Id="ProgramFiles64Folder">
       <Directory Id="INSTALLFOLDER" Name="Lumi">
         <Component Id="InstallMarker">
@@ -52,6 +89,26 @@
         <Component Id="PolicyFileValue" Condition="POLICYFILE">
           <RegistryValue Root="HKLM" Key="SOFTWARE\Policies\Luminary Analytics\Lumi"
                          Name="PolicyFile" Type="string" Value="[POLICYFILE]" KeyPath="yes" />
+          <!-- The remembered copy RememberedPolicyFile reads at the next upgrade. -->
+          <RegistryValue Root="HKLM" Key="SOFTWARE\Luminary Analytics\Lumi\Msi"
+                         Name="PolicyFile" Type="string" Value="[POLICYFILE]" />
+        </Component>
+      </Directory>
+    </StandardDirectory>
+
+    <!-- The machine policy folder (see above). MsiLockPermissionsEx applies the SDDL to the
+         folder, also when a person created it first: O:BA makes Administrators its owner,
+         P keeps ProgramData's entries from being inherited. RemoveFolder takes it away on
+         uninstall when it's empty, a folder that was there before the install included. -->
+    <StandardDirectory Id="CommonAppDataFolder">
+      <Directory Id="MACHINEPOLICYFOLDER" Name="Lumi">
+        <Component Id="MachinePolicyFolder">
+          <CreateFolder>
+            <PermissionEx Sddl="O:BAD:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;0x1200a9;;;BU)" />
+          </CreateFolder>
+          <RemoveFolder Id="RemoveMachinePolicyFolder" On="uninstall" />
+          <RegistryValue Root="HKLM" Key="SOFTWARE\Luminary Analytics\Lumi\Msi"
+                         Name="MachinePolicyFolder" Type="integer" Value="1" KeyPath="yes" />
         </Component>
       </Directory>
     </StandardDirectory>
@@ -69,6 +126,7 @@
       <Files Directory="INSTALLFOLDER" Include="!(bindpath.bundle)\**" />
       <ComponentRef Id="InstallMarker" />
       <ComponentRef Id="PolicyFileValue" />
+      <ComponentRef Id="MachinePolicyFolder" />
       <ComponentRef Id="StartMenuShortcut" />
     </Feature>
   </Package>

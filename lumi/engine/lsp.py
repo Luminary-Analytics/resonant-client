@@ -14,8 +14,9 @@ never asks a server to change files.
 A language server can run the project's own code (rust-analyzer runs build
 scripts; Java and Gradle servers run the build), so servers start only in
 trusted projects (gui/workspace_trust.py), as automatic lint and test runs do.
-They get the environment other children get (``secrets_store.child_env``),
-pass the command guardrails, and run in the shell sandbox when it's on
+They get the environment of the servers Lumi starts (``secrets_store.server_env``:
+no model-provider keys, and a launcher script finds programs on PATH, never
+in the project), pass the command guardrails, and run in the shell sandbox when it's on
 (engine/os_sandbox.py). Answers never name files the exclusions hide.
 """
 
@@ -27,7 +28,6 @@ import logging
 import os
 import re
 import shlex
-import shutil
 import subprocess
 import threading
 import time
@@ -37,6 +37,8 @@ from pathlib import Path
 from typing import Any, Iterable, Sequence
 from urllib.parse import urlsplit
 from urllib.request import url2pathname
+
+from ..executables import NoProject, configured_program, current_project, project_tool
 
 logger = logging.getLogger(__name__)
 
@@ -150,16 +152,43 @@ def configured(settings: Any) -> list[tuple[ServerSpec, bool]]:
     return result
 
 
-def choose(path: str, settings: Any) -> tuple[ServerSpec, list[str]]:
-    """The server for ``path`` and the program and arguments to start it."""
+def program_source(program: str, root: str | None = None, *, trusted: bool = False) -> tuple[str | None, str, str]:
+    """A server's program as an existing absolute path or None, where it came from, and a notice.
+
+    A full path as configured, a relative one inside the project. A bare name
+    comes from a trusted project's own ``.venv``, ``venv`` or
+    ``node_modules/.bin``, else from PATH, never from the project or Lumi's
+    working folder otherwise (lumi/executables.py ``project_tool``); the
+    notice says when an untrusted project has its own. npm installs servers
+    as batch files, which count.
+    """
+    name = str(program or "").strip()
+    if name and not any(separator in name for separator in ("/", "\\", ":")):
+        found, source, notice = project_tool(name, root, trusted=trusted, scripts=True)
+    else:
+        found, source, notice = configured_program(name, folder=root, scripts=True), "as configured", ""
+    if found and os.path.isfile(found):
+        return found, source, notice
+    return None, "", notice
+
+
+def program_path(program: str, root: str | None = None, *, trusted: bool = False) -> str | None:
+    """``program_source``'s path."""
+    return program_source(program, root, trusted=trusted)[0]
+
+
+def choose(path: str, settings: Any, root: str | None = None, *, trusted: bool = False) -> tuple[ServerSpec, list[str]]:
+    """The server for ``path`` in project ``root`` and the program and arguments to start it."""
     extension = Path(path).suffix.lower()
     for spec, enabled in configured(settings):
         if enabled and extension in spec.languages:
-            program = shutil.which(spec.command[0]) or spec.command[0]
+            program = program_path(spec.command[0], root, trusted=trusted)
+            if not program:
+                raise LspError(f"{spec.name}'s program {spec.command[0]} isn't installed, or isn't on PATH.")
             return spec, [program, *spec.command[1:]]
     for spec in KNOWN:
         if extension in spec.languages:
-            program = shutil.which(spec.command[0])
+            program = program_path(spec.command[0], root, trusted=trusted)
             if program:
                 return spec, [program, *spec.command[1:]]
     candidates = [spec.command[0] for spec in KNOWN if extension in spec.languages]
@@ -270,7 +299,7 @@ class LanguageServer:
 
     def _start(self) -> None:
         from ..processes import background_process_kwargs, windows_kill_job
-        from ..secrets_store import child_env
+        from ..secrets_store import server_env
 
         self.state, self.error = "starting", ""
         self._documents.clear()  # a new process has nothing open
@@ -279,7 +308,7 @@ class LanguageServer:
         try:
             self._process = subprocess.Popen(
                 self.launch, cwd=self.root, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE, env=child_env(), **background_process_kwargs(new_process_group=True))
+                stderr=subprocess.PIPE, env=server_env(), **background_process_kwargs(new_process_group=True))
         except OSError as exc:
             self._fail(f"{self.spec.name} didn't start: {exc}")
             raise LspError(self.error) from exc
@@ -567,10 +596,11 @@ class LspManager:
         self._lock = threading.Lock()
         self._reaper: threading.Thread | None = None
 
-    def server_for(self, root: str, path: str, settings: Any, *, sandbox_roots: Sequence[str] = ()) -> LanguageServer:
+    def server_for(self, root: str, path: str, settings: Any, *, sandbox_roots: Sequence[str] = (),
+                   trusted: bool = False) -> LanguageServer:
         from . import guardrails, os_sandbox
 
-        spec, argv = choose(path, settings)
+        spec, argv = choose(path, settings, root, trusted=trusted)
         reason = guardrails.blocked_argv(argv)
         if reason:
             raise LspError(guardrails.refusal(reason))
@@ -808,7 +838,10 @@ def code_intel(arguments: dict, *, project_path: str, settings: Any = None, excl
     path = str(arguments.get("path") or "")
     if not path:
         raise LspError("Name the file to ask about.")
-    root = project_path or os.getcwd()
+    try:
+        root = current_project(project_path)
+    except NoProject as exc:
+        raise LspError(str(exc)) from None
     path = os.path.normpath(path if os.path.isabs(path) else os.path.join(root, path))
     if not os.path.isfile(path):
         raise LspError(f"{path} isn't a file.")
@@ -816,7 +849,7 @@ def code_intel(arguments: dict, *, project_path: str, settings: Any = None, excl
         raise LspError("Language servers start only in trusted projects, because some run the project's build "
                        "scripts. Trust the project in Settings > Project trust, or use grep and file_read.")
     context = _Context(root, list(sandbox_roots) or [root], exclusions)
-    server = servers.server_for(root, path, settings, sandbox_roots=sandbox_roots)
+    server = servers.server_for(root, path, settings, sandbox_roots=sandbox_roots, trusted=trusted)
     metadata = {"server": server.spec.name, "action": action, "path": context.label(path)}
 
     if action == "diagnostics":

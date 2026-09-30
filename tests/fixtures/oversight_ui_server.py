@@ -172,6 +172,11 @@ def main() -> None:
     }, source="fixture machine policy"))
     backend = StreamingBackend(name="ollama", model="fixture-native",
                                events=[text_delta("Scripted reply after the notice."), done(model="fixture-native")])
+    # This computer user accepted Lumi's terms already, as in the app (lumi/terms.py): the checks here
+    # are about other things, and the terms dialog would lock the message box first.
+    from lumi import terms as lumi_terms
+
+    lumi_terms.accept({doc.id: doc.version for doc in lumi_terms.required()}, "app")
     state = gui.state
     state.project.set_project(str(workspace))
     state.apply_project_context(str(workspace), refresh_index=True)

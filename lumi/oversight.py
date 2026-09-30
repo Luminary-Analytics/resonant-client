@@ -29,6 +29,13 @@ Never file contents or tool output (beyond a flag's short excerpt when
 messages are shared), never screenshots, keystrokes or anything outside
 Lumi's own turns.
 
+**The gate every turn path asks.** ``admit`` (before each turn and each model
+request, from ``Session.run``) and ``refusal``/``gate`` (at entry points outside
+a turn) ask Lumi's terms first (lumi/terms.py): until the person accepted the
+End User License Agreement, and the Alpha and Beta Test Terms on a pre-release
+build, nothing reaches a model, whatever the policy says, and the refusal
+carries ``terms.REFUSAL_CODE``. The organization's notice comes next.
+
 **Nothing reaches a model until the person has confirmed the notice.** While
 a policy's oversight is in force (it asks for something, and records have
 somewhere to go), ``admit`` refuses every turn of a person who hasn't
@@ -527,6 +534,8 @@ class Admission:
     trigger: str = "app"
     unattended: bool = False
     acknowledged: bool = False
+    # What refused it: this notice (REFUSAL_CODE) or Lumi's terms (terms.REFUSAL_CODE).
+    code: str = REFUSAL_CODE
 
 
 def _surface_of(session: Any) -> tuple[str, bool, str]:
@@ -617,10 +626,17 @@ def admit(session: Any) -> Admission:
     root, depth = session, 0
     while getattr(root, "parent_session", None) is not None and depth < 50:
         root, depth = root.parent_session, depth + 1
+    key = str(getattr(root, "audit_session_id", "") or "")
     try:
         trigger, unattended, chat = _surface_of(root)
-        admission = _admission(Scope(), trigger=trigger, unattended=unattended, chat=chat,
-                               session_key=str(getattr(root, "audit_session_id", "") or ""))
+    except Exception:  # a surface that can't say needs a person, never less
+        trigger, unattended, chat = "app", False, ""
+    # Lumi's terms first (lumi/terms.py): whatever the policy, nothing reaches a model until they're accepted.
+    refused = _terms_refusal(trigger, key)
+    if refused:
+        return Admission(refusal=refused, trigger=trigger, unattended=unattended, code=_terms_code())
+    try:
+        admission = _admission(Scope(), trigger=trigger, unattended=unattended, chat=chat, session_key=key)
     except Exception as exc:
         return _failed_check(exc)
     if root is not session:
@@ -633,12 +649,56 @@ def refusal(trigger: str = "app") -> str:
 
     For entry points outside a turn: the app's message box, /plan, missions,
     autonomous sessions, Team, model comparisons, dictation and evaluations.
-    Never raises.
+    Lumi's terms come first (``gate`` says which refused). Never raises.
+    """
+    return gate(trigger)[0]
+
+
+def gate(trigger: str = "app") -> tuple[str, str]:
+    """(refusal, code) for ``refusal``: Lumi's terms (``terms.REFUSAL_CODE``), then this notice (``REFUSAL_CODE``).
+
+    ``('', '')`` when nothing stops the work. Never raises.
+    """
+    trigger = trigger if trigger in TRIGGERS else "app"
+    refused = _terms_refusal(trigger)
+    if refused:
+        return refused, _terms_code()
+    try:
+        reason = _admission(Scope(), trigger=trigger, unattended=False).refusal
+    except Exception as exc:
+        reason = _failed_check(exc).refusal
+    return reason, (REFUSAL_CODE if reason else "")
+
+
+def _terms_code() -> str:
+    from .terms import REFUSAL_CODE as TERMS_CODE
+
+    return TERMS_CODE
+
+
+def _terms_refusal(trigger: str, session_key: str = "") -> str:
+    """Why Lumi's terms stop this work (lumi/terms.py), in the words of the surface; '' when accepted.
+
+    Never raises, and a check that fails refuses (terms.refusal): unlike a broken oversight check, it
+    can't fall open when no policy asks for oversight.
     """
     try:
-        return _admission(Scope(), trigger=trigger if trigger in TRIGGERS else "app", unattended=False).refusal
+        from . import terms
+
+        if session_key.startswith(TASK_PREFIX):
+            place = "chat_task"
+        elif trigger == "gateway" or session_key.startswith(CHAT_PREFIX):
+            place = "gateway"
+        elif trigger == "terminal":
+            place = "terminal"
+        elif trigger in ("headless", "schedule"):
+            place = "headless"
+        else:
+            place = "app"
+        return terms.refusal(place)
     except Exception as exc:
-        return _failed_check(exc).refusal
+        logger.exception("Couldn't check whether Lumi's terms were accepted")
+        return f"Lumi couldn't check whether its terms were accepted ({exc}), so nothing is sent to a model."
 
 
 # ── Terminals ───────────────────────────────────────────────────────────────

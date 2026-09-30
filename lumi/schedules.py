@@ -457,7 +457,10 @@ class Registrar:
 
 
 def _run(args: list[str], **kwargs) -> subprocess.CompletedProcess:
-    return subprocess.run(args, capture_output=True, text=True, timeout=30,
+    """Run one of the system's scheduler tools (schtasks, launchctl, crontab) by its full path."""
+    from .executables import system_program
+
+    return subprocess.run([system_program(args[0]), *args[1:]], capture_output=True, text=True, timeout=30,
                           creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0), **kwargs)
 
 
@@ -542,9 +545,29 @@ class Crontab(Registrar):
 _registrar: Registrar | None = None
 
 
+class NullRegistrar(Registrar):
+    """Registers nothing with the OS, for ``LUMI_OS_SCHEDULER=off`` (tests and CI).
+
+    Schedules are still saved and can be run by hand (``lumi schedule run``);
+    nothing starts them automatically.
+    """
+
+    def register(self, schedule: Schedule) -> None:
+        return None
+
+    def unregister(self, schedule_id: str) -> None:
+        return None
+
+
+def os_scheduler_enabled() -> bool:
+    return os.environ.get("LUMI_OS_SCHEDULER", "").strip().lower() not in ("off", "0", "false", "no")
+
+
 def registrar() -> Registrar:
     if _registrar is not None:
         return _registrar
+    if not os_scheduler_enabled():
+        return NullRegistrar()
     if sys.platform == "win32":
         return WindowsTasks()
     if sys.platform == "darwin":

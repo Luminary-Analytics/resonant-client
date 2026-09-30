@@ -11,11 +11,17 @@ successful push alone is not deployment. See
    out of the release. Verify the GitHub account has write access to
    `Luminary-Analytics/resonant-client` before pushing.
 2. Update both `lumi/__init__.py` and `pyproject.toml` to the chosen
-   version. Add `docs/vX.Y.Z-release-notes.md`, update the docs index, and move
+   version: `X.Y.Z`, or `X.Y.Z-alpha.N`, `X.Y.Z-beta.N` or `X.Y.Z-rc.N` for a
+   pre-release, never a PEP 440 spelling such as `0.20.0rc1` (the release
+   check refuses it, since GitHub's pre-release flag, the update feeds and
+   the installers tell a pre-release by its hyphen). Add `docs/vX.Y.Z-release-notes.md`, update the docs index, and move
    shipped entries out of `docs/unreleased.md`. Do not relabel unshipped work as
    part of an existing release.
-3. Run the checks below. Investigate failures rather than weakening gates.
-4. Build and smoke-test the final source. Record what was actually exercised,
+3. Check Lumi's terms: `python packaging/legal_texts.py release-check --release
+   --version X.Y.Z` must pass (see [Lumi's terms](#lumis-terms)). The release
+   workflow runs it first and fails while any fact is still to be provided.
+4. Run the checks below. Investigate failures rather than weakening gates.
+5. Build and smoke-test the final source. Record what was actually exercised,
    especially whether provider generation was live or mocked.
 
 ```sh
@@ -54,6 +60,68 @@ Verify:
 - Changed commands/assets are present; drafts and navigation work.
 - Bundled skills install and startup logs have no unexplained errors.
 - Relevant desktop/compact layouts and keyboard controls remain usable.
+
+## Lumi's terms
+
+Lumi ships its [End User License Agreement](lumi/legal/EULA.md),
+[Alpha and Beta Test Terms](lumi/legal/ALPHA-TERMS.md) and
+[privacy notice](lumi/legal/PRIVACY.md), the
+[Extension SDK License](sdk/LICENSE) and the VS Code extension's license. They
+are rendered from `lumi/legal/templates/` with one file of facts,
+`lumi/legal/terms.json`: Luminary's legal entity (Luminary Analytics, LLC, a
+New Hampshire limited liability company), the governing law and venue (New
+Hampshire), the notices and support email, and for each document its
+version, the day its text was published and the SHA-256 pinning that
+version's text.
+
+- **Changing a fact or a text:** edit `terms.json` or the template, run
+  `python packaging/legal_texts.py render`, and commit the rendered files with
+  it. `tests/test_legal_texts.py` fails while a rendered text isn't what
+  `render` writes.
+- **Versions and pins:** any change to what a text says, a correction
+  included, needs a new `version` and a new `sha256` (render prints the hash;
+  the tests and `check` fail while a text doesn't match its version's pin).
+  Set `published` to the day the text was written; each version applies to a
+  person from the day they accept it, and the release check refuses a
+  `published` date after the day of the build. Who is asked again:
+  - a new **EULA** version: everyone, at the app's next launch or through a
+    new `--accept-terms` value, unless their machine policy accepts for the
+    organization (which covers it);
+  - a new **Alpha and Beta Test Terms** version: everyone on a pre-release
+    build, the same way; stable builds don't need them;
+  - a new **privacy notice** or **Extension SDK License** version: no one.
+    They are read, not accepted.
+
+  An acceptance also records the text's hash, so an accepted text that no
+  longer matches the shipped one counts as pending. Announce a new version in
+  the release notes.
+- **The release check:** `release-check` warns in pull request CI
+  (`tests.yml`); with `--release` it fails both release jobs (Windows and
+  macOS) while a fact or any rendered text still reads
+  `[[TO BE PROVIDED: ...]]`, a text is stale or doesn't match its pin, a
+  `published` date is after the build's, or the version isn't `X.Y.Z` or
+  `X.Y.Z-alpha.N`/`-beta.N`/`-rc.N` from 0.20.0 on. Releases under the EULA
+  start at 0.20.0, above every version published under the MIT License: the
+  releases tagged v0.6.3a1 through v0.19.1 (Resonant Client, Resonant and SONN
+  Client) and the source on `main` from commit c00f29c until commit beb2848
+  ([LICENSE](LICENSE), EULA section 5.4). A carve-out names releases and
+  commits, never a version range: `0.19.2.dev11` was built both under MIT and
+  after it.
+- **Installers:** `scripts/build_clean.ps1` renders `dist/legal/license.rtf`
+  for Inno Setup's license page, `packaging/build_msi.ps1` renders the MSI's,
+  and `packaging/build_macos.sh` the PKG's and the DMG's copies
+  (`python packaging/legal_texts.py rtf --out DIR --version X.Y.Z`). A
+  pre-release version gets the EULA followed by the Alpha and Beta Test
+  Terms; a stable one, the EULA. `rtf` also writes the versions
+  `license.rtf` holds (`license-versions.iss` and `.json`): the EXE installer
+  records them in `HKLM\SOFTWARE\Luminary Analytics\Lumi\Setup` and skips
+  its license page when the installed copy already showed the same versions,
+  so an update with unchanged terms doesn't stop on it (a stable-to-beta
+  update still shows the test terms). That record is the installer's
+  convenience, never a person's acceptance: the app asks each person itself.
+  Square brackets are RTF escapes, so the MSI never reads them as properties.
+- **Before publishing:** counsel reviews the texts; the texts carry no drafts
+  or review notes, so what's in the repository is what ships.
 
 ## Commit, push, and publish
 

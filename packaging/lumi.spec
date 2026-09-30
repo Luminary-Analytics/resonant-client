@@ -118,6 +118,8 @@ datas = [
      "lumi/gui/static"),
     (str(PKG_ROOT / "gui" / "static" / "voice_input.js"),
      "lumi/gui/static"),
+    (str(PKG_ROOT / "gui" / "static" / "terms_view.js"),
+     "lumi/gui/static"),
     (str(PKG_ROOT / "gui" / "static" / "fonts.css"),
      "lumi/gui/static"),
     (str(PKG_ROOT / "gui" / "static" / "styles.css"),
@@ -149,6 +151,13 @@ datas = [
 # The VS Code extension, packed into a .vsix at install time (lumi/code_editors).
 for name in ("package.json", "extension.js", "bridge.js", "README.md", "LICENSE.txt"):
     datas.append((str(PKG_ROOT / "code_editors" / "vscode" / name), "lumi/code_editors/vscode"))
+
+# Lumi's terms and privacy notice, readable offline (Settings > About Lumi,
+# `lumi terms show`), and the facts and versions lumi/terms.py reads to ask
+# for acceptance. packaging/legal_texts.py renders them; the bundle policies
+# require every one, since without them nothing can reach a model.
+for name in ("terms.json", "EULA.md", "ALPHA-TERMS.md", "PRIVACY.md"):
+    datas.append((str(PKG_ROOT / "legal" / name), "lumi/legal"))
 
 # Include data files for libraries that ship their own (jinja2 has none, but
 # starlette ships some HTML defaults for error pages).

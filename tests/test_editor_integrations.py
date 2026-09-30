@@ -29,7 +29,7 @@ def test_managed_unity_endpoint_is_local_and_secret_free(value):
 
 
 def test_blender_and_unreal_configs_are_argument_vectors(tmp_path, monkeypatch):
-    monkeypatch.setattr("shutil.which", lambda name: f"C:/Program Files/uv/{name}.exe")
+    monkeypatch.setattr("lumi.executables.find_program", lambda name, **kwargs: f"C:/Program Files/uv/{name}.exe")
     blender = build_config("blender", "9877")
     assert blender["args"] == ["blender-mcp==1.9.1"]
     assert blender["env"] == {"BLENDER_HOST": "127.0.0.1", "BLENDER_PORT": "9877", "DISABLE_TELEMETRY": "true"}
@@ -45,7 +45,7 @@ def test_blender_and_unreal_configs_are_argument_vectors(tmp_path, monkeypatch):
 
 
 def test_missing_dependency_is_actionable(monkeypatch):
-    monkeypatch.setattr("shutil.which", lambda _: None)
+    monkeypatch.setattr("lumi.executables.find_program", lambda name, **kwargs: None)
     with pytest.raises(ValueError, match="Install uv"):
         build_config("blender", "9876")
 
@@ -108,7 +108,7 @@ def test_setup_connect_probe_and_disable(settings, monkeypatch):
         return httpx.Response(200, json={"jsonrpc": "2.0", "id": payload["id"], "result": result})
     original = MCPConnection
     monkeypatch.setattr("lumi.engine.mcp.MCPConnection",
-                        lambda cfg: original(cfg, http_transport=httpx.MockTransport(transport)))
+                        lambda cfg, **kwargs: original(cfg, http_transport=httpx.MockTransport(transport), **kwargs))
     state = SimpleNamespace(settings=settings, mcp_manager=MCPManager(settings),
                             session=SimpleNamespace(mcp_tools=[]))
     sent = []

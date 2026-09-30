@@ -8,7 +8,8 @@ provider template (Extension SDK v1).
 - `provider.py`: the provider. `echo` works offline; `remote` forwards to
   an OpenAI-compatible endpoint.
 - `lumi_extension/`: the SDK, copied in so the pack needs nothing installed
-  but Python. It is under the MIT License (`lumi_extension/LICENSE`).
+  but Python. It is under the Lumi Extension SDK License
+  (`lumi_extension/LICENSE`), which lets you ship it inside your pack.
 - `test_provider.py`: tests that run the provider as Lumi does.
 
 ## Try it

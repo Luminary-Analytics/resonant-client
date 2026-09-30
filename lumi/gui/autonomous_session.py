@@ -466,6 +466,12 @@ def resume_autonomous_mission(
     backend = getattr(state, "backend", None)
     if backend is not None and hasattr(backend, "warm_up"):
         def _warm_on_resume() -> None:
+            # A warm-up is a model request: none while Lumi's terms or the
+            # organization's notice wait (the backends refuse it too, lumi/dlp.py).
+            from ..oversight import gate
+
+            if gate("mission")[0]:
+                return
             try:
                 backend.warm_up()
                 logger.info("Resume warm-up issued for mission %s", intent_id)

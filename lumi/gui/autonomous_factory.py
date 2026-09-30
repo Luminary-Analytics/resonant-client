@@ -39,14 +39,12 @@ from __future__ import annotations
 import json
 import logging
 import re
-import shutil
 import subprocess
 import threading
 import time
 from pathlib import Path
 from typing import Any, Callable, Optional
 
-from lumi.processes import background_process_kwargs
 
 from ..engine.tools import AGENT_TOOLS
 from ..gui.autonomous_loop import (
@@ -203,23 +201,14 @@ class DispatchTracker:
 def make_git_get_commit_sha(project_path: str) -> Callable[[], Optional[str]]:
     """Returns a callable that reads HEAD's commit SHA via
     `git log -1 --format=%H`. None on any failure (no git binary,
-    no commits yet, repo missing).
+    no commits yet, repo missing, or no Git allowed in an untrusted
+    project whose Git settings run programs: lumi/safe_git.py).
     """
-    git = shutil.which("git")
+    from lumi.safe_git import GitRefused, run as git
 
     def _get() -> Optional[str]:
-        if not git:
-            return None
         try:
-            proc = subprocess.run(
-                [git, "log", "-1", "--format=%H"],
-                cwd=project_path,
-                capture_output=True,
-                text=True,
-                timeout=5.0,
-                check=False,
-                **background_process_kwargs(),
-            )
+            proc = git(project_path, "log", "-1", "--format=%H", timeout=5.0)
             if proc.returncode != 0:
                 return None
             sha = proc.stdout.strip()
@@ -229,7 +218,7 @@ def make_git_get_commit_sha(project_path: str) -> Callable[[], Optional[str]]:
             if re.match(r"^[0-9a-f]{6,40}$", sha):
                 return sha
             return None
-        except (subprocess.TimeoutExpired, OSError):
+        except (GitRefused, subprocess.TimeoutExpired, OSError):
             logger.debug("git log probe failed", exc_info=True)
             return None
 
@@ -241,23 +230,16 @@ def make_git_validate_sha(project_path: str) -> Callable[[str], bool]:
     `git rev-parse --verify <sha>^{commit}`. True iff the SHA is a
     real commit object in the repo.
     """
-    git = shutil.which("git")
+    from lumi.safe_git import GitRefused, run as git
 
     def _validate(sha: str) -> bool:
-        if not git or not sha:
+        if not sha:
             return False
         try:
-            proc = subprocess.run(
-                [git, "rev-parse", "--verify", f"{sha}^{{commit}}"],
-                cwd=project_path,
-                capture_output=True,
-                text=True,
-                timeout=5.0,
-                check=False,
-                **background_process_kwargs(),
-            )
+            proc = git(project_path, "rev-parse", "--verify", f"{sha}^{{commit}}",
+                       timeout=5.0)
             return proc.returncode == 0
-        except (subprocess.TimeoutExpired, OSError):
+        except (GitRefused, subprocess.TimeoutExpired, OSError):
             logger.debug("git rev-parse probe failed", exc_info=True)
             return False
 

@@ -38,6 +38,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from .tools import ToolResult
+from ..executables import find_program, is_absolute
 from ..paths import state_home
 
 logger = logging.getLogger(__name__)
@@ -89,7 +90,8 @@ def set_browser_session_name(
 def _find_chrome() -> Optional[str]:
     """Locate the installed Chrome executable, or None."""
     override = os.environ.get("LUMI_BROWSER_CHROME_PATH")
-    if override and os.path.isfile(override):
+    # A full path only: a relative one would name a file in the working folder.
+    if override and is_absolute(override) and os.path.isfile(override):
         return override
     if sys.platform.startswith("win"):
         candidates = [
@@ -109,9 +111,8 @@ def _find_chrome() -> Optional[str]:
     else:
         candidates = ["google-chrome", "google-chrome-stable", "chromium", "chromium-browser"]
     for candidate in candidates:
-        if os.path.isfile(candidate):
-            return candidate
-        found = shutil.which(candidate)
+        # Full paths as listed; names from PATH, never from the working folder.
+        found = find_program(candidate)
         if found:
             return found
     return None

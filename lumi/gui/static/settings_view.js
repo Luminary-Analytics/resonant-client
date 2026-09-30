@@ -330,18 +330,36 @@ class LumiSettingsView {
             ? `Installed from ${installer[0]}; ${installer[1]} updates it.`
             : info.organization ? `Managed by ${esc(info.organization)}.` : '';
         const row = (label, body) => `<div class="settings-row"><div class="settings-row-copy"><span class="settings-row-label">${label}</span><div class="settings-row-hint">${body}</div></div></div>`;
-        // An organization's oversight sends its Lumi Cloud more (lumi/oversight.py); say so here too.
+        // What leaves this computer, in short (lumi/legal/PRIVACY.md says it all):
+        // model requests, update checks, and Lumi Cloud only when signed in or
+        // enrolled. An organization's oversight sends its Lumi Cloud more
+        // (lumi/oversight.py); say so here too.
+        const leaves = 'Your prompts and code go to the model providers you choose, under your own accounts. Update checks go to Luminary Analytics’ update site unless you turn them off in Updates. Lumi Cloud receives more only when you sign in or this computer is enrolled in an organization (what you share or hand off, tasks from chat and approvals, and an enrolled computer’s usage and crash counts), and feedback only when you send it.';
         const oversight = this.oversightStatus?.configured
-            ? `Your prompts, code and keys go to the model providers you choose. ${esc(this.oversightStatus.notice)} Privacy & security lists exactly what. Luminary Analytics also receives the update check, which you can turn off in Updates.`
-            : 'Your prompts, code and keys go only to the model providers you choose. Luminary Analytics receives only the update check, which you can turn off in Updates.';
+            ? `${leaves} ${esc(this.oversightStatus.notice)} Privacy & security lists exactly what your organization receives.`
+            : leaves;
+        // Lumi's terms (lumi/terms.py): who accepted them, and every text this build
+        // ships, readable offline in the terms dialog (terms_view.js). The test terms
+        // apply only to a pre-release build, so only one offers them.
+        const terms = info.terms || this.termsStatus || {};
+        const readable = Array.isArray(terms.readable) ? terms.readable : (terms.prerelease ? ['alpha_terms'] : []);
+        const legal = (id, label) => `<button type="button" class="btn-sm" id="about-legal-${id}" data-legal-doc="${id}">${label}</button>`;
+        const documents = [
+            terms.pending ? legal('terms', 'Review terms') : '',
+            legal('eula', 'License agreement'),
+            readable.includes('alpha_terms') ? legal('alpha_terms', 'Alpha and beta test terms') : '',
+            legal('privacy', 'Privacy notice'),
+            legal('notices', 'Third-party notices'),
+        ].filter(Boolean).join(' ');
         return [
             row(`Lumi ${esc(info.version)}`, `The coding agent by Luminary Analytics. ${managed}`),
             row('Free for individuals', 'The whole agent, every tool, provider and feature in this app, works without an account: with your own API keys, your ChatGPT sign-in, or models on your own computer.'),
-            row('What leaves this computer', `${oversight} Feedback you choose to send goes to the Lumi Cloud you use.`),
+            row('What leaves this computer', `${oversight} Feedback you choose to send goes to the Lumi Cloud you use. The privacy notice below lists exactly what.`),
             `<div class="settings-row"><div class="settings-row-copy"><span class="settings-row-label">Feedback</span><div class="settings-row-hint">Report a problem or suggest an idea. You see what’s sent before it goes, and your keys never are.</div></div>
                 <div class="settings-row-value"><button type="button" class="btn-sm" id="about-send-feedback" aria-haspopup="dialog">Send feedback…</button></div></div>`,
             row('For teams and organizations', 'Lumi Cloud adds central policy, members, devices and usage reporting; if your organization uses it, sign in from Lumi account. Without it, organizations set policy on each computer (see docs/enterprise-policy.md).'),
             row('License', `© Luminary Analytics. All rights reserved. Licensed under the ${esc(info.license)}.${info.notices ? ` Third-party components and their licenses: <code>${esc(info.notices)}</code>` : ''}`),
+            `<div class="settings-row"><div class="settings-row-copy"><span class="settings-row-label">Terms and notices</span><div class="settings-row-hint" id="about-terms-status">${this._termsAcceptanceText?.(terms) || ''}</div><div class="about-legal-documents">${documents}</div></div></div>`,
         ].join('');
     }
 
@@ -635,12 +653,19 @@ class LumiSettingsView {
     _renderOrgPolicy() {
         const meta = this.settings?._meta?.policy || {};
         const esc = value => this.escapeHtml(String(value ?? ''));
+        // Machine files Lumi didn't use because someone other than an administrator
+        // could have written them (lumi/admin_files.py): shown, never silently dropped.
+        // An error that already names the file says it once.
+        const ignored = (meta.ignored || [])
+            .filter(item => !(meta.error && String(meta.error).includes(item.reason)))
+            .map(item => `<p class="editor-error settings-policy-ignored" role="status"><strong>${esc(item.title)}.</strong> <code>${esc(item.path)}</code>: ${esc(item.reason)}.</p>`)
+            .join('');
         if (meta.error) {
-            return `<p class="editor-error" role="alert">${esc(meta.error)} Lumi won’t send model requests until it’s fixed.</p>`;
+            return `<p class="editor-error" role="alert">${esc(meta.error)} Lumi won’t send model requests until it’s fixed.</p>${ignored}`;
         }
         const policy = meta.summary;
         if (!policy) {
-            return '<p class="editor-help">No organization policy is installed on this computer. An administrator can set one with Group Policy, a configuration profile or a policy file; see docs/enterprise-policy.md.</p>';
+            return ignored + '<p class="editor-help">No organization policy is installed on this computer. An administrator can set one with Group Policy, a configuration profile or a policy file; see docs/enterprise-policy.md.</p>';
         }
         const list = (items, none) => items === null || items === undefined ? none
             : items.length ? items.map(item => `<code>${esc(item)}</code>`).join(', ') : 'none';
@@ -665,7 +690,7 @@ class LumiSettingsView {
                 : policy.oversight?.enabled ? 'On; see Organization oversight below' : 'Off'],
             ['Data loss prevention', this._renderDlpRules(policy, esc)],
         ];
-        return rows.map(([label, value]) => `<div class="settings-row"><div class="settings-row-copy"><span class="settings-row-label">${label}</span></div><div class="settings-row-value settings-policy-value">${value}</div></div>`).join('');
+        return ignored + rows.map(([label, value]) => `<div class="settings-row"><div class="settings-row-copy"><span class="settings-row-label">${label}</span></div><div class="settings-row-value settings-policy-value">${value}</div></div>`).join('');
     }
 
     // ── Organization oversight (lumi/oversight.py) ─────────────────────────
@@ -731,13 +756,25 @@ class LumiSettingsView {
     }
 
     _setOversightLock(locked) {
+        this._oversightNoticeLock = Boolean(locked);
+        this._applyComposerLock();
+    }
+
+    /**
+     * The message box is locked while Lumi's terms wait to be accepted
+     * (terms_view.js, _termsLocked) or the organization's oversight notice waits
+     * to be confirmed. `_oversightLocked` is that combined lock, which sending,
+     * dictation and the running state check; the server refuses too.
+     */
+    _applyComposerLock() {
+        const locked = Boolean(this._termsLocked || this._oversightNoticeLock);
         const was = Boolean(this._oversightLocked);
         this._oversightLocked = locked;
-        // Nothing may keep listening once the notice locks the message box.
+        // Nothing may keep listening once a notice locks the message box.
         if (locked && this._dictation && this._dictation.state !== 'idle') this._dictation.cancel({focus: false});
         if (locked !== was) {
             if (typeof this._syncDictationButton === 'function') this._syncDictationButton();
-            // Unlocked: ask again which ways of dictating may listen (lumi/voice.py follows the notice).
+            // Unlocked: ask again which ways of dictating may listen (lumi/voice.py follows the gate).
             if (!locked && typeof this.send === 'function') this.send({command: 'voice_status'});
         }
         const input = this.userInput || document.getElementById('user-input');
@@ -747,19 +784,44 @@ class LumiSettingsView {
             if (control) control.disabled = locked;
         }
         if (input) {
-            input.placeholder = locked ? 'Confirm the notice above to start'
-                : this.isRunning ? 'Write a follow-up for the running agent...' : 'Message Lumi';
+            input.placeholder = this._composerLockPlaceholder()
+                || (this.isRunning ? 'Write a follow-up for the running agent...' : 'Message Lumi');
             input.closest?.('.input-wrapper')?.classList.toggle('is-oversight-locked', locked);
         }
         if (locked && !was && hadFocus) {
             // The message box can't keep focus while locked: move it to the notice
-            // itself (not its button), where Tab reaches What’s shared and I’ve read this.
-            document.getElementById('oversight-notice')?.focus();
+            // itself (not its button), where Tab reaches the notice's buttons.
+            this._focusComposerLock();
         }
-        if (!locked && was && this._oversightFocusAfterConfirm && input) {
+        const focusAfter = this._oversightFocusAfterConfirm || this._termsFocusAfterAccept;
+        if (!locked && was && focusAfter && input) {
             this._oversightFocusAfterConfirm = false;
+            this._termsFocusAfterAccept = false;
             input.focus();
         }
+    }
+
+    /** What the locked message box says: Lumi's terms come first, then the organization's notice. */
+    _composerLockPlaceholder() {
+        if (this._termsLocked) return 'Accept Lumi’s terms to start';
+        return this._oversightLocked ? 'Confirm the notice above to start' : '';
+    }
+
+    /** Why the message box is locked, for a toast when someone tries anyway. */
+    _composerLockMessage() {
+        return this._termsLocked
+            ? 'Accept Lumi’s terms first: choose Review terms above the message box.'
+            : 'Confirm your organization’s oversight notice above the message box first.';
+    }
+
+    /** The notice that explains the lock: the terms' when they wait, else the organization's. */
+    _focusComposerLock() {
+        // The terms dialog is modal: while it's open, the focus stays in its text.
+        if (this._termsDialog) {
+            document.getElementById('terms-dialog-body')?.focus();
+            return;
+        }
+        document.getElementById(this._termsLocked ? 'terms-notice' : 'oversight-notice')?.focus();
     }
 
     _confirmOversightNotice() {
@@ -1208,7 +1270,7 @@ class LumiSettingsView {
                 <div class="settings-row-hint">${item.decision === 'trusted' ? 'Trusted' : 'Restricted'} since ${esc(item.at)}${item.note ? ` · ${esc(item.note)}` : ''}</div></div>
                 <div class="settings-row-value"><button type="button" class="btn-sm" data-trust-decision="forget" data-trust-path="${esc(item.path)}" aria-label="Forget the decision for ${esc(item.path)}">Forget</button></div>
             </div>`).join('');
-        return `<p class="editor-help">A project’s instruction files (AGENTS.md, LUMI.md, CLAUDE.md and similar), its notes and codebase summary, and the allow rules in its lumi-policy.json, which skip approval in Auto-edit, apply only after you trust it, and language servers (code intelligence) and automatic lint and test runs wait for trust because they execute the project’s code. Its deny and ask rules always apply, because they only make Lumi more careful. Capability packs keep their own approval.</p>
+        return `<p class="editor-help">A project’s instruction files (AGENTS.md, LUMI.md, CLAUDE.md and similar), its notes and codebase summary, and the allow rules in its lumi-policy.json, which skip approval in Auto-edit, apply only after you trust it, and language servers (code intelligence) and automatic lint and test runs wait for trust because they execute the project’s code. So do Lumi’s own Git features (status, indexing, @diff, checkpoints) in a repository whose Git settings name programs, such as filters or diff drivers. Its deny and ask rules always apply, because they only make Lumi more careful. Capability packs keep their own approval.</p>
             <div class="settings-row"><div class="settings-row-copy"><span class="settings-row-label">This project</span>
                 <div class="settings-row-hint">${esc(`${brings.length ? `Brings ${brings.join(', ')}.` : 'Brings no instructions or policy.'} ${state}`)}</div></div></div>
             ${actions}
@@ -2074,7 +2136,7 @@ class LumiSettingsView {
             {id:'model_evaluations', title:'Model evaluations', group:'Advanced', icon:'chart', description:'Compare models on your own tasks, and review model quality and runtime diagnostics.', sections:['model_comparisons', 'model_evaluations'], keywords:'compare comparison benchmark evaluate models tasks switch pass rate'},
             {id:'iteration_checkpoints', title:'Checkpoints & recovery', group:'Advanced', icon:'history', description:'Inspect saved iterations and recovery options.', sections:['iteration_checkpoints']},
             {id:'lumi_account', title:'Lumi account', group:'Personal', icon:'person', description:'Sign in to Lumi Cloud and use your organization’s policy on this computer.', sections:['lumi_account'], keywords:'lumi cloud organization team company sign in enroll device computer managed policy seat slack teams microsoft chat tasks remote requests'},
-            {id:'about', title:'About Lumi', group:'Personal', icon:'book', description:'What Lumi is, what it costs and what it sends where.', sections:['about'], keywords:'version license EULA terms copyright free plan pricing account privacy telemetry notices feedback bug report idea'},
+            {id:'about', title:'About Lumi', group:'Personal', icon:'book', description:'What Lumi is, what it costs and what it sends where.', sections:['about'], keywords:'version license EULA terms agreement alpha beta test accept accepted copyright free plan pricing account privacy notice telemetry notices third-party feedback bug report idea'},
             {id:'updates', title:'Updates', group:'Advanced', icon:'history', description:'Choose how Lumi updates itself and which releases it takes.', sections:['updates','update_status','update_file'], keywords:'update upgrade version release beta channel pin stable automatic manual off file offline installer bundle air-gapped'},
         ];
     }
@@ -2843,6 +2905,13 @@ class LumiSettingsView {
         this._bindScheduledTasks();
         this._bindCodeEditors();
         this._bindModelComparisons();
+        // About Lumi: the terms and notices open in the terms dialog, readable offline (terms_view.js).
+        this.settingsBody.querySelectorAll('[data-legal-doc]').forEach(button => {
+            button.addEventListener('click', () => {
+                const doc = button.dataset.legalDoc;
+                this.openTermsDialog?.(doc === 'terms' ? {returnFocus: button} : {mode: 'read', doc, returnFocus: button});
+            });
+        });
         this.settingsBody.querySelectorAll('[data-trust-decision]').forEach(button => {
             button.addEventListener('click', () => {
                 button.disabled = true;
@@ -3377,7 +3446,7 @@ class LumiSettingsView {
     _gitPopoverHtml(data) {
         return `
             <div class="git-popover-header">
-                <span>${this.escapeHtml(data.branch)}</span>
+                <span>${this.escapeHtml(data.refused ? 'Git features are off' : data.branch)}</span>
                 <button class="icon-btn git-popover-close">&times;</button>
             </div>
             <div class="git-popover-tabs">
@@ -3392,6 +3461,10 @@ class LumiSettingsView {
         const body = document.getElementById('git-popover-body');
         if (!body || !this.gitData) return;
 
+        if (this.gitData.refused) {
+            body.innerHTML = `<div class="git-popover-empty">${this.escapeHtml(this.gitData.refused)}</div>`;
+            return;
+        }
         if (tab === 'changes') {
             if (this.gitData.changes.length === 0) {
                 body.innerHTML = '<div class="git-popover-empty">No changes</div>';
@@ -3402,9 +3475,10 @@ class LumiSettingsView {
                 if (c.status === '??' || c.status === 'A') statusClass = 'added';
                 if (c.status === 'D') statusClass = 'deleted';
                 if (c.status === '??') statusClass = 'untracked';
+                const name = c.from ? `${c.from} → ${c.file}` : c.file;
                 return `<div class="git-file-item">
                     <span class="git-status-code ${statusClass}">${this.escapeHtml(c.status)}</span>
-                    <span>${this.escapeHtml(c.file)}</span>
+                    <span>${this.escapeHtml(name)}</span>
                 </div>`;
             }).join('');
         } else {

@@ -1,0 +1,97 @@
+{{doc.sdk_license.title}}
+Version {{doc.sdk_license.version}}, published {{doc.sdk_license.published}}
+
+Copyright (c) {{doc.sdk_license.year}} {{entity.legal_name}}. All rights reserved.
+
+This license covers the Lumi Extension SDK (the "SDK"): the files in the sdk
+folder of Lumi's source code, including the lumi_extension Python package, the
+extension templates, the lumi-pack.json schema and sdk/new_pack.py, and copies
+of them. {{entity.legal_name}} ("Luminary") licenses the SDK to you; it
+doesn't sell it. By using the SDK, you accept this license.
+
+1. License. Subject to this license, Luminary grants you a non-exclusive,
+   worldwide, royalty-free, non-transferable license to:
+
+   (a) use, copy and modify the SDK to develop, test, support and distribute
+       extensions for Lumi: capability packs, model provider extensions,
+       panels and other add-ons that run in Lumi through its documented
+       extension interfaces ("Extensions"); and
+
+   (b) reproduce and distribute the SDK's lumi_extension package, as
+       provided or as you modified it, only as part of an Extension, in
+       source or compiled form, if the copy keeps this license (the LICENSE
+       file inside lumi_extension, which sdk/new_pack.py copies into every new
+       pack).
+
+2. People who use Extensions. Anyone who receives an Extension that includes
+   parts of the SDK, as its developer provided them, may install, run and use
+   those parts as part of that Extension with Lumi, and pass the Extension on
+   as its developer allows, without accepting anything more from Luminary for
+   them. The parts of the SDK in it stay under this license.
+
+3. Your Extensions, and the code the templates start. You own the Extensions
+   you create, apart from the SDK and any other Luminary material in them.
+   What the extension templates or sdk/new_pack.py put into a new Extension
+   for you to fill in (such as provider.py and its tests, lumi-pack.json and
+   the README), other than the lumi_extension package and this license, is
+   yours once it's in your Extension: you may use, change, license and
+   distribute it however you choose, and section 4 doesn't apply to it. You
+   may license and distribute your Extensions on terms you choose, including
+   an open-source license, as long as the parts of the SDK they include stay
+   under this license and your terms don't claim to grant rights in the SDK
+   beyond it. Extensions may connect Lumi to other software and services.
+   Offering an Extension in a Lumi extension registry or marketplace may be
+   subject to that registry's or marketplace's own terms.
+
+4. Restrictions. You may not:
+
+   (a) distribute the SDK on its own, or as part of anything other than an
+       Extension;
+   (b) use the SDK, or anything derived from it, to build extensions or
+       add-ons for a product other than Lumi, or to build a product that
+       replaces Lumi;
+   (c) use the SDK or an Extension to circumvent Lumi's security, permission,
+       organization policy or licensing controls, or in violation of law or of
+       the rights of others;
+   (d) remove or alter the copyright notice or this license in copies of the
+       SDK; or
+   (e) use Luminary's trademarks, except to state truthfully that your
+       Extension works with Lumi, without suggesting that Luminary sponsors or
+       endorses it.
+
+5. Lumi itself. This license covers the SDK only. Lumi is licensed under the
+   Lumi End User License Agreement, and nothing in this license grants rights
+   in Lumi.
+
+6. Earlier copies. The SDK was never part of a Lumi release. Before this
+   license, its copies in Luminary's public source repository were published
+   under the MIT License, from September 25, 2026 until this license replaced
+   it there, with the lumi-extension Python package at version 1.0.0. Those
+   copies remain under the MIT License. This license applies to every later
+   copy, starting with lumi-extension 1.1.0.
+
+7. Feedback. If you give Luminary feedback about the SDK, Luminary may use it
+   for any purpose, without obligation to you.
+
+8. Termination. This license lasts until it ends under this section. It ends
+   automatically if you breach it and don't cure the breach within 30 days
+   after Luminary tells you about it. When it ends, you must stop using and
+   distributing the SDK; copies of your Extensions that you distributed before
+   then may continue to be used under this license.
+
+9. No warranty. THE SDK IS PROVIDED "AS IS," WITHOUT WARRANTY OF ANY KIND,
+   EXPRESS OR IMPLIED, INCLUDING THE WARRANTIES OF MERCHANTABILITY, FITNESS
+   FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.
+
+10. Limitation of liability. TO THE FULLEST EXTENT PERMITTED BY LAW, LUMINARY
+    WILL NOT BE LIABLE FOR ANY INDIRECT, INCIDENTAL, SPECIAL, CONSEQUENTIAL OR
+    PUNITIVE DAMAGES, OR FOR LOST PROFITS, REVENUE OR DATA, ARISING OUT OF OR
+    RELATING TO THE SDK OR THIS LICENSE, AND LUMINARY'S TOTAL LIABILITY FOR ALL
+    CLAIMS ABOUT THE SDK WILL NOT EXCEED ONE HUNDRED U.S. DOLLARS (US$100).
+
+11. General. This license is governed by the laws of the State of
+    {{governing_law}} and applicable United States federal law, without
+    regard to conflict-of-laws rules, and disputes about it are heard
+    exclusively in the state and federal courts located in {{venue}}. You
+    will comply with the export control and sanctions laws that apply to the
+    SDK and your Extensions. Send notices to Luminary at {{notices_email}}.

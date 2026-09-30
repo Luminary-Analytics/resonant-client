@@ -199,6 +199,7 @@ const LUMI_EVENT_DELEGATES = {
     'tool.result': 'handleToolResult',
     'tool_permission': 'handleToolPermission',
     'user_input_received': 'handleUserInputReceived',
+    'workspace_path_runs': 'handleWorkspacePathRuns',
 };
 
 // The state label in the Plan tab's toolbar, for the plan it follows.
@@ -213,6 +214,11 @@ const PLAN_STATE_LABELS = {
 };
 const PLAN_FINAL_STATES = new Set(['stopped', 'complete', 'failed', 'ended']);
 
+
+// Error codes that end a turn when the engine refuses it (Session.run): Lumi's
+// terms, the organization's notice or policy, offline mode and budgets.
+const TURN_ENDING_CODES = new Set(['terms_not_accepted', 'oversight_notice', 'policy_blocked', 'offline',
+    'budget_exceeded']);
 
 class LumiApp {
     constructor() {
@@ -1337,6 +1343,7 @@ class LumiApp {
         });
         this._initAccountMenu();
         this._initOversightNotice?.();
+        this._initTermsView?.();
         document.getElementById('settings-back')?.addEventListener('click', () => {
             this.switchView('agents');
             if (this.userInput?.getClientRects().length) this.userInput.focus();
@@ -1675,6 +1682,7 @@ class LumiApp {
     // ── Send Message ────────────────────────────────────────────
 
     _prepareTurnUI(text, images = []) {
+        this._agentRunRefused = false;
         if (this._renderTimer) {
             clearTimeout(this._renderTimer);
             this._renderTimer = null;
@@ -1881,6 +1889,7 @@ class LumiApp {
         this._queuedMessages.delete(event.message_id);
         this._syncComposerQueue();
         this._prepareTurnUI(text, images);
+        this._pendingTurnText = text;
         this.setRunning(true);
     }
 
@@ -1913,10 +1922,12 @@ class LumiApp {
 
     sendMessage(options = {}) {
         if (this._oversightLocked) {
-            // Nothing goes to a model before the organization's notice is
-            // confirmed; the server refuses too (lumi/oversight.py).
-            this.showToastMessage('Confirm your organization’s oversight notice above the message box first.');
-            document.getElementById('oversight-notice')?.focus();
+            // Nothing goes to a model before Lumi's terms are accepted and the
+            // organization's notice is confirmed; the server refuses too
+            // (lumi/terms.py, lumi/oversight.py).
+            this.showToastMessage(this._composerLockMessage?.() || 'Confirm your organization’s oversight notice above the message box first.');
+            if (this._focusComposerLock) this._focusComposerLock();
+            else document.getElementById('oversight-notice')?.focus();
             return;
         }
         if (this._newSessionInflight || this._pendingProjectSwitchId) {
@@ -2012,6 +2023,8 @@ class LumiApp {
         }
 
         this._prepareTurnUI(text, this.attachedImages);
+        // Given back if the server refuses the message (_endRefusedTurn).
+        this._pendingTurnText = text;
 
         // Send to server (include images if attached)
         const msg = { command: 'message', text };
@@ -3177,11 +3190,12 @@ class LumiApp {
         this._setSessionActivity(running ? 'working' : 'idle');
         this.sendBtn.style.display = 'flex';
         this.stopBtn.style.display = running ? 'flex' : 'none';
-        // An organization's oversight notice that isn't confirmed yet keeps
-        // the message box locked (settings_view.js _setOversightLock).
+        // Lumi's terms waiting to be accepted, or an organization's oversight
+        // notice that isn't confirmed yet, keep the message box locked
+        // (settings_view.js _applyComposerLock).
         this.userInput.disabled = Boolean(this._oversightLocked);
         this.userInput.placeholder = this._oversightLocked
-            ? 'Confirm the notice above to start'
+            ? (this._composerLockPlaceholder?.() || 'Confirm the notice above to start')
             : running
             ? 'Write a follow-up for the running agent...'
             : 'Message Lumi';
@@ -3639,10 +3653,16 @@ class LumiApp {
                 if (event.request_id && event.request_id === this._newSessionRequestId) this._releaseNewSessionGuard();
                 // A refused mission dispatch un-marks its Build button or card (autonomous_view.js).
                 if (event.source === 'mission_dispatch') this._missionDispatchRefused();
-                // Organization oversight refused work before any turn started: the
-                // notice above the message box says why (settings_view.js), so this
-                // is no failed turn with retries.
-                if (event.code === 'oversight_notice' && !this.isRunning && !this._activeTask) {
+                // The server started no turn for a message (`refused`: Lumi's terms,
+                // the organization's notice or policy, no model): the running state
+                // ends and the text goes back into the message box (_endRefusedTurn).
+                if (event.refused && this._endRefusedTurn(event)) break;
+                // Lumi's terms or organization oversight refused work before any
+                // turn started: the notice above the message box says why
+                // (terms_view.js, settings_view.js), so this is no failed turn
+                // with retries.
+                if ((event.code === 'oversight_notice' || event.code === 'terms_not_accepted')
+                    && !this.isRunning && !this._activeTask) {
                     this.showToastMessage(event.message || 'Confirm your organization’s oversight notice first.');
                     break;
                 }
@@ -4342,6 +4362,14 @@ class LumiApp {
                 // The organization's oversight: the notice and Settings (settings_view.js).
                 this._applyOversight?.(event.data);
                 break;
+            case 'terms_status':
+                // Lumi's terms: the dialog, the notice and About (terms_view.js).
+                this._applyTerms?.(event.data);
+                break;
+            case 'legal_document':
+                // A text the terms dialog asked for (terms_view.js).
+                this._receiveLegalDocument?.(event.data);
+                break;
             case 'cloud_status':
                 this.cloudStatus = event.data;
                 if (event.data && !event.data.signing_in && event.data.signed_in) this._cloudUrlDraft = undefined;
@@ -4446,6 +4474,8 @@ class LumiApp {
                 break;
             case 'project_trust':
                 this.projectTrust = event;
+                // Trusting the project turns Lumi's own Git features back on (lumi/safe_git.py).
+                if (this.gitData?.refused) this.requestGitStatus();
                 if (this._runtimeBannerState) {
                     this._applyRuntimeError({...this._runtimeBannerState, project_trust: event.current});
                 }
@@ -4782,6 +4812,8 @@ class LumiApp {
         // What the organization's oversight receives: the notice beside the
         // message box, shown before anything is recorded (settings_view.js).
         if (event.oversight) this._applyOversight?.(event.oversight);
+        // Lumi's terms: asked for at first launch and when their version changes (terms_view.js).
+        if (event.terms) this._applyTerms?.(event.terms);
 
         // Plans still running when this page connected; only the socket's
         // own init lists them. Before the returns below: a plan runs on the
@@ -5471,10 +5503,10 @@ class LumiApp {
             if (event.code === 'Space' && event.ctrlKey && event.shiftKey && !event.altKey && !event.metaKey) {
                 if (this.currentView === 'settings') return;
                 event.preventDefault();
-                // Nothing listens while the organization's oversight notice waits: the
-                // webview's recognizer sends audio to its vendor like a model request.
+                // Nothing listens while Lumi's terms or the organization's oversight notice
+                // wait: the webview's recognizer sends audio to its vendor like a model request.
                 if (this._oversightLocked) {
-                    if (!event.repeat) this.showToastMessage('Confirm your organization’s oversight notice above the message box first.');
+                    if (!event.repeat) this.showToastMessage(this._composerLockMessage?.() || 'Confirm your organization’s oversight notice above the message box first.');
                     return;
                 }
                 if (!event.repeat && !shortcutHeld) {
@@ -5501,12 +5533,13 @@ class LumiApp {
 
     /**
      * Which ways of dictating may listen (lumi/voice.py, settings._meta.voice),
-     * and none while the organization's oversight notice locks the message box.
+     * and none while Lumi's terms or the organization's oversight notice lock
+     * the message box.
      */
     _dictationStatus() {
         const voice = this.settings?._meta?.voice;
         if (!this._oversightLocked) return voice;
-        const reason = 'Confirm your organization’s oversight notice above the message box first.';
+        const reason = this._composerLockMessage?.() || 'Confirm your organization’s oversight notice above the message box first.';
         return {...(voice || {}), browser: false, service_ready: false, browser_reason: reason, reason};
     }
 
@@ -7926,8 +7959,43 @@ class LumiApp {
     _openWorkspacePath(path) {
         const value = String(path || '').trim();
         if (!value) return;
+        // The server says "Opened …", or asks first when opening would run the file.
         this.send({ command: 'open_workspace_path', path: value });
-        this.showStatusMessage(`Opening ${this.shortenPath(value)}…`);
+    }
+
+    /**
+     * The file clicked would run if opened (a program, script, shortcut or
+     * installer): the server didn't open it. Name the file and its type, and
+     * offer to show it in its folder instead (lumi/executables.py).
+     */
+    handleWorkspacePathRuns(event) {
+        document.getElementById('reveal-program-dialog')?.remove();
+        const returnFocus = document.activeElement;
+        const name = String(event.name || event.path || 'This file');
+        const dialog = document.createElement('dialog');
+        dialog.id = 'reveal-program-dialog';
+        dialog.className = 'dialog reveal-program-dialog';
+        dialog.setAttribute('aria-labelledby', 'reveal-program-title');
+        dialog.setAttribute('aria-describedby', 'reveal-program-text');
+        dialog.innerHTML = `
+            <div class="dialog-header" id="reveal-program-title">Show ${this.escapeHtml(name)} in its folder?</div>
+            <div class="dialog-body"><p id="reveal-program-text"><strong>${this.escapeHtml(name)}</strong> is ${this.escapeHtml(event.kind || 'a file that runs when opened')}. Opening it would run it, so Lumi doesn’t open it. You can show it in its folder instead.</p></div>
+            <div class="dialog-actions">
+                <button type="button" class="dialog-btn deny" data-cancel>Cancel</button>
+                <button type="button" class="dialog-btn allow" data-reveal>Show in folder</button>
+            </div>`;
+        dialog.querySelector('[data-cancel]').onclick = () => dialog.close();
+        dialog.querySelector('[data-reveal]').onclick = () => {
+            this.send({ command: 'reveal_workspace_path', path: String(event.path || '') });
+            dialog.close();
+        };
+        dialog.addEventListener('close', () => {
+            dialog.remove();
+            if (returnFocus?.isConnected) returnFocus.focus();
+        });
+        document.body.appendChild(dialog);
+        dialog.showModal();
+        dialog.querySelector('[data-cancel]').focus();
     }
 
     _selectAlternateModelValue() {
@@ -9765,6 +9833,43 @@ class LumiApp {
 
     // ── Error ───────────────────────────────────────────────────
 
+    /**
+     * The server refused a chat message before any turn started. A refused
+     * follow-up leaves the queue, and the turn it followed keeps running;
+     * otherwise the running state sendMessage set ends. The text goes back
+     * into an empty message box either way. Returns true when nothing more is
+     * shown: a follow-up's refusal is a toast, not a failed turn.
+     */
+    _endRefusedTurn(event) {
+        const queued = event.message_id ? this._queuedMessages?.get(event.message_id) : null;
+        if (queued) {
+            queued.el?.remove();
+            this._queuedMessages.delete(event.message_id);
+            this._syncComposerQueue();
+            this._restoreRefusedText(queued.text);
+            this.showToastMessage(event.message || 'That follow-up wasn’t sent.');
+            return true;
+        }
+        const text = this._pendingTurnText;
+        this._pendingTurnText = '';
+        // Its card shows the reason without Retry or Continue (run_cards.js).
+        this._agentRunRefused = true;
+        this.clearTerminals();
+        this.setRunning(false);
+        this._restoreRefusedText(text);
+        return false;
+    }
+
+    _restoreRefusedText(text) {
+        if (!text || this.userInput.value.trim()) return;
+        this.userInput.value = text;
+        this._markDraftEdited();
+        this._saveDraft();
+        this.userInput.style.height = 'auto';
+        this.userInput.style.height = Math.min(this.userInput.scrollHeight, 200) + 'px';
+        this._syncComposerGutter?.();
+    }
+
     handleError(event) {
         this.removeThinking();
         this._finalizeLiveCollapsedGroup();
@@ -9828,8 +9933,11 @@ class LumiApp {
             total_steps: (this._currentTurn && this._currentTurn.stepCount) || 0,
         });
 
-        // If it was a fatal-ish error, stop running and clean up terminals
-        if (event.message && (
+        // If it was a fatal-ish error, stop running and clean up terminals.
+        // A refusal of Lumi's terms, the organization's notice or policy, offline
+        // mode or a budget ends the turn, and the engine may send no session.end
+        // after it (Session.run returns at once when it refuses a turn).
+        if (TURN_ENDING_CODES.has(event.code) || event.message && (
             event.message.includes('step limit') ||
             event.message.includes('No backend') ||
             event.message.includes('Cancelled')
@@ -10963,7 +11071,11 @@ class LumiApp {
                 : `This project brings ${parts.join(' and ')}. Lumi isn't using them until you trust the project.`;
         }
 
-        if (!reason && !mcpNote && !packNote && !trustNote) {
+        // Lumi's own Git is off in an untrusted project whose Git settings run
+        // programs (lumi/safe_git.py); trusting the project turns it back on.
+        const gitNote = (event && event.git_refused) || '';
+
+        if (!reason && !mcpNote && !packNote && !trustNote && !gitNote) {
             el.hidden = true;
             el.textContent = '';
             this._dismissedRuntimeNotice = '';
@@ -10974,7 +11086,7 @@ class LumiApp {
         // with no way to close it is just noise once the user has read it —
         // but silencing it forever would hide a *different*, later problem, so
         // a changed message brings it back.
-        const signature = `${reason}||${mcpNote}||${packNote}||${trustNote}`;
+        const signature = `${reason}||${mcpNote}||${packNote}||${trustNote}||${gitNote}`;
         if (this._dismissedRuntimeNotice === signature) {
             el.hidden = true;
             return;
@@ -11018,6 +11130,23 @@ class LumiApp {
                 button.addEventListener('click', () => {
                     button.disabled = true;
                     this.send({command: 'project_trust_set', decision, project_path: trust.project_path});
+                });
+                line.appendChild(button);
+            }
+            el.appendChild(line);
+        }
+        if (gitNote) {
+            const line = document.createElement('div');
+            line.className = 'runtime-banner-git';
+            line.textContent = gitNote;
+            if (!trustNote) {  // the trust line above already offers the choice
+                const button = document.createElement('button');
+                button.type = 'button';
+                button.className = 'runtime-banner-action';
+                button.textContent = 'Trust this project';
+                button.addEventListener('click', () => {
+                    button.disabled = true;
+                    this.send({command: 'project_trust_set', decision: 'trusted', project_path: ''});
                 });
                 line.appendChild(button);
             }
@@ -13804,6 +13933,13 @@ class LumiApp {
     handleGitStatus(data) {
         this.gitData = data;
         this._applyGitBadgeFromData();
+        // An untrusted project whose Git settings run programs: Lumi runs no
+        // Git there (lumi/safe_git.py). The banner says so until the project
+        // is trusted (or the notice is dismissed); the Git popover keeps it.
+        const refused = (data && data.refused) || '';
+        if ((this._runtimeBannerState?.git_refused || '') !== refused) {
+            this._applyRuntimeError({...(this._runtimeBannerState || {}), git_refused: refused});
+        }
     }
 
     /** Git badge is Agent/workspace context; hidden on Ask so chat feels repo-agnostic. */
@@ -13877,6 +14013,7 @@ function applyMixin(target, MixinClass, label) {
 
 applyMixin(LumiApp.prototype, window.LumiAutonomousView, 'autonomous-view');
 applyMixin(LumiApp.prototype, window.LumiSettingsView, 'settings-view');
+applyMixin(LumiApp.prototype, window.LumiTermsView, 'terms-view');
 applyMixin(LumiApp.prototype, window.LumiRunCards, 'run-cards');
 applyMixin(LumiApp.prototype, window.LumiEmployeeTasks, 'employee-tasks');
 applyMixin(LumiApp.prototype, window.LumiPanelsView, 'panels-view');

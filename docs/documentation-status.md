@@ -79,6 +79,10 @@ guidance needs an explicit status notice and a current replacement.
   orchestrated teams are recorded in the [benchmarks](swarming-benchmarks.md).
   Packaged qualification and a benefit claim are still pending.
 - [docs/organization-oversight.md](organization-oversight.md)
+- [lumi/legal/EULA.md](../lumi/legal/EULA.md), [ALPHA-TERMS.md](../lumi/legal/ALPHA-TERMS.md)
+  and [PRIVACY.md](../lumi/legal/PRIVACY.md): the texts Lumi ships and asks
+  people to accept, rendered from `lumi/legal/templates/` and
+  `lumi/legal/terms.json`. Edit those, never the rendered files.
 - [docs/unreleased.md](unreleased.md)
 
 ## Planning proposals

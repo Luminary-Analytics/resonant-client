@@ -293,6 +293,460 @@ Validation:
   Escape.
 - **Not covered:** a real Lumi Cloud, the packaged app and the desktop
   window's clipboard; a screen reader.
+## September 29 Lumi's terms: the EULA, the alpha terms, a privacy notice, and accepting them (source only, not released)
+
+The owner decided on September 27: no MIT License for this build. The
+Extension SDK and the VS Code extension become proprietary like the app, with
+a limited license that lets developers build extensions for Lumi, and the End
+User License Agreement and the alpha terms ship now and take effect for alpha
+testers; counsel reviews them later. On September 29 the owner gave the legal
+details, and a review's findings were fixed (below). The texts are complete
+and carry no draft marks.
+
+This build is **0.20.0.dev0**: `0.19.2.dev11` was built both under the MIT
+License (on `main` before commit beb2848) and after it, so the version moved
+past every version published under the MIT License.
+
+### The texts (`lumi/legal/`)
+
+- **[End User License Agreement](../lumi/legal/EULA.md)**, version 1.0: the
+  license and its restrictions, free individual use during the alpha, updates
+  (automatic checks, channels, pins, managed copies), third-party components
+  and the earlier copies that stay MIT, what it means that Lumi is an AI agent
+  acting on your computer (permission modes are yours, computer use is on
+  unless turned off, review output, keep backups, model providers under your
+  own accounts and their terms), data (with the privacy notice), feedback,
+  termination, the warranty disclaimer and the limitation of liability, export
+  controls, governing law (New Hampshire and applicable US federal law, with
+  the consumer carve-out) and venue (the state and federal courts in New
+  Hampshire), notices, and how a new version is announced and accepted again.
+  Luminary Analytics, LLC, a New Hampshire limited liability company, is the
+  licensor; notices and support go to rich.bellantoni@luminaryanalytics.com.
+- **[Alpha and Beta Test Terms](../lumi/legal/ALPHA-TERMS.md)**, version 1.0,
+  for pre-release builds (a version whose number carries a pre-release label,
+  development builds included, whichever channel brought it): as-is software
+  that may change or end, not for production-critical use, no confidentiality
+  obligation in the open alpha, feedback Luminary may use freely, feedback and
+  diagnostics only when the tester sends them (the privacy notice has the
+  details, so they can change without new terms), a license that lasts until
+  the program ends or a stable release succeeds the build, and how to leave.
+- **[Privacy notice](../lumi/legal/PRIVACY.md)**, version 1.0, checked against
+  the code: update checks, model requests (and an organization's DLP service,
+  which receives their text), what the agent reaches, Lumi Cloud once signed in
+  or enrolled (shared conversations, hand-offs, second approvals, reviews, the
+  library, tasks from chat and their replies, and an enrolled computer's hourly
+  usage and crash counts), feedback as PR #101 sends it, "when the feature is
+  available" (to `privacy.feedback_url` or the computer's Lumi Cloud, with the
+  sign-in when signed in there, waiting reports retried, and organizations able
+  to turn it off), organization oversight (unattended work recorded by default,
+  and flag excerpts that can come from tool output), offline mode, and where
+  local data lives.
+- **[Lumi Extension SDK License](../sdk/LICENSE)**, version 1.0: use, change
+  and ship the SDK only as part of extensions for Lumi; people who install an
+  extension may run the SDK parts in it; the code the templates start is the
+  developer's own; developers license their extensions as they like, including
+  open source, with the SDK's files keeping its license. `lumi-extension` is
+  now 1.1.0.
+- **The VS Code extension** is part of Lumi under the EULA (`LICENSE.txt`,
+  `"license": "SEE LICENSE IN LICENSE.txt"`), now version 0.2.0.
+- **The earlier MIT copies** are named by release and commit, never a version
+  range (EULA 5.4, `LICENSE`): the releases tagged v0.6.3a1 through v0.19.1,
+  published as Resonant Client (0.6.3a1 to 0.6.10), Resonant (0.6.11 to
+  0.18.2) and SONN Client (0.19.0 and 0.19.1); the source on `main` from commit
+  c00f29c (May 15) until commit beb2848 (September 27); and the SDK and the VS
+  Code extension as published in the repository before their current licenses
+  (neither was ever part of a release). Releases v0.2.0 to v0.6.2 were not MIT.
+
+### One file of facts, and a pin for each text
+
+`lumi/legal/terms.json` holds the facts, and for each document its version,
+the day its text was published and the SHA-256 that pins that version's text.
+`packaging/legal_texts.py render` writes the texts from
+`lumi/legal/templates/`; `tests/test_legal_texts.py` fails while a committed
+text isn't what it writes, or doesn't match its version's pin, so any change
+to what a text says comes with a new version. `release-check` warns in pull
+request CI and, with `--release`, fails `release.yml` while a fact or any
+rendered text still holds `[[TO BE PROVIDED: ...]]`, a text is stale or
+unpinned, a published date is after the build's day, or the version isn't
+`X.Y.Z` or `X.Y.Z-alpha.N`, `-beta.N` or `-rc.N` from 0.20.0 on. See
+[RELEASING.md](../RELEASING.md#lumis-terms).
+
+### Accepting them (`lumi/terms.py`)
+
+- **The terms in force:** the EULA, plus the Alpha and Beta Test Terms when
+  the build's version is a pre-release. A new version of either asks again, and
+  so does an accepted text that no longer matches the shipped one (each
+  acceptance records the text's SHA-256). A new version of the privacy notice
+  or the SDK license asks no one; a version applies to a person from the day
+  they accept it.
+- **The gate on every path:** `oversight.admit` and `oversight.gate` ask the
+  terms before anything else, so every path that waited for the oversight
+  notice waits for them: `Session.run` before each turn and each model
+  request, the app's message box, `/plan`, missions, autonomous sessions, Team,
+  model comparisons, evaluations, dictation, Engram's socket commands, Run now
+  and requests outside a turn.
+- **And underneath every model request** (the review found warm-ups sending
+  "hi", or an EXO tool call, before acceptance): `dlp.guarded`, which wraps
+  every backend request method, refuses while the terms wait, even under
+  `dlp.permit`; so do `dlp.check_request` (before anything reaches a DLP
+  service), `request_purpose.auxiliary_stream`, and Lumi's own HTTP model
+  requests (Ollama's warm-up and tool probe). Choosing a model in the app, and
+  resuming a mission, warm it up only once the gate passes, and the terminal UI
+  asks for the terms right after checking the policy, before it scans for
+  models or warms one up. `tests/test_dlp.py` lists every use of a model
+  request with its gate.
+- **Who accepts:** the person, in the app's dialog (Accept on a trusted click
+  or key press; every open window then unlocks), by typing yes where
+  `lumi run`, the terminal UI or `lumi gateway` shows the terms, or with
+  `lumi terms accept <value>`; `lumi run --accept-terms <value>` and
+  `LUMI_ACCEPT_TERMS` (outside the app) for CI, where a development or
+  pre-release build needs `eula-1.0,alpha-terms-1.0`. Tasks from Slack and
+  Teams aren't taken from Lumi Cloud until the terms are accepted; they wait
+  there.
+- **Organizations:** a machine policy's
+  `"legal": {"accepted_by_organization": "Example Corp"}` accepts for everyone
+  on the computer, only from a source only administrators can write (PR #109's
+  hardened machine policy: the HKLM Group Policy key or the `PolicyFile` it
+  names, a configuration profile, or the machine policy file in a locked
+  folder). Which source found the policy decides, so the machine file counts
+  even when `LUMI_POLICY_FILE` names it too, and `LUMI_POLICY_FILE` elsewhere,
+  a Lumi Cloud policy, or a policy Lumi can't use (such as an unreadable
+  `PolicyFile`, which fails closed) accepts nothing.
+- **A refused message** is marked `refused` (`ws_commands.refused_turn`, PR
+  #105's contract): the page leaves the running state, gives the text back to
+  the message box and marks the card "Not sent" without Retry. The app asks
+  the organization's policy before a message becomes a turn too, and a refusal
+  the engine gives after a turn started (the gate, the policy, offline mode, a
+  budget) ends the running state as well.
+
+### In the app
+
+- A dialog shows the terms at first launch and when they change, with the
+  privacy notice one link away; the message box stays locked until Accept.
+  Settings > About Lumi says who accepted and opens every text this build
+  ships (the test terms only on a pre-release build), and says in short what
+  leaves the computer (not "only the update check").
+
+### In the installers
+
+- **Inno Setup** shows the terms on its license page once for each version:
+  `legal_texts.py rtf` writes the versions `license.rtf` holds, the installer
+  records them in `HKLM\SOFTWARE\Luminary Analytics\Lumi\Setup`, and
+  `ShouldSkipPage` skips the page while they match, so WinSparkle's updates
+  don't stop on it (a stable-to-beta update still shows the test terms). The
+  record is the installer's convenience, never a person's acceptance, and no
+  silent arguments were added.
+- **The MSI** keeps WixUI_Minimal's license dialog; brackets in the text are
+  RTF escapes, so Windows Installer never reads them as properties. The
+  package remembers `POLICYFILE` (WiX's remember-property pattern), so an
+  upgrade that doesn't name it again keeps the machine's `PolicyFile`.
+- **macOS:** the PKG shows the terms, and the DMG carries them beside the app.
+- **Third-party notices** now carry every component's real license text:
+  marked, highlight.js, DOMPurify and Inter from committed copies named for
+  their versions, and the Python runtime and the PyInstaller bootloader from
+  the build's own Python and PyInstaller, with their exact versions. Writing
+  the notices fails when a component would ship without its text.
+
+### CI
+
+- `build-check.yml` compiles `installer.iss` without output (`/O-`), checks
+  the MSI's license text has no brackets, and upgrades the installed MSI with a
+  second build that doesn't name `POLICYFILE`: the `PolicyFile` value and the
+  policy's acceptance must stay.
+- `release.yml` refuses a tag that isn't `vX.Y.Z` or `vX.Y.Z-alpha.N`,
+  `-beta.N` or `-rc.N`, and flags pre-releases by that rule, so a tag like
+  `v0.20.0rc1` can't publish a non-prerelease GitHub Release.
+
+### Still open
+
+- Counsel's review of the four texts (the owner accepted that the alpha ships
+  them first).
+- PR #101's feedback: if what it sends changes before it merges, the privacy
+  notice changes with it (a new version of the notice, which asks no one).
+- Whether the repository stays public.
+
+### Validation (September 29)
+
+- `ruff check .` is clean; `node --check` passes for `app.js`,
+  `settings_view.js`, `terms_view.js` and `run_cards.js`; the six Node UI
+  test files pass (160 tests; four new: a refused message's recovery, a
+  refused follow-up, refusals after a turn started, About on a stable build).
+- The full pytest suite in a throwaway home with a clean virtual environment
+  (Python 3.13.5, six workers): 6,636 passed, 25 skipped, 2 failed, 11
+  errors. The errors were `tests/test_swarm_benchmark_runner.py`'s shared
+  fixture, which blocked because commits landed in the checkout during the
+  run; alone, the file passes (37). The two failures
+  (`test_a_child_left_suspended_outside_its_job…` and
+  `test_malformed_child_protocol…[early-eof]`) fail the same way on the
+  pre-fix code on this computer. After merging PR #109's latest commit, the
+  terms, legal texts, DLP, machine policy, MSI, oversight, policy, supply
+  chain, license, docs links, terminal UI, remote tasks and EXO tests pass
+  (705, 4 skipped).
+- The review's probes are tests now. Against the pre-fix code, 16 of the 19
+  new Python tests fail, and all four new Node tests; the other three pass
+  there because PR #109 fixed them (a planted ProgramData policy, an
+  unreadable `PolicyFile`, a planted key file).
+- The reviewer's terminal UI probe, as a real process against a recording
+  Ollama with the terms declined: before, two model list requests and
+  `POST /api/chat` "hi"; now, no request at all.
+- In headless Edge with real key presses (`tests/terms_acceptance.browser.cjs`):
+  choosing a model while the terms wait sends the recording Ollama nothing,
+  and once accepted the warm-up follows; a second window unlocks when the
+  first accepts; a message refused after the acceptance vanished leaves the
+  running state (Stop hidden), comes back to the message box and reads "Not
+  sent" without Retry, and accepting again from the keyboard sends it; at
+  375 px in both themes that card fits, with contrast of 6.4:1 or more.
+  The oversight, DLP, policy (two), panels and Team (`swarm_app`) browser
+  tests pass, their fixtures starting with the terms accepted.
+- Not run on this computer: Inno Setup, WiX and the macOS build. CI's
+  build-check compiles `installer.iss`, and builds, upgrades and checks the
+  MSI.
+
+### Validation (September 27, before the review fixes)
+
+- `ruff check .` clean; the six Node UI test files passed (156 tests); the
+  full pytest suite in a throwaway home: 6,539 passed, 24 skipped, 6 failed
+  (three needed the gitignored `rg.exe`, one passed on its own, two failed the
+  same way on the base commit).
+- In headless Edge with real key presses (`tests/terms_acceptance.browser.cjs`):
+  the dialog, the locked message box, refusals of a script's click and a raw
+  socket message, keyboard use, About, a machine policy accepting, and 375 px
+  in both themes.
+- Real processes in a throwaway home: `lumi terms`, `lumi run` with and
+  without an acceptance, `lumi terms show` and `lumi terms accept`.
+
+## September 29 security fix: Lumi's own programs never come from the project (source only, not released)
+
+Lumi starts programs for its own work (Git for the status bar, ripgrep for
+search, the system's tools, editors' command lines, language and MCP servers,
+the Codex and Claude Code CLIs). It named many of them by bare name while the
+app's working folder was the open project, and Windows looks for a program in
+the working folder before the system folders and PATH, so a program of the
+same name in a repository could run in their place. They are now resolved in
+one place, `lumi/executables.py` (see [shell sandbox](shell-sandbox.md#programs-lumi-starts-itself)).
+A review found more ways for a project to start a program through Lumi: its
+own Git settings, a server's launcher script, a changed file clicked in the
+page and computer use's open application. Those are closed too:
+
+- **Every process hardens itself.** Importing the `lumi` package, which every
+  entry point does first (the app, the terminal UI, `lumi run`, scheduled
+  runs, the gateway, workers), sets `NoDefaultCurrentDirectoryInExePath` on
+  Windows: CreateProcess, cmd.exe and `shutil.which` (Python 3.12+) then leave
+  the working folder out.
+- **The app never works in a project.** It stays in the system folder (`/`
+  elsewhere) and gives each command its folder; opening a project no longer
+  changes the working folder, so ShellExecute and DLL lookups, which the
+  setting doesn't cover, never search a project either. Stdio MCP servers,
+  which pack commands expect to run in the project, now get it as their
+  working folder explicitly. A relative folder typed for a schedule or for
+  tasks from Slack and Teams is still taken relative to the open project;
+  opening, adding or starting a mission in a project takes its full path.
+- **Full paths for Lumi's own launches.** The system's tools (`cmd`,
+  `powershell`, `explorer`, `taskkill`, `schtasks`, `clip`, `findstr`) come
+  from the folders Windows reports (`GetSystemDirectoryW`,
+  `GetSystemWindowsDirectoryW`), never from environment variables; on macOS
+  from `/usr/bin` and the like. Everything else comes from PATH's full folders,
+  skipping empty, `.` and relative entries and any folder inside the open
+  project or the working folder (the home folder and the Windows folder
+  excepted, since per-user installs live there). No more `shell=True` for
+  Lumi's own calls: Git status (which ran through cmd.exe), MCP batch files
+  and opening an application no longer use a shell.
+- **Git for Lumi's own work** goes through one helper, `lumi/safe_git.py`:
+  the page's status when a project opens, indexing, `@diff`, checkpoints,
+  hand-offs, the editor bridge, agent worktrees, model comparisons, the Git
+  popover and the agent's Git and pull-request tools. Every call switches off
+  the programs a repository's own settings can start
+  (`core.fsmonitor=false`, `core.hooksPath` set to an empty folder Lumi owns,
+  `safe.bareRepository=explicit`, `log.showSignature=false`,
+  `protocol.ext.allow=never`, `--no-optional-locks` for status and
+  `--no-ext-diff --no-textconv` for diffs). A commit or push you ask for (the
+  popover's commit, the agent's `git_commit` and pull-request tools) still
+  runs a trusted project's hooks, as your own `git commit` would. In a project
+  you haven't trusted, Lumi first reads the repository's settings with
+  `git config` (which runs nothing), including the files they include, the
+  ones an `includeIf` names even when its condition doesn't hold yet, and its
+  submodules' settings. If they name programs (clean, smudge and process
+  filters, diff drivers, merge drivers, `core.sshCommand`, `core.askPass`,
+  `gpg.program`, credential helpers, editors and pagers, `uploadpack` and
+  `receivepack`), Lumi runs no Git there: a banner says "Git features are off
+  for this project until you trust it", names the settings and offers **Trust
+  this project**, the Git popover keeps the notice, `@diff` attaches it,
+  indexing walks the folder instead, and session checkpoints keep an archive.
+  Trusting the project (there, or in Settings > Privacy & security > Project
+  trust) turns them back on. The page's changed-file list now reads
+  `status --porcelain=v1 -z`, so names with spaces, other scripts and renames
+  show as they are.
+- **Servers keep Lumi's hardening.** MCP servers, language servers, provider
+  extensions, automatic lint and test runs and the Codex and Claude Code CLIs
+  get `secrets_store.server_env`: Lumi's model-provider keys removed (the CLI
+  agents keep theirs, which they sign in with) and
+  `NoDefaultCurrentDirectoryInExePath` kept, so a launcher script such as
+  npm's `tool.cmd`, which runs `node` by bare name, finds it on PATH and never
+  in the project. Codex no longer gets the project's path on its command line
+  (its working folder is the project), and a CLI agent installed as a batch
+  file refuses arguments cmd.exe would read as commands.
+- **Clicking a changed file.** A document opens with its own program; a file
+  that opening would run (a program, batch file, PowerShell or Python script,
+  shortcut, installer, a type whose registered command runs it; `.app`,
+  `.command` and `.pkg` on macOS; `.desktop` on Linux; an executable file) is
+  never opened: the page names the file and its type and offers **Show in
+  folder** instead. The worker hand-off's file buttons do the same.
+- **Computer use's open application** takes an installed application by
+  name, or on Windows a web page (`https:`), mail (`mailto:`), a Settings page
+  (`ms-settings:`), an installed app's id (`shell:AppsFolder\<id>`) or a
+  document by its full path. It refuses `file:` and every other address kind,
+  network shares, and files that would run; on macOS and Linux it takes
+  names only.
+- **Smaller fixes.** A relative capability-pack folder in Settings is the
+  project's; a tool that needs the project (jobs, previews, checks, notes,
+  code intelligence, the CLI agents, `@file` completion, indexing, `!`
+  commands) says to open one instead of using the system folder; the app
+  leaves the folder it was started in before the managed setup or the updater
+  run; a mission's project path must be a full path with its drive;
+  JetBrains' External Tools start `python -P -m lumi`, so a `lumi` module in
+  the project isn't imported; and the working folder is out of Lumi's own DLL
+  search (`SetDllDirectoryW("")`, not inherited by children).
+- **A trusted project's own tools.** Automatic lint and tests, language
+  servers and sprint mode's Python look in a trusted project's `.venv`,
+  `venv` and `node_modules/.bin` first (`executables.project_tool`), and say
+  where each came from ("from the project's .venv", "from PATH") in the LSP
+  list and in their results. In a project you haven't trusted they never run
+  from there, and Lumi says the project has its own copy and to trust it.
+  Git, ripgrep, the system's tools and the CLI agents never come from the
+  project.
+- **What changes for you.** Tools in a virtual environment you activated
+  inside a project you haven't trusted are not picked up by Lumi's own
+  automatic runs (language servers, auto-test, auto-lint); trust the project,
+  or name them by full path, or by a path relative to the project, in
+  Settings. A server started through a batch file that runs another program
+  by bare name from the project folder (`helper.cmd`) needs to name it with a
+  path (`.\helper.cmd`, `%~dp0helper.cmd`). `LUMI_CODEX_CLI`,
+  `LUMI_CLAUDE_CLI`, `CODEX_CLI_PATH` and `LUMI_BROWSER_CHROME_PATH` take a
+  full path or a name on PATH; a relative path is ignored. A stdio MCP server
+  configured as `npx` now finds `npx.cmd` on Windows. Computer use's "open
+  application" on Windows opens a name found on PATH or registered under App
+  Paths, or one of the addresses above, without cmd.exe.
+- **Unchanged by design.** The agent's shell and checks, jobs and previews,
+  the composer's `!` commands and your hooks still run in the project with
+  your own environment (`executables.person_environment`, which
+  `secrets_store.child_env` applies), and the Codex and Claude Code tool loops
+  still run in the project (their own launch keeps Lumi's hardening),
+  so `gradlew build` in cmd.exe finds the project's script as in your
+  terminal. A job or preview naming a program relative to the project still
+  runs it from there. Sprint-mode validation commands and worktree
+  validation commands now get that same environment (without Lumi's model
+  keys), like other checks.
+- **Tests.** `tests/test_safe_git.py` builds repositories whose settings
+  name programs (fsmonitor, external diff, textconv, clean filter, gpg with
+  signatures, hooks, includes, `includeIf`, submodules), each a harmless
+  script, and runs every Lumi Git caller against them, untrusted and trusted.
+  `tests/test_open_files.py`, `tests/test_project_tools.py` and new cases in
+  `tests/test_project_programs.py` cover clicking scripts, open application,
+  project tools, the npm-shim chain for MCP servers and the CLI agents, the
+  DLL search and `-P`. `tests/open_files.browser.cjs` and
+  `tests/git_trust.browser.cjs` click through the page. The launch scan now
+  requires every program to come from a resolver, `sys.executable` or an
+  absolute path, follows wrappers across modules, module constants,
+  f-strings, `*prefix`, `append`, `functools.partial`, event loops,
+  `getattr(os, "startfile")`, `ShellExecuteW` and `pty.spawn`, and counts
+  each by-design use. `tests/test_project_programs.py` plants harmless `git.exe`,
+  `git.bat`, `explorer.exe`, `rg.exe` and similar programs in a project and
+  runs Lumi's Git status, Git tools, indexing, context, search (bundled
+  ripgrep and PATH), language-server and editor lookups and "Show in folder"
+  with that project as the working folder and PATH pointing into it, without
+  the process setting, plus a fresh process that imports `lumi` and launches
+  by bare name, `shell=True` included. `tests/test_launch_scan.py` fails on
+  any new launch by bare name, shell, `shutil.which`, `os.startfile` or
+  `webbrowser` outside a reviewed list; `tests/test_executables.py` covers
+  the resolver. The macOS CI job runs all three.
+- `executables.show_in_folder` is there for the first-run polish work's
+  "Show in folder".
+## September 29 security fix: machine policy only from places only administrators can write (source only, not released)
+
+Organization policy, the keys that sign policies, and a machine
+`license.json` now count only where nobody but administrators can change
+them, and a policy file Group Policy names fails closed. Before, files in
+`C:\ProgramData\Lumi`, which any user can create where no administrator did,
+counted as the machine's policy and signing keys, and a `PolicyFile` Lumi
+couldn't read left it without the organization's policy. See
+[the file rules](enterprise-policy.md#only-files-only-administrators-can-change-count).
+
+- **The check** (`lumi/admin_files.py`, ctypes, no pywin32). Windows: the
+  file and each folder up to ProgramData (or the drive's or share's root)
+  must be owned by SYSTEM, Administrators or TrustedInstaller, and no
+  permission entry may let anyone else write, append, add files or folders,
+  change attributes, delete, change permissions or take ownership, including
+  the `BUILTIN\Users:(CI)(WD,AD,WEA,WA)` entry every folder made under
+  ProgramData inherits. On a UNC path the Domain Admins and Enterprise Admins
+  of this computer's own domain (read from LSA's primary domain) count too;
+  never another domain's, and never on a local path. Inherit-only and deny
+  entries don't count; a junction or symbolic link anywhere on the way, the
+  root included, does, and a path naming an alternate data stream is refused.
+  The root itself may let people add folders but not replace them. macOS and
+  Linux: root must own the file and each folder up to `/etc`,
+  `/Library/Application Support` or `/Library`, and none may be writable by
+  its group or others.
+- **A file that fails is ignored, never silently:** Settings > Privacy &
+  security > Organization policy shows "Policy file ignored: writable by
+  non-administrators" with the file and the reason, `lumi policy` lists it,
+  and the audit log records `policy.file_ignored` (once per file and reason in
+  a process). A file someone other than an administrator owns, or one in a
+  folder someone else owns, reads as absent. A file an administrator put
+  there (it and its folder are an administrator's) in a place others can
+  change fails closed.
+- **`PolicyFile` fails closed.** A file Group Policy names that can't be read
+  (a share out of reach, a missing file, a path that isn't a full one, such
+  as one with an unexpanded `%USERPROFILE%`), that others can change, or a
+  policy registry key Lumi can't read, refuses model requests through the
+  existing unusable-policy path (and keeps offline mode on with no hosts).
+  A read error there used to fall through to
+  `C:\ProgramData\Lumi\policy.json`, `LUMI_POLICY_FILE` or no policy.
+- **Signing keys on Windows come only from Group Policy's `PolicyKeys`**
+  (and a machine policy's `trusted_keys`). `policy-keys.json` isn't read on
+  Windows any more, as `license-keys.json` already wasn't: these keys decide
+  which downloaded policy replaces the machine's, a registry policy value can
+  only be an administrator's, and a file under ProgramData is theirs only
+  while its folder stays locked down. Settings notes a `policy-keys.json`
+  that is there. On macOS and Linux the file stays, behind the check.
+- **Licenses:** a machine `license.json`, and `license-keys.json` on macOS
+  and Linux, pass the same check; one that fails is skipped (the next place
+  is used) and shown in `lumi license status` and Settings > Offline mode.
+- **The MSI creates `%ProgramData%\Lumi` locked** (`packaging/lumi.wxs`,
+  `MsiLockPermissionsEx`: owned by Administrators, full control for SYSTEM and
+  Administrators, read and execute for Users, nothing inherited), taking over
+  a folder someone made first; uninstalling removes it when empty. Each
+  install replaces the folder's owner and permissions, and files inside keep
+  their own owners.
+  [Organization policy](enterprise-policy.md#locking-down-a-policy-folder-on-windows)
+  gives the icacls recipe for Group Policy and Intune scripts.
+- **`lumi policy`** prints the policy in force as JSON (source, error,
+  ignored files, summary) and exits 1 while Lumi refuses model requests under
+  it, for administrators checking a deployment.
+- **Tests:** `tests/test_machine_policy_trust.py` checks every kind of
+  permission entry on descriptors built in the test and, on Windows, from
+  SDDL; real folders changed with icacls (the half needing an administrator
+  runs only elevated, as in CI); owner and mode rules, which the macOS job now
+  runs on a real Mac; ignored and fail-closed files, `PolicyFile` cases,
+  Settings, `lumi policy` and the audit record; and the reported case end to
+  end: with Group Policy in force, files written without administrator
+  rights no longer change the policy. `tests/policy_trust.browser.cjs`
+  checks Settings and a refused turn in the source app (run locally, not in
+  CI). `build-check.yml` installs the MSI over a folder the Users group owns
+  and checks it comes out locked, that a `PolicyFile` in a folder made the
+  usual way fails closed, and that the icacls recipe makes it apply.
+  `build-linux.yml` checks the installed .deb: root's
+  `/etc/lumi/policy.json` made writable by everyone fails closed, and one
+  the runner's account owns is ignored.
+## September 29 Tests no longer register real scheduled tasks (source only, not released)
+
+Tests that saved a schedule registered a real Task Scheduler entry
+(`Lumi\<id>`, `python -m lumi schedule run <id>`); only `tests/test_schedules.py`
+installed a fake. On a developer machine 183 such tasks ran nightly at 02:30
+and renamed the real `~/.resonant` folder to `~/.lumi`. `tests/conftest.py` now
+sets `LUMI_OS_SCHEDULER=off` for the whole run, and subprocesses inherit it.
+With it, `lumi.schedules.registrar()` returns `NullRegistrar`: schedules are
+saved but never registered with Task Scheduler, launchd or cron. A test
+checks that saving, pausing and removing a schedule never runs `schtasks`.
 
 ## September 27 macOS alpha: Sparkle updates and release publishing (source only, not released)
 
@@ -441,7 +895,9 @@ wording is a draft for counsel.
   or the Lumi End User License Agreement provided with the software; no other
   rights. It notes that versions 0.6.3 through 0.19.x were published under the
   MIT License and remain under it. Versions before 0.6.3 declared
-  "Proprietary" and had no `LICENSE` file.
+  "Proprietary" and had no `LICENSE` file. (On September 29 that range gave way
+  to releases and commits, since `0.19.2.dev11` was built both under the MIT
+  License and after it; see "September 29 Lumi's terms".)
 - **Package metadata:** `license = {text = "Proprietary"}` and the classifier
   `License :: Other/Proprietary License` in `pyproject.toml`. The table form
   still builds with `setuptools>=68`; a PEP 639 SPDX string needs setuptools
@@ -452,8 +908,11 @@ wording is a draft for counsel.
   notices as before; searching Settings for "EULA" finds it.
   `THIRD_PARTY_NOTICES.txt` says the same about Lumi itself, since the bundle
   doesn't ship `LICENSE`.
-- **Still under the MIT License**, so others can build and ship extensions
-  (the proposed default; the owner decides): the Extension SDK (`sdk/LICENSE`,
+- **Superseded the same day** (see "September 29 Lumi's terms"): the owner chose no
+  MIT License for this build, so the SDK is under the Lumi Extension SDK
+  License and the VS Code extension under the EULA. This entry's original
+  bullet: **still under the MIT License**, so others can build and ship
+  extensions (the proposed default; the owner decides): the Extension SDK (`sdk/LICENSE`,
   plus `sdk/python/lumi_extension/LICENSE`, which travels with the package,
   also into the packs `sdk/new_pack.py` makes) and the VS Code extension
   (`lumi/code_editors/vscode/LICENSE.txt`, unchanged).
@@ -473,9 +932,11 @@ wording is a draft for counsel.
   the upstream text, so `THIRD_PARTY_NOTICES.txt` and the SBOM include it.
 - **Unchanged:** the copyleft gate. No installer shows a license page (Inno
   Setup, the MSI and the macOS package have none), so none needed changing.
+  (Superseded: Lumi's terms, above, add license pages to all three.)
 - **Before the next release,** the End User License Agreement has to exist
   and ship with the installers: `LICENSE` names an agreement "provided with
-  the software".
+  the software". (Done in Lumi's terms, above; its entity facts are still to
+  be provided.)
 - **Still to decide:** whether the repository stays public. On the
   organization's free GitHub plan, a private repository turns GitHub Pages
   off, and Pages serves the installers and the update feed (`FEED_BASE` in

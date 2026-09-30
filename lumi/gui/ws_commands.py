@@ -38,9 +38,7 @@ import asyncio
 import json
 import logging
 import os
-import shutil
 import subprocess
-import sys
 import threading
 import time
 import uuid
@@ -49,7 +47,7 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable, Optional
 
 from ..engine.session import inspect_system_instructions
-from ..processes import background_process_kwargs
+from ..executables import NoProject, OpensAsProgram, current_project, open_path, opens_as_program, show_in_folder
 from .autonomous_session import (
     build_roadmap_inspector_payload as _build_roadmap_inspector_payload,
     find_orphaned_autonomous_missions as _find_orphaned_autonomous_missions,
@@ -73,6 +71,20 @@ STATUS_UPDATE_STEER = (
 )
 
 PERMISSION_MODES = frozenset({"ask", "auto-edit", "plan", "bypass"})
+
+
+def refused_turn(msg: dict[str, Any], message: str, **fields: Any) -> dict[str, Any]:
+    """The error for a chat message the server didn't start a turn for.
+
+    The page shows a turn as running from the moment it sends the message;
+    ``refused`` tells it none started, so it ends that state and gives the
+    text back. ``message_id`` names a queued follow-up that won't run.
+    """
+    event: dict[str, Any] = {"event": "error", "message": message, "refused": True, **fields}
+    message_id = msg.get("message_id") if isinstance(msg, dict) else None
+    if message_id:
+        event["message_id"] = str(message_id)
+    return event
 
 
 def _is_connection_closed(exc: BaseException) -> bool:
@@ -142,6 +154,10 @@ class CommandContext:
     async def send_error(self, message: str) -> None:
         await self.send({"event": "error", "message": message})
 
+    async def send_refusal(self, message: str, **fields: Any) -> None:
+        """Refuse a chat message before any turn starts (see ``refused_turn``)."""
+        await self.send(refused_turn(self.msg, message, **fields))
+
     @property
     def project_path(self) -> str:
         return self.state.project.project_path
@@ -171,6 +187,22 @@ def command(name: str) -> Callable[[Handler], Handler]:
 
 async def _in_executor(func, *args):
     return await asyncio.get_event_loop().run_in_executor(None, func, *args)
+
+
+def _typed_folder(ctx: CommandContext, text: Any) -> str:
+    """A folder typed in Settings as a full path, "" for none.
+
+    A relative one is relative to the open project, as it was when the project
+    was the app's working folder. The app never is one now
+    (lumi/executables.py), and its own folder is no place for a project.
+    """
+    folder = os.path.expanduser(str(text or "").strip().strip('"'))
+    if not folder:
+        return ""
+    current = str(getattr(getattr(ctx.state, "project", None), "project_path", "") or "")
+    if not os.path.isabs(folder) and current:
+        folder = os.path.join(current, folder)
+    return os.path.abspath(folder)
 
 
 async def _block_active_navigation(ctx: CommandContext) -> bool:
@@ -918,16 +950,109 @@ async def _voice_status(ctx: CommandContext) -> None:
 
 
 async def _oversight_refusal(ctx: CommandContext, trigger: str = "app") -> str:
-    """Why nothing may reach a model now (the organization's notice isn't confirmed); '' when it may.
+    """Why nothing may reach a model now (Lumi's terms or the organization's notice); '' when it may.
 
-    Also sends the page the current oversight status, so it shows the notice.
+    Also sends the page what refused, so it shows the terms or the notice.
     """
+    return (await _gate_refusal(ctx, trigger))[0]
+
+
+def gate_status_event(code: str) -> dict:
+    """What the page needs after the gate refused (oversight.gate): the terms, or the oversight notice."""
+    from .. import oversight, terms
+
+    if code == terms.REFUSAL_CODE:
+        return {"event": "terms_status", "data": terms.status()}
+    return {"event": "oversight_status", "data": oversight.status()}
+
+
+async def _gate_refusal(ctx: CommandContext, trigger: str = "app") -> tuple[str, str]:
+    """(refusal, code) from the gate every turn path asks (oversight.gate): Lumi's terms
+    (lumi/terms.py), then the organization's oversight notice. Sends the page the matching status."""
     from .. import oversight
 
-    refusal = await asyncio.to_thread(oversight.refusal, trigger)
+    refusal, code = await asyncio.to_thread(oversight.gate, trigger)
     if refusal:
-        await ctx.send({"event": "oversight_status", "data": await asyncio.to_thread(oversight.status)})
-    return refusal
+        await ctx.send(await asyncio.to_thread(gate_status_event, code))
+    return refusal, code
+
+
+@command("terms_status")
+async def _terms_status(ctx: CommandContext) -> None:
+    """Lumi's terms in force and whether this person accepted them (lumi/terms.py)."""
+    from .. import terms
+
+    await ctx.send({"event": "terms_status", "data": await asyncio.to_thread(terms.status)})
+
+
+@command("terms_accept")
+async def _terms_accept(ctx: CommandContext) -> None:
+    """The person accepted the terms the dialog showed (``documents``: {id: version}); the app unlocks.
+
+    The page sends it only from the dialog's Accept button, on a click or key press the browser reports
+    as the person's. A version that isn't the one in force (the terms changed while the dialog was open)
+    accepts nothing: the page gets the current terms back and shows them. Dictation follows too.
+    """
+    from .. import terms, voice
+
+    shown = ctx.msg.get("documents")
+    versions = {str(key): str(value) for key, value in shown.items()} if isinstance(shown, dict) else {}
+    try:
+        accepted = await asyncio.to_thread(terms.accept, versions, "app")
+    except (OSError, ValueError) as exc:
+        logger.exception("Recording the acceptance of Lumi's terms failed")
+        await ctx.send({"event": "error", "code": terms.REFUSAL_CODE,
+                        "message": f"Lumi couldn't record that you accepted its terms ({exc}). Try again."})
+        accepted = False
+    if not accepted:
+        logger.info("An acceptance of terms that aren't in force was refused: %s", versions)
+    status = await asyncio.to_thread(terms.status)
+    await ctx.send({"event": "terms_status", "data": status})
+    settings = getattr(ctx.state, "settings", None)
+    voice_status = await asyncio.to_thread(voice.status, settings) if accepted and settings is not None else None
+    if voice_status is not None:
+        await ctx.send({"event": "voice_status", "data": voice_status})
+    if accepted:
+        # Every other window of this app unlocks too: the acceptance is this computer user's.
+        for viewer in tuple(getattr(ctx.state, "_navigation_viewers", ())):
+            if viewer is ctx.ws:
+                continue
+            try:
+                await viewer.send_json({"event": "terms_status", "data": status})
+                if voice_status is not None:
+                    await viewer.send_json({"event": "voice_status", "data": voice_status})
+            except Exception:
+                logger.debug("A window closed before it heard the terms were accepted", exc_info=True)
+
+
+@command("legal_document")
+async def _legal_document(ctx: CommandContext) -> None:
+    """One of the texts Lumi ships, to read offline: ``eula``, ``alpha_terms``, ``privacy`` or ``notices``."""
+    from .. import terms
+
+    wanted = str(ctx.msg.get("id") or "")
+
+    def read() -> dict:
+        if wanted == "notices":
+            path = _third_party_notices_path()
+            if not path:
+                return {"id": wanted, "title": "Third-party notices", "format": "text", "text": "",
+                        "error": "Installed copies of Lumi include the third-party notices "
+                                 "(THIRD_PARTY_NOTICES.txt); a copy running from source doesn't."}
+            text = Path(path).read_text(encoding="utf-8", errors="replace")
+            return {"id": wanted, "title": "Third-party notices", "format": "text", "text": text, "path": path}
+        if wanted not in terms.READABLE_DOCUMENTS:
+            raise KeyError(wanted)
+        return {**terms.document(wanted).as_dict(), "format": "markdown", "text": terms.text(wanted)}
+
+    try:
+        data = await asyncio.to_thread(read)
+    except KeyError:
+        data = {"id": wanted, "error": "There's no such document."}
+    except (OSError, ValueError) as exc:
+        logger.exception("Reading a legal document failed")
+        data = {"id": wanted, "error": f"Lumi couldn't read it ({exc})."}
+    await ctx.send({"event": "legal_document", "data": data})
 
 
 def _code_editors_payload(settings: Any = None, **extra: Any) -> dict:
@@ -1011,6 +1136,8 @@ async def _schedule_save(ctx: CommandContext) -> None:
     if not isinstance(raw, dict):
         await ctx.send_error("Send the schedule's fields.")
         return
+    if str(raw.get("project") or "").strip():
+        raw = {**raw, "project": _typed_folder(ctx, raw.get("project"))}
     settings = getattr(ctx.state, "settings", None)
     try:
         saved = await _in_executor(lambda: schedules.save(raw, str(ctx.msg.get("id") or ""), settings=settings))
@@ -1453,9 +1580,13 @@ async def _mcp_disconnect(ctx: CommandContext) -> None:
 
 @command("lsp_list")
 async def _lsp_list(ctx: CommandContext) -> None:
+    trusted = False
+    if ctx.project_path and hasattr(ctx.state, "project_trust"):
+        trusted = ctx.state.project_trust(ctx.project_path).trusted
     await ctx.send(_lsp_list_payload(
         project_path=ctx.project_path,
         settings=ctx.state.settings,
+        trusted=trusted,
     ))
 
 
@@ -1481,11 +1612,22 @@ async def _engram_status(ctx: CommandContext) -> None:
     })
 
 
+async def _engram_refused(ctx: CommandContext) -> bool:
+    """Engram's memory server receives what's recalled or remembered, like a model request: nothing goes
+    while the gate refuses (Lumi's terms, then the organization's notice; oversight.gate). Says why."""
+    refusal, code = await _gate_refusal(ctx)
+    if refusal:
+        await ctx.send({"event": "error", "source": "engram", "message": refusal, "code": code})
+    return bool(refusal)
+
+
 @command("engram_recall")
 async def _engram_recall(ctx: CommandContext) -> None:
     query = ctx.msg.get("query", "")
     engram = ctx.state.engram
     if query and engram.enabled:
+        if await _engram_refused(ctx):
+            return
         memories = await _in_executor(engram.recall, query)
         await ctx.send({"event": "engram_recall", "memories": memories})
     else:
@@ -1497,6 +1639,8 @@ async def _engram_remember(ctx: CommandContext) -> None:
     text = ctx.msg.get("text", "")
     engram = ctx.state.engram
     if text and engram.enabled:
+        if await _engram_refused(ctx):
+            return
         await _in_executor(engram.remember, text)
         await ctx.send({"event": "engram_remembered", "ok": True})
 
@@ -1520,7 +1664,11 @@ async def _rag_index(ctx: CommandContext) -> None:
     from ..engine.rag import CodebaseIndex
 
     if not ctx.state.codebase_index:
-        project_path = ctx.project_path if ctx.state.project else os.getcwd()
+        try:
+            project_path = current_project(ctx.project_path if ctx.state.project else None)
+        except NoProject as exc:
+            await ctx.send({"event": "status_msg", "message": str(exc)})
+            return
         ctx.state.codebase_index = CodebaseIndex(project_path, engram=ctx.state.engram)
     stats = await _in_executor(ctx.state.codebase_index.index, ctx.msg.get("force", False))
     await ctx.send({"event": "rag_indexed", **stats})
@@ -1884,38 +2032,70 @@ async def _get_session_history_page(ctx: CommandContext) -> None:
     })
 
 
+def _workspace_file(project_path: str, raw: str) -> Path | None:
+    """An existing file or folder inside the project, by its absolute or project-relative path."""
+    try:
+        root = Path(project_path).resolve(strict=True)
+        requested = Path(raw)
+        target = (requested if requested.is_absolute() else root / requested).resolve(strict=True)
+        target.relative_to(root)
+    except (OSError, ValueError):
+        return None
+    return target
+
+
 @command("open_workspace_path")
 async def _open_workspace_path(ctx: CommandContext) -> None:
-    """Open an existing project file explicitly selected by the user."""
+    """Open an existing project file explicitly selected by the user.
+
+    A document opens with its own program, as double-clicking it would. A
+    file that opening would run (a program, script, shortcut or installer,
+    lumi/executables.py ``opens_as_program``) doesn't: the page names it and
+    its type and offers to show it in its folder (``reveal_workspace_path``).
+    """
     raw = str(ctx.msg.get("path") or "").strip()
     if not raw:
         await ctx.send({"event": "status_msg", "message": "No file path was provided."})
         return
-    try:
-        root = Path(ctx.project_path).resolve(strict=True)
-        requested = Path(raw)
-        target = (requested if requested.is_absolute() else root / requested).resolve(
-            strict=True
-        )
-        target.relative_to(root)
-    except (OSError, ValueError):
+    target = _workspace_file(ctx.project_path, raw)
+    if target is None:
         await ctx.send({
             "event": "status_msg",
             "message": "That file is unavailable or outside the active project.",
         })
         return
-
+    kind = opens_as_program(target)
     try:
-        if sys.platform == "win32":
-            os.startfile(str(target))  # type: ignore[attr-defined]
-        elif sys.platform == "darwin":
-            subprocess.Popen(["open", str(target)], **background_process_kwargs())
-        else:
-            subprocess.Popen(["xdg-open", str(target)], **background_process_kwargs())
-    except OSError as exc:
+        if not kind:
+            # The opener itself is the system's, never one from the project.
+            open_path(target)
+    except OpensAsProgram as exc:
+        kind = exc.kind
+    except (OSError, ValueError) as exc:
         await ctx.send({"event": "status_msg", "message": f"Could not open file: {exc}"})
         return
+    if kind:
+        await ctx.send({"event": "workspace_path_runs", "path": raw, "name": target.name, "kind": kind})
+        return
     await ctx.send({"event": "status_msg", "message": f"Opened {target.name}"})
+
+
+@command("reveal_workspace_path")
+async def _reveal_workspace_path(ctx: CommandContext) -> None:
+    """Show a project file selected in Explorer, the Finder or the file manager, without opening it."""
+    target = _workspace_file(ctx.project_path, str(ctx.msg.get("path") or "").strip())
+    if target is None:
+        await ctx.send({
+            "event": "status_msg",
+            "message": "That file is unavailable or outside the active project.",
+        })
+        return
+    try:
+        show_in_folder(target)
+    except (OSError, ValueError) as exc:
+        await ctx.send({"event": "status_msg", "message": f"Could not show the file: {exc}"})
+        return
+    await ctx.send({"event": "status_msg", "message": f"Showing {target.name} in its folder"})
 
 
 # ---------------------------------------------------------------------------
@@ -2198,8 +2378,18 @@ async def _cmd_select_backend(ctx: CommandContext) -> None:
 
         # Pre-warm the model so the user's first message doesn't sit
         # at "thinking" for 60-90s while Ollama cold-loads. Fire and
-        # forget — we don't want to block the connect response.
+        # forget — we don't want to block the connect response. A warm-up
+        # is a model request ("hi", or a tool call), so none is sent while
+        # the gate refuses: Lumi's terms or the organization's notice wait
+        # (oversight.gate); the backends refuse it themselves too (lumi/dlp.py).
         backend_for_warm = ctx.state.backend
+        if backend_for_warm and hasattr(backend_for_warm, "warm_up"):
+            from .. import oversight
+
+            refusal, _code = await asyncio.to_thread(oversight.gate, "app")
+            if refusal:
+                logger.info("Skipped the model warm-up: %s", refusal)
+                backend_for_warm = None
         if backend_for_warm and hasattr(backend_for_warm, "warm_up"):
             async def _emit_warm_event(payload: dict):
                 try:
@@ -2248,17 +2438,17 @@ async def _cmd_message(ctx: CommandContext) -> None:
     text = ctx.msg.get("text", "").strip()
     if not text:
         return
-    # Organization oversight: nothing reaches a model before its notice is
-    # confirmed (lumi/oversight.py); the page's message box is locked too.
-    refusal = await _oversight_refusal(ctx)
+    # Lumi's terms, then organization oversight: nothing reaches a model before
+    # they're accepted and its notice is confirmed (lumi/terms.py,
+    # lumi/oversight.py); the page's message box is locked too.
+    # A refusal is ``refused`` (refused_turn): the page ends the running state it
+    # showed and gives the text back to the message box.
+    refusal, code = await _gate_refusal(ctx)
     if refusal:
-        await ctx.send({"event": "error", "message": refusal, "code": "oversight_notice"})
+        await ctx.send_refusal(refusal, code=code)
         return
     if not ctx.state.session:
-        await ctx.send({
-            "event": "error",
-            "message": ctx.state.runtime_unavailable_reason(),
-        })
+        await ctx.send_refusal(ctx.state.runtime_unavailable_reason())
         return
     await ctx.runs.enqueue(ctx.msg)
     return
@@ -2849,11 +3039,13 @@ async def _cmd_list_project_files(ctx: CommandContext) -> None:
     # capping at a sane upper bound so giant monorepos don't
     # ship multi-megabyte JSON over the websocket.
     request_id = ctx.msg.get("request_id", "")
-    project_path_str = (
-        ctx.state.project.project_path
-        if ctx.state.project and ctx.state.project.project_path
-        else os.getcwd()
-    )
+    try:
+        project_path_str = current_project(
+            ctx.state.project.project_path if ctx.state.project and ctx.state.project.project_path else None)
+    except NoProject:
+        await ctx.send({"event": "project_files", "request_id": request_id, "files": [], "total": 0,
+                        "truncated": False, "project_path": ""})
+        return
     _SKIP_DIRS = {
         ".git", "node_modules", "__pycache__", ".pytest_cache",
         "dist", "build", ".venv", "venv", ".tox", ".idea",
@@ -3446,12 +3638,12 @@ async def _cmd_intent(ctx: CommandContext) -> None:
 
         if name == "intent_start":
             text = (ctx.msg.get("text") or "").strip()
-            refusal = await _oversight_refusal(ctx, "plan") if text else ""
+            refusal, code = await _gate_refusal(ctx, "plan") if text else ("", "")
             if not text:
                 await ctx.send({"event": "error",
                                     "message": "intent text is required"})
             elif refusal:
-                await ctx.send({"event": "error", "message": refusal, "code": "oversight_notice"})
+                await ctx.send({"event": "error", "message": refusal, "code": code})
             else:
                 try:
                     # The page follows it in the Plan tab; its events go there.
@@ -3814,8 +4006,7 @@ async def _cmd_cloud_remote_tasks(ctx: CommandContext) -> None:
     from ..remote_tasks import MODES
 
     enabled = ctx.msg.get("enabled") is True
-    project = os.path.abspath(os.path.expanduser(str(ctx.msg.get("project") or "").strip())) \
-        if str(ctx.msg.get("project") or "").strip() else ""
+    project = _typed_folder(ctx, ctx.msg.get("project"))
     mode = str(ctx.msg.get("mode") or "ask")
 
     def save(client) -> None:
@@ -3840,6 +4031,8 @@ async def _cmd_about_info(ctx: CommandContext) -> None:
     from ..policy import current as current_policy
     from ..update_channels import installed_by
 
+    from .. import terms
+
     policy = current_policy()
     await ctx.send({"event": "about_info", "data": {
         "version": __version__,
@@ -3849,6 +4042,9 @@ async def _cmd_about_info(ctx: CommandContext) -> None:
         "notices": _third_party_notices_path(),
         "organization": policy.organization if policy else "",
         "installed_by": installed_by(),
+        # The terms in force, who accepted them (this person, or the
+        # organization's machine policy), and the texts About opens.
+        "terms": await asyncio.to_thread(terms.status),
     }})
 
 
@@ -4998,56 +5194,69 @@ async def _cmd_skill_archive(ctx: CommandContext) -> None:
 # one concern across two files for no reason.
 # ---------------------------------------------------------------------------
 
-def _git_run(*args: str, cwd: str | None = None) -> tuple[int, str]:
-    """Run a git command and return (returncode, stdout).
+def _git_run(*args: str, cwd: str | None = None, hooks: bool = False,
+             trusted: bool | None = None) -> tuple[int, str, str]:
+    """Run a git command for the page; returns (returncode, stdout, stderr).
 
-    `cwd` is required in practice. It used to fall back to the module-level
-    AppState singleton in app.py, which made these helpers untestable and
-    silently tied "which repository" to global state — the caller always knew
-    the project path and now has to say so.
+    `cwd` is required. It used to fall back to the module-level AppState
+    singleton in app.py, which made these helpers untestable and silently
+    tied "which repository" to global state — the caller always knew the
+    project path and now has to say so.
+
+    Git runs through lumi/safe_git.py: the installed Git, none of the
+    programs a repository's settings name, and nothing at all in an
+    untrusted project whose settings name some (GitRefused, which callers
+    turn into a notice). The page asks for the status as soon as a project
+    opens.
     """
-    import subprocess
+    from ..safe_git import run as git
+
+    if not cwd:
+        return 1, "", "No project folder."
     try:
-        result = subprocess.run(
-            ["git"] + list(args),
-            capture_output=True, text=True, timeout=15,
-            cwd=cwd or os.getcwd(),
-            shell=(sys.platform == "win32"),
-            **background_process_kwargs(),
-        )
-        return result.returncode, (result.stdout + result.stderr).strip()
-    except Exception as e:
-        return 1, str(e)
+        result = git(cwd, *args, hooks=hooks, trusted_project=trusted, timeout=15)
+    except OSError as e:  # no Git installed, or it couldn't start
+        return 1, "", str(e)
+    except subprocess.TimeoutExpired:
+        return 1, "", "Git took too long."
+    return result.returncode, result.stdout, result.stderr
 
 
 def _git_status(project_path: str) -> dict:
-    """Get git status for the given project."""
+    """Branch, changed files and recent commits of the project's repository."""
+    from ..safe_git import GitRefused, refusal, status_entries
+
     cwd = project_path
-
-    # Branch
-    rc, branch = _git_run("branch", "--show-current", cwd=cwd)
-    if rc != 0:
-        return {"is_repo": False}
-
-    # Status (porcelain)
-    _, status_raw = _git_run("status", "--porcelain", cwd=cwd)
+    try:
+        reason = refusal(cwd) if cwd else ""
+    except Exception as e:  # Git missing: report it as not a repository
+        logger.debug("git settings check failed: %s", e)
+        reason = ""
+    if reason:
+        return {"is_repo": True, "refused": reason, "branch": "", "changes": [], "change_count": 0,
+                "commits": []}
+    try:
+        rc, branch, _ = _git_run("branch", "--show-current", cwd=cwd)
+        if rc != 0:
+            return {"is_repo": False}
+        # -z: names exactly as they are (spaces, other scripts), one record
+        # each, renames with their old name in the next field.
+        _, status_raw, _ = _git_run("status", "--porcelain=v1", "-z", "--untracked-files=normal", cwd=cwd)
+        _, log_raw, _ = _git_run("log", "--format=%h%x1f%s", "-10", cwd=cwd)
+    except GitRefused as e:  # the settings changed since the check above
+        return {"is_repo": True, "refused": str(e), "branch": "", "changes": [], "change_count": 0,
+                "commits": []}
     changes = []
-    for line in status_raw.split("\n"):
-        line = line.strip()
-        if line:
-            status_code = line[:2].strip()
-            filepath = line[3:]
-            changes.append({"status": status_code, "file": filepath})
-
-    # Recent commits
-    _, log_raw = _git_run("log", "--oneline", "-10", cwd=cwd)
+    for entry in status_entries(status_raw)[1]:
+        change = {"status": (entry["x"] + entry["y"]).strip(), "file": entry["path"]}
+        if "from" in entry:
+            change["from"] = entry["from"]
+        changes.append(change)
     commits = []
-    for line in log_raw.split("\n"):
-        line = line.strip()
+    for line in log_raw.splitlines():
         if line:
-            parts = line.split(" ", 1)
-            commits.append({"hash": parts[0], "message": parts[1] if len(parts) > 1 else ""})
-
+            short, _, subject = line.partition("\x1f")
+            commits.append({"hash": short, "message": subject})
     return {
         "is_repo": True,
         "branch": branch.strip(),
@@ -5058,40 +5267,47 @@ def _git_status(project_path: str) -> dict:
 
 
 def _git_quick(action: str, msg: dict, project_path: str) -> dict:
-    """Execute quick git actions."""
-    cwd = project_path
+    """The Git popover's actions."""
+    from ..safe_git import GitRefused
 
-    if action == "diff":
-        _, output = _git_run("diff", cwd=cwd)
-        return {"output": output}
-    elif action == "diff_staged":
-        _, output = _git_run("diff", "--staged", cwd=cwd)
-        return {"output": output}
-    elif action == "log":
-        count = msg.get("count", 20)
-        _, output = _git_run("log", "--oneline", f"-{count}", cwd=cwd)
-        return {"output": output}
-    elif action == "add":
-        files = msg.get("files", [])
-        if files:
-            rc, output = _git_run("add", *files, cwd=cwd)
+    cwd = project_path
+    try:
+        if action == "diff":
+            _, output, error = _git_run("diff", cwd=cwd)
+            return {"output": (output or error).strip()}
+        elif action == "diff_staged":
+            _, output, error = _git_run("diff", "--staged", cwd=cwd)
+            return {"output": (output or error).strip()}
+        elif action == "log":
+            try:
+                count = max(1, min(int(msg.get("count", 20)), 200))
+            except (TypeError, ValueError):
+                count = 20
+            _, output, error = _git_run("log", "--oneline", f"-{count}", cwd=cwd)
+            return {"output": (output or error).strip()}
+        elif action == "add":
+            files = [str(name) for name in (msg.get("files") or []) if str(name)]
+            # "--": a name that starts with "-" is a file, not an option.
+            rc, output, error = _git_run("add", "--", *files, cwd=cwd) if files else _git_run("add", "-A", cwd=cwd)
+            return {"success": rc == 0, "output": (output + error).strip()}
+        elif action == "commit":
+            message = msg.get("message", "")
+            if not message:
+                return {"success": False, "output": "No commit message"}
+            # Someone asked for this commit: a trusted project's hooks run, as
+            # its own `git commit` would run them (lumi/safe_git.py).
+            rc, output, error = _git_run("commit", "-m", message, cwd=cwd, hooks=True)
+            return {"success": rc == 0, "output": (output + error).strip()}
+        elif action == "stash":
+            rc, output, error = _git_run("stash", cwd=cwd)
+            return {"success": rc == 0, "output": (output + error).strip()}
+        elif action == "stash_pop":
+            rc, output, error = _git_run("stash", "pop", cwd=cwd)
+            return {"success": rc == 0, "output": (output + error).strip()}
         else:
-            rc, output = _git_run("add", "-A", cwd=cwd)
-        return {"success": rc == 0, "output": output}
-    elif action == "commit":
-        message = msg.get("message", "")
-        if not message:
-            return {"success": False, "output": "No commit message"}
-        rc, output = _git_run("commit", "-m", message, cwd=cwd)
-        return {"success": rc == 0, "output": output}
-    elif action == "stash":
-        rc, output = _git_run("stash", cwd=cwd)
-        return {"success": rc == 0, "output": output}
-    elif action == "stash_pop":
-        rc, output = _git_run("stash", "pop", cwd=cwd)
-        return {"success": rc == 0, "output": output}
-    else:
-        return {"success": False, "output": f"Unknown action: {action}"}
+            return {"success": False, "output": f"Unknown action: {action}"}
+    except GitRefused as e:
+        return {"success": False, "output": str(e), "refused": True}
 
 
 # ── Skill list/view payload helpers (v0.6.2a3) ───────────────────────
@@ -5142,12 +5358,15 @@ def _workspace_language_hints(project_path: str, *, max_files: int = 1600) -> se
     return found
 
 
-def _lsp_list_payload(*, project_path: str = "", settings: SettingsManager | None = None) -> dict:
+def _lsp_list_payload(*, project_path: str = "", settings: SettingsManager | None = None,
+                      trusted: bool = False) -> dict:
     """Build the {event: "lsp_list", servers: [...]} status payload.
 
     The servers the ``code_intel`` tool can use (engine/lsp.py): Settings'
     ``lsp_servers``, then well-known servers installed on PATH or matching the
-    project's languages, with whether each is running for this project.
+    project's languages, with whether each is running for this project and
+    where its program comes from (a trusted project's own environment, or
+    PATH).
     """
     from ..engine import lsp
 
@@ -5164,11 +5383,13 @@ def _lsp_list_payload(*, project_path: str = "", settings: SettingsManager | Non
     for spec, enabled in lsp.configured(settings):
         program = spec.command[0]
         configured_programs.add(lsp._program_name(program))
-        available = bool(shutil.which(program) or os.path.isfile(program))
+        found, found_from, notice = lsp.program_source(program, project_path, trusted=trusted)
+        available = bool(found)
         languages = sorted(set(spec.languages.values()))
         status, error = status_of(spec.id, "available" if available else "missing")
         if not enabled:
             status, error = "disabled", ""
+        detail = error or (", ".join(languages) if languages else "Add extensions or languages to use it")
         servers.append({
             "id": spec.id,
             "name": spec.name,
@@ -5177,9 +5398,10 @@ def _lsp_list_payload(*, project_path: str = "", settings: SettingsManager | Non
             "available": available,
             "status": status,
             "source": "configured",
+            "program_source": found_from,
             "languages": languages,
-            "detail": error or (", ".join(languages) if languages
-                                else "Add extensions or languages to use it"),
+            "detail": " ".join(part for part in (detail + (f" · {found_from}" if found_from else ""), notice)
+                               if part),
         })
 
     workspace_langs = _workspace_language_hints(project_path)
@@ -5187,8 +5409,8 @@ def _lsp_list_payload(*, project_path: str = "", settings: SettingsManager | Non
         if lsp._program_name(spec.command[0]) in configured_programs:
             continue
         languages = sorted(set(spec.languages.values()))
-        executable = shutil.which(spec.command[0])
-        if not executable and not workspace_langs.intersection(languages):
+        executable, found_from, notice = lsp.program_source(spec.command[0], project_path, trusted=trusted)
+        if not executable and not workspace_langs.intersection(languages) and not notice:
             continue
         status, error = status_of(spec.id, "available" if executable else "missing")
         servers.append({
@@ -5199,9 +5421,11 @@ def _lsp_list_payload(*, project_path: str = "", settings: SettingsManager | Non
             "available": bool(executable),
             "status": status,
             "source": "detected",
+            "program_source": found_from,
             "languages": languages,
-            "detail": error or (f"Installed: {executable}; starts when the agent asks about this code"
-                                if executable else f"Install {spec.command[0]} to use it"),
+            "detail": " ".join(part for part in (
+                error or (f"Installed ({found_from}): {executable}; starts when the agent asks about this code"
+                          if executable else f"Install {spec.command[0]} to use it"), notice) if part),
         })
 
     servers.sort(key=lambda item: (

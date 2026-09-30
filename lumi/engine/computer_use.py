@@ -39,7 +39,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 from lumi.executables import find_program, is_absolute, opens_as_program, program, system_program
-from lumi.processes import background_process_kwargs
+from lumi.processes import background_process_kwargs, decode_output
 
 from .tools import ToolResult
 
@@ -252,7 +252,7 @@ def _list_windows_macos() -> list[dict]:
                     return windowList
                 end tell
             '''],
-            capture_output=True, text=True, timeout=10,
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
         )
         windows = []
         for line in result.stdout.strip().split(", "):
@@ -276,7 +276,7 @@ def _list_windows_linux() -> list[dict]:
         import subprocess
         result = subprocess.run(
             [program("wmctrl"), "-lG"],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5,
         )
         windows = []
         for line in result.stdout.strip().split("\n"):
@@ -442,7 +442,7 @@ def _focus_window_macos(title: str) -> str:
         import subprocess
         result = subprocess.run(
             [system_program("osascript"), "-e", _FOCUS_SCRIPT, title],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5,
         )
         if result.returncode == 0:
             return f"Focused window: {title}"
@@ -456,7 +456,7 @@ def _focus_window_linux(title: str) -> str:
         import subprocess
         result = subprocess.run(
             [program("wmctrl"), "-a", title],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5,
         )
         if result.returncode == 0:
             return f"Focused window: {title}"
@@ -695,7 +695,10 @@ def exec_screen_ocr(args: dict, start: float) -> ToolResult:
                 tmp = os.path.join(tempfile.gettempdir(), "lumi_ocr.png")
                 img.save(tmp, format="PNG")
 
+                # Text in UTF-8: Windows PowerShell writes the console's code
+                # page otherwise, where recognized text outside it becomes "?".
                 ps_script = f"""
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 Add-Type -AssemblyName System.Runtime.WindowsRuntime
 $null = [Windows.Media.Ocr.OcrEngine, Windows.Foundation, ContentType = WindowsRuntime]
 $engine = [Windows.Media.Ocr.OcrEngine]::TryCreateFromUserProfileLanguages()
@@ -708,11 +711,11 @@ Write-Output $result.Text
 """
                 result = subprocess.run(
                     [system_program("powershell"), "-NoProfile", "-Command", ps_script],
-                    capture_output=True, text=True, timeout=15,
+                    capture_output=True, timeout=15,
                     **background_process_kwargs(),
                 )
                 os.unlink(tmp)
-                text = result.stdout.strip()
+                text = decode_output(result.stdout).strip()
                 if text:
                     elapsed = time.time() - start
                     return ToolResult(

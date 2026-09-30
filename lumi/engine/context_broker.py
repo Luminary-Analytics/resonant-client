@@ -205,12 +205,19 @@ class ContextBroker:
             args.extend(self.exclusions.git_pathspecs())
         # The installed Git without the programs a repository's settings
         # name, and none at all in an untrusted project whose settings name
-        # some (lumi/safe_git.py): the attachment then says why.
+        # some (lumi/safe_git.py): the attachment then says why. Without Git,
+        # or in a folder that is gone, it says that instead of dropping the
+        # mention silently (git_support.start_failure_message).
         try:
             result = git(self.project_path, *args)
         except GitRefused as refused:
             return self._item("diff", selector, str(refused), "git-refused")
-        except (OSError, subprocess.SubprocessError):
+        except OSError as exc:
+            from ..git_support import start_failure_message
+
+            return self._item("diff", selector, start_failure_message(exc, "Attaching @diff needs",
+                                                                      cwd=self.project_path), "git")
+        except subprocess.SubprocessError:
             return None
         if result.returncode != 0:
             return None

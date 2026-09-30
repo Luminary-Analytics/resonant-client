@@ -10,7 +10,6 @@ from __future__ import annotations
 import hashlib
 import os
 import re
-import shutil
 import subprocess
 import threading
 import time
@@ -18,11 +17,17 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Iterable
 
-from lumi.processes import background_process_kwargs
+from lumi import git_support
+from lumi.processes import decode_output, run_command, utf8_env
 from lumi.safe_git import GitRefused, run as safe_git, status_entries
 from lumi.secrets_store import child_env
+from lumi.worktree_removal import remove_tree, remove_worktree
 
 from .artifacts import project_state_dir
+
+# How long one post-merge validation command may run before it, and
+# everything it started, is ended and the merge counts as unvalidated.
+VALIDATION_SECONDS = 600
 
 
 class WorktreeError(RuntimeError):
@@ -62,7 +67,11 @@ class WorktreeManager:
 
     def create(self, agent_id: str, *, base_ref: str = "HEAD") -> WorktreeLease:
         if not self.available:
-            raise WorktreeError(self.refused or "Worktree isolation requires a git repository")
+            if self.refused:
+                raise WorktreeError(self.refused)
+            if not git_support.git_available():
+                raise WorktreeError(git_support.missing_message("Agent worktrees need"))
+            raise WorktreeError("Worktree isolation requires a git repository")
         safe_id = re.sub(r"[^A-Za-z0-9._-]+", "-", agent_id).strip(".-") or "agent"
         digest = hashlib.sha256(f"{agent_id}:{time.time_ns()}".encode()).hexdigest()[:8]
         branch = f"lumi/agent/{safe_id}-{digest}"
@@ -134,22 +143,23 @@ class WorktreeManager:
                 raise WorktreeError(result.stderr.strip() or "Worktree merge conflicted")
             for command in validation_commands:
                 # A check the caller names, in the project, as the person's
-                # own shell would run it (by design; lumi/executables.py).
-                completed = subprocess.run(
-                    command,
-                    cwd=self.project_path,
-                    shell=True,
-                    env=child_env(),
-                    text=True,
-                    capture_output=True,
-                    check=False,
-                    **background_process_kwargs(),
-                )
+                # own shell would run it (by design; lumi/executables.py). Its
+                # output is decoded per line, and a timeout ends everything it
+                # started, not only its shell (lumi/processes.py).
+                try:
+                    completed = run_command(command, shell=True, cwd=self.project_path, env=utf8_env(child_env()),
+                                            timeout=VALIDATION_SECONDS)
+                except subprocess.TimeoutExpired as exc:
+                    lease.status = "validation_failed"
+                    raise WorktreeError(
+                        f"Post-merge validation didn't finish within {VALIDATION_SECONDS // 60} minutes: {command}\n"
+                        f"{decode_output(exc.stdout)}\n{decode_output(exc.stderr)}".strip()
+                    ) from None
                 if completed.returncode != 0:
                     lease.status = "validation_failed"
                     raise WorktreeError(
                         f"Post-merge validation failed: {command}\n"
-                        f"{completed.stdout}\n{completed.stderr}".strip()
+                        f"{decode_output(completed.stdout)}\n{decode_output(completed.stderr)}".strip()
                     )
             lease.status = "integrated"
         return lease
@@ -157,21 +167,39 @@ class WorktreeManager:
     def remove(self, lease: WorktreeLease, *, delete_branch: bool = False) -> None:
         target = Path(lease.path).resolve()
         self._assert_under_root(target)
-        if target.exists():
-            result = self._git("worktree", "remove", "--force", str(target), check=False)
-            if result.returncode != 0 and target.exists():
-                shutil.rmtree(target)
-                self._git("worktree", "prune", check=False)
+        # Not `git worktree remove --force` and `prune`: Git for Windows
+        # follows a junction inside the worktree (an npm file: dependency, a
+        # link the agent's shell made) and deletes the files it points to,
+        # and prune forgets the person's own worktrees whose folders are away.
+        common = self._common_dir()
+        if common is not None:
+            removal = remove_worktree(target, common_dir=common)
+            error = "" if removal.removed else removal.error
+        else:
+            try:
+                remove_tree(target)
+                error = ""
+            except OSError as exc:
+                error = str(exc)
+        if error:
+            raise WorktreeError(f"Couldn't remove the agent worktree {target}: {error}")
         if delete_branch and lease.status in {"unchanged", "integrated"}:
-            self._git("branch", "-D", lease.branch, check=False)
+            # -d, not -D: Git deletes it only while its commits are on the
+            # checked-out branch (merged, or none made), never someone's others.
+            self._git("branch", "-d", lease.branch, check=False)
 
     def diff(self, lease: WorktreeLease) -> str:
         target = lease.commit or lease.branch
         return self._git("diff", f"{lease.base_ref}...{target}", "--").stdout
 
     def _discover_git_dir(self) -> Path | None:
+        # Every session builds a manager, so this runs on computers without
+        # Git too: no Git means no repository to isolate, never a failed
+        # session (_git_at turns a program that can't start into a failure).
         try:
             result = self._git("rev-parse", "--git-dir", check=False)
+        except OSError:
+            return None
         except WorktreeError as refused:  # no Git allowed here yet (lumi/safe_git.py)
             self.refused = str(refused)
             return None
@@ -179,6 +207,16 @@ class WorktreeManager:
             return None
         value = Path(result.stdout.strip())
         return (self.project_path / value).resolve() if not value.is_absolute() else value.resolve()
+
+    def _common_dir(self) -> Path | None:
+        """``$GIT_COMMON_DIR``, where Git records linked worktrees: the git dir, or the one its ``commondir`` names."""
+        if self._git_dir is None:
+            return None
+        try:
+            named = (self._git_dir / "commondir").read_text(encoding="utf-8").strip()
+        except OSError:
+            return self._git_dir
+        return (self._git_dir / named).resolve() if named else self._git_dir
 
     def _assert_under_root(self, path: Path) -> None:
         if path != self.root and self.root not in path.parents:
@@ -209,6 +247,10 @@ class WorktreeManager:
             result = safe_git(cwd, *args, project=project, env=env, timeout=None)
         except GitRefused as exc:
             raise WorktreeError(str(exc)) from None
+        except OSError as exc:
+            # Git isn't installed, or can't start here (a folder that is gone):
+            # a failed command with the reason, like any other Git failure.
+            result = git_support.start_failure_result(["git", *args], exc, "Agent worktrees need", cwd=cwd)
         if check and result.returncode != 0:
             raise WorktreeError(result.stderr.strip() or f"git {' '.join(args)} failed")
         return result

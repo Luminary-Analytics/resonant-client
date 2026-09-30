@@ -415,17 +415,16 @@ def get_system_instruction_layers(
     role_instructions: str | None = None,
 ) -> list[dict[str, str]]:
     """Return the exact assembled prompt as named, inspectable layers."""
+    # The hints follow the programs this computer actually has: a new Windows
+    # computer has no Python, Git or Node.js, and telling the model to use
+    # them only produced failing commands (lumi/toolchain.py).
+    from ..toolchain import prompt_hints
+
     if sys.platform == "win32":
         platform_name = f"Windows ({plat.release()})"
-        platform_hints = (
-            "Use 'python' not 'python3'. Use 'pip' not 'pip3'. Paths use backslashes. "
-            "Unix tools like `tail`, `head`, `sed`, `awk`, `grep`, `wc`, `find` are "
-            "NOT available — use `file_read` for inspection, the `grep` agent tool "
-            "for content search, and `glob` for path listing instead of shelling out."
-        )
     else:
         platform_name = f"Linux/macOS ({plat.system()})"
-        platform_hints = "Use 'python3'/'pip3'."
+    platform_hints = prompt_hints()
 
     runtime = "\n".join((
         f"Environment: {platform_name}",
@@ -4635,6 +4634,27 @@ class Session:
                 f"Worker backend {worker_id or model_role} is unavailable: {exc}",
             )
             return
+
+        if (requested_isolation == "worktree" and self.worktree_manager
+                and not getattr(self.worktree_manager, "available", False)):
+            # Asked for its own worktree in a Git repository, on a computer
+            # without Git: refuse rather than let it edit the shared checkout
+            # the caller wanted kept apart. (Outside a repository there is no
+            # checkout to protect, and the agent works in the folder as before.)
+            from .. import git_support
+            from ..worktree_removal import repository_common_dir
+
+            if not git_support.git_available() and repository_common_dir(self.project_path or os.getcwd()):
+                result_output = ("Error: " + git_support.missing_message("A sub-agent in its own Git worktree needs")
+                                 + ' Or start it with isolation "shared" to let it work in the project folder itself.')
+                yield make_event(EngineEvent.TOOL_RESULT, name="task", call_id=call_id, output=result_output,
+                                 is_error=True, elapsed=0.0, metadata={"not_executed": True}, denied=False)
+                if append_parent_history:
+                    self.conversation_history.append({"role": "tool_call", "name": "task", "arguments": fn_args_str,
+                                                      "call_id": call_id, "content": "Called task"})
+                    self.conversation_history.append({"role": "tool_result", "call_id": call_id,
+                                                      "content": result_output})
+                return
 
         # Notify TUI of sub-agent start
         child_cancel = threading.Event()

@@ -2456,6 +2456,9 @@ async def _cmd_select_backend(ctx: CommandContext) -> None:
 
             threading.Thread(target=_warm_in_bg, name="model-warmup", daemon=True).start()
     except Exception as e:
+        # The page shows only the message; keep the traceback for diagnostics
+        # (a missing program once surfaced as a bare "[WinError 2]").
+        logger.exception("Starting %s (%s) failed", backend_type, model or "default model")
         ctx.state.project.current_session = previous_record
         await ctx.send({"event": "error", "message": str(e)})
 
@@ -2463,9 +2466,9 @@ async def _cmd_select_backend(ctx: CommandContext) -> None:
 
 @command("message")
 async def _cmd_message(ctx: CommandContext) -> None:
-    from .swarming import busy as swarm_busy
+    from .swarming import busy as swarm_busy, busy_refusal
     if swarm_busy(ctx.state):
-        await ctx.send_error("Finish or stop the active team before starting an ordinary chat turn.")
+        await ctx.send(busy_refusal(ctx.state))
         return
     text = ctx.msg.get("text", "").strip()
     if not text:
@@ -2768,9 +2771,9 @@ async def _cmd_mission_dispatch_roadmap(ctx: CommandContext) -> None:
         # dispatched when it was clicked (autonomous_view.js).
         await ctx.send({"event": "error", "message": message, "source": "mission_dispatch"})
 
-    from .swarming import busy as swarm_busy
+    from .swarming import busy as swarm_busy, busy_refusal
     if swarm_busy(ctx.state):
-        await refuse("Finish or reconcile the current team before dispatching a roadmap.")
+        await refuse(busy_refusal(ctx.state, "building this roadmap")["message"])
         return
     if not ctx.state.project.current_session:
         await refuse("No active mission to dispatch")
@@ -3209,9 +3212,11 @@ async def _cmd_clear(ctx: CommandContext) -> None:
 
 @command("switch_model")
 async def _cmd_switch_model(ctx: CommandContext) -> None:
-    from .swarming import busy as swarm_busy
+    from .swarming import busy as swarm_busy, busy_refusal
     if ctx.runs.busy or swarm_busy(ctx.state):
-        await ctx.send({"event": "model_switch_blocked", "message": "Finish or stop the current run before changing models."})
+        message = ("Finish or stop the current run before changing models." if ctx.runs.busy
+                   else busy_refusal(ctx.state, "changing this conversation's model")["message"])
+        await ctx.send({"event": "model_switch_blocked", "message": message})
         await ctx.send(ctx.state.get_init_data(refresh_only=True))
         return
     model = ctx.msg.get("model", "")
@@ -3259,6 +3264,9 @@ async def _cmd_switch_model(ctx: CommandContext) -> None:
                 await ctx.send({"event": "settings", "data": ctx.state.settings.get_masked()})
             await ctx.send(ctx.state.get_init_data())
         except Exception as e:
+            # The page shows only the message; keep the traceback for diagnostics
+            # (a missing program once surfaced as a bare "[WinError 2]").
+            logger.exception("Switching to %s (%s) failed", backend_type, model or "default model")
             await ctx.send({"event": "error", "message": str(e)})
             # The selector optimistically shows the model the user picked, so
             # push authoritative state back or the UI keeps advertising a
@@ -3327,6 +3335,7 @@ async def _cmd_set_thinking_mode(ctx: CommandContext) -> None:
             })
             await ctx.send(ctx.state.get_init_data())
         except Exception as e:
+            logger.exception("Restarting the model with reasoning depth %r failed", mode)
             await ctx.send({"event": "error", "message": str(e)})
 
 
@@ -3500,6 +3509,7 @@ async def _cmd_switch_session(ctx: CommandContext) -> None:
             ctx.state._first_message_sent = record.message_count > 0
 
         except Exception as e:
+            logger.exception("The saved conversation's runtime (%s) failed to start", record.backend_type)
             ctx.state.backend = None
             ctx.state.backend_spec = None
             ctx.state.session = None
@@ -5399,14 +5409,15 @@ def _git_run(*args: str, cwd: str | None = None, hooks: bool = False,
     turn into a notice). The page asks for the status as soon as a project
     opens.
     """
+    from ..git_support import start_failure_message
     from ..safe_git import run as git
 
     if not cwd:
         return 1, "", "No project folder."
     try:
         result = git(cwd, *args, hooks=hooks, trusted_project=trusted, timeout=15)
-    except OSError as e:  # no Git installed, or it couldn't start
-        return 1, "", str(e)
+    except OSError as e:  # no Git installed, or it couldn't start here (a folder that is gone)
+        return 1, "", start_failure_message(e, cwd=cwd)
     except subprocess.TimeoutExpired:
         return 1, "", "Git took too long."
     return result.returncode, result.stdout, result.stderr

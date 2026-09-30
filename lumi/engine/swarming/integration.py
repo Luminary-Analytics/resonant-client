@@ -26,7 +26,9 @@ from lumi.processes import background_process_kwargs, close_windows_job, popen_i
 
 from ..artifacts import project_state_dir
 from .argv_process import ArgvResult, ManagedArgvProcess, effect_support
-from .git_boundary import disabled_filter_options, git_bytes, has_custom_merge_driver, trusted_git_executable
+from .git_boundary import (REPOSITORY_LOCK_NAME, TEAM_BRANCH_PREFIX, disabled_filter_options, git_bytes,
+                           git_error_line, has_custom_merge_driver, open_repository_lock, release_repository_lock,
+                           trusted_git_executable, try_repository_lock)
 from .integration_processes import IntegrationProcesses
 from .models import AdmissionClosed, AttemptContext, Conflict, RunAuthority, Scope, ScopeDenied, StaleAuthority, require_id
 from .policy import AssignmentGrant, normalize_scope
@@ -109,7 +111,7 @@ class SwarmIntegration:
         common = self._git(self.project, "rev-parse", "--git-common-dir").stdout.strip()
         self._common = (self.project / common).resolve()
         self.repo_key = hashlib.sha256(os.path.normcase(str(self._common)).encode()).hexdigest()
-        self._lock_path = self._common / "sonn-swarm-integration.lock"
+        self._lock_path = self._common / REPOSITORY_LOCK_NAME
         # Threads now waiting for another step to release the repository, so a
         # worker's or an operation's status can say so while it waits.
         self._waiting_threads: set[int] = set()
@@ -234,11 +236,9 @@ class SwarmIntegration:
             result = subprocess.CompletedProcess(command, observed.exit_code,
                 observed.stdout.decode("utf-8", "strict"), observed.stderr.decode("utf-8", "strict"))
             if check and result.returncode:
-                # Git's first error line says what went wrong (a live run's was
-                # "fatal: '$GIT_DIR' too big"); keep it short and single-line.
-                reason = next((line.strip() for line in result.stderr.splitlines() if line.strip()), "")[:200]
                 raise Conflict(f"Owned Git operation failed (exit {result.returncode}"
-                               f"{': ' + reason if reason else ''}); retained process evidence requires inspection")
+                               f"{': ' + git_error_line(result.stderr) if result.stderr.strip() else ''}); "
+                               "retained process evidence requires inspection")
             return result
         if not metadata_only and (not args or args[0] not in {"status", "diff"}):
             raise ScopeDenied("Mutating Git commands require captured durable process ownership")
@@ -284,23 +284,13 @@ class SwarmIntegration:
         every quarter second while it lasts.
         """
         timeout = self.LOCK_WAIT_SECONDS if timeout is None else timeout
-        handle = self._lock_path.open("a+b")
-        handle.seek(0, os.SEEK_END)
-        if handle.tell() == 0:
-            handle.write(b"0")
-            handle.flush()
+        handle = open_repository_lock(self._lock_path)
         started, checked = time.monotonic(), None
         waiting = False
         try:
             while True:
                 try:
-                    handle.seek(0)
-                    if os.name == "nt":
-                        import msvcrt
-                        msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
-                    else:
-                        import fcntl
-                        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    try_repository_lock(handle)
                     break
                 except OSError as exc:
                     now = time.monotonic()
@@ -322,13 +312,7 @@ class SwarmIntegration:
             try:
                 yield
             finally:
-                handle.seek(0)
-                if os.name == "nt":
-                    import msvcrt
-                    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
-                else:
-                    import fcntl
-                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+                release_repository_lock(handle)
         finally:
             if waiting:
                 with self._waiting_lock:
@@ -527,7 +511,7 @@ class SwarmIntegration:
                 # this folder; on Windows a long name can push it past the path
                 # limit ("'$GIT_DIR' too big"), so keep the name short.
                 path = self.root / f"writer-{identity[:16]}"
-                manifest = {"branch": f"codex/swarm-writer-{identity}", "target_branch": target_branch,
+                manifest = {"branch": f"{TEAM_BRANCH_PREFIX}{identity}", "target_branch": target_branch,
                             "target_checkout": target_checkout, "grant": grant.to_dict()}
                 connection.execute("INSERT INTO writer_worktrees(id,run_id,attempt_id,epoch,repo_key,path,base_revision,state,manifest_json,process_protocol) "
                                    "VALUES(?,?,?,?,?,?,?,'creating',?,1)",

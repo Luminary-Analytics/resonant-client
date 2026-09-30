@@ -58,7 +58,7 @@ from dataclasses import dataclass
 from typing import Callable, Optional
 
 from lumi.executables import find_program
-from lumi.processes import background_process_kwargs
+from lumi.processes import decode_output, run_command, utf8_env
 
 from ..gui.roadmap import AcceptanceCriterion
 from ..secrets_store import child_env
@@ -159,36 +159,22 @@ class BashRunner:
                 # string flows through bash's own parser, which
                 # handles redirects (`<`), pipes, and quoting the
                 # same way on Windows-with-Git-Bash and Linux/macOS.
-                proc = subprocess.run(
-                    [bash_path, "-c", command],
-                    cwd=self.cwd,
-                    env=child_env(),
-                    capture_output=True,
-                    text=True,
-                    timeout=self.timeout_seconds,
-                    check=False,
-                    **background_process_kwargs(),
-                )
+                args, shell = [bash_path, "-c", command], False
             else:
                 # Platform default shell. On Linux/macOS this is bash
                 # / zsh anyway; on Windows it's cmd.exe with the
                 # known POSIX-tool gap. The criterion is a command the
                 # plan asked for: by design it runs as the person's own
                 # shell would (child_env; lumi/executables.py).
-                proc = subprocess.run(
-                    command,
-                    shell=True,
-                    cwd=self.cwd,
-                    env=child_env(),
-                    capture_output=True,
-                    text=True,
-                    timeout=self.timeout_seconds,
-                    check=False,
-                    **background_process_kwargs(),
-                )
-            return proc.returncode, proc.stdout, proc.stderr
+                args, shell = command, True
+            # Bytes, decoded per line (cmd.exe writes the OEM code page,
+            # Python children UTF-8); a timeout ends every process the
+            # check started, not only the shell (lumi/processes.py).
+            proc = run_command(args, shell=shell, cwd=self.cwd, env=utf8_env(child_env()),
+                               timeout=self.timeout_seconds)
+            return proc.returncode, decode_output(proc.stdout), decode_output(proc.stderr)
         except subprocess.TimeoutExpired as exc:
-            return 124, exc.stdout or "", f"timeout after {self.timeout_seconds}s"
+            return 124, decode_output(exc.stdout), f"timeout after {self.timeout_seconds}s"
         except Exception as exc:
             return 127, "", f"subprocess error: {exc}"
 

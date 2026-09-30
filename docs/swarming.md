@@ -161,8 +161,15 @@ The panel captures the project, conversation and run it opened. Closing the
 panel does not stop its workers. Its view refreshes while open and reconnects to
 the same server-owned run after a socket interruption. Use **Refresh team** to
 inspect current state after a rejected or uncertain command; a lost response
-does not authorize replaying it. Ordinary chat, model changes and project/session
-navigation are gated while the client owns active team work.
+does not authorize replaying it. While a team runs in this window, project and
+session navigation wait for it. Ordinary chat, model changes, missions and
+agent restarts wait only in the conversation that owns an unfinished team,
+including one left unfinished when Lumi closed; the refusal names the team and
+says how to end it (**Stop team**; for an interrupted team, **Take over expired
+team**, the steps under **Review interrupted work**, then **Finish stopped team**).
+Other conversations and projects aren't affected (`SwarmRuntime.blocking`).
+Team storage Lumi can't read holds every conversation, since its owner is
+unknown.
 
 Choose one of two planning approaches:
 
@@ -409,6 +416,9 @@ is lost, inspect retained guidance before choosing whether to send it again.
 
 ## Allow and review file changes
 
+Writers need Git (Git for Windows on Windows): without it a team with
+writable folders is refused at once ("Writer teams need Git for Windows ...");
+read-only teams never run Git and work without it.
 Writer setup requires a clean, committed Git checkout at the repository root
 on a branch. A project opened at a repository subdirectory cannot start writers;
 the client does not widen its workspace. The team
@@ -432,9 +442,49 @@ roots within the team's roots, and list its required check names. The total
 allowance must cover the configured per-worker allowances. A coordinator may
 propose writers only when writable roots and trusted checks were configured.
 
-Writers work in isolated Git worktrees. Their submitted output does not change
-your working checkout. The **Review file changes** section shows the captured
-base, finalized writer revisions and changed paths.
+Writers work in isolated Git worktrees under Lumi's runtime folder, on branches
+named `lumi/team-<writer>` in your repository (`codex/swarm-writer-<writer>`
+before). Their submitted output does not change your working checkout. The
+**Review file changes** section shows the captured base, finalized writer
+revisions and changed paths.
+
+When the team ends (completed, stopped or failed), Lumi removes the worktree
+and branch of each writer whose change was applied (it is on your branch) or
+who made none, and a combined candidate whose writers' changes were all
+applied through another one; at startup it does the same for teams that
+ended earlier, including the old branch names (`engine/swarming/cleanup.py`).
+Everything that may still be someone's work stays: a writer's change nobody
+applied, a writer's worktree that may hold edits nobody committed, and any
+other combined candidate nobody applied. An applied combined candidate stays
+too, so **Inspect candidate** keeps working. **Stop team** says what it keeps,
+and once the team has ended, **Review file changes** lists it under **Kept in
+your repository**, with how much disk its folders take, and **Discard kept
+work** (confirm with its checkbox) removes all of it, applied candidates
+included. **Saved teams in this conversation** shows what every ended team of
+the conversation keeps, and **Discard all kept work** (confirmed in a dialog)
+does the same for all of them. Lumi never removes:
+
+- a branch someone committed to after the team recorded it (salvaging its
+  work, say): it is listed as kept for you, with the worktree left with it and
+  a **Remove folder** button. Remove folder (confirmed in a dialog) deletes
+  that folder the way Lumi removes its own worktrees, below; the branch and its
+  commits stay, and what wasn't committed in the folder goes with it. Don't
+  delete such a folder by hand: File Explorer or `rmdir /s` can follow a
+  junction inside it and delete the files it points to;
+- a branch checked out, or being rebased or bisected, in another worktree,
+  until it no longer is. Whether it is is read again just before each branch
+  is deleted, right after its worktree, so a checkout that happens meanwhile
+  keeps it.
+
+Lumi removes a worktree itself, never with `git worktree remove` or `git
+worktree prune`: it unlinks junctions and symbolic links inside without
+following them (Git for Windows followed one, an npm `file:` dependency, and
+deleted the files it pointed to), and it removes only that worktree's own
+record, so your own worktrees stay registered even while their folders are
+away. Cleanup runs Lumi's own Git (`lumi/safe_git.py`: hooks and the other
+programs a repository's settings name switched off, none at all in an
+untrusted project whose settings name some) and waits for other team steps on
+the repository.
 
 1. Select compatible stopped writer results and choose **Prepare selected
    changes**. This creates a combined candidate for review.

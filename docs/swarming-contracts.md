@@ -127,8 +127,22 @@ the command records the owner as reviewer and accepts atomically. It does not
 represent an executed test or model verification. The owner completes the run
 separately after every work item is accepted and all effects/accounting resolve.
 The runtime watches durable foreground ownership even with no panel connected.
-Unreconciled saved work blocks new execution; navigation remains available to
-inspect orphaned runs. Finishing Stop releases ownership without viewer polling.
+Unreconciled saved work blocks new team execution in its project; ordinary chat,
+model changes and missions wait only in the conversation that owns it
+(`SwarmRuntime.blocking`), and navigation remains available to inspect orphaned
+runs. A run this host starts or takes over holds its conversation at once,
+before the ownership observer's next refresh, and any active run whose owner
+isn't known yet holds every conversation. Finishing Stop releases ownership
+without viewer polling. When a run ends, the worktrees and team branches of
+writers whose change was applied, or who made none, are removed from the
+repository; unapplied writer results and candidates, and applied candidates'
+worktrees (for Inspect candidate), stay until the owner's Discard
+(`discard_kept_work`, or `discard_all_kept_work` for every ended run of the
+conversation). A branch is deleted only at its recorded tip, right after its
+own worktree, once a fresh read shows no worktree, rebase or bisect uses it; a
+branch someone committed to is never deleted, and the folder left with it goes
+only by the owner's `remove_left_worktree` (`cleanup.py`, recorded as run
+events). The run's records stay.
 
 ## Local persistence decision
 

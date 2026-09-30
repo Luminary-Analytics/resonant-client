@@ -1,7 +1,9 @@
 # The terminal UI
 
 `lumi` with no subcommand (also `lumi-tui`) opens a chat with the agent in the
-terminal, with a model from Ollama. The project is the folder it starts in,
+terminal, with a model from Ollama. The windowless Windows `lumi.exe` opened
+without arguments from Explorer or a shortcut has no terminal, and opens the
+desktop app instead. The project is the folder it starts in,
 and the same rules as in the desktop app and [`lumi run`](headless.md) apply
 there. The code is `lumi/tui.py`.
 

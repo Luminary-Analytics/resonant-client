@@ -20,7 +20,14 @@ from pathlib import Path
 from typing import Optional, Sequence
 
 from lumi.executables import current_project, find_program, system_program
-from lumi.processes import background_process_kwargs
+from lumi.processes import (
+    CMD_COMMAND_LIMIT,
+    CMD_TOO_LONG,
+    background_process_kwargs,
+    cmd_too_long,
+    decode_output,
+    utf8_env,
+)
 
 from .truncation import (
     GREP_MAX_LINE_LENGTH,
@@ -1688,7 +1695,7 @@ def execute_tool(
         elif name == "file_edit":
             return _exec_file_edit(arguments, start)
         elif name == "glob":
-            return _exec_glob(arguments, start, exclusions=exclusions)
+            return _exec_glob(arguments, start, exclusions=exclusions, project_path=project_path)
         elif name == "grep":
             return _exec_grep(arguments, start, cancel_event=cancel_event, exclusions=exclusions,
                               project_path=project_path,
@@ -1893,6 +1900,7 @@ def _run_subprocess_with_cancel(
     stdin=None,
     cancel_event: Optional[threading.Event] = None,
     owned_process_group: bool = False,
+    env: Optional[dict[str, str]] = None,
 ):
     def _create_windows_kill_job(process):
         if sys.platform != "win32":
@@ -1972,14 +1980,24 @@ def _run_subprocess_with_cancel(
         # worker's private host-control pipe (or compete with its reader).
         stdin=subprocess.DEVNULL if owned_process_group and stdin is None else stdin,
         # The agent's shell runs model-written commands: keep Lumi's own
-        # model keys out of its reach (secrets_store.PROVIDER_KEY_ENV).
-        env=child_env(),
+        # model keys out of its reach (secrets_store.PROVIDER_KEY_ENV). A
+        # caller's ``env`` is built from child_env() too.
+        env=child_env() if env is None else env,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
-        text=text,
+        # Always bytes: a text-mode pipe decodes with the locale's code page
+        # (cp1252 here), and cmd.exe writes the OEM one. One undecodable byte
+        # ("ü" is 0x81) killed the reader thread and lost all of the output.
+        # ``text=True`` callers get it decoded by lumi.processes.decode_output.
+        text=False,
         **process_group_args,
     )
     windows_job = _create_windows_kill_job(proc)
+
+    def _output(stdout, stderr):
+        if not text:
+            return stdout, stderr
+        return decode_output(stdout), decode_output(stderr)
 
     def _terminate_tree():
         if sys.platform == "win32" and windows_job:
@@ -2033,11 +2051,11 @@ def _run_subprocess_with_cancel(
 
     try:
         stdout, stderr = proc.communicate(timeout=timeout)
-        return proc.returncode, stdout, stderr, False
+        return (proc.returncode, *_output(stdout, stderr), False)
     except subprocess.TimeoutExpired:
         _terminate_tree()
         stdout, stderr = proc.communicate()
-        return proc.returncode, stdout, stderr, True
+        return (proc.returncode, *_output(stdout, stderr), True)
     finally:
         process_finished.set()
         if watcher:
@@ -2093,6 +2111,16 @@ def _exec_bash(args: dict, start: float, cancel_event: Optional[threading.Event]
             metadata={"command": cmd, "not_executed": True, "reason": "windows_multiline_command"},
         )
 
+    if sandboxed is None and cmd_too_long(managed_cmd):
+        # cmd.exe would refuse it too, in these words; say so without starting it.
+        return ToolResult(
+            f"{CMD_TOO_LONG}\n(exit code: 1)\nNo command was executed: cmd.exe takes commands of up to "
+            f"{CMD_COMMAND_LIMIT:,} characters. Write a longer one to a script file in the project, then run that.",
+            is_error=True,
+            elapsed=time.time() - start,
+            metadata={"command": cmd, "exit_code": 1, "not_executed": True, "reason": "windows_command_too_long"},
+        )
+
     try:
         returncode, stdout, stderr, timed_out = _run_subprocess_with_cancel(
             sandboxed or managed_cmd,
@@ -2102,6 +2130,9 @@ def _exec_bash(args: dict, start: float, cancel_event: Optional[threading.Event]
             cwd=cwd,
             stdin=subprocess.DEVNULL,
             cancel_event=cancel_event,
+            # Python children write UTF-8 (utf8_env); decode_output reads
+            # what the rest writes, cmd.exe's OEM code page included.
+            env=utf8_env(child_env()),
         )
         elapsed = time.time() - start
         if cancel_event is not None and cancel_event.is_set():
@@ -2118,7 +2149,8 @@ def _exec_bash(args: dict, start: float, cancel_event: Optional[threading.Event]
                 elapsed=timeout,
                 metadata={"command": cmd, "timed_out": True},
             )
-        output = stdout
+        # Never None: output a command produced is decoded, not dropped.
+        output = stdout or ""
         if stderr:
             output += ("\n" if output else "") + stderr
         if returncode != 0:
@@ -2307,7 +2339,7 @@ def _exec_file_edit(args: dict, start: float) -> ToolResult:
     )
 
 
-def _exec_glob(args: dict, start: float, *, exclusions=None) -> ToolResult:
+def _exec_glob(args: dict, start: float, *, exclusions=None, project_path: str = "") -> ToolResult:
     pattern = args.get("pattern", "")
     base = args.get("path", ".")
     offset = max(0, int(args.get("offset", 0) or 0))
@@ -2345,13 +2377,17 @@ def _exec_glob(args: dict, start: float, *, exclusions=None) -> ToolResult:
             is_error=True,
             elapsed=time.time() - start,
         )
+    root = project_path or base
+    if not _names_lumi_folder(root, base, pattern):
+        # Only Lumi's old codebase index; the person's .lumi files are listed.
+        all_matches = [m for m in all_matches if not _is_old_index(str(m), root)]
     hidden = 0
     if exclusions:
         kept, hidden = exclusions.filter_paths(str(m) for m in all_matches)
         all_matches = [Path(p) for p in kept]
     total = len(all_matches)
     matches = all_matches[offset:offset + limit]
-    result = "\n".join(str(m) for m in matches)
+    result = "\n".join(_project_display_path(str(m), project_path) for m in matches)
     next_offset = offset + len(matches)
     if next_offset < total:
         result += (
@@ -2434,6 +2470,98 @@ def _bundled_ripgrep(*, trusted_only: bool = False) -> Optional[str]:
 
 
 _GREP_LINE_PATH = re.compile(r"^((?:[A-Za-z]:)?[^:]*):\d+:")
+
+
+def _findstr_lines(data: bytes, root: str) -> list[str]:
+    """findstr's matches as ``path:line:text``, one per match.
+
+    findstr doesn't end a match that is a file's last line when the file has
+    no final newline, so the next file's match follows on the same line. Each
+    match starts with the search root it was given, the rest of the file's
+    path and ``:<line>:``; one match ends where the next such start begins,
+    never at the root's name elsewhere in a line's text. findstr writes the
+    path in the console's code page (the OEM one: "ö" is 0x94) and the text
+    as the file's own bytes, so each is decoded on its own: the path with the
+    code page that spells the root, the text with decode_output. Decoding
+    the whole output first read "Jöhn Smith" wrongly, nothing was split, and
+    an excluded file's match rode along on the line before it.
+    """
+    from lumi.processes import _ansi_code_page, _oem_code_page
+
+    base = root.rstrip("\\/") + os.sep
+    for page in dict.fromkeys((_oem_code_page(), _ansi_code_page(), "utf-8")):
+        try:
+            prefix = base.encode(page)
+        except (UnicodeEncodeError, LookupError):
+            continue
+        starts = list(re.finditer(re.escape(prefix) + rb"([^:\r\n]*):(\d+):", data, re.IGNORECASE))
+        if not starts or data[:starts[0].start()].strip():
+            continue
+        matches = []
+        for index, found in enumerate(starts):
+            end = starts[index + 1].start() if index + 1 < len(starts) else len(data)
+            path = (prefix + found.group(1)).decode(page, errors="replace")
+            text = decode_output(data[found.end():end], prefer="ansi").rstrip("\n")
+            matches.append(f"{path}:{found.group(2).decode('ascii')}:{text}")
+        return matches
+    # The root isn't spelled in any of those code pages (a character the
+    # console can't write): lines as they come, split before the root.
+    output = decode_output(data).strip()
+    split = re.compile("(?=" + re.escape(base) + r"[^:\n]*:\d+:)", re.IGNORECASE)
+    return [part for line in output.split("\n") if line for part in split.split(line) if part]
+
+
+# The codebase index Lumi used to keep in the project: <project>/.lumi/index.json
+# (.resonant/ before the rebrand). It lives in Lumi's state folder now
+# (engine/rag.py), and an old copy isn't the project's code, so searches skip
+# it. Everything else there is the person's (.lumi/LUMI.md, capability packs,
+# mission roadmaps) and is searched like any other file, and a search that
+# names .lumi itself (its path or pattern) skips nothing.
+_LUMI_FOLDERS = frozenset({".lumi", ".resonant"})
+
+
+def _relative_to(path: str, root: str) -> str | None:
+    """``path`` relative to ``root`` when it is inside it (any case), else None."""
+    if not path or not root:
+        return None
+    try:
+        absolute, base = os.path.abspath(path), os.path.abspath(root)
+        if os.path.normcase(absolute) == os.path.normcase(base):
+            return "."
+        prefix = os.path.normcase(base).rstrip("\\/") + os.sep
+        if not os.path.normcase(absolute).startswith(prefix):
+            return None
+        # relpath keeps the result's own spelling; only the root is dropped.
+        return os.path.relpath(absolute, base)
+    except ValueError:  # another drive
+        return None
+
+
+def _names_lumi_folder(root: str, base: str, *patterns: str) -> bool:
+    """Whether a search names .lumi or .resonant: its folder inside ``root``, or a pattern's part."""
+    relative = _relative_to(base, root)
+    parts = [*(Path(relative).parts if relative not in (None, ".") else ())]
+    for pattern in patterns:
+        parts += [part for part in re.split(r"[\\/]+", pattern or "") if part]
+    return any(part.lower() in _LUMI_FOLDERS for part in parts)
+
+
+def _is_old_index(path: str, root: str) -> bool:
+    """Whether ``path`` is the codebase index Lumi used to keep in the project at ``root``."""
+    relative = _relative_to(path, root)
+    parts = [part.lower() for part in Path(relative).parts] if relative else []
+    return len(parts) == 2 and parts[0] in _LUMI_FOLDERS and parts[1] == "index.json"
+
+
+def _project_display_path(path: str, project_path: str) -> str:
+    """A search result as the agent should see it: relative to the project, as the file is spelled.
+
+    The sandbox hands tools a case-folded absolute root ("c:\\users\\...").
+    Paths inside the project are shown relative to it, so what's left is
+    the files' own spelling; anything else stays absolute.
+    """
+    relative = _relative_to(path, project_path)
+    return path if relative in (None, ".") else relative
 
 
 def _build_grep_command(pattern: str, path: str, file_glob: str, *, trusted_only: bool = False,
@@ -2534,15 +2662,18 @@ def _exec_grep(
             metadata={"pattern": pattern, "timed_out": True},
         )
 
-    try:
-        output = stdout.decode("utf-8").strip()
-    except (UnicodeDecodeError, AttributeError):
-        try:
-            output = stdout.decode("latin-1").strip()
-        except (UnicodeDecodeError, AttributeError):
-            output = str(stdout).strip()
-
-    lines = output.split("\n") if output else []
+    # Matched text is each file's own bytes, in whatever encoding it has, and
+    # findstr writes paths in the console's code page: decode per line
+    # (lumi.processes.decode_output), and findstr's matches as findstr
+    # wrote them (_findstr_lines).
+    raw = stdout if isinstance(stdout, bytes) else str(stdout or "").encode("utf-8")
+    # rg, findstr or grep, by the full path _build_grep_command resolved.
+    searcher = os.path.splitext(os.path.basename(cmd[0]))[0].lower()
+    if searcher == "findstr" and os.path.isdir(path):
+        lines = _findstr_lines(raw, path)
+    else:
+        decoded = decode_output(raw, prefer="ansi").strip()  # files' own text
+        lines = decoded.split("\n") if decoded else []
     hidden = 0
     if exclusions and lines:
         # Every backend prints path:line:content; a Windows path starts
@@ -2556,6 +2687,24 @@ def _exec_grep(
             else:
                 kept_lines.append(line)
         lines = kept_lines
+    old_index = 0
+    if lines:
+        # Paths relative to the project, as the files are spelled, and not
+        # Lumi's old codebase index (only ripgrep's .gitignore handling or
+        # nothing at all would skip it otherwise).
+        root = project_path or (path if os.path.isdir(path) else os.path.dirname(path))
+        skip_index = not _names_lumi_folder(root, path, file_glob)
+        shown_lines = []
+        for line in lines:
+            match = _GREP_LINE_PATH.match(line)
+            if match and skip_index and _is_old_index(match.group(1), root):
+                old_index += 1
+                continue
+            if match and project_path:
+                line = _project_display_path(match.group(1), project_path) + line[match.end(1):]
+            shown_lines.append(line)
+        lines = shown_lines
+    output = ""  # only what survived the filters above is ever shown
     count = len(lines)
     # Cap each match line at 500 chars so a single minified-JS hit can't
     # dominate the result list. Then head-truncate the overall match set.
@@ -2581,23 +2730,30 @@ def _exec_grep(
             )
         if any_line_truncated:
             output += "\n[note: some match lines were individually truncated]"
-        if hidden:
-            output += f"\n[{hidden} match{'es' if hidden != 1 else ''} in excluded files not shown (file exclusion rules)]"
     else:
         shown = 0
         next_offset = offset
 
     if not output:
-        # ripgrep honours .gitignore, which is the right default (no
-        # node_modules noise) but makes an empty result ambiguous: the agent
-        # cannot tell "not in this codebase" from "in a file I chose not to
-        # read". Say so, so it can decide rather than conclude.
         output = "(no matches)"
-        if _ripgrep_executable():
-            output += (
-                "\nNote: .gitignore'd files were not searched. "
-                "Re-run with bash `rg --no-ignore ...` to include them."
-            )
+        if searcher not in ("findstr", "grep"):
+            # ripgrep honours .gitignore, which is the right default (no
+            # node_modules noise) but makes an empty result ambiguous: the
+            # agent cannot tell "not in this codebase" from "in a file I
+            # chose not to read". Say so, so it can decide rather than
+            # conclude. The shell can run rg only when it is on PATH; the
+            # copy Lumi ships isn't.
+            output += "\nNote: files your .gitignore excludes were not searched."
+            output += (" Re-run with bash `rg --no-ignore ...` to include them."
+                       if find_program("rg", exclude=[project_path or path])
+                       else " Read one you need with file_read, or find it with glob.")
+    if hidden:
+        output += f"\n[{hidden} match{'es' if hidden != 1 else ''} in excluded files not shown (file exclusion rules)]"
+    if old_index and not count:
+        # Only when nothing else matched: otherwise it would ride along on
+        # every search in a project that still has the old file.
+        output += (f"\n[{old_index} match{'es' if old_index != 1 else ''} in Lumi's old codebase index "
+                   "(.lumi/index.json) not shown; search .lumi to include it]")
 
     elapsed = time.time() - start
     return ToolResult(

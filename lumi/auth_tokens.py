@@ -155,11 +155,14 @@ def entra_token(tenant: str, *, client_id: str = "", client_secret: str = "", sc
         command = [az, "account", "get-access-token", "--resource", resource, "--output", "json"]
         if tenant:
             command += ["--tenant", tenant]
-        from .processes import background_process_kwargs
+        from .processes import background_process_kwargs, decode_output
 
         try:
-            completed = subprocess.run(command, capture_output=True, text=True, timeout=60,
-                                       **background_process_kwargs())
+            # Bytes, decoded after: az runs through cmd.exe, whose messages
+            # come in the console's code page, which a text-mode pipe misread.
+            done = subprocess.run(command, capture_output=True, timeout=60, **background_process_kwargs())
+            completed = subprocess.CompletedProcess(done.args, done.returncode, decode_output(done.stdout),
+                                                    decode_output(done.stderr))
         except (OSError, subprocess.TimeoutExpired):
             completed = None
     if completed is None or completed.returncode != 0:

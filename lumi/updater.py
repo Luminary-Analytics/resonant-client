@@ -141,6 +141,19 @@ def _find_dll() -> Path | None:
     return None
 
 
+MISSING_COMPONENT_MESSAGE = ("This installation is missing its update component (WinSparkle.dll). "
+                             "Reinstall Lumi to get updates.")
+
+
+def component_missing() -> bool:
+    """Whether this installed Windows copy lacks its updater (WinSparkle.dll).
+
+    That's a damaged installation, not a copy that runs from source: say
+    "reinstall" (MISSING_COMPONENT_MESSAGE), not "the updater didn't start".
+    """
+    return sys.platform == "win32" and bool(getattr(sys, "frozen", False)) and _find_dll() is None
+
+
 def _load_dll() -> ctypes.CDLL | None:
     """Load WinSparkle.dll and configure ctypes signatures. Returns None on failure."""
     if sys.platform != "win32":
@@ -437,6 +450,8 @@ def _unavailable_reason(prefs: UpdatePreferences) -> str:
     if prefs.platform == "linux":
         return ("Lumi doesn't update itself on Linux: your package manager does, or a new AppImage or "
                 "tarball.")
+    if component_missing():
+        return MISSING_COMPONENT_MESSAGE
     return "Lumi's updater didn't start, so this copy doesn't update itself. The startup log says why."
 
 

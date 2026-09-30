@@ -112,15 +112,18 @@ def _git(args: list[str], *, cwd: Path | None = None, local: bool = False, remot
         config += ["-c", "http.followRedirects=false"]
         try:
             rewritten = subprocess.run([*git, *config, "ls-remote", "--get-url", "--", remote], cwd=cwd, env=env,
-                                       capture_output=True, text=True, timeout=_GIT_TIMEOUT).stdout.strip()
+                                       capture_output=True, text=True, encoding="utf-8", errors="replace",
+                                       timeout=_GIT_TIMEOUT).stdout.strip()
         except (OSError, subprocess.TimeoutExpired) as exc:
             raise PackInstallError(f"Git couldn't run: {exc}") from exc
         reason = offline.refusal(rewritten or remote, feature)
         if reason:
             raise PackInstallError(reason)
     try:
+        # Git writes UTF-8; a text-mode pipe read it as cp1252 and failed on
+        # some names and messages.
         completed = subprocess.run([*git, *config, *args], cwd=cwd, env=env, capture_output=True,
-                                   text=True, timeout=_GIT_TIMEOUT)
+                                   text=True, encoding="utf-8", errors="replace", timeout=_GIT_TIMEOUT)
     except subprocess.TimeoutExpired as exc:
         raise PackInstallError("Git took too long; check the address and your network.") from exc
     except OSError as exc:

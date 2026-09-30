@@ -75,7 +75,7 @@ class TestBashRunnerShell:
 
         runner = BashRunner(_bash_path="/usr/bin/bash")
         with patch(
-            "lumi.orchestration.acceptance_check.subprocess.run",
+            "lumi.orchestration.acceptance_check.run_command",
             side_effect=fake_run,
         ):
             runner.run("echo hello")
@@ -84,13 +84,16 @@ class TestBashRunnerShell:
         assert captured["args"] == ["/usr/bin/bash", "-c", "echo hello"]
         assert captured["shell"] is False
 
-    def test_falls_back_to_shell_true_when_bash_unavailable(self):
+    def test_falls_back_to_shell_true_when_bash_unavailable(self, monkeypatch):
+        monkeypatch.delenv("PYTHONIOENCODING", raising=False)
+        monkeypatch.delenv("PYTHONUTF8", raising=False)
         captured = {}
 
         def fake_run(*args, **kwargs):
             captured["args"] = args
             captured["shell"] = kwargs.get("shell", False)
-            return MagicMock(returncode=0, stdout="ok", stderr="")
+            captured["env"] = kwargs.get("env") or {}
+            return MagicMock(returncode=0, stdout=b"ok", stderr=b"")
 
         # Stub bash detection to return None
         runner = BashRunner()
@@ -98,14 +101,19 @@ class TestBashRunnerShell:
             "lumi.orchestration.acceptance_check._detect_bash",
             return_value=None,
         ), patch(
-            "lumi.orchestration.acceptance_check.subprocess.run",
+            "lumi.orchestration.acceptance_check.run_command",
             side_effect=fake_run,
         ):
             runner.run("echo hello")
 
-        # Falls back to shell=True with raw command
+        # Falls back to the platform shell with the raw command: one
+        # `cmd.exe /c` on Windows, as before (output is decoded instead).
         assert captured["args"][0] == "echo hello"
         assert captured["shell"] is True
+        # A child Python writes UTF-8 to the pipe, and nothing else changes:
+        # not PYTHONUTF8, which would change what open() reads and writes.
+        assert captured["env"]["PYTHONIOENCODING"] == "utf-8"
+        assert "PYTHONUTF8" not in captured["env"]
 
     def test_explicit_bash_path_overrides_detection(self):
         """If a test (or runtime config) sets `_bash_path` explicitly,
@@ -118,7 +126,7 @@ class TestBashRunnerShell:
 
         runner = BashRunner(_bash_path="/custom/path/to/bash")
         with patch(
-            "lumi.orchestration.acceptance_check.subprocess.run",
+            "lumi.orchestration.acceptance_check.run_command",
             side_effect=fake_run,
         ), patch(
             "lumi.orchestration.acceptance_check._detect_bash"
@@ -159,7 +167,7 @@ class TestBashRunnerShell:
             timeout_seconds=15.0,
         )
         with patch(
-            "lumi.orchestration.acceptance_check.subprocess.run",
+            "lumi.orchestration.acceptance_check.run_command",
             side_effect=fake_run,
         ):
             runner.run("ls")
@@ -172,7 +180,7 @@ class TestBashRunnerShell:
 
         runner = BashRunner(_bash_path="/bin/bash", timeout_seconds=0.1)
         with patch(
-            "lumi.orchestration.acceptance_check.subprocess.run",
+            "lumi.orchestration.acceptance_check.run_command",
             side_effect=sp.TimeoutExpired(cmd="x", timeout=0.1),
         ):
             rc, out, err = runner.run("anything")
@@ -183,7 +191,7 @@ class TestBashRunnerShell:
     def test_subprocess_error_returns_127(self):
         runner = BashRunner(_bash_path="/bin/bash")
         with patch(
-            "lumi.orchestration.acceptance_check.subprocess.run",
+            "lumi.orchestration.acceptance_check.run_command",
             side_effect=OSError("no such bash"),
         ):
             rc, out, err = runner.run("anything")

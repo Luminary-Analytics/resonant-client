@@ -46,6 +46,26 @@ pinned tools (`python -m pip install --require-hashes -r
 packaging/tools-requirements.txt`) in the Python running the script. Do not
 build from an arbitrary environment with accumulated packages.
 
+Things that trip up a local build:
+
+- **Use PowerShell 7** (`pwsh ./scripts/build_clean.ps1`), as CI does.
+  Windows PowerShell 5.1 turns a native program's standard error into a
+  terminating error when the script's output is captured (`*>&1`, or a
+  wrapper that logs it), and PyInstaller writes its progress there, so the
+  build stops at PyInstaller's first line.
+- **ripgrep counts as present** only when `packaging/ripgrep/` holds `rg.exe`
+  *and* its license files (`COPYING`, `LICENSE-MIT`, `UNLICENSE`) and
+  `rg --version` reports the pinned version. Otherwise `fetch_ripgrep.ps1`
+  downloads the pinned archive and checks its SHA-256; copying only `rg.exe`
+  from another checkout triggers that download. The web assets under
+  `lumi/gui/static/vendor/` are reused when each file matches its pinned
+  hash in `fetch_web_assets.ps1`.
+- **The SBOM** (`-SbomPath`) runs `cyclonedx_py` from the Python that runs the
+  script, so install `packaging/tools-requirements.txt` there first.
+- The build environment is a fresh virtual environment in
+  `%TEMP%\lumi-clean-build-<pid>`, removed afterwards (`-KeepEnvironment`
+  keeps it); packages are downloaded again each time (`--no-cache-dir`).
+
 When dependencies in `pyproject.toml` change, run `python scripts/lock_release.py`
 (needs [uv](https://docs.astral.sh/uv/)), review the lock diff, and commit it.
 The tests fail while the lock misses a declared dependency, and the weekly

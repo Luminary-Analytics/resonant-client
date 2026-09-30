@@ -175,8 +175,10 @@ It exits 1 while Lumi refuses model requests under the policy. It reads the
 policy as the app does; it only adds a `policy.file_ignored` record to the
 audit log for a file it ignored.
 
-`lumi.exe` is a windowed program. To see its output from PowerShell, redirect
-it:
+`lumi.exe` is a windowed program. Opened from Explorer or a shortcut without
+arguments, it has no console, and opens the app as `lumi gui` does. With any
+argument, or with its input or output redirected, it runs the command. To see
+its output from PowerShell, redirect it:
 
 ```
 Start-Process "C:\Program Files\Lumi\lumi.exe" -ArgumentList updates -Wait `

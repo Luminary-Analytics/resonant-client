@@ -479,6 +479,15 @@ host enrollment and actual packaged/learned-benefit qualification remain open.
 - Never silently use a system/install directory as the project. Respect the
   sandbox and permission modes; writer worktrees must not reset, stash, or merge
   over a dirty user checkout. `working_subdir` may narrow, never broaden, scope.
+- Remove Lumi's worktrees only with `lumi/worktree_removal.py`, never
+  `git worktree remove --force` or `git worktree prune`: Git for Windows follows a
+  junction inside a worktree and deletes its target's files, and prune forgets
+  the person's own worktrees whose folders are away. Delete a team branch only at
+  the commit the team recorded, right after its own worktree and after reading
+  again whether it is checked out, rebased or bisected; keep an ended team's
+  unapplied work until the person discards it, and a folder left with a branch
+  someone committed to until they remove it in the panel; never tell the person
+  to delete one by hand (`engine/swarming/cleanup.py`).
 - Long foreground workers use `job_start`, `job_status`, and `job_cancel`.
   Ordinary shell children are cleaned up at tool completion. Managed jobs are
   project-owned, limited to20minutes, and stopped on client exit; explicit
@@ -643,12 +652,28 @@ and commit the locks. A shipped package under GPL, AGPL or LGPL needs a
 `license_reviews` entry in `packaging/third-party-components.json`, or exclusion
 under `not_shipped`; the build fails otherwise.
 
-Use `scripts/build_clean.ps1` for Windows release builds. Never clean a running
+Use `scripts/build_clean.ps1` for Windows release builds, run with PowerShell 7
+(`pwsh`); RELEASING.md lists what else a local build needs. Never clean a running
 bundle; use a separate source copy for a candidate build while testing. The
 script's `-ValidateOnly` checks the running-target guard without cleanup. Verify the packaged
 executable, HTTP UI, WebSocket connection, startup logs, and changed packaged
 assets. Stop only fixture processes you started. See [RELEASING.md](RELEASING.md)
 for publishing and update-feed verification.
+
+Git, Python and Node.js are optional on a user's computer. Code that runs
+`git` treats a program that can't start like a failed command and never lets
+it end a session, and says Git isn't installed only when `git_available()`
+says so (`lumi/git_support.py`, through `safe_git.executable`). Shell
+commands the model or the person asked for run in one `cmd.exe /c`
+(`shell=True`, a reviewed `BY_DESIGN` launch) exactly as in their own
+terminal: never switch its code page or wrap it in another cmd.exe, which
+changes what batch files, long commands and quoted paths do. Python children
+get `PYTHONIOENCODING=utf-8` (`processes.utf8_env`), never `PYTHONUTF8`, which
+changes what `open()` reads and writes. Output read as text is decoded with
+`processes.decode_output` (per line: UTF-8, else the OEM or ANSI code page;
+OEM wins a tie for commands) or `OutputDecoder` when read in pieces. A command
+with a timeout runs through `processes.run_command`, whose timeout ends every
+process it started and which resolves a program named without a path.
 
 ## Documentation and releases
 

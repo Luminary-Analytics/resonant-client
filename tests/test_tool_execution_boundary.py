@@ -170,6 +170,8 @@ def test_grep_passes_file_glob_through_to_ripgrep():
         command = _build_grep_command("needle", "src", "*.py")
 
     globs = [command[i + 1] for i, arg in enumerate(command) if arg == "--glob"]
+    # VCS internals are never searched; the model's glob follows. The
+    # person's .lumi files (LUMI.md, packs) are searched like any other.
     assert globs == ["!.git/", "*.py"]
 
 

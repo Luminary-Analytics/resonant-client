@@ -225,6 +225,11 @@ def _git(cwd: str, *args: str) -> str:
                               timeout=30)
     except GitRefused as exc:
         raise GitHubError(str(exc)) from exc
+    except FileNotFoundError as exc:
+        # Git isn't installed, or the folder is gone (FileNotFoundError too off Windows).
+        from ..git_support import start_failure_message
+
+        raise GitHubError(start_failure_message(exc, "Pull request tools need", cwd=cwd)) from exc
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise GitHubError(f"git {' '.join(args)} failed: {exc}") from exc
     if completed.returncode != 0:

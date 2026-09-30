@@ -456,12 +456,21 @@ class Registrar:
         raise NotImplementedError
 
 
-def _run(args: list[str], **kwargs) -> subprocess.CompletedProcess:
-    """Run one of the system's scheduler tools (schtasks, launchctl, crontab) by its full path."""
-    from .executables import system_program
+def _run(args: list[str], *, input: str | None = None) -> subprocess.CompletedProcess:
+    """Run one of the system's scheduler tools (schtasks, launchctl, crontab) by its full path.
 
-    return subprocess.run([system_program(args[0]), *args[1:]], capture_output=True, text=True, timeout=30,
-                          creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0), **kwargs)
+    Its output is text whatever code page it writes: schtasks writes the
+    console's code page (cp437 or cp850 in a German or French Windows),
+    which a text-mode pipe read as cp1252, or failed on.
+    """
+    from .executables import system_program
+    from .processes import decode_output
+
+    done = subprocess.run([system_program(args[0]), *args[1:]], capture_output=True, timeout=30,
+                          input=None if input is None else input.encode("utf-8"),
+                          creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    return subprocess.CompletedProcess(done.args, done.returncode, decode_output(done.stdout),
+                                       decode_output(done.stderr))
 
 
 class WindowsTasks(Registrar):

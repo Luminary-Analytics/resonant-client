@@ -22,7 +22,10 @@ feed in use now.
 
 Settings > Updates also shows the installed version and the last check. A copy
 that runs from source, or on Linux, doesn't update itself, and Settings says
-why; the check button is off there. On macOS only the app updates itself, not
+why; the check button is off there. An installed Windows copy whose
+`WinSparkle.dll` is missing says its update component is missing and to
+reinstall Lumi, there, in Help > Check for Updates and in `lumi updates`
+(`"updater": "missing: ..."`). On macOS only the app updates itself, not
 `lumi` in Terminal or the chat gateway. Running from source never loads
 WinSparkle or Sparkle, so development runs and tests don't write the WinSparkle
 registry key or Sparkle's preferences, or show their dialogs. To try WinSparkle

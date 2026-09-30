@@ -275,5 +275,11 @@ def main(argv: list[str] | None = None) -> int:
     if argv:
         print("usage: lumi updates [verify <installer, folder or .zip>]", file=sys.stderr)
         return 2
-    print(json.dumps({"version": __version__, **read().as_dict()}, indent=2))
+    report = {"version": __version__, **read().as_dict()}
+    from .updater import component_missing
+
+    if component_missing():
+        # An installed Windows copy without WinSparkle.dll can't update itself.
+        report["updater"] = "missing: reinstall Lumi to get updates"
+    print(json.dumps(report, indent=2))
     return 0

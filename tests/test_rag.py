@@ -12,6 +12,7 @@ import time
 
 import pytest
 
+from lumi.engine.artifacts import project_state_dir
 from lumi.engine.rag import (
     CodebaseIndex,
     IndexEntry,
@@ -21,6 +22,11 @@ from lumi.engine.rag import (
     _extract_imports,
     _extract_symbols,
 )
+
+
+def _cache_file(project):
+    """Where the index cache lives: Lumi's state for the project, not the project itself."""
+    return project_state_dir(project) / "index.json"
 
 
 # ======================================================================
@@ -277,7 +283,7 @@ class TestCache:
     def test_version_mismatch_recovery(self, tmp_project):
         idx = CodebaseIndex(tmp_project)
         idx.index()
-        cache_file = tmp_project / ".resonant" / "index.json"
+        cache_file = _cache_file(tmp_project)
         # Tamper version
         data = json.loads(cache_file.read_text(encoding="utf-8"))
         data["version"] = 999
@@ -291,7 +297,7 @@ class TestCache:
     def test_corrupt_json_recovery(self, tmp_project):
         idx = CodebaseIndex(tmp_project)
         idx.index()
-        cache_file = tmp_project / ".resonant" / "index.json"
+        cache_file = _cache_file(tmp_project)
         cache_file.write_text("{{{invalid json!!!", encoding="utf-8")
 
         idx2 = CodebaseIndex(tmp_project)
@@ -300,7 +306,8 @@ class TestCache:
     @pytest.mark.adversarial
     def test_missing_fields_in_cached_entries(self, tmp_project):
         """Cached entries with missing fields should use defaults."""
-        cache_file = tmp_project / ".resonant" / "index.json"
+        cache_file = _cache_file(tmp_project)
+        cache_file.parent.mkdir(parents=True, exist_ok=True)
         data = {
             "version": 1,
             "last_indexed": time.time(),
@@ -324,8 +331,11 @@ class TestCache:
     def test_cache_file_created_on_index(self, tmp_project):
         idx = CodebaseIndex(tmp_project)
         idx.index()
-        cache_file = tmp_project / ".resonant" / "index.json"
+        cache_file = _cache_file(tmp_project)
         assert cache_file.exists()
+        # Runtime state stays out of the project (and out of its searches and git status).
+        assert not (tmp_project / ".resonant" / "index.json").exists()
+        assert not (tmp_project / ".lumi" / "index.json").exists()
 
 
 # ======================================================================
@@ -1073,10 +1083,13 @@ class TestEdgeCases:
 
     @pytest.mark.adversarial
     def test_cache_missing_lumi_dir(self, tmp_path):
-        """Indexing creates the .lumi dir if needed."""
+        """Indexing creates its state folder if needed, and nothing in the project."""
         proj = tmp_path / "no_resonant"
         proj.mkdir()
         (proj / "hello.py").write_text("print('hi')\n", encoding="utf-8")
         idx = CodebaseIndex(proj)
-        idx.index()
-        assert (proj / ".lumi" / "index.json").exists()
+        stats = idx.index()
+        assert _cache_file(proj).exists()
+        assert not (proj / ".lumi").exists()
+        # The index's own totals, which the page shows as its status.
+        assert stats["total_files"] == 1 and stats["total_lines"] == 1

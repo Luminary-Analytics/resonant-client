@@ -1605,13 +1605,28 @@ def _history_path() -> Path:
 
 def main(argv: Optional[list] = None):
     parser = argparse.ArgumentParser(
-        description="Lumi Code Agent — Agentic Coding TUI",
+        description=(
+            "Lumi, the coding agent. Without a command it starts the terminal UI, "
+            "which uses a local Ollama model."
+        ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
-Examples:
-  %(prog)s --backend ollama --model llama3.1:70b   # Use specific Ollama model
-  %(prog)s --ollama-url http://192.168.1.20:11434 # Ollama on LAN
-  %(prog)s --dir ~/projects/myapp                 # Set working directory
+Commands:
+  gui [--browser] [--port N]   Open the desktop app (--browser: in your web browser)
+  run ...                      Run one task without a window; see `run --help`
+  schedule ...                 Run a saved task at set times
+  usage ...                    Summarize or export usage records
+  updates [verify <file>]      Update settings in effect, or check an update file
+  editor ...                   Code editor extensions (VS Code)
+  extension ...                Work on Lumi extension packs
+  license ...                  Offline licenses: show, check or install one
+  gateway ...                  Chat gateway (Telegram, Slack)
+  --version                    Print the version
+
+Terminal UI examples:
+  %(prog)s --model llama3.1:70b                    # Use a specific Ollama model
+  %(prog)s --ollama-url http://192.168.1.20:11434 # Ollama on another computer
+  %(prog)s --dir ~/projects/myapp                 # Set the working directory
 """,
     )
 
@@ -1628,7 +1643,7 @@ Examples:
 
     # Common args
     parser.add_argument("--backend", type=str, choices=["ollama", "auto"], default="auto",
-                        help="Backend (Ollama-only since v0.4.0)")
+                        help="Model provider for the terminal UI (the desktop app offers every provider)")
     parser.add_argument("--model", type=str, default=None)
     parser.add_argument("--ollama-url", type=str, default=None)
     parser.add_argument("--dir", type=str, default=None)
@@ -1696,8 +1711,8 @@ Examples:
         _print(f"    [{C_DIM}]Checked: {_esc(ollama_url)}[/{C_DIM}]")
         console.print()
         console.print(f"  [{C_DIM}]Start Ollama or specify a different URL:[/{C_DIM}]")
-        console.print(f"    [{C_TEXT}]ollama serve  # then re-run resonant[/{C_TEXT}]")
-        console.print(f"    [{C_TEXT}]resonant --ollama-url http://<host>:11434[/{C_TEXT}]")
+        console.print(f"    [{C_TEXT}]ollama serve  # then run lumi again[/{C_TEXT}]")
+        console.print(f"    [{C_TEXT}]lumi --ollama-url http://<host>:11434[/{C_TEXT}]")
         console.print()
         return
 
@@ -2057,8 +2072,8 @@ Examples:
                 console.print(f"    [{C_TEXT}]/quit[/{C_TEXT}]             [{C_MUTED}]exit[/{C_MUTED}]")
                 console.print()
                 console.print(f"  [{C_BRAND2}]Architecture[/{C_BRAND2}]")
-                console.print(f"    [{C_TEXT}]resonant[/{C_TEXT}]                  [{C_MUTED}]embedded engine + TUI[/{C_MUTED}]")
-                console.print(f"    [{C_TEXT}]resonant-gui[/{C_TEXT}]              [{C_MUTED}]desktop GUI (recommended)[/{C_MUTED}]")
+                console.print(f"    [{C_TEXT}]lumi[/{C_TEXT}]                      [{C_MUTED}]embedded engine + TUI[/{C_MUTED}]")
+                console.print(f"    [{C_TEXT}]lumi gui[/{C_TEXT}]                  [{C_MUTED}]desktop GUI (recommended)[/{C_MUTED}]")
                 console.print()
                 console.print(f"  [{C_BRAND2}]Tips[/{C_BRAND2}]")
                 console.print(f'    [{C_MUTED}]Ask naturally — "Build a REST API with auth"[/{C_MUTED}]')

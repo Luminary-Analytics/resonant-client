@@ -36,7 +36,7 @@ import threading
 import time
 from typing import Any, Sequence
 
-from .executables import program
+from .executables import find_program, program
 
 NOTICE = ("Git features are off for this project until you trust it: its Git settings run programs "
           "({names}). Trust it in Settings > Privacy & security > Project trust to use them.")
@@ -113,6 +113,16 @@ def _split(args: Sequence[str]) -> tuple[list[str], str, list[str]]:
         index += 2
     rest = list(args[index:])
     return config, (rest[0] if rest else ""), rest[1:]
+
+
+def executable(project: str | os.PathLike | None = None, *, launchers: bool = False) -> str | None:
+    """The installed Git ``argv`` starts, by its full path; None when there is none.
+
+    ``launchers`` also counts a ``git.cmd`` or ``git.bat`` on PATH, which
+    ``argv`` never starts (cmd.exe would parse its arguments again): Git is
+    installed there, only not in a form Lumi runs itself (git_support).
+    """
+    return find_program("git", exclude=[project] if project else (), scripts=launchers)
 
 
 def argv(*args: str, project: str | os.PathLike | None = None, hooks: bool = False) -> list[str]:

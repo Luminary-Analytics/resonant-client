@@ -15,11 +15,15 @@ import tempfile
 import time
 from pathlib import Path
 
+from lumi import git_support
 from lumi.safe_git import GitRefused, run as safe_git
 
 
 class CheckpointError(RuntimeError):
     pass
+
+
+_NEEDS_GIT = "Checkpoints of the project's files in Git need"
 
 
 class IterationCheckpointStore:
@@ -174,8 +178,11 @@ class IterationCheckpointStore:
             result = safe_git(self.project_path, *args, env=env, timeout=None)
         except GitRefused as exc:
             raise CheckpointError(str(exc)) from None
-        except FileNotFoundError as exc:
-            raise CheckpointError(str(exc)) from None
+        except OSError as exc:
+            # No Git on this computer, or a project folder that is gone: a
+            # CheckpointError with the reason, which callers already handle
+            # (a turn's checkpoint falls back to an archive).
+            result = git_support.start_failure_result(["git", *args], exc, _NEEDS_GIT, cwd=self.project_path)
         if check and result.returncode != 0:
             raise CheckpointError(result.stderr.strip() or f"git {' '.join(args)} failed")
         return result

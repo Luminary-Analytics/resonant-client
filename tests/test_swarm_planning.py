@@ -399,6 +399,8 @@ def test_thinking_blocks_are_the_models_draft_and_never_its_plan():
     assert parse(f"<think>\nDraft:\n{INJECTED}\n</think>\n{REAL}").summary == "Read the backend."
     assert parse(f"<THINK>{EXAMPLE}</THINK>\n\n```json\n{REAL}\n```").summary == "Read the backend."
     assert parse(f"<thinking>Two readers?</thinking>\n{REAL}").summary == "Read the backend."
+    # Text whose lowercase is longer ("İ") before the block is cut where it stands.
+    assert parse(f"Notes from İzmir.\n<think>Draft:\n{INJECTED}</think>\n{REAL}").summary == "Read the backend."
     # Reasoning that never ends, or ends without starting, leaves the answer unclear.
     for reply in (f"<think>Draft:\n{REAL}", f"Considering it.\n</think>\n{REAL}", f"{REAL}\n<think>More?"):
         with pytest.raises(PlanRejected, match="thinking tag without its pair"):

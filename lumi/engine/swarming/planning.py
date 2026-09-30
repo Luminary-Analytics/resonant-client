@@ -36,7 +36,7 @@ _FILE_READERS = FILE_TOOL_NAMES - {"artifact_read"}
 _TEMPLATE_TAIL = re.compile(r"(?:</[A-Za-z_][^<>\s]{0,40}>|<\|[^|<>\s]{1,40}\|>)\Z")
 # Reasoning an OpenAI-compatible server leaves in the reply's text when it
 # doesn't separate it (<think>…</think>): the model's draft, not its answer.
-_THINKING_TAG = re.compile(r"</?think(?:ing)?>")
+_THINKING_TAG = re.compile(r"</?think(?:ing)?>", re.IGNORECASE)
 # How many "{" that start no complete JSON value a reply may hold; a reply with
 # more is refused rather than searched further (each failed parse reads on).
 _PLAN_SCAN_LIMIT = 32
@@ -173,18 +173,19 @@ def _without_reasoning(text: str) -> str:
 
     A block that is never closed, or a closing tag without its opening one,
     leaves the answer unclear, so the reply is refused. Searches only move
-    forward, so this takes linear time.
+    forward, so this takes linear time. Tags match in any case, on the text
+    itself: lowering it first can change its length ("İ") and so where it is cut.
     """
-    lowered = text.lower()
     kept: list[str] = []
     index = 0
-    while (tag := _THINKING_TAG.search(lowered, index)) is not None:
-        closing = "</" + tag.group(0)[1:]
-        end = -1 if tag.group(0).startswith("</") else lowered.find(closing, tag.end())
-        if end == -1:
+    while (tag := _THINKING_TAG.search(text, index)) is not None:
+        name = tag.group(0).lower()
+        closing = None if name.startswith("</") else re.compile(
+            re.escape("</" + name[1:]), re.IGNORECASE).search(text, tag.end())
+        if closing is None:
             raise PlanRejected(f"{_ONE_OBJECT}, and the reply has a thinking tag without its pair")
         kept.append(text[index:tag.start()])
-        index = end + len(closing)
+        index = closing.end()
     kept.append(text[index:])
     return "".join(kept)
 

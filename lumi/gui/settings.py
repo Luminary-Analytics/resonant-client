@@ -37,6 +37,25 @@ _FILE_RETRY_SECONDS = 0.05
 DEFAULT_PERMISSION_MODE = "auto-edit"
 EARLIER_DEFAULT_PERMISSION_MODE = "bypass"
 
+# Turns on Lumi's own developer tools in Settings, like general.developer_tools.
+DEVELOPER_TOOLS_ENV = "LUMI_DEVELOPER_TOOLS"
+
+
+def developer_tools(settings: Any) -> bool:
+    """Whether Settings shows Lumi's own developer tools: ``general.developer_tools`` or LUMI_DEVELOPER_TOOLS=1.
+
+    Today that's Model evaluations' GLM / DeepSeek runs, against models and
+    specs built into Lumi for its own releases (gui/evaluation_dashboard.py);
+    not something a tester needs, so it's off unless asked for.
+    """
+    if str(os.environ.get(DEVELOPER_TOOLS_ENV, "")).strip().lower() in {"1", "true", "yes", "on"}:
+        return True
+    try:
+        return settings is not None and settings.get("general", "developer_tools", False) is True
+    except Exception:  # an unreadable setting is the default
+        return False
+
+
 DEFAULTS = {
     "general": {
         "display_name": "",
@@ -70,6 +89,9 @@ DEFAULTS = {
         # something you must switch on inverts the default that matters.
         # Windows only; a no-op elsewhere.
         "computer_use_indicator": True,
+        # Lumi's own developer tools in Settings (developer_tools above): edited
+        # in this file, never shown to turn on.
+        "developer_tools": False,
     },
     "network": {
         # Empty means use OLLAMA_HOST or the local endpoint default.
@@ -88,6 +110,14 @@ DEFAULTS = {
         # were dropped here. Pre-v0.4.0 settings.json files that still
         # carry those keys load fine — Python dict tolerance ignores
         # unknown keys; nothing reads them anymore.
+    },
+    # Settings > Ollama runtime (backends.ollama_runtime): the context window
+    # and keep-alive each Ollama request carries; None and "" leave them to
+    # LUMI_OLLAMA_NUM_CTX / LUMI_OLLAMA_KEEP_ALIVE and the model. Ollama's
+    # address is network.ollama_url.
+    "local_backends": {
+        "ollama_num_ctx": None,
+        "ollama_keep_alive": "",
     },
     # Settings > Offline mode (lumi/offline.py): no outbound connections but
     # this computer and these hosts (names, *.domain, addresses, networks).
@@ -243,11 +273,13 @@ DEFAULTS = {
         "remote_tasks_mode": "ask",
     },
     # Settings > Updates (lumi/update_channels.py): automatic, manual or off;
-    # the stable or beta channel; and a release line ("0.20") to stay on.
-    # Read at startup, so a change applies after a restart.
+    # the stable or beta channel ("" until someone chooses: this build's
+    # default, beta for a pre-release, update_channels.default_channel); and a
+    # release line ("0.20") to stay on. Read at startup, so a change applies
+    # after a restart.
     "updates": {
         "mode": "automatic",
-        "channel": "stable",
+        "channel": "",
         "pin": "",
     },
     # Settings > Voice (lumi/voice.py): dictation in the composer. The engine
@@ -432,6 +464,14 @@ class SettingsManager:
         # Which ways of dictating Settings and the policy allow; reads settings only.
         from .. import voice
         meta["voice"] = voice.status(self)
+        # Lumi's own developer tools (developer_tools), and where feedback goes
+        # while Settings' feedback address is empty: this build's address.
+        meta["developer_tools"] = developer_tools(self)
+        from .. import feedback
+        meta["feedback"] = {"build_destination": feedback.BUILD_DESTINATION}
+        # The update channel this copy follows while updates.channel is "" (nobody chose one).
+        from ..update_channels import default_channel
+        meta["updates"] = {"default_channel": default_channel()}
         return data
 
     def key_present(self, key: str) -> bool:

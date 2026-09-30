@@ -15,6 +15,10 @@ packaging/ripgrep/
 # packaging/fetch_web_assets.ps1. Same reasoning as ripgrep above.
 lumi/gui/static/vendor/
 
+# What a build is made with (its feedback address), written by
+# packaging/build_config.py from LUMI_BUILD_FEEDBACK_URL during a build.
+lumi/_build_config.py
+
 # Sparkle.framework for the macOS app's updates, fetched + SHA-256 verified
 # by packaging/fetch_sparkle.sh. Same reasoning again.
 packaging/sparkle/

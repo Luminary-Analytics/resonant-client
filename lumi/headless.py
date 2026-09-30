@@ -253,6 +253,9 @@ def _configure(settings: Any) -> None:
     from . import connections, policy
 
     policy.set_zero_retention_resolver(connections.zero_retention_resolver(settings))
+    from .backends import configure_ollama_runtime
+
+    configure_ollama_runtime(settings)
 
 
 def _read_prompt(args: argparse.Namespace, stdin: TextIO) -> str:

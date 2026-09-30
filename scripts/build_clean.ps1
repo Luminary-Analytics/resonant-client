@@ -68,6 +68,12 @@ try {
 
     python -m venv $tempRoot
     $python = Join-Path $tempRoot "Scripts/python.exe"
+    # What this build is made with: its feedback address, from LUMI_BUILD_FEEDBACK_URL
+    # (release.yml passes the repository variable LUMI_FEEDBACK_URL), into
+    # lumi/_build_config.py before Lumi is installed and bundled. An address that
+    # isn't https, or carries a user name or password, stops the build. Removed at the end.
+    & $python (Join-Path $repo "packaging/build_config.py")
+    if ($LASTEXITCODE -ne 0) { throw "The build configuration failed with exit code $LASTEXITCODE" }
     # Only hash-pinned packages go into the build (release.yml's build job
     # relies on it): the pip that comes with this Python, not the newest, then
     # exact, hash-checked versions of everything the bundle is built from
@@ -117,6 +123,10 @@ try {
     }
 } finally {
     Remove-Item Env:LUMI_THIRD_PARTY_NOTICES -ErrorAction SilentlyContinue
+    # The build's configuration is in the bundle now; a checkout run from source has none.
+    $buildConfig = [IO.Path]::GetFullPath((Join-Path $repo "lumi/_build_config.py"))
+    Assert-ChildPath $buildConfig $repo
+    if (Test-Path -LiteralPath $buildConfig) { Remove-Item -LiteralPath $buildConfig -Force }
     if ($pushed) { Pop-Location }
     if (Test-Path -LiteralPath $eggInfo) {
         Assert-ChildPath $eggInfo $repo

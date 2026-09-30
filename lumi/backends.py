@@ -18,7 +18,7 @@ import threading
 import time
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Iterator, Tuple
+from typing import Any, Callable, Iterator, Tuple
 
 import httpx
 
@@ -457,6 +457,96 @@ def _wait_with_cancel(seconds: float, cancel_event) -> bool:
     return False
 
 
+# Settings › Ollama runtime: the context window and keep-alive every Ollama
+# request carries (local_backends.ollama_num_ctx and ollama_keep_alive), read
+# when each Ollama backend is made (configure_ollama_runtime), so a change
+# applies from the next backend. Empty, LUMI_OLLAMA_NUM_CTX (which the
+# Large-context profile sets) and LUMI_OLLAMA_KEEP_ALIVE apply.
+OLLAMA_NUM_CTX_RANGE = (4_096, 1_048_576)
+_OLLAMA_DURATION = re.compile(r"-?(?:[0-9]+(?:\.[0-9]+)?(?:ns|us|ms|s|m|h))+")
+_ollama_runtime_source: Callable[[], dict] = dict
+
+
+def ollama_num_ctx_setting(value: Any) -> int | None:
+    """A context window Settings may hold: None for the model's own, else whole tokens in range; ValueError otherwise."""
+    if value is None or value == "" or value == 0:
+        return None
+    try:
+        number = float(value) if not isinstance(value, bool) else float("nan")
+    except (TypeError, ValueError):
+        number = float("nan")
+    low, high = OLLAMA_NUM_CTX_RANGE
+    if not number.is_integer() or not low <= number <= high:
+        raise ValueError(f"Enter a context window from {low:,} to {high:,} tokens, or leave it empty for the "
+                         "model's own.")
+    return int(number)
+
+
+def ollama_keep_alive_setting(value: Any) -> str:
+    """A keep-alive Settings may hold: "" for the default, else a duration Ollama takes; ValueError otherwise.
+
+    Ollama reads a string as a Go duration ("30m", "1h30m", "-1m" keeps the
+    model loaded, "0" unloads it at once); a plain number is seconds.
+    """
+    text = str(value if value is not None else "").strip()
+    if not text:
+        return ""
+    if re.fullmatch(r"-?[0-9]{1,9}", text):
+        text = "0" if int(text) == 0 else f"{text}s"
+    if text != "0" and (len(text) > 32 or not _OLLAMA_DURATION.fullmatch(text)):
+        raise ValueError("Enter how long Ollama keeps the model loaded, such as 30m or 2h (0 unloads it at once, "
+                         "-1m keeps it loaded), or leave it empty for 120m.")
+    return text
+
+
+def configure_ollama_runtime(settings: Any) -> None:
+    """Take the Ollama context window and keep-alive from ``settings`` (None: none) for each backend made from now."""
+    global _ollama_runtime_source
+    if settings is None:
+        _ollama_runtime_source = dict
+        return
+
+    def read() -> dict:
+        return {"num_ctx": settings.get("local_backends", "ollama_num_ctx", None),
+                "keep_alive": settings.get("local_backends", "ollama_keep_alive", "")}
+
+    _ollama_runtime_source = read
+
+
+def ollama_runtime() -> dict:
+    """Settings' Ollama context window (None when not set) and keep-alive ("" when not set).
+
+    A value Settings wouldn't save (settings.json edited by hand) is ignored
+    with a warning, never sent to Ollama.
+    """
+    try:
+        raw = _ollama_runtime_source() or {}
+    except Exception:
+        logger.debug("Couldn't read the Ollama runtime settings", exc_info=True)
+        raw = {}
+    try:
+        num_ctx = ollama_num_ctx_setting(raw.get("num_ctx"))
+    except ValueError:
+        logger.warning("Ignoring local_backends.ollama_num_ctx: not a context window Lumi can use")
+        num_ctx = None
+    try:
+        keep_alive = ollama_keep_alive_setting(raw.get("keep_alive"))
+    except ValueError:
+        logger.warning("Ignoring local_backends.ollama_keep_alive: not a duration Ollama takes")
+        keep_alive = ""
+    return {"num_ctx": num_ctx, "keep_alive": keep_alive}
+
+
+def unreachable_message(label: str, address: str, exc: BaseException | None = None) -> str:
+    """What a turn says when a model server doesn't answer at ``address``: where, and what to do.
+
+    Settings › Connections' Ollama card says the same ("Start Ollama
+    there"). When offline mode refused the request, its reason comes instead.
+    """
+    refused = net.offline_message(exc) if exc is not None else ""
+    return refused or f"Lumi couldn't reach {label} at {address}. Start {label} there, or check Settings › Connections."
+
+
 @dlp.guard_backend
 class OllamaBackend:
     """Direct connection to Ollama /api/chat with adaptive tool calling.
@@ -506,11 +596,15 @@ class OllamaBackend:
         # Keep options stable across requests. Context is capability-derived;
         # machine-specific GPU and batch tuning is opt-in through environment
         # variables so downloaded builds inherit Ollama's platform defaults.
+        # Settings › Ollama runtime first (ollama_runtime), then the environment.
+        runtime = ollama_runtime()
         configured_num_ctx = os.environ.get("LUMI_OLLAMA_NUM_CTX", "").strip()
         try:
             num_ctx = int(configured_num_ctx) if configured_num_ctx else self._default_num_ctx(model)
         except ValueError:
             num_ctx = self._default_num_ctx(model)
+        if runtime["num_ctx"]:
+            num_ctx = runtime["num_ctx"]
         self._ollama_options = {"num_ctx": max(4_096, num_ctx)}
         for env_name, option_name in (
             ("LUMI_OLLAMA_NUM_GPU", "num_gpu"),
@@ -543,7 +637,8 @@ class OllamaBackend:
         else:
             # Unknown value — drop silently rather than poisoning the dict
             self.thinking_mode = None
-        self._ollama_keep_alive = (os.environ.get("LUMI_OLLAMA_KEEP_ALIVE", "120m").strip() or "120m")
+        self._ollama_keep_alive = (runtime["keep_alive"]
+                                   or os.environ.get("LUMI_OLLAMA_KEEP_ALIVE", "120m").strip() or "120m")
         # Long reasoning and cold model loads can legitimately take minutes.
         self._ollama_http_timeout = float(os.environ.get("LUMI_OLLAMA_HTTP_TIMEOUT_SEC", "360"))
         self._ollama_http_read_timeout = float(
@@ -1705,7 +1800,15 @@ class OllamaBackend:
             })
             # v0.6.5 — repeated open-phase timeouts count toward the breaker.
             self._circuit_record_failure()
-            yield (EVENT_ERROR, {"message": str(e) or type(e).__name__})
+            # A host that never answered (switched off, another address) says where and what to do.
+            unreachable = isinstance(e, httpx.ConnectTimeout)
+            yield (EVENT_ERROR, {"message": unreachable_message("Ollama", self.base_url, e) if unreachable
+                                 else str(e) or type(e).__name__})
+        except httpx.ConnectError as e:
+            # Nothing listens there (Ollama isn't running, or runs at another
+            # address): say where and what to do, never the socket's own
+            # words ("[WinError 10061] No connection could be made ...").
+            yield (EVENT_ERROR, {"message": unreachable_message("Ollama", self.base_url, e)})
         except Exception as e:
             yield (EVENT_ERROR, {"message": str(e)})
         finally:
@@ -2424,6 +2527,14 @@ class KimiBackend:
     def _timeout_error_message(self) -> str:
         return f"{self.PROVIDER_LABEL} API request timed out."
 
+    def _unreachable_message(self, exc: BaseException) -> str:
+        """What a server that refused the connection says; "" keeps the provider's generic message.
+
+        A server on this computer or the local network (EXO, a custom
+        connection to localhost) names its address and what to do, as Ollama does.
+        """
+        return ""
+
     def _is_retryable_stream_error(self, message: str) -> bool:
         """Return whether an in-stream provider error is safe to replay."""
         return False
@@ -2872,6 +2983,7 @@ class KimiBackend:
             else:
                 yield (EVENT_ERROR, {
                     "message": net.offline_message(exc)
+                    or (self._unreachable_message(exc) if isinstance(exc, httpx.ConnectError) else "")
                     or f"{self.PROVIDER_LABEL} API connection failed: {type(exc).__name__}"
                 })
         except Exception as exc:
@@ -3438,6 +3550,10 @@ class ExoBackend(KimiBackend):
                 "idle_timeout_seconds": int(self._stream_idle_timeout),
                 "progress_warning_seconds": int(self._progress_warning_seconds),
             })
+        except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
+            # EXO isn't running there (or at another address): as Ollama says it.
+            yield (EVENT_ERROR, {"message": unreachable_message("EXO", self.base_url, exc)})
+            return
         except httpx.HTTPError as exc:
             yield (EVENT_ERROR, {
                 "message": f"EXO instance setup failed: {type(exc).__name__}"
@@ -3466,6 +3582,9 @@ class ExoBackend(KimiBackend):
         if status_code in {401, 403}:
             return "EXO rejected the request. Check EXO_API_KEY or the endpoint proxy."
         return f"EXO API request failed ({status_code}): {message}"
+
+    def _unreachable_message(self, exc: BaseException) -> str:
+        return unreachable_message("EXO", self.base_url, exc)
 
 
 @dlp.guard_backend

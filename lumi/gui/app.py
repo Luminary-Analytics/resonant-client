@@ -2351,7 +2351,9 @@ class AppState:
             self.backend_spec and
             (self.backend_spec.backend_type in {"ollama", "exo", "kimi", "openrouter", "sonn", "anthropic", "openai"}
              or self.backend_spec.backend_type.startswith("conn-")) and
-            section in {"api_keys", "engram", "general", "network", "connections"}
+            (section in {"api_keys", "engram", "general", "network", "connections"}
+             # Settings › Ollama runtime: the next request carries the new context window and keep-alive.
+             or (section == "local_backends" and self.backend_spec.backend_type == "ollama"))
         ):
             try:
                 if section == "network" and self.backend_spec.backend_type == "ollama":
@@ -2416,6 +2418,10 @@ class AppState:
         from ..engine import os_sandbox
 
         os_sandbox.configure(self.settings)
+        # And the context window and keep-alive each Ollama backend asks for (Settings › Ollama runtime).
+        from ..backends import configure_ollama_runtime
+
+        configure_ollama_runtime(self.settings)
 
     @property
     def cloud(self):

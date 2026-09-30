@@ -894,6 +894,7 @@ class _OllamaState:
     def update_setting_value(self, section, key, value):
         self.settings.set(section, key, value)
         self.ollama_url = value or self.ollama_url
+        self.detect_backends(force=True)  # as the app's apply_settings does after every change
         return {"network": {"ollama_url": value}}
 
     def detect_backends(self, force=False):
@@ -946,7 +947,18 @@ def test_saving_an_ollama_address_stores_it_and_starts_a_model(tmp_path, ollama,
     assert connection["data"]["address"] == {"in_use": url, "saved": url, "environment": ""}
     assert init == {"event": "init", "refresh_only": True}
     assert state.settings.get("network", "ollama_url") == url
+    # Providers are probed once, by the save itself: a second probe made Save take seconds.
     assert state.detected == 1 and state.started == 1
+
+
+def test_the_ollama_cards_status_check_probes_the_providers_again(tmp_path, ollama, monkeypatch):
+    monkeypatch.delenv("OLLAMA_HOST", raising=False)
+    server, url = ollama
+    monkeypatch.setattr(_Ollama, "models", ["qwen3-coder:30b"])
+    state = _OllamaState(tmp_path, url)
+    [connection, *_] = _connection(state, "status")
+    assert connection["data"]["status"] == "ready" and connection["data"]["action"] == "status"
+    assert state.detected == 1 and state.settings.get("network", "ollama_url") == ""
 
 
 class _ResolvingOllamaState(_OllamaState):
@@ -957,6 +969,7 @@ class _ResolvingOllamaState(_OllamaState):
 
         self.settings.set(section, key, value)
         self.ollama_url = resolve_ollama_url(settings_data=self.settings.get_all())
+        self.detect_backends(force=True)
         return {"network": {"ollama_url": value}}
 
 

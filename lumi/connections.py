@@ -354,6 +354,14 @@ class OpenAICompatibleBackend(KimiBackend):
     def _tls_options(self) -> dict:
         return {"verify": self._tls} if self._tls is not None else {}
 
+    def _unreachable_message(self, exc: BaseException) -> str:
+        """A server on this computer (LM Studio, vLLM, a local gateway) that isn't running: where, and what to do."""
+        from .backends import unreachable_message
+        from .offline_rules import is_local_host
+
+        host = urllib.parse.urlsplit(self.base_url).hostname or ""
+        return unreachable_message(self.PROVIDER_LABEL, self.base_url, exc) if is_local_host(host) else ""
+
     def _accepts_images(self) -> bool:
         """The connection's "Models accept images"; images go through when it isn't set."""
         explicit = self.connection.get("vision")

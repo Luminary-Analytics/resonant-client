@@ -175,6 +175,15 @@ def test_writer_reaches_exact_reviewed_application_and_preserves_dirty_checkout(
     operate(desktop, run_id, "apply_candidate", "reviewed-apply", **apply)
     current = settled(desktop, run_id)
     assert current["integration_candidates"][0]["state"] == "applied"
+    # The commit that lands in the person's branch says what the team did, and where it came from.
+    applied = git(project, "log", "-1", "--format=%B").strip().splitlines()
+    assert applied[0] == "Lumi team: Change the scoped value"
+    assert applied[2:] == [f"Team run: {run_id}", f"Combined change: {candidate['id']}",
+                           f"Writers: {writer['attempt_id']}"]
+    # A writer's own commit says its task.
+    written = git(project, "log", "-1", "--format=%B", current["writer_worktrees"][0]["result_revision"])
+    assert written.strip().splitlines() == ["Lumi team: Update src/value.txt", "",
+                                             f"Team run: {run_id}", f"Writer: {writer['attempt_id']}"]
     assert current["work_items"][0]["state"] == "submitted"  # Applying is not owner acceptance.
     attempt = current["attempts"][0]
     operate(desktop, run_id, "accept_writer", "accept", attempt_id=attempt["id"], attempt_epoch=attempt["epoch"],
@@ -190,10 +199,35 @@ def test_writer_reaches_exact_reviewed_application_and_preserves_dirty_checkout(
 def test_dirty_writer_baseline_is_reported_before_reserving_or_launching(desktop):
     service, capture, project, instances = desktop
     (project / "personal.txt").write_text("my unfinished work\n")
-    with pytest.raises(Conflict, match="clean committed"):
+    with pytest.raises(Conflict, match="Commit or stash your changes, then start the team again") as refused:
         service.operate(capture, request())
+    # The refusal names what isn't committed, so the person knows what to commit or stash.
+    assert "aren't committed: personal.txt." in str(refused.value)
     assert not service.busy and not instances
     assert (project / "personal.txt").read_text() == "my unfinished work\n"
+
+
+def test_a_team_commit_is_named_by_its_objective_on_one_line():
+    from lumi.engine.swarming.integration import SUBJECT_OBJECTIVE, commit_subject
+
+    assert commit_subject("Fix the login page") == "Lumi team: Fix the login page"
+    assert commit_subject("First line\n\n  second\tline") == "Lumi team: First line second line"
+    shortened = commit_subject("word " * 40)
+    assert len(shortened) <= len("Lumi team: ") + SUBJECT_OBJECTIVE and shortened.endswith("word…")
+    assert commit_subject("") == "Lumi team: changes"
+    assert commit_subject("bell\x07 and \x1b[31mred") == "Lumi team: bell and [31mred"
+
+
+def test_the_dirty_checkout_refusal_names_up_to_ten_files():
+    from lumi.engine.swarming.integration import status_paths, uncommitted_message
+
+    # git status --porcelain=v1 -z: a rename carries its old name in the next field, which isn't listed.
+    output = "\0".join([" M src/app.py", "R  new name.txt", "old name.txt", "?? notes/todo.md", "A  added.py", ""])
+    assert status_paths(output) == ["src/app.py", "new name.txt", "notes/todo.md", "added.py"]
+    assert status_paths("") == []
+    message = uncommitted_message([f"file{index}.txt" for index in range(12)])
+    assert "file0.txt, file1.txt" in message and "file9.txt and 2 more." in message and "file10.txt" not in message
+    assert message.endswith("Commit or stash your changes, then start the team again. Nothing in the project was changed.")
 
 
 def test_recovered_writer_git_discovery_cannot_block_stop(desktop, monkeypatch):

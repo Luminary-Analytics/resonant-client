@@ -7,6 +7,10 @@ Settings > Updates, or an organization policy, sets three values:
   ``off`` never checks, for organizations that deploy Lumi themselves.
 * ``updates.channel``: ``stable`` or ``beta``. The beta feed lists beta
   releases and every stable release, so beta users also get stable fixes.
+  Until someone chooses (nothing saved, which settings.json starts as ``""``,
+  and no policy lock), a copy follows ``default_channel``: beta for a
+  pre-release build (alpha, beta or rc), whose next release is published
+  only to the beta feeds, and stable otherwise.
 * ``updates.pin``: a release line such as ``0.20``. Lumi then takes only
   stable releases of that line and nothing newer. A pin wins over the
   channel.
@@ -71,6 +75,28 @@ _PIN = re.compile(r"(0|[1-9]\d{0,3})\.(0|[1-9]\d{0,3})")
 # A release version as the feeds give it (0.21.0-beta.1), as a Mac bundle
 # gives it (0.21.0beta.1), or a development build's (0.19.2.dev11).
 _RELEASE = re.compile(r"(\d+)\.(\d+)\.(\d+)(?:[.-]?(dev|alpha|a|beta|b|rc)\.?(\d+))?", re.IGNORECASE)
+# What makes a version a pre-release, published only to the beta feeds (a development build isn't one).
+_PRERELEASES = frozenset({"alpha", "a", "beta", "b", "rc"})
+
+
+def _running_version() -> str:
+    from . import __version__
+
+    return __version__
+
+
+def default_channel(version: str | None = None) -> str:
+    """The channel a copy follows until someone chooses one: ``beta`` for a pre-release, else ``stable``.
+
+    ``version`` is the running copy's unless given. Pre-releases
+    (X.Y.Z-alpha.N, -beta.N and -rc.N) are published only to the beta feeds
+    (packaging/update_appcast.py), so an alpha tester left on the stable
+    channel would never be offered the next alpha. A stable release and a
+    development build (0.20.0.dev0) follow stable.
+    """
+    text = str(_running_version() if version is None else version).strip().removeprefix("v")
+    match = _RELEASE.fullmatch(text)
+    return "beta" if match and (match.group(4) or "").lower() in _PRERELEASES else "stable"
 
 
 def parse_pin(value: Any) -> str:
@@ -184,6 +210,10 @@ class UpdatePreferences:
     offline: str = ""  # why offline mode keeps the updater from the update site, or ""
     # Whose feeds (PLATFORMS): the running copy's unless a caller says otherwise.
     platform: str = field(default_factory=lambda: platform_name())
+    # The channel this copy follows until someone chooses one (default_channel), and whether someone
+    # chose: a saved setting or a policy lock.
+    default_channel: str = "stable"
+    channel_chosen: bool = False
 
     @property
     def feed_url(self) -> str:
@@ -199,16 +229,20 @@ class UpdatePreferences:
         return {"mode": self.mode, "channel": self.channel, "pin": self.pin, "feed": self.feed_url,
                 "describe": self.describe(), "managed_by": self.managed_by, "locked": list(self.locked),
                 "problems": list(self.problems), "installed_by": self.installed_by, "offline": self.offline,
-                "platform": self.platform}
+                "platform": self.platform, "default_channel": self.default_channel,
+                "channel_chosen": self.channel_chosen}
 
 
 def read(settings_path: Path | None = None, policy_state: Any = None,
-         installer: str | None = None) -> UpdatePreferences:
+         installer: str | None = None, *, version: str | None = None) -> UpdatePreferences:
     """The update settings in effect: the policy's, else settings.json's, else the defaults.
 
-    An invalid policy pauses automatic updates (``manual``): the administrator
-    may have meant to turn them off, and a person can still check by hand.
-    An MSI, PKG, deb or rpm installation turns them off whatever the settings say.
+    The channel's default is this copy's (``default_channel`` of ``version``,
+    the running version unless given): a pre-release build follows beta until
+    someone saves a channel or a policy locks one. An invalid policy pauses
+    automatic updates (``manual``): the administrator may have meant to turn
+    them off, and a person can still check by hand. An MSI, PKG, deb or rpm
+    installation turns them off whatever the settings say.
     """
     from . import policy as policy_module
     from .paths import state_home
@@ -225,12 +259,17 @@ def read(settings_path: Path | None = None, policy_state: Any = None,
     locked = {name.split(".", 1)[1]: value for name, value in (policy.settings if policy else {}).items()
               if name.startswith("updates.")}
     values, problems = dict(DEFAULTS), []
+    values["channel"] = default = default_channel(version)
+    chosen = "channel" in locked
     for key in DEFAULTS:
         if key in locked:
             values[key] = normalize(key, locked[key])  # validated when the policy loaded
+        elif key == "channel" and stored.get(key) in ("", None):
+            continue  # nobody chose one (settings.json starts with ""): this copy's default
         elif key in stored:
             try:
                 values[key] = normalize(key, stored[key])
+                chosen = chosen or key == "channel"
             except ValueError as exc:
                 problems.append(str(exc))
     if getattr(state, "error", "") and values["mode"] == "automatic":
@@ -249,7 +288,8 @@ def read(settings_path: Path | None = None, policy_state: Any = None,
     return UpdatePreferences(mode=values["mode"], channel=values["channel"], pin=values["pin"],
                              managed_by=policy.organization if (policy and locked) else "",
                              locked=tuple(sorted(locked)), problems=tuple(problems), installed_by=source,
-                             offline=offline_reason, platform=platform)
+                             offline=offline_reason, platform=platform, default_channel=default,
+                             channel_chosen=chosen)
 
 
 def main(argv: list[str] | None = None) -> int:

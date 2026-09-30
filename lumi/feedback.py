@@ -28,12 +28,14 @@ refuses when that Lumi Cloud didn't issue the sign-in or someone else is
 signed in there). Otherwise it waits for its writer, and goes without the
 account only when the person chooses that (``send_without_account``).
 
-* **Where reports go** (``destination``): ``privacy.feedback_url`` (Settings,
-  or locked by an organization's policy), else the build's own address
-  (``BUILD_DESTINATION``, empty for now), else the Lumi Cloud this computer
-  uses. A report is bound to its destination when it's written: it never goes
-  anywhere else, and one written with no destination waits until the person
-  sends it with the destination shown (``send_held``).
+* **Where reports go** (``destination``): ``privacy.feedback_url`` (Settings
+  › Privacy & security, or locked by an organization's policy), else the
+  build's own address (``BUILD_DESTINATION``: ``lumi/_build_config.py``, which
+  the release build writes from LUMI_BUILD_FEEDBACK_URL; none from source),
+  else the Lumi Cloud this computer uses. A report is bound to its destination
+  when it's written: it never goes anywhere else, and one written with no
+  destination waits until the person sends it with the destination shown
+  (``send_held``), or copies it and emails it to SUPPORT_EMAIL.
 * **Always sent:** the app's version, update channel, operating system and
   architecture, and an install id derived from a random secret made on
   first use (``feedback/install-id``), separately for each destination and
@@ -123,9 +125,29 @@ FEATURE = "sending feedback"
 PURPOSE = "feedback"
 KINDS = ("bug", "idea", "other")
 KIND_LABELS = {"bug": "Bug", "idea": "Idea", "other": "Other"}
-# This build's own feedback address, used when neither Settings nor the organization names one
-# (privacy.feedback_url). Empty for now: alpha builds set Luminary's Lumi Cloud here once it exists.
-BUILD_DESTINATION = ""
+# Luminary Analytics support, where the dialog suggests emailing a report no address takes: the
+# address Lumi's terms give for notices and support (lumi/legal/terms.json's notices_email).
+SUPPORT_EMAIL = "rich.bellantoni@luminaryanalytics.com"
+
+
+def _build_destination() -> str:
+    """This build's own feedback address: ``lumi/_build_config.py``'s FEEDBACK_URL, or "".
+
+    The release builds write that module (packaging/build_config.py) from
+    LUMI_BUILD_FEEDBACK_URL, which release.yml takes from the repository
+    variable LUMI_FEEDBACK_URL, so setting the address needs no code change.
+    A source checkout has no such module. ``destination`` checks the address
+    again before any report goes there.
+    """
+    try:
+        from . import _build_config  # type: ignore[attr-defined]  # written by the build, never committed
+    except ImportError:
+        return ""
+    return str(getattr(_build_config, "FEEDBACK_URL", "") or "").strip()
+
+
+# Used when neither Settings nor the organization names an address (privacy.feedback_url).
+BUILD_DESTINATION = _build_destination()
 
 # What the dialog takes.
 MAX_MESSAGE = 5000
@@ -246,7 +268,9 @@ class Outcome:
     """What happened to a report the person sent: ``sent`` (with Lumi Cloud's id) or ``queued``.
 
     ``notices`` says what the checks changed (secrets removed, a redaction, a
-    reply-to address left out), for the dialog to show with the outcome.
+    reply-to address left out), for the dialog to show with the outcome. A
+    report kept because no feedback address is set carries ``copy``, the
+    report as text, and ``support_email``, where it can be emailed instead.
     """
 
     status: str
@@ -254,10 +278,12 @@ class Outcome:
     id: str = ""
     reason: str = ""
     notices: list[str] = field(default_factory=list)
+    copy: str = ""
+    support_email: str = ""
 
     def as_dict(self) -> dict:
         return {"status": self.status, "message": self.message, "id": self.id, "reason": self.reason,
-                "notices": list(self.notices)}
+                "notices": list(self.notices), "copy_text": self.copy, "support_email": self.support_email}
 
 
 def set_transport_for_tests(transport: Any) -> None:
@@ -320,6 +346,28 @@ def validate_policy_settings(settings: dict) -> None:
                 normalize_url(value)
             except CloudError as exc:
                 raise ValueError(f"'privacy.{ADDRESS}': {exc}") from exc
+
+
+def check_address(value: Any) -> str:
+    """A feedback address Settings may keep (privacy.feedback_url): "" for none, else the address, normalized.
+
+    The rules a policy's address meets (``validate_policy_settings``): a Lumi
+    Cloud address, https (http only for one on this computer), without a user
+    name or password, a query or a fragment. ValueError says what's wrong.
+    """
+    from .cloud import CloudError, normalize_url
+
+    if value is not None and not isinstance(value, str):
+        raise ValueError("Enter a Lumi Cloud address, such as https://cloud.example.com, or leave it empty.")
+    text = (value or "").strip()
+    if not text:
+        return ""
+    if len(text) > 2048:
+        raise ValueError("That address is too long. Enter the Lumi Cloud address, such as https://cloud.example.com.")
+    try:
+        return normalize_url(text)
+    except CloudError as exc:
+        raise ValueError(str(exc)) from exc
 
 
 def disabled_reason(settings: Any) -> str:
@@ -1648,6 +1696,8 @@ def submit(cloud: Any, form_data: Any, *, settings: Any = None, provider: str = 
         if not url:
             outcome = _keep(report_id, body, state=HELD, reason="no_destination", account="", url="", now=now,
                             rules=rules)
+            # Nowhere to send it yet: the dialog offers it to copy and email to Luminary instead.
+            outcome.copy, outcome.support_email = copy, SUPPORT_EMAIL
         else:
             try:
                 delivered = _send(cloud, url, body, report_id, account=user_id)
@@ -1717,7 +1767,9 @@ def status(cloud: Any, settings: Any = None) -> dict:
             "configured": bool(target.url), "account": email if user_id else "", "offline": offline_refusal(target.url),
             "disabled": disabled_reason(settings), "diagnostics": {"allowed": not refusal, "reason": refusal},
             "waiting": len(items), "sendable": sendable, "reports": reports, "app": app_info(), "busy": busy,
-            "dlp_service": dlp.service_configured(), "limits": {"message": MAX_MESSAGE, "reply_to": MAX_REPLY_TO}}
+            "dlp_service": dlp.service_configured(), "limits": {"message": MAX_MESSAGE, "reply_to": MAX_REPLY_TO},
+            # Where a report written with no address can be emailed instead (Copy beside it).
+            "support_email": SUPPORT_EMAIL}
 
 
 # ── In the background ──────────────────────────────────────────────────────

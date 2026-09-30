@@ -137,6 +137,20 @@ class TestTheMacOSUpdater:
                                    "automatic": False, "stopped": False}
         assert info["feed"] == info["sparkle"]["feed"] and info["unavailable"] == ""
 
+    def test_a_pre_release_starts_on_the_macos_beta_feed_until_someone_chooses(self, mac, tmp_path):
+        from lumi.gui.settings import SettingsManager
+
+        path = tmp_path / "settings.json"
+        SettingsManager(path)  # a new install: no channel chosen
+        nobody = SimpleNamespace(policy=None, error="")
+        engine = start(update_channels.read(path, nobody, installer="", version="0.20.0-alpha.1"))
+        assert engine.feed_url() == update_channels.FEED_BASE + "appcast-macos-beta.xml"
+        updater.reset_for_tests()
+        # A saved choice stays.
+        path.write_text(json.dumps({"updates": {"channel": "stable"}}), encoding="utf-8")
+        engine = start(update_channels.read(path, nobody, installer="", version="0.20.0-alpha.1"))
+        assert engine.feed_url() == update_channels.FEED_BASE + "appcast-macos.xml"
+
     def test_a_pin_picks_its_macos_line_and_automatic_checks_are_on(self, mac):
         engine = start(UpdatePreferences(pin="0.20"))
         assert mac.calls == [("start", True)]

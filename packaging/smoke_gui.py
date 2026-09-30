@@ -1,7 +1,10 @@
 """Ask a running Lumi GUI a question over its own WebSocket, as the page does (CI smoke tests).
 
-    python3 packaging/smoke_gui.py --port 8975 --token TOKEN update_status
-    python3 packaging/smoke_gui.py --port 8975 --token TOKEN check_updates --event status_msg --containing Checking
+    python3 packaging/smoke_gui.py --port 8975 --token=TOKEN update_status
+    python3 packaging/smoke_gui.py --port 8975 --token=TOKEN check_updates --event status_msg --containing Checking
+
+The token goes as ``--token=TOKEN``: a random token starts with "-" about one
+time in 64, and argparse reads ``--token -abc`` as a missing value.
 
 Connects to ``/ws`` with the launch's access token (gui/local_access.py: the
 exact Host, the server's own Origin and the ``lumi.access.<token>``

@@ -2223,6 +2223,11 @@ def _validate_write_path(fpath: str, allow_leading_dash: bool) -> str:
     return ""
 
 
+def _line_count(text: str) -> int:
+    """How many lines ``text`` has: a final newline ends the last line rather than starting another."""
+    return text.count("\n") + (1 if text and not text.endswith("\n") else 0)
+
+
 def _exec_file_write(args: dict, start: float) -> ToolResult:
     fpath = args.get("path", "")
     content = args.get("content", "")
@@ -2237,7 +2242,7 @@ def _exec_file_write(args: dict, start: float) -> ToolResult:
     path = Path(fpath)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content, encoding="utf-8")
-    lines = len(content.split("\n"))
+    lines = _line_count(content)
     elapsed = time.time() - start
     return ToolResult(
         f"File written: {fpath} ({lines} lines, {len(content)} characters)",
@@ -2255,7 +2260,8 @@ def _exec_file_read(args: dict, start: float) -> ToolResult:
         return ToolResult(f"Error: File not found: {fpath}", is_error=True, elapsed=time.time() - start)
     content = path.read_text(encoding="utf-8")
     lines = content.split("\n")
-    total_lines = len(lines)
+    # Pages split on each newline, but a final newline doesn't count as a line of its own.
+    total_lines = _line_count(content)
     selected = "\n".join(lines[offset:offset + limit])
     result = truncate_head(selected, max_lines=limit)
     output = result.content
@@ -2381,6 +2387,11 @@ def _exec_glob(args: dict, start: float, *, exclusions=None, project_path: str =
     if not _names_lumi_folder(root, base, pattern):
         # Only Lumi's old codebase index; the person's .lumi files are listed.
         all_matches = [m for m in all_matches if not _is_old_index(str(m), root)]
+    # Git's folder and what's inside ignored folders, as grep leaves them out.
+    skipped = _glob_skips(root, base, pattern)
+    listed = [m for m in all_matches if not skipped(str(m))]
+    ignored = len(all_matches) - len(listed)
+    all_matches = listed
     hidden = 0
     if exclusions:
         kept, hidden = exclusions.filter_paths(str(m) for m in all_matches)
@@ -2396,6 +2407,11 @@ def _exec_glob(args: dict, start: float, *, exclusions=None, project_path: str =
             f"\"path\": {json.dumps(str(base))}, \"offset\": {next_offset}, "
             f"\"limit\": {limit}}}]"
         )
+    if ignored:
+        result = (result or "(no matches)") + (
+            f"\n[{ignored} path{'s' if ignored != 1 else ''} in .git or in folders .gitignore excludes not "
+            "shown; name the folder in the pattern or path to list them]"
+        )
     if hidden:
         result = (result or "(no matches)") + (
             f"\n[{hidden} excluded path{'s' if hidden != 1 else ''} not shown (file exclusion rules)]"
@@ -2407,6 +2423,7 @@ def _exec_glob(args: dict, start: float, *, exclusions=None, project_path: str =
         metadata={
             "pattern": pattern,
             "count": total,
+            "ignored": ignored,
             "excluded": hidden,
             "shown": len(matches),
             "offset": offset,
@@ -2551,6 +2568,78 @@ def _is_old_index(path: str, root: str) -> bool:
     relative = _relative_to(path, root)
     parts = [part.lower() for part in Path(relative).parts] if relative else []
     return len(parts) == 2 and parts[0] in _LUMI_FOLDERS and parts[1] == "index.json"
+
+
+# What glob leaves out unless the search names it, as grep does (ripgrep's
+# `--glob !.git/` and its .gitignore handling): Git's own folder, and what is
+# inside the folders the project's .gitignore excludes (node_modules, build
+# output, virtual environments). A `**/*` otherwise lists every object and
+# hook under .git before the project's own files.
+_GIT_FOLDER = ".git"
+_GITIGNORE_READ_LIMIT = 256 * 1024
+
+
+def _ignored_folder_rules(root: str) -> list[re.Pattern[str]]:
+    """The project root's .gitignore as tests of a folder's own path; [] without one, or one this can't follow.
+
+    Each matches a folder the file names itself (``node_modules`` in any
+    folder, ``/build`` at the root), not every folder inside one, so a search
+    that names an ignored folder still lists what's in it. Only the root's own
+    file is read: cheap, and where such folders are almost always named. A
+    file with a negated pattern (``!keep/``) isn't used at all, since which
+    folders it keeps needs Git's full rules; a glob that lists too much is
+    better than one that hides the person's files.
+    """
+    from .exclusions import _translate, compile_rule  # the same gitignore-style patterns as .lumiignore
+
+    try:
+        with open(os.path.join(root, ".gitignore"), encoding="utf-8") as handle:
+            lines = handle.read(_GITIGNORE_READ_LIMIT).splitlines()
+    except (OSError, UnicodeDecodeError, ValueError):
+        return []
+    patterns = [line.strip() for line in lines]
+    if any(pattern.startswith("!") for pattern in patterns):
+        return []
+    flags = re.IGNORECASE if os.name == "nt" else 0
+    return [re.compile(("^" if rule.anchored else "^(?:.*/)?") + _translate(rule.body) + "$", flags)
+            for rule in (compile_rule(pattern, ".gitignore") for pattern in patterns) if rule]
+
+
+def _glob_skips(root: str, base: str, pattern: str):
+    """A test for the paths glob leaves out: Git's folder, and inside folders the root's .gitignore excludes.
+
+    A folder the search names (a part of its pattern or of its path) is
+    listed as usual: ``.git/**`` lists Git's folder, ``node_modules/**/*.json``
+    what is in node_modules. An ignored folder itself still shows, so
+    ``glob *`` still says node_modules exists; only what is inside it doesn't.
+    """
+    relative_base = _relative_to(base, root)
+    base_parts = Path(relative_base).parts if relative_base not in (None, ".") else ()
+    named = {os.path.normcase(part) for part in (*base_parts, *re.split(r"[\\/]+", pattern or "")) if part}
+    rules = _ignored_folder_rules(root) if relative_base is not None else []
+    ignored: dict[str, bool] = {}
+
+    def skipped(path: str) -> bool:
+        relative = _relative_to(path, root)
+        in_root = relative is not None
+        if not in_root:
+            relative = _relative_to(path, base)
+        parts = Path(relative).parts if relative not in (None, ".") else ()
+        for index, name in enumerate(parts):
+            key = os.path.normcase(name)
+            if key in named:
+                continue
+            if key == _GIT_FOLDER:
+                return True
+            if rules and in_root and index < len(parts) - 1:
+                folder = "/".join(parts[:index + 1])
+                if folder not in ignored:
+                    ignored[folder] = any(rule.match(folder) for rule in rules)
+                if ignored[folder]:
+                    return True
+        return False
+
+    return skipped
 
 
 def _project_display_path(path: str, project_path: str) -> str:

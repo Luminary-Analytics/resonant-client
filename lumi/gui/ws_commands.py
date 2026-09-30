@@ -1357,10 +1357,18 @@ async def _evaluation_list(ctx: CommandContext) -> None:
 
 @command("evaluation_start")
 async def _evaluation_start(ctx: CommandContext) -> None:
+    from .settings import DEVELOPER_TOOLS_ENV, developer_tools
+
     msg = ctx.msg
     refusal = await _oversight_refusal(ctx)
     if refusal:
         await ctx.send_error(refusal)
+        return
+    # Lumi's own GLM / DeepSeek evaluations are a developer tool, shown only
+    # when it's turned on (Settings > Model evaluations); so is starting one.
+    if not developer_tools(ctx.state.settings):
+        await ctx.send_error("Model evaluations with Lumi's own models and specs are a developer tool: set "
+                             f"general.developer_tools in settings.json, or {DEVELOPER_TOOLS_ENV}=1, to use them.")
         return
     try:
         record = ctx.state.evaluations.start(
@@ -4684,7 +4692,8 @@ _SOCKET_SETTING_KEYS: dict[str, frozenset[str]] = {
         "harness_enabled", "autonomous_sessions", "fallback_models", "role_models",
     }),
     "appearance": frozenset({"theme", "density", "font_size"}),
-    "local_backends": frozenset({"ollama_host", "ollama_num_ctx", "ollama_keep_alive"}),
+    # Ollama's address is network.ollama_url (Settings › Connections' Ollama card), its only setting.
+    "local_backends": frozenset({"ollama_num_ctx", "ollama_keep_alive"}),
     "network": frozenset({"ollama_url", "exo_url", "sonn_url", "proxy_url", "no_proxy", "system_certificates"}),
     "api_keys": frozenset({"sonn", "openrouter", "kimi", "anthropic", "openai", "otlp", "github", "gitlab", "bitbucket",
                            "azure_devops", "jira", "linear"}),
@@ -4696,7 +4705,7 @@ _SOCKET_SETTING_KEYS: dict[str, frozenset[str]] = {
                                 "price_overrides"}),
     "privacy": frozenset({
         "secret_scan", "excluded_paths", "transcript_retention_days",
-        "audit_log", "audit_capture", "audit_retention_days",
+        "audit_log", "audit_capture", "audit_retention_days", "feedback_url",
     }),
     "audit": frozenset({"otlp_endpoint", "otlp_auth_header"}),
     "security": frozenset({"cli_adapters", "computer_use", "chat_gateway", "shell_sandbox", "scheduled_tasks",
@@ -4909,6 +4918,18 @@ def _socket_setting_value(section: Any, key: Any, value: Any) -> Any:
         return int(value)
     elif (section, key) == ("network", "ollama_url"):
         return ollama_address(value)
+    elif (section, key) == ("local_backends", "ollama_num_ctx"):
+        from ..backends import ollama_num_ctx_setting
+
+        return ollama_num_ctx_setting(value)
+    elif (section, key) == ("local_backends", "ollama_keep_alive"):
+        from ..backends import ollama_keep_alive_setting
+
+        return ollama_keep_alive_setting(value)
+    elif (section, key) == ("privacy", "feedback_url"):
+        from ..feedback import check_address
+
+        return check_address(value)
     elif (section, key) == ("network", "proxy_url"):
         from .. import net
         return net.validate_proxy_url(value if isinstance(value, str) else "")
@@ -4984,6 +5005,11 @@ async def _cmd_update_settings(ctx: CommandContext) -> None:
     if sonn_change:
         ctx.state.sonn_account_revision = getattr(ctx.state, "sonn_account_revision", 0) + 1
         await ctx.send({"event": "sonn_account", "data": None})
+    if section == "privacy" and "feedback_url" in changed:
+        # Reports written for the new feedback address go now rather than at the next round.
+        from .. import feedback
+
+        feedback.wake()
     await ctx.send({"event": "settings", "data": data})
     if (section == "security" and any(k == "extension_panels" for k, _ in writes)) or section == "offline":
         # Offline mode keeps panels closed (gui/extension_panels.enabled): an open one closes now.
@@ -5123,8 +5149,13 @@ async def _ollama_connection(ctx: CommandContext, action: str, resolve_ollama_ur
     # `saved`: this checked the address Lumi uses (Save, status), not a typed one (Test).
     data.update(saved=action != "test", action=action, address=address)
     if action != "test":
-        # The saved address: offer its models, and start one if no model runs yet.
-        await asyncio.to_thread(ctx.state.detect_backends, force=True)
+        # The saved address: offer its models, and start one if no model runs yet. Save's
+        # update_setting_value probed every provider again already (apply_settings), so
+        # only a status check probes here. Probing twice made Save take five seconds
+        # where Test takes a fraction of one: each probe waits out any provider that
+        # isn't running (Windows takes two seconds to refuse a connection on this computer).
+        if action != "save":
+            await asyncio.to_thread(ctx.state.detect_backends, force=True)
         if data["status"] == "ready" and not ctx.state.backend:
             try:
                 await asyncio.to_thread(ctx.state.ensure_default_runtime_session)

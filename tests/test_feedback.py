@@ -764,6 +764,67 @@ def test_a_report_written_with_no_address_waits_until_the_person_sends_it_somewh
     assert [r["type"] for r in records(audit_log)] == ["feedback.held", "feedback.sent"]
 
 
+def test_a_report_with_nowhere_to_go_offers_its_copy_and_luminarys_support_address(inbox, clock):
+    kept = feedback.submit(Cloud(url=""), form(), now=NOW).as_dict()
+    assert (kept["status"], kept["reason"]) == ("queued", "no_destination")
+    assert kept["copy_text"].startswith("Lumi feedback: Bug") and FORM["message"] in kept["copy_text"]
+    assert kept["support_email"] == feedback.SUPPORT_EMAIL
+    # The dialog's list offers it beside each such report's Copy too.
+    assert feedback.status(Cloud(url=""))["support_email"] == feedback.SUPPORT_EMAIL
+    # A report that went has nothing to copy or email.
+    sent = feedback.submit(Cloud(), form(), now=NOW + 1).as_dict()
+    assert (sent["status"], sent["copy_text"], sent["support_email"]) == ("sent", "", "")
+
+
+def test_the_support_address_is_the_one_lumis_terms_and_diagnostics_give():
+    from lumi import terms
+
+    assert feedback.SUPPORT_EMAIL == terms.facts()["notices_email"]
+    app_js = (Path(feedback.__file__).parent / "gui" / "static" / "app.js").read_text(encoding="utf-8")
+    assert f"const SUPPORT_EMAIL = '{feedback.SUPPORT_EMAIL}';" in app_js
+
+
+@pytest.mark.parametrize("value, kept", [
+    (None, ""), ("", ""), ("  ", ""),
+    (" https://Inbox.Example.test/ ", "https://inbox.example.test"),
+    ("https://inbox.example.test:8443/feedback", "https://inbox.example.test:8443/feedback"),
+    ("http://127.0.0.1:8000", "http://127.0.0.1:8000"),  # a Lumi Cloud on this computer, as elsewhere
+])
+def test_settings_keeps_a_feedback_address_lumi_can_use(value, kept):
+    assert feedback.check_address(value) == kept
+
+
+@pytest.mark.parametrize("value, complaint", [
+    ("http://inbox.example.test", "https"),
+    ("https://ada:pw@inbox.example.test", "user name or password"),
+    ("https://inbox.example.test/?to=me", "without ? or #"),
+    ("inbox", "Lumi Cloud"),
+    (7, "Lumi Cloud address"),
+    ("https://inbox.example.test/" + "a" * 3000, "too long"),
+])
+def test_settings_refuses_a_feedback_address_lumi_wouldnt_use(value, complaint):
+    with pytest.raises(ValueError, match=re.escape(complaint)):
+        feedback.check_address(value)
+
+
+def test_the_feedback_address_is_a_setting_the_page_saves_checked_and_a_policy_locks(settings):
+    from lumi.gui import ws_commands
+
+    assert ws_commands._socket_setting_value("privacy", "feedback_url", " https://inbox.example.test/ ") == \
+        "https://inbox.example.test"
+    with pytest.raises(ValueError, match="user name or password"):
+        ws_commands._socket_setting_value("privacy", "feedback_url", "https://ada:pw@inbox.example.test")
+    _policy({"privacy.feedback_url": "https://inbox.acme.test"})
+    meta = settings.get_masked()["_meta"]
+    assert meta["locked"]["privacy.feedback_url"] == "Acme"  # shown managed, and refused by update_settings
+
+
+def test_settings_says_where_reports_go_while_its_address_is_empty(settings, monkeypatch):
+    assert settings.get_masked()["_meta"]["feedback"] == {"build_destination": ""}
+    monkeypatch.setattr(feedback, "BUILD_DESTINATION", "https://feedback.luminary.test")
+    assert settings.get_masked()["_meta"]["feedback"] == {"build_destination": "https://feedback.luminary.test"}
+
+
 def test_an_unreachable_lumi_cloud_is_retried_with_backoff(inbox, clock):
     inbox.answers = [down()]
     outcome = feedback.submit(Cloud(), form(), now=NOW)

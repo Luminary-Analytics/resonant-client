@@ -213,8 +213,14 @@ jobs:
       - name: Install the pinned SBOM tools
         run: python -m pip install --disable-pip-version-check --no-cache-dir --require-hashes -r packaging/tools-requirements.txt
 
+      # LUMI_FEEDBACK_URL (a repository variable, not a secret; empty until
+      # Luminary's Lumi Cloud is live) is where Send feedback sends reports when
+      # neither Settings nor an organization names an address
+      # (packaging/build_config.py, RELEASING.md).
       - name: Build PyInstaller bundle
         shell: pwsh
+        env:
+          LUMI_BUILD_FEEDBACK_URL: ${{ vars.LUMI_FEEDBACK_URL }}
         run: |
           ./scripts/build_clean.ps1 -SbomPath "dist/lumi-${{ steps.version.outputs.version }}-sbom.cdx.json"
           if (-not (Test-Path "dist/lumi/lumi.exe")) {
@@ -669,6 +675,8 @@ jobs:
       # the MACOS_SIGNING_REQUIRED variable is true, which fails the build.
       - name: Build Lumi.app, the DMG and the PKG
         env:
+          # The feedback address, as for the Windows bundle (packaging/build_config.py).
+          LUMI_BUILD_FEEDBACK_URL: ${{ vars.LUMI_FEEDBACK_URL }}
           MACOS_SIGNING_REQUIRED: ${{ vars.MACOS_SIGNING_REQUIRED }}
           MACOS_SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
           MACOS_SIGN_P12_BASE64: ${{ secrets.MACOS_SIGN_P12_BASE64 }}

@@ -1,7 +1,7 @@
 """Isolated writer results and evidence-bound local Git integration.
 
 All Git effects happen in owned worktrees until an explicitly approved apply.
-The repository lock coordinates SONN processes; other Git clients still rely on
+The repository lock coordinates Lumi processes; other Git clients still rely on
 Git's index locking and preflight checks. This is not an OS sandbox: trusted
 check programs run with the local user's process permissions.
 """
@@ -76,6 +76,45 @@ class ApplyApproval:
             raise ValueError("Application approval needs a finite expiry")
 
 
+# How many changed files the refusal of a checkout with uncommitted work names.
+UNCOMMITTED_NAMED = 10
+# The objective's share of a team commit's subject, after "Lumi team: " (a 72-character line).
+SUBJECT_OBJECTIVE = 60
+
+
+def status_paths(output: str) -> list[str]:
+    """The paths in ``git status --porcelain=v1 -z`` output, each once: a rename's new name, not its old one."""
+    fields = output.split("\0")
+    paths: list[str] = []
+    index = 0
+    while index < len(fields):
+        entry = fields[index]
+        index += 1
+        if len(entry) < 4:
+            continue
+        if "R" in entry[:2] or "C" in entry[:2]:
+            index += 1  # the name it had before, in the next field
+        if entry[3:] not in paths:
+            paths.append(entry[3:])
+    return paths
+
+
+def uncommitted_message(paths: list[str]) -> str:
+    """Why a writer team can't start on this checkout: its uncommitted files (up to UNCOMMITTED_NAMED), and what to do."""
+    named = ", ".join(paths[:UNCOMMITTED_NAMED])
+    more = f" and {len(paths) - UNCOMMITTED_NAMED} more" if len(paths) > UNCOMMITTED_NAMED else ""
+    return (f"Writers start from your last commit, and this project has changes that aren't committed: {named}{more}. "
+            "Commit or stash your changes, then start the team again. Nothing in the project was changed.")
+
+
+def commit_subject(objective: str) -> str:
+    """A team commit's first line: "Lumi team: " and the objective on one line, shortened to fit."""
+    text = "".join(character for character in " ".join(str(objective or "").split()) if character.isprintable())
+    if len(text) > SUBJECT_OBJECTIVE:
+        text = text[:SUBJECT_OBJECTIVE - 1].rstrip() + "…"
+    return f"Lumi team: {text or 'changes'}"
+
+
 class SwarmIntegration:
     """Durable intent and observation around isolated, bounded Git operations."""
 
@@ -122,10 +161,15 @@ class SwarmIntegration:
         return thread is not None and thread.ident in self._waiting_threads
 
     def capture_base(self) -> dict[str, str]:
-        """Capture clean committed input without modifying the checkout."""
+        """Capture clean committed input without modifying the checkout.
+
+        A checkout with uncommitted changes is refused, naming them, and left
+        exactly as it is.
+        """
         with self._repository_lock(timeout=5):
-            if not self._clean(self.project):
-                raise Conflict("Writer baseline requires a clean committed checkout; existing work is preserved")
+            changed = self._uncommitted(self.project)
+            if changed:
+                raise Conflict(uncommitted_message(changed))
             branch = self._branch(self.project)
             if not branch:
                 raise Conflict("Writer setup requires a checked-out branch, not a detached revision")
@@ -333,6 +377,19 @@ class SwarmIntegration:
 
     def _clean(self, path: Path) -> bool:
         return not self._git(path, "status", "--porcelain=v1", "-z", "--untracked-files=all").stdout
+
+    def _uncommitted(self, path: Path) -> list[str]:
+        """The paths ``git status`` lists as changed, staged or untracked, in its order ([] when clean)."""
+        return status_paths(self._git(path, "status", "--porcelain=v1", "-z", "--untracked-files=all").stdout)
+
+    @staticmethod
+    def _objective(connection, run_id: str, work_item_id: str | None) -> str:
+        """A writer's task (its work item's objective), else its team's objective."""
+        row = connection.execute("SELECT objective FROM work_items WHERE run_id=? AND id=?",
+                                 (run_id, work_item_id)).fetchone() if work_item_id else None
+        if row is None:
+            row = connection.execute("SELECT objective FROM runs WHERE id=?", (run_id,)).fetchone()
+        return str(row["objective"]) if row is not None else ""
 
     def _unchanged(self, path: Path) -> bool:
         """A candidate still holds exactly its revision's tracked content.
@@ -611,6 +668,8 @@ class SwarmIntegration:
                 attempt = self.store._attempt(connection, context)
                 if attempt["grant_json"] != _json(json.loads(record["manifest_json"])["grant"]):
                     raise Conflict("Writer grant changed after isolation")
+                # What its commit says: the task this writer did.
+                objective = self._objective(connection, context.run_id, attempt["work_item_id"])
                 if connection.execute("SELECT 1 FROM process_observations WHERE attempt_id=? AND state!='stopped'", (context.attempt_id,)).fetchone():
                     raise Conflict("Writer finalization requires observed owned-process termination")
             if record["state"] == "ready":
@@ -637,7 +696,9 @@ class SwarmIntegration:
                 self._check_tree(path)
                 self._check_paths(path, self._changed_paths(path, record["base_revision"]), grant.write_roots)
                 if changed:
-                    self._git(path, "commit", "-m", f"SONN swarm writer {context.attempt_id}", effect=(authority, "writer", writer_id))
+                    self._git(path, "commit", "-m", commit_subject(objective),
+                              "-m", f"Team run: {context.run_id}\nWriter: {context.attempt_id}",
+                              effect=(authority, "writer", writer_id))
                 result = self._head(path)
                 # Validate the immutable committed result too. A writer editing
                 # during finalization cannot smuggle an additional path between
@@ -720,7 +781,9 @@ class SwarmIntegration:
                         "target_checkout": json.loads(checkouts.pop()), "criterion_checks": mapping}
             path = self.root / f"candidate-{hashlib.sha256(identity.encode()).hexdigest()[:16]}"  # See create_writer.
             with self.store._connection(write=True) as connection:
-                self.store._admitting(self.store._authority(connection, authority))
+                run = self.store._authority(connection, authority)
+                self.store._admitting(run)
+                objective = run["objective"]  # what the combined change's commit says
                 existing = connection.execute("SELECT * FROM integration_candidates WHERE id=?", (identity,)).fetchone()
                 if existing:
                     if existing["run_id"] != authority.run_id or existing["repo_key"] != self.repo_key:
@@ -744,7 +807,12 @@ class SwarmIntegration:
                     if merged.returncode:
                         self._outcome(authority, "integration_candidates", identity, "conflict", error=merged.stderr)
                         return self._record(authority, "integration_candidates", identity)
-                    self._git(path, "commit", "-m", f"SONN combined candidate {identity}", effect=(authority, "candidate", identity))
+                    # The commit applying lands in the person's branch: named by the team's objective,
+                    # with the run, the combined change and its writers' ids in the body.
+                    writer_list = ", ".join(writer["attempt_id"] for writer in writers)
+                    self._git(path, "commit", "-m", commit_subject(objective),
+                              "-m", f"Team run: {authority.run_id}\nCombined change: {identity}\nWriters: {writer_list}",
+                              effect=(authority, "candidate", identity))
                 self._check_tree(path)
                 result = self._head(path)
                 self._outcome(authority, "integration_candidates", identity, "ready", revision=result)

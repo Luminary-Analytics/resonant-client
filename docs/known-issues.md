@@ -4,6 +4,31 @@ Living catalog of known bugs surfaced during real usage. Each entry has reproduc
 
 > **Convention:** issues are numbered chronologically across all sources (dogfood passes, release pipeline, post-release reports). Numbers are stable — even after a fix lands, the issue number stays in this doc as a historical record.
 
+## Windows code pages: search results and batch files (2026-09-30, by design)
+
+Lumi decodes what Windows programs print without changing how they run, so
+these two cases read as they would in the person's own terminal:
+
+- **Search results from a file saved in the OEM code page.** `grep` shows
+  each matched line as the file's own text: UTF-8 when the line is, else
+  whichever of the ANSI and OEM code pages it reads better in, and the ANSI
+  one when both read equally well, since Windows programs save text in it
+  (`processes.decode_output(prefer="ansi")`). A line from a file saved in the
+  OEM code page (cp437 or cp850: a DOS-era tool, or `echo ... > file` in a
+  console) that reads as well either way comes back in ANSI characters:
+  "Übersicht" as "šbersicht", "Straße" as "Straáe", and `tree`'s "├───" as
+  "ÃÄÄÄ". `type` in the shell shows it as saved: a command's own output is
+  decoded the other way round, the OEM code page winning a tie.
+- **A batch file saved as UTF-8 that names a non-ASCII path.** cmd.exe reads
+  a batch file in the console's code page (the OEM one), as in the person's
+  own terminal. A `.bat` or `.cmd` saved as UTF-8, or as Notepad's "ANSI",
+  that names "C:\Users\Jöhn Smith\..." fails with "The system cannot find the
+  path specified." unless its first line is `chcp 65001 >nul` or it is saved
+  in the console's code page. Each command runs in its own console, so a
+  `chcp` in one doesn't carry over to the next. Lumi doesn't switch the code
+  page itself: a September 29 review found that doing so broke batch files
+  saved in the console's code page, which work as they are.
+
 ## Desktop views without an entry point (2026-09-25, fixed in source)
 
 v0.14.0 ("conversation-first agent workflow", 8d6d023) removed the Agents pane

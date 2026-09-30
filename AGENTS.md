@@ -669,11 +669,16 @@ commands the model or the person asked for run in one `cmd.exe /c`
 terminal: never switch its code page or wrap it in another cmd.exe, which
 changes what batch files, long commands and quoted paths do. Python children
 get `PYTHONIOENCODING=utf-8` (`processes.utf8_env`), never `PYTHONUTF8`, which
-changes what `open()` reads and writes. Output read as text is decoded with
+changes what `open()` reads and writes; `utf8_env` takes the child's
+environment, `secrets_store.child_env()` for anything the project runs, never
+Lumi's own with its provider keys. Output read as text is decoded with
 `processes.decode_output` (per line: UTF-8, else the OEM or ANSI code page;
-OEM wins a tie for commands) or `OutputDecoder` when read in pieces. A command
-with a timeout runs through `processes.run_command`, whose timeout ends every
-process it started and which resolves a program named without a path.
+OEM wins a tie for commands) or `OutputDecoder` when read in pieces. Search
+tools print a file's path and its text in different encodings: ripgrep and
+grep run with `--null`, and the path and the text are decoded apart before
+exclusion rules see the path. A command with a timeout runs through
+`processes.run_command`, whose timeout ends every process it started and
+which resolves a program named without a path.
 
 ## Documentation and releases
 

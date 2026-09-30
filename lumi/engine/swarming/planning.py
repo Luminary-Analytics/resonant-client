@@ -38,6 +38,9 @@ _TEMPLATE_TAIL = re.compile(r"(?:</[A-Za-z_][^<>\s]{0,40}>|<\|[^|<>\s]{1,40}\|>)
 # Stray closing brackets after a complete object: a live model ended a closing
 # turn's plan with a second "}". Anything else after the object still refuses it.
 _STRAY_CLOSERS = re.compile(r"[\s}\]]{1,16}\Z")
+# How many "{" a reply without a fence is searched from for its one plan object
+# (_embedded_plan); a reply with more is refused rather than searched further.
+_PLAN_SCAN_LIMIT = 32
 
 
 class PlanRejected(ValueError):
@@ -195,13 +198,43 @@ def _json_object(source: str) -> Any:
         raise failure from None
 
 
+def _embedded_plan(source: str) -> str | None:
+    """The one complete JSON object with the plan's own fields in a reply without a fence, or None.
+
+    Chat models such as Claude and GPT tend to add a sentence before or after
+    the JSON even when told to return only JSON ("Here is my plan:", "This
+    splits the work..."). The prose is dropped only when exactly one object in
+    the reply has ``summary``, ``use_team`` and ``work_items``; two such
+    objects, or none, leave the reply refused as before. The object found is
+    validated like any proposal.
+    """
+    decoder = json.JSONDecoder(object_pairs_hook=_object, parse_constant=_constant, parse_float=_float)
+    found: list[str] = []
+    index, tries = source.find("{"), 0
+    while index != -1:
+        tries += 1
+        if tries > _PLAN_SCAN_LIMIT:
+            return None  # Too many candidates to tell a unique plan apart.
+        try:
+            value, end = decoder.raw_decode(source, index)
+        except (json.JSONDecodeError, PlanRejected, RecursionError, ValueError):
+            index = source.find("{", index + 1)
+            continue
+        if type(value) is dict and _TOP_FIELDS <= set(value):
+            found.append(source[index:end])
+        index = source.find("{", end)
+    return found[0] if len(found) == 1 else None
+
+
 def parse_plan(
     text: str, *, run_id: str, policy: PolicyProfile, model: ModelSelection,
     allowed_criteria: frozenset[str], namespace: str | None = None, allow_no_work: bool = False,
 ) -> CoordinatorPlan:
     """Parse one strict JSON proposal and admit its complete requested scopes.
 
-    A single optional JSON fence is accepted. No scope is clipped to fit policy;
+    A single optional JSON fence is accepted, with prose before or after it,
+    and so is prose around the one plan object of a reply without a fence
+    (_embedded_plan). No scope is clipped to fit policy;
     broad requests are denied. Role tools are derived from policy, never from
     model fields. Implement items require actual write scope/capability; explore
     and verify items are read-only. Worker count is scheduling policy, not a cap
@@ -233,11 +266,17 @@ def parse_plan(
         if tail is None:
             break
         source = source[:tail.start()].rstrip()
+    fenced = "```" in source
     if source.startswith("```"):
         fence = _FENCE.fullmatch(source)
         if fence is None:
-            raise PlanRejected("Only one complete JSON fence is permitted")
-        source = fence.group(1)
+            # Prose after exactly one fenced block is as unambiguous as prose before it.
+            fences = _EMBEDDED_FENCE.findall(source)
+            if len(fences) != 1:
+                raise PlanRejected("Only one complete JSON fence is permitted")
+            source = fences[0]
+        else:
+            source = fence.group(1)
     elif not source.startswith("{"):
         # Prose around exactly one fenced block is still unambiguous; two
         # blocks, or none, leave the whole text to be the JSON object.
@@ -245,7 +284,14 @@ def parse_plan(
         if len(fences) == 1:
             source = fences[0]
     try:
-        proposal = _json_object(source)
+        try:
+            proposal = _json_object(source)
+        except (json.JSONDecodeError, RecursionError, ValueError):
+            # Without a fence, prose may surround the one plan object (_embedded_plan).
+            embedded = None if fenced else _embedded_plan(source)
+            if embedded is None:
+                raise
+            proposal = _json_object(embedded)
     except (json.JSONDecodeError, RecursionError, ValueError) as exc:
         # Do not echo a model response; rejected extras may contain credentials.
         raise PlanRejected("Coordinator output must be one strict JSON object") from exc

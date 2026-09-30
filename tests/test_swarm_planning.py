@@ -123,8 +123,9 @@ def test_model_cannot_supply_authority_or_change_tool_model_or_budget(location, 
 def test_chat_template_residue_after_the_json_is_dropped(residue):
     # A live model ended its final report with "</function></tool_call>".
     assert len(parse(json.dumps(proposal()) + residue).work_items) == 1
+    # Residue is no licence for a second plan after it.
     with pytest.raises(PlanRejected):
-        parse(json.dumps(proposal()) + residue + "\nThat is my plan.")
+        parse(json.dumps(proposal()) + residue + "\n" + json.dumps(proposal()))
 
 
 def test_a_missing_last_brace_or_stray_closing_braces_are_tolerated_and_nothing_else():
@@ -136,7 +137,7 @@ def test_a_missing_last_brace_or_stray_closing_braces_are_tolerated_and_nothing_
     assert len(parse(text + "}\n]").work_items) == 1
     for broken in (text[:-1].rstrip()[:-2],  # cut inside the work items: two closers missing
                    text.replace('"summary": "Independent', '"summary": "Indep', 1)[:-40],  # cut inside a string
-                   text + "\n}\nThat is my plan.",  # prose after the stray brace
+                   text + "\n}\n" + text,  # a second plan after the stray brace
                    "[" + text + "]"):  # not an object
         with pytest.raises(PlanRejected, match="one strict JSON object|missing or unsupported"):
             parse(broken)
@@ -310,6 +311,34 @@ def test_prose_around_exactly_one_json_fence_is_read():
         parse("Two options:\n" + fenced + "\nor\n" + fenced)
     with pytest.raises(PlanRejected):
         parse("No JSON here, only prose.")
+
+
+@pytest.mark.parametrize("wrapper", [
+    "Here is the plan: {}",
+    "I read both files. Here's my proposal:\n\n{}",
+    "{}\n\nThis splits the work into independent investigations.",
+    "Plan below.\n{}\nLet me know if you want changes.",
+    "```json\n{}\n```\n\nThe first task reads the backend.",
+    'The config uses {{braces}} and {{"retries": 3}}.\n\n{}',
+    "{}\n}}\nThat is my plan.",  # a stray brace, then prose
+])
+def test_prose_around_the_one_plan_object_is_dropped(wrapper):
+    # Claude and GPT tend to add a sentence before or after the JSON even when
+    # told to return only JSON. Exactly one object with the plan's fields is
+    # unambiguous, so the prose is dropped and the object validated as usual.
+    assert parse(wrapper.format(json.dumps(proposal()))).use_team
+
+
+@pytest.mark.parametrize("wrapper", [
+    "Two options: {} or {}",
+    "{}\n\nOr, more cautiously:\n{}",
+    'Here: {{"plan": {}}}',
+    'Only a {{"summary": "no plan fields"}} object.',
+    "x{{ " * 40 + "{}",
+])
+def test_two_plans_a_wrapped_plan_or_too_many_candidates_in_prose_are_refused(wrapper):
+    with pytest.raises(PlanRejected, match="one strict JSON object"):
+        parse(wrapper.format(*[json.dumps(proposal())] * wrapper.count("{}")))
 
 
 def test_only_follow_ups_and_owner_granted_orchestrators_may_propose_no_work():

@@ -53,7 +53,8 @@ def test_the_sessions_own_model_is_no_separate_choice(team):  # noqa: F811
 
 
 @pytest.mark.parametrize("choice, error, match", [
-    ({"provider": "codex", "model": "gpt"}, Conflict, "native provider or an OpenAI-compatible connection"),
+    ({"provider": "codex", "model": "gpt"}, Conflict, "Team workers can't run on Codex"),
+    ({"provider": "claude-code", "model": "sonnet"}, Conflict, "Team workers can't run on Claude Code"),
     ({"provider": "kimi", "model": "k2"}, ValueError, "No API key for kimi"),
     ({"provider": "ollama"}, ValueError, "workers' provider and model"),
     ({"provider": "ollama", "model": " "}, ValueError, "workers' provider and model"),

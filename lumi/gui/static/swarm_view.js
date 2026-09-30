@@ -730,7 +730,7 @@ window.LumiSwarmView = class LumiSwarmView {
             : managed?.available ? 'Personal work stays local. Choose organization ownership explicitly for a new team.'
                 : 'Organization managed teams run under your organization’s Lumi Cloud, with a setup your administrator gives Lumi when it starts. Personal teams need nothing more.';
         nodes.model.textContent = event.model ? `${event.model.label || event.model.provider} · ${event.model.model}` : 'No supported model selected';
-        this._swarmWorkerModels(event.model);
+        this._swarmWorkerModels(event.model, event.team_providers);
         const snapshot = event.run;
         nodes['run-section'].hidden = !incomingRun;
         const workerModel = snapshot?.worker_model;
@@ -1756,12 +1756,13 @@ window.LumiSwarmView = class LumiSwarmView {
             submitted: 'Awaiting verification', accepted: 'Accepted', completed: 'Complete', cancelled: 'Stopped', failed: 'Needs review', uncertain: 'Needs reconciliation', reconciliation_required: 'Needs reconciliation', recovery_required: 'Recovery needed', unknown: 'Not confirmed'})[state] || 'Not confirmed';
     }
 
-    /** Worker model choices: each Team-capable provider's models (native or a connection). */
-    _swarmWorkerModels(session) {
+    /** Worker model choices: the models of each provider or connection a team runs on (the server's ``team_providers``). */
+    _swarmWorkerModels(session, teamProviders) {
         const select = this._swarmNodes['worker-model'];
+        const eligible = new Set(Array.isArray(teamProviders) ? teamProviders : []);
         const choices = [];
         for (const [provider, info] of Object.entries(this.backends || {})) {
-            if (!/^(ollama|exo|kimi|openrouter|sonn|conn-[a-z0-9][a-z0-9-]*)$/.test(provider)) continue;
+            if (!eligible.has(provider)) continue;
             for (const model of info?.models || []) {
                 if (session && provider === session.provider && model === session.model) continue;
                 choices.push({provider, model, label: `${info.label || provider} · ${model}`});

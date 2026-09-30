@@ -77,6 +77,8 @@ guidance needs an explicit status notice and a current replacement.
 - [docs/dlp.md](dlp.md): data loss prevention rules on outgoing model requests (source only).
 - [Team preview](swarming.md): current source behavior. Live NVIDIA NIM runs of
   orchestrated teams are recorded in the [benchmarks](swarming-benchmarks.md).
+  Anthropic, OpenAI, Azure OpenAI and Bedrock teams (September 30) are checked
+  against scripted servers only; no live run on them yet.
   Packaged qualification and a benefit claim are still pending.
 - [docs/organization-oversight.md](organization-oversight.md)
 - [lumi/legal/EULA.md](../lumi/legal/EULA.md), [ALPHA-TERMS.md](../lumi/legal/ALPHA-TERMS.md)

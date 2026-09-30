@@ -15,13 +15,18 @@ import json
 import re
 from typing import Any
 
+from ...backends import supervised_native_providers
 from .models import SwarmError
 
 
-NATIVE_PROVIDERS = frozenset({"ollama", "exo", "kimi", "openrouter", "sonn"})
+# The native providers a team participant can run on: those whose adapters keep
+# the supervised request contract (lumi/backends.py, ``supervised_requests``):
+# Anthropic, OpenAI, OpenRouter, Ollama, EXO, Kimi and SONN. The CLI adapters
+# (Codex, Claude Code) run their own tool loops and never do.
+NATIVE_PROVIDERS = supervised_native_providers()
 # A Lumi connection's backend name (lumi/connections.py). The name alone
-# grants nothing: swarming/connections.py admits only OpenAI-compatible
-# connections, which run through the same guarded Chat Completions adapter.
+# grants nothing: swarming/connections.py admits a connection only when its
+# adapter keeps the same contract and it authenticates with a key.
 _CONNECTION_PROVIDER = re.compile(r"conn-[a-z0-9][a-z0-9-]{0,39}")
 _DEVICE = re.compile(r"(?:con|prn|aux|nul|com[0-9¹²³]+|lpt[0-9¹²³]+)(?:\..*)?", re.I)
 _DIGEST = re.compile(r"[0-9a-f]{64}")

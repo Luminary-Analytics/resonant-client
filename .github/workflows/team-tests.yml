@@ -20,6 +20,12 @@ on:
       - 'lumi/engine/sandbox.py'
       - 'lumi/engine/artifacts.py'
       - 'lumi/backends.py'
+      # The adapters team participants run on (engine/swarming/connections.py).
+      - 'lumi/anthropic_api.py'
+      - 'lumi/openai_api.py'
+      - 'lumi/openrouter.py'
+      - 'lumi/sonn.py'
+      - 'lumi/connections.py'
       - 'lumi/processes.py'
       - 'lumi/executables.py'
       - 'lumi/__init__.py'
@@ -37,6 +43,7 @@ on:
       - 'tests/fixtures/swarming*'
       - 'tests/fixtures/swarming/**'
       - 'tests/streaming_stub.py'
+      - 'tests/api_provider_stub.py'
       - 'packaging/fetch_ripgrep.ps1'
       - '.github/workflows/team-tests.yml'
   push:

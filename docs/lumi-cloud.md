@@ -167,8 +167,10 @@ To enroll computers without anyone signing in:
 
 1. Create an **enrollment token** on the Devices page in Lumi Cloud.
 2. Deploy the machine policy that the page prints, through Group Policy,
-   Intune, a configuration profile or `%ProgramData%\Lumi\policy.json`
-   ([Deploying on Windows](deploy-windows.md)):
+   Intune, a configuration profile or `%ProgramData%\Lumi\policy.json` in a
+   folder only administrators can change
+   ([Deploying on Windows](deploy-windows.md),
+   [the file rules](enterprise-policy.md#only-files-only-administrators-can-change-count)):
 
 ```json
 {
@@ -189,9 +191,11 @@ Lumi enrolls on its next start. After that:
 - The published cloud policy **replaces** the rules in this machine policy.
 - The machine policy's own rules (`models` above) apply until the first
   download, and whenever a download fails to verify.
-- Only keys in `trusted_keys`, the `PolicyKeys` registry value or
-  `policy-keys.json` can sign the cloud policy. The file in `~/.lumi/cloud/`
-  is only a cache.
+- Only keys in `trusted_keys`, the `PolicyKeys` registry value (or
+  configuration profile key), or on macOS and Linux a root-owned
+  `policy-keys.json` beside the machine policy can sign the cloud policy.
+  Windows doesn't read a `policy-keys.json`. The file in `~/.lumi/cloud/` is
+  only a cache.
 - People can't leave a managed enrollment or point Lumi at a different Lumi
   Cloud.
 

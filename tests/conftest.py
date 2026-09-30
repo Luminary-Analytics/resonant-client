@@ -88,6 +88,31 @@ _SESSION_TEST_HOME = Path(tempfile.mkdtemp(prefix="resonant-tests-home-"))
 Path.home = staticmethod(lambda: _SESSION_TEST_HOME)  # type: ignore[method-assign]
 
 
+# ── Machine files in temporary folders (autouse) ───────────────────
+# Tests stand in for C:\ProgramData\Lumi, /etc/lumi and a Group Policy
+# PolicyFile with temporary folders the test's own user owns, which the real
+# check (lumi/admin_files.py) rightly refuses. Files there count as an
+# administrator's; anywhere else the real check still runs.
+# tests/test_machine_policy_trust.py tests the real check itself.
+
+@pytest.fixture(autouse=True)
+def _temporary_machine_files_count_as_administrators(tmp_path_factory):
+    from lumi import admin_files
+
+    # realpath on both sides: a runner's TEMP can be an 8.3 short name.
+    folders = tuple(os.path.normcase(os.path.realpath(folder)).rstrip("\\/") + os.sep
+                    for folder in (tmp_path_factory.getbasetemp(), _SESSION_TEST_HOME))
+
+    def check(path, root):
+        if os.path.normcase(os.path.realpath(path)).startswith(folders):
+            return admin_files.Trust(True, admin_owned=True)
+        return admin_files.real_check(path, root)
+
+    admin_files.set_for_tests(check)
+    yield
+    admin_files.set_for_tests(None)
+
+
 # ── Home isolation (autouse) ───────────────────────────────────────
 
 @pytest.fixture(autouse=True)

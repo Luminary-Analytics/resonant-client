@@ -11,30 +11,38 @@ thinking before its answer (``thinking: {"type": "between_tools"}``).
 
 ``lumi/anthropic_api.py`` sends Lumi's thinking levels (off, low, med, high,
 max; "default" sends nothing) in the shape each family accepts. The families,
-from Anthropic's Messages API documentation (Thinking, Effort and the models
-overview), read 2026-09-30:
+from Anthropic's Messages API documentation (Thinking, Effort, the models
+overview and the migration guides), read 2026-09-30:
 
 - Opus 5.5: thinks without being asked and can't stop; a budget or
   "disabled" is a 400. Effort defaults to medium. Lumi's "off" is the lowest
   effort.
-- Fable 5 and 5.1, Mythos 5, 5.1 and Preview: as Opus 5.5, with effort
-  defaulting to high.
+- Fable 5 and 5.1, Mythos 5 and 5.1: as Opus 5.5, with effort defaulting to
+  high.
 - Sonnet 5.5: thinks without being asked; a budget or "disabled" is a 400.
   Lumi's "off" is ``between_tools``, its lowest setting (no thinking before
   the answer), which it accepts at effort high or below.
-- Opus 5 and Sonnet 5: think without being asked; "disabled" turns it off
-  (on Opus 5 at effort high or below). A budget is a 400.
+- Opus 5 and Sonnet 5: think without being asked; a budget is a 400.
+  "disabled" would turn thinking off, but Anthropic advises against it for
+  work with tools: Opus 5 then writes some tool calls as plain text (they
+  never run) and leaks its tags, and Sonnet 5 reaches for tools less. Lumi is
+  a coding agent, so its "off" is the lowest effort, as Anthropic recommends.
 - Opus 4.7 and 4.8: think only when asked, adaptively; a budget is a 400.
 - Opus 4.6 and Sonnet 4.6: as Opus 4.7; a budget still works there but is
   deprecated.
-- Opus 4.5, Sonnet 4.5, Haiku 4.5, Sonnet 4, Sonnet 3.7, Opus 4 and 4.1:
-  a budget only (at least 1,024 tokens, below max_tokens); adaptive thinking
-  is a 400, and so is effort except on Opus 4.5.
+- Opus 4.5, Sonnet 4.5, Haiku 4.5, Sonnet 4, Sonnet 3.7, Opus 4 and 4.1, and
+  Mythos Preview: a budget only (at least 1,024 tokens, below max_tokens);
+  adaptive thinking is a 400, and so is effort except on Opus 4.5.
 - Claude 3.5 and older: no thinking.
 
-Every family's thinking counts toward ``max_tokens``. A model id Lumi
-doesn't recognize (a newer model, or a gateway's own name) gets the newest
-family's shape, and a request the API refuses says so.
+Every family's thinking counts toward ``max_tokens``.
+
+An id that names a Claude model newer than this table (``claude-opus-6``)
+gets the newest family's shape. Any other id Lumi doesn't recognize (a
+Bedrock application inference profile ARN, a gateway's own name) could be
+any Claude model, down to one that refuses every thinking field, so it is
+sent none at any level; the adapter decides what such an id is on each
+platform (``anthropic_api.AnthropicBackend``).
 
 Opus 5.5, Fable 5.1 and Sonnet 5.5 also bind each thinking block to the
 conversation before it ("preserved thinking"): replayed after the system
@@ -55,13 +63,15 @@ class ClaudeModel:
 
     family: str
     # How a thinking level is sent: "adaptive" (with an effort level),
-    # "budget" (a fixed thinking budget) or "none" (the model can't think).
+    # "budget" (a fixed thinking budget) or "none" (no thinking field at all:
+    # the model can't think, or Lumi can't tell what it takes).
     thinking: str
     # Whether the model thinks when a request has no thinking field.
     thinks_by_default: bool
     # How Lumi's "off" is sent: "omit" (no field: thinking is off by
-    # default), "disabled", "between_tools" (Sonnet 5.5's lowest setting)
-    # or "low_effort" (the model always thinks: the least it will).
+    # default), "between_tools" (Sonnet 5.5's lowest setting) or
+    # "low_effort" (the lowest effort: the model always thinks, or turning
+    # thinking off would hurt its tool calls).
     off: str
     # The effort the API uses when a request sends none; "" without effort.
     default_effort: str
@@ -70,7 +80,7 @@ class ClaudeModel:
     # Whether the API refuses a replayed thinking block once the conversation
     # before it changed (preserved thinking).
     binds_thinking: bool = False
-    # False for an id Lumi doesn't recognize, sent the newest family's shape.
+    # False for an id that isn't in this table.
     known: bool = True
 
     @property
@@ -83,16 +93,31 @@ _OPUS_5_5 = ClaudeModel("opus-5.5", "adaptive", True, "low_effort", "medium", 12
 _ALWAYS_ON = ClaudeModel("fable-mythos", "adaptive", True, "low_effort", "high", 128_000)
 _FABLE_5_1 = replace(_ALWAYS_ON, family="fable-5.1", binds_thinking=True)
 _SONNET_5_5 = ClaudeModel("sonnet-5.5", "adaptive", True, "between_tools", "high", 128_000, binds_thinking=True)
-_ON_BY_DEFAULT = ClaudeModel("opus-5-sonnet-5", "adaptive", True, "disabled", "high", 128_000)
+_ON_BY_DEFAULT = ClaudeModel("opus-5-sonnet-5", "adaptive", True, "low_effort", "high", 128_000)
 _OPT_IN = ClaudeModel("adaptive-opt-in", "adaptive", False, "omit", "high", 128_000)
 _BUDGET = ClaudeModel("budget", "budget", False, "omit", "", 64_000)
 _BUDGET_32K = replace(_BUDGET, max_output=32_000)
+# Anthropic's only example for Mythos Preview asks for a thinking budget; its
+# output limit isn't published, so it keeps the one Lumi used for every model.
+_MYTHOS_PREVIEW = replace(_BUDGET_32K, family="mythos-preview")
 _NO_THINKING = ClaudeModel("no-thinking", "none", False, "omit", "", 8_192)
 _NO_THINKING_4K = replace(_NO_THINKING, max_output=4_096)
-# The newest family's shape for an id Lumi doesn't recognize. Its default
-# effort is unknown, so its output room assumes "high"; its output limit is
-# the conservative one Lumi used for every model before.
-NEWEST = replace(_OPUS_5_5, family="unrecognized", default_effort="high", max_output=32_000, known=False)
+# An id naming a Claude model newer than this table (claude-opus-6): the
+# newest family's shape. Its default effort is unknown, so its output room
+# assumes "high"; its output limit is the conservative one Lumi used for
+# every model before.
+NEWEST = replace(_OPUS_5_5, family="newer", default_effort="high", max_output=32_000, known=False)
+# Any other id Lumi doesn't recognize: a Bedrock application inference
+# profile or provisioned throughput ARN, a gateway's alias. Behind it may sit
+# any Claude model, one that refuses adaptive thinking and effort as much as
+# one that refuses a budget, so it is sent no thinking field at any level,
+# and no more output than Lumi always asked for. A thinking block it returns
+# is still left out once its conversation changed, in case it binds them.
+UNRECOGNIZED = ClaudeModel("unrecognized", "none", False, "omit", "", 32_000, binds_thinking=True, known=False)
+# A name Lumi doesn't recognize on an Anthropic-compatible gateway, which may
+# serve a model that isn't Claude at all (DeepSeek, GLM, Kimi, MiniMax): sent
+# as UNRECOGNIZED, and its thinking blocks go back as they came.
+OTHER_MODEL = replace(UNRECOGNIZED, family="other", binds_thinking=False)
 
 _KNOWN: dict[tuple[str, int, int], ClaudeModel] = {
     ("opus", 5, 5): _OPUS_5_5,
@@ -120,6 +145,11 @@ _KNOWN: dict[tuple[str, int, int], ClaudeModel] = {
     # Mythos 5.1 is Fable 5.1 without the conversation check.
     ("mythos", 5, 1): _ALWAYS_ON,
     ("mythos", 5, 0): _ALWAYS_ON,
+}
+# The newest version of each tier in the table: an id naming a later one is
+# a newer model, and one naming an earlier version the table lacks is not.
+_NEWEST_KNOWN: dict[str, tuple[int, int]] = {
+    tier: max((major, minor) for other, major, minor in _KNOWN if other == tier) for tier, _, _ in _KNOWN
 }
 
 # Current ids name the tier first (claude-opus-5-5, claude-haiku-4-5-20251001);
@@ -150,17 +180,21 @@ def normalize_model_id(model: str) -> str:
 def claude_model(model: str) -> ClaudeModel:
     """How ``model`` (any platform's id) takes thinking, effort and output length.
 
-    An id Lumi doesn't recognize gets :data:`NEWEST`, the newest family's shape.
+    An id naming a Claude model newer than the table gets :data:`NEWEST`, the
+    newest family's shape; any other id Lumi doesn't recognize gets
+    :data:`UNRECOGNIZED`, no thinking field at all.
     """
     name = normalize_model_id(model)
     if "claude-mythos-preview" in name:
-        return _ALWAYS_ON
+        return _MYTHOS_PREVIEW
     match = _TIER_FIRST.search(name)
     if match:
-        key = (match[1], int(match[2]), int(match[3] or 0))
-        return _KNOWN.get(key, NEWEST)
+        tier, version = match[1], (int(match[2]), int(match[3] or 0))
+        known = _KNOWN.get((tier, *version))
+        if known is not None:
+            return known
+        return NEWEST if version > _NEWEST_KNOWN[tier] else UNRECOGNIZED
     match = _VERSION_FIRST.search(name)
     if match:
-        key = (match[3], int(match[1]), int(match[2] or 0))
-        return _KNOWN.get(key, NEWEST)
-    return NEWEST
+        return _KNOWN.get((match[3], int(match[1]), int(match[2] or 0)), UNRECOGNIZED)
+    return UNRECOGNIZED

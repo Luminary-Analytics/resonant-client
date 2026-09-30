@@ -28,6 +28,7 @@ import logging
 import os
 import sys
 
+from ..backends import ChosenMaxTokens
 from ..gui.settings import SettingsManager
 from ..network_defaults import resolve_ollama_url
 from .service import GatewayService
@@ -119,7 +120,8 @@ def build_service(args: argparse.Namespace, settings: SettingsManager, adapter) 
         session = build_session(settings, spec, project=project, mode=mode, trust_project=False,
                                 max_requests=None, run_id=f"gateway-{adapter.name}-{chat_id}", tier=TIERS[mode])
         if args.max_tokens:
-            session.max_tokens = args.max_tokens
+            # Sent as given, never raised to make room for thinking.
+            session.max_tokens = ChosenMaxTokens(args.max_tokens)
         # Audit and usage records name the chat.
         session.audit_session_id = f"gateway:{chat_id}"
         return session

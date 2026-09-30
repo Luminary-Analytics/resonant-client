@@ -11,7 +11,7 @@ from dataclasses import asdict, dataclass, replace
 from fnmatch import fnmatchcase
 from typing import Any, Iterable
 
-from .claude_models import claude_model
+from .claude_models import ClaudeModel, claude_model
 
 
 _TEXT_MODALITY = ("text",)
@@ -161,12 +161,12 @@ def default_context_window(model: str, *, claude: bool = False) -> int:
     return 32_768
 
 
-def infer_model_capabilities(model: str, *, claude: bool = False) -> ModelCapabilities:
+def infer_model_capabilities(model: str, *, claude: ClaudeModel | None = None) -> ModelCapabilities:
     """Conservative capabilities for ``model`` from its name.
 
-    ``claude``: the model is Claude whatever its name (the Anthropic adapter,
-    where a Bedrock inference profile ARN or a gateway's own name may not
-    say so).
+    ``claude``: the Claude family the model belongs to, whatever its name
+    (the Anthropic adapter decides: a Bedrock inference profile ARN doesn't
+    say it's Claude). Without it, a name with "claude" in it is looked up.
     """
     lower = str(model or "").lower()
     base = lower.split(":", 1)[0]
@@ -182,11 +182,11 @@ def infer_model_capabilities(model: str, *, claude: bool = False) -> ModelCapabi
     reasoning_can_disable: bool | None = None
     prompt_caching: bool | None = None
 
-    if claude or "claude" in lower:
+    if claude is not None or "claude" in lower:
         # How each Claude family takes thinking (lumi/claude_models.py): the
-        # oldest can't think, and the newest always do, so their "off" is
-        # the lowest effort rather than none.
-        family = claude_model(model)
+        # oldest can't think (nor can Lumi set a level for an id it doesn't
+        # recognize), and on the newest "off" is the lowest effort.
+        family = claude or claude_model(model)
         modalities.add("image")
         native_tools = True
         parallel_tools = True
@@ -258,7 +258,7 @@ def infer_model_capabilities(model: str, *, claude: bool = False) -> ModelCapabi
 
     return ModelCapabilities(
         model=model,
-        context_window=default_context_window(model, claude=claude),
+        context_window=default_context_window(model, claude=claude is not None),
         modalities=tuple(sorted(modalities, key=("text", "image", "audio", "video", "document").index)),
         native_tools=native_tools,
         parallel_tools=parallel_tools,

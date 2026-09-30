@@ -12,12 +12,16 @@ token) is refused with 401, and a Messages request whose history holds tool
 calls but defines no tools with 400, as the providers would.
 
 A Messages request is also checked as the API checks it for the models in
-``CLAUDE_RULES`` (thinking, effort, sampling and forced tool choice; a 400
-with the API's own wording otherwise), and every signed thinking block it
-replays must come back unchanged, in the place the response had it. With
-``enforce_prefix`` set, the models that run preserved thinking also refuse a
-block whose conversation changed before it, as the API does for accounts
-created on or after 2026-08-31.
+``CLAUDE_RULES`` (thinking, effort, output length, sampling and forced tool
+choice; a 400 with the API's own wording otherwise), and every signed
+thinking block it replays must come back unchanged, in the place the
+response had it. A model that thinks without being asked answers with
+thinking at the default level too. With ``enforce_prefix`` set, the models
+that run preserved thinking also refuse a block whose conversation changed
+before it, as the API does for accounts created on or after 2026-08-31. That
+check is written from Anthropic's description of it (the claude-api skill's
+preserved-thinking guide), not from Lumi's own check in
+lumi/anthropic_api.py, so a test can catch the two disagreeing.
 
 NOT a test file: test files import it.
 """
@@ -55,20 +59,22 @@ class ClaudeRules:
     sampling: bool          # a non-default temperature, top_p or top_k (never with thinking)
     forced_tools: bool      # tool_choice "any" or "tool"
     preserved: bool         # runs preserved thinking's check that the conversation before a block is unchanged
+    thinks_by_default: bool = False   # thinks when a request has no thinking field
+    max_output: int = 128_000         # the largest max_tokens accepted
 
 
 FIVE_EFFORTS = frozenset({"low", "medium", "high", "xhigh", "max"})
-_ALWAYS_ON = ClaudeRules(True, False, "no", False, FIVE_EFFORTS, False, False, True)
+_ALWAYS_ON = ClaudeRules(True, False, "no", False, FIVE_EFFORTS, False, False, True, thinks_by_default=True)
 _OPUS_47 = ClaudeRules(True, False, "yes", False, FIVE_EFFORTS, False, True, False)
 _ADAPTIVE_46 = ClaudeRules(True, True, "yes", False, frozenset({"low", "medium", "high", "max"}), True, True, False)
-_BUDGET_ONLY = ClaudeRules(False, True, "yes", False, frozenset(), True, True, False)
+_BUDGET_ONLY = ClaudeRules(False, True, "yes", False, frozenset(), True, True, False, max_output=64_000)
 CLAUDE_RULES: dict[str, ClaudeRules] = {
     "claude-opus-5-5": _ALWAYS_ON,
     "claude-fable-5-1": _ALWAYS_ON,
     "claude-fable-5": replace(_ALWAYS_ON, forced_tools=True, preserved=False),
     "claude-sonnet-5-5": replace(_ALWAYS_ON, between_tools=True),
-    "claude-opus-5": replace(_OPUS_47, disabled="high"),
-    "claude-sonnet-5": _OPUS_47,
+    "claude-opus-5": replace(_OPUS_47, disabled="high", thinks_by_default=True),
+    "claude-sonnet-5": replace(_OPUS_47, thinks_by_default=True),
     "claude-opus-4-8": _OPUS_47,
     "claude-opus-4-7": _OPUS_47,
     "claude-opus-4-6": _ADAPTIVE_46,
@@ -76,7 +82,11 @@ CLAUDE_RULES: dict[str, ClaudeRules] = {
     "claude-opus-4-5-20251101": replace(_BUDGET_ONLY, efforts=frozenset({"low", "medium", "high"})),
     "claude-sonnet-4-5-20250929": _BUDGET_ONLY,
     "claude-haiku-4-5-20251001": _BUDGET_ONLY,
+    "claude-opus-4-1-20250805": replace(_BUDGET_ONLY, max_output=32_000),
+    "claude-3-5-haiku-20241022": ClaudeRules(False, False, "yes", False, frozenset(), True, True, False,
+                                             max_output=8_192),
 }
+THINKING_TYPES = frozenset({"thinking", "redacted_thinking"})
 
 
 def _without_cache_control(value: Any) -> Any:
@@ -88,12 +98,76 @@ def _without_cache_control(value: Any) -> Any:
     return value
 
 
+def _compared(content: Any) -> list:
+    """Content as preserved thinking compares it.
+
+    From the claude-api skill (shared/preserved-thinking-migration.md): the
+    check ignores cache_control markers, a string versus a single text block,
+    leading and trailing whitespace of a text block, whitespace-only text
+    blocks, key order and the thinking blocks themselves; everything else
+    counts.
+    """
+    blocks = [{"type": "text", "text": content}] if isinstance(content, str) else list(content or [])
+    kept = []
+    for block in blocks:
+        if not isinstance(block, dict) or block.get("type") in THINKING_TYPES:
+            continue
+        block = _without_cache_control(block)
+        if block.get("type") == "text":
+            text = str(block.get("text") or "").strip()
+            if not text:
+                continue
+            block = {**block, "text": text}
+        kept.append(block)
+    return kept
+
+
+def conversation_before(body: dict, message: int, position: int) -> str:
+    """What preserved thinking binds the block at ``messages[message].content[position]`` to.
+
+    The top-level system prompt, the tools (compared as a set, by name) and
+    every message and block before it, as _compared sees them. A block's
+    place in the chain of thinking blocks is checked separately.
+    """
+    messages = body.get("messages") or []
+    current = messages[message].get("content") if message < len(messages) else []
+    tools = sorted((_without_cache_control(tool) for tool in body.get("tools") or []),
+                   key=lambda tool: str(tool.get("name")))
+    return json.dumps({
+        "system": _compared(body.get("system")),
+        "tools": tools,
+        "messages": [{"role": entry.get("role"), "content": _compared(entry.get("content"))}
+                     for entry in messages[:message]],
+        "before": _compared(current[:position] if isinstance(current, list) else []),
+    }, sort_keys=True)
+
+
+def _thinking_before(body: dict, message: int, position: int, model_of: Callable[[str], str | None],
+                     model: str) -> str | None:
+    """The key of the last thinking block ``model`` made before a position of ``body``, or None."""
+    last = None
+    for i, entry in enumerate(body.get("messages") or []):
+        content = entry.get("content") if isinstance(entry.get("content"), list) else []
+        for j, block in enumerate(content):
+            if (i, j) >= (message, position):
+                return last
+            if isinstance(block, dict) and block.get("type") in THINKING_TYPES:
+                key = str(block.get("signature") or block.get("data") or "")
+                if model_of(key) == model:
+                    last = key
+    return last
+
+
 def claude_refusal(rules: ClaudeRules, body: dict) -> str:
     """Why the Messages API refuses ``body`` for a model with ``rules``, in its words, or ''."""
     thinking = body.get("thinking") if isinstance(body.get("thinking"), dict) else None
     kind = (thinking or {}).get("type")
     effort = (body.get("output_config") or {}).get("effort")
     tool_choice = (body.get("tool_choice") or {}).get("type")
+    max_tokens = int(body.get("max_tokens") or 0)
+    if max_tokens > rules.max_output:
+        return (f"max_tokens: {max_tokens} > {rules.max_output}, which is the maximum allowed number of output "
+                f"tokens for {body.get('model') or 'this model'}")
     if kind not in {None, "enabled", "adaptive", "disabled", "between_tools"}:
         return f"thinking.type: Input tag '{kind}' found using 'type' does not match any of the expected tags"
     if kind == "enabled" and not rules.budget:
@@ -333,8 +407,8 @@ class _Handler(BaseHTTPRequestHandler):
             self._error(400, "invalid_request_error",
                         "Requests which include `tool_use` or `tool_result` blocks must define tools.")
             return
+        rules = self.server.claude_rules.get(str(body.get("model") or "")) if protocol == "anthropic" else None
         if protocol == "anthropic":
-            rules = self.server.claude_rules.get(str(body.get("model") or ""))
             refusal = (claude_refusal(rules, body) if rules else "") or self.server.replay_refusal(body)
             if refusal:
                 with self.server.lock:
@@ -348,8 +422,12 @@ class _Handler(BaseHTTPRequestHandler):
             self.server.errors.append(f"request {number}: {type(exc).__name__}: {exc}")
             self._error(400, "invalid_request_error", "The fixture has no reply scripted for this request")
             return
-        thinking = body.get("thinking") if isinstance(body.get("thinking"), dict) else {}
-        asks = thinking.get("type") in {"adaptive", "enabled"} or body.get("reasoning")
+        kind = (body.get("thinking") if isinstance(body.get("thinking"), dict) else {}).get("type")
+        asks = (kind in {"adaptive", "enabled"} or body.get("reasoning")
+                # A model that thinks without being asked.
+                or (kind is None and rules is not None and rules.thinks_by_default)
+                # Sonnet 5.5's between_tools: a short progress note before a call.
+                or (kind == "between_tools" and reply.tool is not None))
         if not reply.thinking and not reply.blocks and asks:
             # A request that asks for thinking (Claude) or reasoning (GPT) gets
             # it first, signed or encrypted, as the providers answer.
@@ -415,35 +493,52 @@ class ScriptedProviders(ThreadingHTTPServer):
         self._thread = threading.Thread(target=self.serve_forever, daemon=True, name="provider-fixture")
         self._thread.start()
 
-    def issue(self, body: dict, content: list[dict]) -> None:
-        """Remember a response's thinking blocks with what produced them, to check their replay."""
-        produced = _without_cache_control({"system": body.get("system"), "tools": body.get("tools"),
-                                           "messages": body.get("messages") or []})
+    def _model_of(self, key: str) -> str | None:
         with self.lock:
-            for position, block in enumerate(content):
-                key = block.get("signature") or block.get("data")
-                if block.get("type") in {"thinking", "redacted_thinking"} and key:
-                    self.issued[key] = {"model": str(body.get("model") or ""), "content": content,
-                                        "position": position, "produced": produced}
+            issued = self.issued.get(key)
+        return issued["model"] if issued else None
+
+    def issue(self, body: dict, content: list[dict]) -> None:
+        """Remember a response's thinking blocks with what produced them, to check their replay.
+
+        Each block is bound to the conversation before it (conversation_before)
+        and records the thinking block before it from the same model, in its
+        response or else in the request (the claude-api skill: "each block
+        records the one before it", which is why blocks can be removed from the
+        front of the history and not from the middle).
+        """
+        model = str(body.get("model") or "")
+        messages = list(body.get("messages") or [])
+        produced = {**body, "messages": [*messages, {"role": "assistant", "content": content}]}
+        previous = _thinking_before(body, len(messages), 0, self._model_of, model)
+        records = {}
+        for position, block in enumerate(content):
+            key = block.get("signature") or block.get("data")
+            if block.get("type") in THINKING_TYPES and key:
+                records[key] = {"model": model, "content": content, "position": position, "previous": previous,
+                                "conversation": conversation_before(produced, len(messages), position)}
+                previous = key
+        with self.lock:
+            self.issued.update(records)
 
     def replay_refusal(self, body: dict) -> str:
         """Why the API refuses the signed thinking ``body`` sends back, in its words, or ''.
 
         Each block must come back unchanged, after exactly the blocks that
         preceded it in its response. Where preserved thinking runs (and
-        ``enforce_prefix`` is set), the system prompt, the tools and every
-        earlier message must also be as they were when the block was made.
+        ``enforce_prefix`` is set), what the block is bound to must be as it
+        was (conversation_before), and the thinking block before it the one it
+        recorded, unless every earlier one is gone.
         """
         model = str(body.get("model") or "")
         rules = self.claude_rules.get(model)
-        now = _without_cache_control({"system": body.get("system"), "tools": body.get("tools"),
-                                      "messages": body.get("messages") or []})
-        for i, message in enumerate(now["messages"]):
+        for i, message in enumerate(body.get("messages") or []):
             content = message.get("content")
             if message.get("role") != "assistant" or not isinstance(content, list):
                 continue
+            content = _without_cache_control(content)
             for j, block in enumerate(content):
-                if block.get("type") not in {"thinking", "redacted_thinking"}:
+                if block.get("type") not in THINKING_TYPES:
                     continue
                 with self.lock:
                     issued = self.issued.get(str(block.get("signature") or block.get("data") or ""))
@@ -456,10 +551,11 @@ class ScriptedProviders(ThreadingHTTPServer):
                     return (f"messages.{i}.content.{j}: `thinking` or `redacted_thinking` blocks in the latest "
                             "assistant message cannot be modified. These blocks must remain as they were in the "
                             "original response.")
-                produced = issued["produced"]
-                if self.enforce_prefix and rules is not None and rules.preserved and (
-                        now["system"] != produced["system"] or now["tools"] != produced["tools"]
-                        or now["messages"][:i] != produced["messages"]):
+                if not (self.enforce_prefix and rules is not None and rules.preserved):
+                    continue
+                before = _thinking_before(body, i, j, self._model_of, model)
+                if (conversation_before(body, i, j) != issued["conversation"]
+                        or before not in {None, issued["previous"]}):
                     return (f"messages.{i}.content.{j}: Invalid `signature` in `thinking` block. The block is bound "
                             "to a different conversation. Remove the block, or set "
                             '`thinking.block_binding.prefix_mismatch_behavior` to "drop_block".')

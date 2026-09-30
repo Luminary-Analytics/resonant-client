@@ -59,9 +59,22 @@ EVENT_ERROR = "error"                     # {"message": "..."}
 #                             marks the timeout flavor. The GUI
 #                             renders this as a persistent chip (the
 #                             per-retry banner auto-fades).
+#   kind="output_limit":     {"message", "model", "limit", "needed"} —
+#                             the output limit the person chose is
+#                             smaller than the model's thinking at this
+#                             level may need; the limit stands.
 EVENT_BACKEND_STATUS = "backend.status"
 # Observations from a CLI-owned tool loop; never executable engine requests.
 EVENT_EXTERNAL_TOOL = "external.tool"
+
+
+class ChosenMaxTokens(int):
+    """An output limit the person chose (the terminal's ``--max-tokens``).
+
+    Adapters send it as given. Lumi's own default and its small internal
+    limits (a session title, a summary) may be raised to leave room for a
+    model's thinking; a limit the person set never is.
+    """
 
 
 def _new_call_id(name: str, arguments: str, ordinal: int = 0) -> str:

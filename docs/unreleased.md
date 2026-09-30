@@ -20,41 +20,60 @@ description), from director workers, and from a team, whose participants take
 their conversation's level.
 
 - **Each family's form** (`lumi/claude_models.py`, from Anthropic's Thinking
-  and Effort documentation, read on September 30): adaptive thinking with
-  `output_config.effort` (low, medium, high or max) on Opus 4.6 and later,
-  Sonnet 4.6 and later, Fable and Mythos; a budget (2,048 to 24,576 tokens)
-  only on Haiku 4.5, Sonnet 4.5, Opus 4.5 and older, which take nothing else;
-  nothing on Claude 3.5 and older. Off sends nothing where thinking is off by
-  default, `disabled` on Opus 5 and Sonnet 5 (which think by default),
-  `between_tools` on Sonnet 5.5 (which refuses `disabled`), and the lowest
-  effort on Opus 5.5, Fable and Mythos, which can't stop thinking. The
-  default level still sends nothing. Lumi sends no temperature, top_p or
-  top_k, and no forced tool choice (a team's last request uses `none`, which
-  every family takes).
+  and Effort documentation and migration guides, read on September 30):
+  adaptive thinking with `output_config.effort` (low, medium, high or max) on
+  Opus 4.6 and later, Sonnet 4.6 and later, Fable and Mythos; a budget (2,048
+  to 24,576 tokens) only on Haiku 4.5, Sonnet 4.5, Opus 4.5 and older, and
+  Mythos Preview, which take nothing else; nothing on Claude 3.5 and older.
+  Off sends nothing where thinking is off by default, and `between_tools` on
+  Sonnet 5.5 (which refuses `disabled`). On Opus 5 and Sonnet 5 it is the
+  lowest effort: Anthropic advises against `disabled` there for work with
+  tools (Opus 5 then writes some tool calls as plain text, which never run).
+  Opus 5.5, Fable and Mythos can't stop thinking, so off is their lowest
+  effort too. The default level still sends nothing. Lumi sends no
+  temperature, top_p or top_k, and no forced tool choice (a team's last
+  request uses `none`, which every family takes).
 - **Ids on every platform.** Bedrock model ids, inference profiles
   (`us.anthropic.claude-sonnet-4-5-20250929-v1:0`) and their ARNs, and Vertex
   AI versions (`claude-opus-4-5@20251101`) find their family, and those
-  request bodies carry the same fields. An id Lumi doesn't recognize (a newer
-  model, a gateway's own name, an application inference profile ARN) gets the
-  newest family's form and counts as Claude (vision, tools, thinking levels),
-  its output still capped at 32,000 tokens. If Claude refuses the thinking
-  settings, the error says what Lumi sent and to use the provider default or a
-  model Lumi knows. An organization's capability override with
-  `"reasoning": false` stops Lumi sending thinking settings to that model.
+  request bodies carry the same fields.
+- **Ids Lumi doesn't recognize.** An id naming a newer Claude model
+  (`claude-opus-6`), or any name Lumi doesn't know on the Anthropic API
+  itself, gets the newest family's form. If Claude refuses it, Lumi sends the
+  request again without thinking settings and leaves them out from then on.
+  Any other unknown id (a Bedrock application inference profile or
+  provisioned throughput ARN, a gateway's alias) could be any Claude model,
+  down to one that refuses every thinking field, so it gets none at any level
+  and no added output room. Before, it got a budget, which the newer models
+  behind it refuse. On an Anthropic-compatible endpoint of one's own, such a
+  name may not be Claude at all (DeepSeek, GLM, Kimi or MiniMax through
+  LiteLLM): it keeps the capabilities its name suggests and the connection's
+  settings (context window, vision), and its thinking goes back as it came.
+  An organization's capability override with `"reasoning": false` stops Lumi
+  sending thinking settings to that model.
 - **Room to think.** Thinking counts toward max_tokens and adaptive thinking
-  has no budget of its own, so a request that may think asks for at least
-  16,384 tokens at low and medium effort, 32,000 at high and 64,000 at max,
-  within the model's limit (128,000 on current models, 64,000 on the 4.5
-  models). That includes the default level on models that think by default,
-  where a session title (32 tokens) or a summary (1,024) could end inside the
-  thinking. Budget models keep their budget plus 4,096.
+  has no budget of its own, so a request at a thinking level asks for at
+  least 16,384 tokens at low and medium effort, 32,000 at high and 64,000 at
+  max, within the model's limit (128,000 on current models, 64,000 on the 4.5
+  models). Bedrock sets the whole max_tokens against the tokens-per-minute
+  quota when a request starts, so there the room stops at 32,000, about what a
+  max-level budget took before. The default level asks for what it did before,
+  with two exceptions: a model that thinks anyway gets at least 16,384, so a
+  session title (32 tokens) or a summary (1,024) doesn't end inside the
+  thinking, and no model is asked for more output than it gives (Claude 3.5
+  gives 8,192). Budget models keep their budget plus 4,096. An output limit
+  the person set (the terminal's or the gateway's `--max-tokens`) is sent as
+  given: when it's below what the level may need, Lumi says so once, and a
+  budget shrinks to fit below it.
 - **Thinking goes back as it came.** A response's thinking blocks go back
   where they sat among its text and tool calls (a progress note before each of
   several calls, text before a thinking block), empty ones (the default display
   returns no text) and redacted ones included. Before, every thinking block
-  went first, and the API refuses a turn rebuilt that way. Each response keeps its
-  order and a digest of the request that produced it in its
-  `reasoning_details` (a `replay` entry).
+  went first, and the API refuses a turn rebuilt that way. Each response keeps
+  its order, a digest of its text and a digest of the request that produced it
+  in its `reasoning_details` (a `replay` entry). A turn whose text changed
+  since (an organization's redaction rules, the secret scan) goes back
+  without its thinking, which can no longer sit where it was.
 - **Preserved thinking.** Claude Opus 5.5, Fable 5.1 and Sonnet 5.5 bind each
   thinking block to the system prompt, the tools and the messages before it,
   and refuse it once they changed, with a 400, for accounts created on or
@@ -64,25 +83,39 @@ their conversation's level.
   Lumi now leaves out the blocks whose conversation changed
   (`anthropic_api.bound_thinking`), and the model continues without that
   reasoning; blocks made since stay. On those models, thinking kept before
-  this change (no digest) is left out.
+  this change (no digest) is left out. If Claude still reports a block bound
+  to a different conversation, Lumi leaves that block and every thinking block
+  after it out and sends the request once more (sending the same body again
+  never clears it), and later requests leave them out too.
 - **CI:** `team-tests.yml` also runs on changes to `lumi/claude_models.py`.
 - **Checked** with the scripted Messages API server (`tests/api_provider_stub.py`),
-  which now refuses what the API refuses for each current model, with its
+  which refuses what the API refuses for each model it knows, with its
   wording: a thinking budget, adaptive thinking on a budget model, `disabled`
   or `between_tools` where a model doesn't take them, an effort it doesn't
-  take, sampling parameters, forced tool choice, a thinking block not sent back
-  unchanged in its place, and, with `enforce_prefix`, one bound to a changed
-  conversation. `tests/test_claude_thinking.py`: the request for 13 models at 6
-  levels, each accepted by those rules; the budget Lumi used to send, refused
-  with the API's message and Lumi's error for it; an unrecognized model's
-  refusal; Bedrock and Vertex bodies; streamed thinking (empty, progress notes,
-  redacted) and its replay; a chat on Opus 5.5 over three turns, its system
-  prompt changed before the second, and without the new check, the API's
-  refusal; tools added
-  mid-turn; and the vision role. `tests/test_swarm_api_providers.py`: a team
-  on Sonnet 5 and on Opus 5.5 at its conversation's level, which fails on the
-  old adapter with the API's 400. No Anthropic key was used: live checks are
-  still to do.
+  take, more output than it gives, sampling parameters, forced tool choice,
+  and a thinking block not sent back unchanged in its place. A model that
+  thinks without being asked answers with thinking at the default level. With
+  `enforce_prefix`, the server checks preserved thinking as Anthropic describes
+  it (the system prompt, the tools as a set, the earlier messages without their
+  thinking, and each block's place in the chain: blocks can go from the front,
+  not the middle), rather than repeating Lumi's own check.
+  `tests/test_claude_thinking.py`: the request for 15 models at 6 levels, each
+  accepted by those rules; the default level's request byte for byte as
+  origin/main sent it, for 30 model ids on the API, Bedrock and Vertex at six
+  output limits, apart from the two exceptions above; an application inference
+  profile at every level against five models' rules; a newer model's refusal
+  and the request sent again; a gateway's own names; a limit the person set;
+  the budget Lumi used to send, refused with the API's message and Lumi's
+  error for it; Bedrock and Vertex bodies; streamed thinking (empty, progress
+  notes, redacted) and its replay; redacted turns; a chat on Opus 5.5 over
+  three turns, its system prompt changed before the second; five changes
+  mid-turn (a nudge, `search_tools`, a hook's context, a continued promise,
+  progress notes) on three models, and without Lumi's own check the server's
+  refusal and the request sent again; and the vision role.
+  `tests/test_swarm_api_providers.py`: a team on Sonnet 5 and on Opus 5.5 at
+  its conversation's level, which fails on the old adapter with the API's 400.
+  `tests/test_tui.py`: `--max-tokens` kept as given, and the notice. No
+  Anthropic key was used: live checks are still to do.
 - **Unchanged:** the chat's reasoning selector still appears only for Ollama
   and Kimi, and a Claude chat keeps no level of its own; levels reach Claude
   through roles, director workers and teams.

@@ -172,7 +172,10 @@ host enrollment and actual packaged/learned-benefit qualification remain open.
   (actions by commit, tools by SHA-256, nothing installed at run time). Tests
   and PyPI installs stay in `test`; what's signed comes only from `build`'s
   hash-pinned packages, and only tags on main are released. Publish only
-  what `packaging/check_release_files.ps1` lists.
+  what `packaging/check_release_files.ps1` lists. A job that signs or
+  publishes takes an artifact only by the ID in a job output, never by name,
+  and checks it with `packaging/tree_digest.py` against the digest the job
+  that made it passed on.
 - Offline mode (`offline.py`, docs/offline.md): every outbound connection Lumi
   makes goes through the central check, and only this computer and
   `offline.allowed_hosts` are reachable. Build HTTP clients with

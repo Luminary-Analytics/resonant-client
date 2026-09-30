@@ -59,6 +59,11 @@ name: Release
 #     bytes it signs come from `build`. tests/test_release_supply_chain.py
 #     fails on another job with a token, or a run-time install that isn't
 #     hash-checked.
+#   - `release` and `publish-macos` take artifacts by the ID the job that made
+#     them recorded, never by name, and check the files against the digest
+#     that job took of them before uploading (packaging/tree_digest.py). Both
+#     come as job outputs, which no other job can change: an artifact `test`
+#     deleted or replaced stops the release instead of being signed.
 #   - Only the two publishing jobs get contents: write; the macOS build reads.
 #     Checkouts that never push keep no credentials.
 #   - The jobs that write gh-pages share one concurrency group and push with a
@@ -127,12 +132,18 @@ jobs:
     timeout-minutes: 30
     permissions:
       contents: read
+    # What `release` takes from here: the artifact's ID, and the digest of its
+    # files. Job outputs are the one thing no other job in the run can change.
+    outputs:
+      artifact-id: ${{ steps.upload.outputs.artifact-id }}
+      digest: ${{ steps.handover.outputs.digest }}
 
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
-          fetch-depth: 0   # all branches: main, for the check below
+          fetch-depth: 0      # every branch's history: main's, for the check below
+          filter: blob:none   # without file contents, but the tagged commit's
           persist-credentials: false
 
       # Only a commit on main is released: a tag on any other commit (a
@@ -209,7 +220,20 @@ jobs:
           }
           Write-Host "Smoke test passed: $output"
 
+      # Of exactly what's uploaded next, for `release` to check what it
+      # downloads against (packaging/tree_digest.py).
+      - name: Digest of the files for the release job
+        id: handover
+        shell: pwsh
+        run: |
+          $v = "${{ steps.version.outputs.version }}"
+          $digest = python packaging/tree_digest.py dist lumi "lumi-$v-sbom.cdx.json" "lumi-$v-THIRD_PARTY_NOTICES.txt"
+          if ($LASTEXITCODE -ne 0) { throw "tree_digest.py failed" }
+          "digest=$digest" >> $env:GITHUB_OUTPUT
+          Write-Host "Handing over files with digest $digest"
+
       - name: Keep the bundle for the release job
+        id: upload
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: lumi-windows-bundle
@@ -217,6 +241,7 @@ jobs:
             dist/lumi/
             dist/lumi-${{ steps.version.outputs.version }}-sbom.cdx.json
             dist/lumi-${{ steps.version.outputs.version }}-THIRD_PARTY_NOTICES.txt
+          include-hidden-files: true   # all the digest covers
           if-no-files-found: error
           retention-days: 7
 
@@ -240,7 +265,8 @@ jobs:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
-          fetch-depth: 0   # all branches: main, for the check below
+          fetch-depth: 0      # every branch's history: main's, for the check below
+          filter: blob:none   # without file contents, but the tagged commit's
           persist-credentials: false
 
       # As in `build`, and before anything is signed.
@@ -273,11 +299,28 @@ jobs:
         with:
           python-version: '3.13'
 
-      - name: Fetch the bundle
+      # By the ID `build` recorded, never by name: any job in this run, `test`
+      # too, could delete an artifact and upload another under the same name.
+      # The ID is never empty ('none' fails), since no ID and no name would
+      # download every artifact in the run. merge-multiple keeps the files in
+      # dist rather than dist/<artifact name>.
+      - name: Fetch the bundle build made
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          name: lumi-windows-bundle
+          artifact-ids: ${{ needs.build.outputs.artifact-id || 'none' }}
           path: dist
+          merge-multiple: true
+
+      # download-artifact only warns when a download doesn't match the
+      # artifact's digest. This fails, on the files themselves, before
+      # anything reads them.
+      - name: Check the bundle is byte for byte what build made
+        shell: pwsh
+        env:
+          HANDOVER_DIGEST: ${{ needs.build.outputs.digest }}
+        run: |
+          python packaging/tree_digest.py dist --expect "$env:HANDOVER_DIGEST"
+          if ($LASTEXITCODE -ne 0) { throw "The bundle isn't what the build job made; nothing was signed" }
 
       # The bundle, SBOM and notices come from `build`, and nothing else does:
       # the installers are made and signed here.
@@ -489,15 +532,19 @@ jobs:
       # accumulate in branch history; appcast.xml keeps the version history.
       # packaging/push_pages.py stages the site and commits nothing unless the
       # staged blobs, the bytes Pages will serve, check out: the earlier
-      # releases' macOS feeds and disk images too. Its lease refuses the push
-      # if gh-pages moved since the checkout above; nothing changed (a retry)
-      # pushes nothing.
+      # releases' macOS feeds and disk images too, and (--signed) this
+      # release's installers, byte for byte as sign_windows.ps1 recorded them.
+      # Its lease refuses the push if gh-pages moved since the checkout above;
+      # nothing changed (a retry) pushes nothing.
       - name: Push the Pages site
         shell: pwsh
+        env:
+          WINDOWS_SIGN_RECORD: ${{ runner.temp }}/lumi-authenticode.jsonl
         run: |
           python packaging/push_pages.py gh-pages-checkout `
               --message "release: Lumi ${{ steps.version.outputs.version }} installer and appcast" `
-              --tool packaging/winsparkle/WinSparkle-0.9.2/bin/winsparkle-tool.exe
+              --tool packaging/winsparkle/WinSparkle-0.9.2/bin/winsparkle-tool.exe `
+              --signed $env:WINDOWS_SIGN_RECORD
           if ($LASTEXITCODE -ne 0) { throw "push_pages.py didn't publish the Pages site" }
 
   macos:
@@ -514,12 +561,16 @@ jobs:
     outputs:
       version: ${{ steps.version.outputs.version }}
       notarized: ${{ steps.status.outputs.notarized }}
+      # What `publish-macos` takes, as `release` takes `build`'s bundle.
+      artifact-id: ${{ steps.upload.outputs.artifact-id }}
+      digest: ${{ steps.handover.outputs.digest }}
 
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
-          fetch-depth: 0   # all branches: main, for the check below
+          fetch-depth: 0      # every branch's history: main's, for the check below
+          filter: blob:none   # without file contents, but the tagged commit's
           persist-credentials: false
 
       # As in `build`: before the Developer ID signs anything.
@@ -619,11 +670,21 @@ jobs:
           cp "$(find dist/Lumi.app -name THIRD_PARTY_NOTICES.txt | head -1)" "release/lumi-$v-macos-THIRD_PARTY_NOTICES.txt"
           ls -l release
 
+      - name: Digest of the files for the publishing job
+        id: handover
+        run: |
+          set -euo pipefail
+          digest="$(python3 packaging/tree_digest.py release)"
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          echo "Handing over files with digest $digest"
+
       - name: Keep them for the publishing job
+        id: upload
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: lumi-macos-release
           path: release/
+          include-hidden-files: true   # all the digest covers
           if-no-files-found: error
           retention-days: 7
 
@@ -654,11 +715,22 @@ jobs:
         with:
           python-version: '3.13'
 
+      # As `release` takes the bundle: by the ID the macOS job recorded, then
+      # checked against the digest it took.
       - name: Fetch the macOS release files
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          name: lumi-macos-release
+          artifact-ids: ${{ needs.macos.outputs.artifact-id || 'none' }}
           path: release
+          merge-multiple: true
+
+      - name: Check they're byte for byte what the macOS job made
+        shell: pwsh
+        env:
+          HANDOVER_DIGEST: ${{ needs.macos.outputs.digest }}
+        run: |
+          python packaging/tree_digest.py release --expect "$env:HANDOVER_DIGEST"
+          if ($LASTEXITCODE -ne 0) { throw "The macOS release files aren't what the macOS job made; nothing was published" }
 
       # As in the Windows job: Git keeps the site's bytes as they are, so the
       # signed feeds reach Pages exactly as signed.

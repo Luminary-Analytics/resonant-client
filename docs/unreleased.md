@@ -150,16 +150,30 @@ with a warning, exactly as before. See
   they use and the scripts those run), or an action isn't pinned to a
   commit.
 - **Only commits on main are released.** `build`, `release` and `macos` stop
-  unless the tag's commit is on main (`git merge-base --is-ancestor`), and
-  the docs add a tag ruleset so that only the owner can create `v*` tags.
+  unless the tag's commit is on main (`git merge-base --is-ancestor`, with the
+  history fetched without file contents), and the docs add a tag ruleset so
+  that only the owner can create, move or delete `v*` tags. The install check
+  is documented as a lint: it reads commands as text.
+- **Artifacts by ID, checked by digest.** Any job in a run can delete an
+  artifact and upload another under its name, `test` included. So `release`
+  and `publish-macos` download only the artifact ID that `build` and `macos`
+  pass on as job outputs, which no other job can change, and check the files
+  against the digest those jobs took before uploading
+  (`packaging/tree_digest.py`); download-artifact itself only warns on a
+  digest mismatch. `build-check.yml` rehearses the handover and the swap: a
+  replaced artifact fails the download by ID, and what a download by name
+  gets fails the digest. A test fails if a job that signs or publishes
+  downloads by name.
 - **Only what the job signed is published.** `release` takes only the
   bundle, SBOM and notices from `build`'s artifact. `sign_windows.ps1`
   records each file it signs with its SHA-256, and
   `packaging/check_release_files.ps1` runs before the GitHub Release and
   again before the Pages site: `dist/installer` must hold just the installer
   and, for a stable tag, the MSI (a beta gets none), each unchanged and
-  signed as recorded. The release uploads the list it outputs.
-  `build_msi.ps1` no longer leaves a `.wixpdb` beside the MSI.
+  signed as recorded. The release uploads the list it outputs, and
+  `push_pages.py --signed` checks the installers it stages for Pages against
+  the same record. `build_msi.ps1` no longer leaves a `.wixpdb` beside the
+  MSI.
 - **Protect the environment first.** The docs give the owner's steps in
   order: the `v*` tag rule and the owner as required reviewer on `release`,
   and the tag ruleset, before the app registration's federated credential

@@ -22,6 +22,21 @@ three jobs, so that only pinned inputs produce the bytes that get signed:
 
 `test` and `build` have no secret, no OIDC token and no environment.
 
+**The handover.** Any job in a run can delete an artifact and upload another
+under the same name: the token that lets `build` upload is also in `test`'s
+steps, and so within reach of a compromised test dependency. So `release`
+never takes an artifact by name. `build` takes a digest of exactly the files
+it uploads (`packaging/tree_digest.py`: each file's path, size and SHA-256),
+and passes the artifact's ID and that digest on as job outputs, which no other
+job can change. `release` downloads that ID (a replaced artifact has another,
+so the download fails) and checks the files against the digest before
+anything reads them. download-artifact checks a download against the
+artifact's digest too, but only warns when they differ. `macos` hands its
+files to `publish-macos` the same way. `build-check.yml` rehearses this on
+every packaging change, with the swap it stops: after a job replaces the
+artifact, the download by ID fails, and the files a download by name gets
+fail the digest.
+
 The clean build creates a temporary virtual environment and installs, with the
 pip that comes with that Python, `packaging/requirements-release.txt` with
 `--require-hashes`, then the local package from the checkout without an index
@@ -127,14 +142,17 @@ and `ARTIFACT_SIGNING_DLIB` overrides and signs only with the Windows SDK's
 signtool, checked as validly signed by Microsoft.
 
 **Publishing only what was signed.** `release` takes only the bundle, SBOM
-and notices from `build`'s artifact (`packaging/check_release_files.ps1
--Handover`). `sign_windows.ps1` records each file it signs, with its SHA-256,
-and `check_release_files.ps1` runs again just before the GitHub Release and
-before the Pages site: `dist/installer` must hold exactly the installer and,
-for a stable tag, the MSI (a beta gets none), each unchanged since it was
-signed and signed as recorded (`sign_windows.ps1 -Verify`; with no signer
-configured, still unsigned and not required). Only the files it lists, with
-the SBOM and notices, are uploaded.
+and notices from `build`'s artifact ([the handover](#source-to-installer),
+then `packaging/check_release_files.ps1 -Handover`). `sign_windows.ps1`
+records each file it signs, with its SHA-256, and `check_release_files.ps1`
+runs again just before the GitHub Release and before the Pages site:
+`dist/installer` must hold exactly the installer and, for a stable tag, the
+MSI (a beta gets none), each unchanged since it was signed and signed as
+recorded (`sign_windows.ps1 -Verify`; with no signer configured, still
+unsigned and not required). Only the files it lists, with the SBOM and
+notices, are uploaded. Last, `push_pages.py --signed` checks the installers
+it stages for Pages against the same record, byte for byte as Pages will
+serve them.
 
 `build-check.yml`'s `signing-dry-run` job runs the same action as a pull
 request can, with no identity, token or secret. It first finds signtool and
@@ -238,15 +256,19 @@ the owner configures it (Settings › Environments › `release`):
    Optional until an OIDC identity trusts the environment; required from then
    on (below).
 
-And one repository setting: **a tag ruleset** (Settings › Rules › Rulesets ›
-New ruleset › *New tag ruleset*), named e.g. `release tags`, enforcement
-*Active*, target *Include by pattern* `v*`, with the rules *Restrict
-creations*, *Restrict updates* and *Restrict deletions*, and only the
-*Repository admin* role (the owner's) in the bypass list. Then collaborators
-with write access can't push, move or delete the tag that starts a release.
-`build`, `release` and `macos` also check that the tag's commit is on main
-(`git merge-base --is-ancestor`, with main fetched by the checkout) and stop
-otherwise, so a tag on an unmerged branch releases nothing.
+And one repository setting: **a tag ruleset** that lets only the owner
+create, update or delete `v*` tags (Settings › Rules › Rulesets › New ruleset
+› *New tag ruleset*): named e.g. `release tags`, enforcement *Active*, target
+*Include by pattern* `v*`, with the rules *Restrict creations*, *Restrict
+updates* and *Restrict deletions*. A ruleset's bypass list takes roles, teams
+and apps, not people, so put in it only what the owner alone has: the
+*Repository admin* role while the owner is the only admin, or else a team with
+the owner as its only member. Then nobody else can push, move or delete the
+tag that starts a release. `build`, `release` and `macos` also check that the
+tag's commit is on main (`git merge-base --is-ancestor`; the checkout fetches
+the branches' history without file contents, `filter: blob:none`, so not
+gh-pages' installers) and stop otherwise, so a tag on an unmerged branch
+releases nothing.
 
 All of this is free for a public repository. A private one needs GitHub Team
 or Enterprise for environments, their secrets, the tag rule and rulesets, and
@@ -268,6 +290,14 @@ or action can ask, if a workflow leaves its token's permissions to the
 repository's default, or if a job whose output is released (`build`,
 `release`, `macos`, `publish-macos`) installs anything at run time that isn't
 hash-checked: its steps, the local actions they use, and the scripts those run.
+It also fails if a job that signs or publishes downloads an artifact other than
+by the ID in a job output, or without the digest check after it.
+
+That install check is a lint, not a boundary: it reads commands as text, so a
+tool installed indirectly (`python -c` calling pip, a script it doesn't
+follow) or downloaded and then run slips past it. Review what the `release`
+job runs as carefully as before; the test catches the plain cases, such as
+someone adding `dotnet tool install` or an unpinned `pip install` back.
 
 The workflow is hardened in the same spirit:
 
@@ -295,7 +325,7 @@ profile created:
    `release`): *Deployment branches and tags* › *Selected branches and tags*
    with the one tag rule `v*`, and **Required reviewers** with the owner. Add
    the [tag ruleset](#the-release-environment) that lets only the owner
-   create `v*` tags. Do this before step 3: until then any job that names the
+   create, move or delete `v*` tags. Do this before step 3: until then any job that names the
    environment gets a token the credential would trust.
 2. **Create the app registration** (Microsoft Entra ID › App registrations ›
    New registration, e.g. `lumi-release-signing`, single tenant, no redirect
@@ -498,6 +528,7 @@ ordinary CI. Keep mocked wire-contract tests distinct from live model evidence.
 | `.github/actions/authenticode-sign/action.yml`, `packaging/sign_windows.ps1` | Authenticode signing: the Azure sign-in (OIDC), the signer's choice and each signature's check |
 | `packaging/fetch_artifact_signing.ps1` | Microsoft's Artifact Signing client (the signtool dlib), pinned by SHA-256 |
 | `packaging/check_release_files.ps1` | What the release takes from `build`, and publishes: only the files it signed, unchanged |
+| `packaging/tree_digest.py` | The digest of the files one release job hands the next, checked on arrival |
 | `packaging/check_bundle.py`, `packaging/bundle-policy.json` | Bundle contents and size gate |
 | `packaging/installer.iss` | Windows installer (EXE) |
 | `packaging/lumi.wxs`, `packaging/build_msi.ps1` | MSI for device management |

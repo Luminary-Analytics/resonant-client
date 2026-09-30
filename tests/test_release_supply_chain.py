@@ -564,10 +564,10 @@ def test_tests_and_the_signed_bytes_run_in_separate_jobs():
     assert "pytest" not in runs(build) and "ruff" not in runs(build) and "pip install -e" not in runs(build)
     assert "environment" not in build and build["permissions"] == {"contents": "read"}
     assert [step["with"]["name"] for step in uses(build, "actions/upload-artifact")] == ["lumi-windows-bundle"]
-    # `release` waits for both, takes only the bundle `build` made, and runs no tests.
+    # `release` waits for both, takes only the bundle `build` made (by its ID), and runs no tests.
     assert sorted(release["needs"]) == ["build", "test"]
     assert [step["with"] for step in uses(release, "actions/download-artifact")] == [
-        {"name": "lumi-windows-bundle", "path": "dist"}]
+        {"artifact-ids": "${{ needs.build.outputs.artifact-id || 'none' }}", "path": "dist", "merge-multiple": True}]
     assert "pytest" not in runs(release)
 
 
@@ -576,6 +576,8 @@ def test_only_commits_on_main_are_built_or_signed():
     for name in ("build", "release", "macos"):
         checkout, check = jobs[name]["steps"][:2]
         assert checkout["uses"].startswith("actions/checkout@") and checkout["with"]["fetch-depth"] == 0, name
+        # The history, not the files: gh-pages' installers alone are tens of megabytes.
+        assert checkout["with"]["filter"] == "blob:none", name
         assert check["name"] == "Check the tag is on main", name
         assert 'tagged="$(git rev-parse "${GITHUB_REF}^{commit}")"' in check["run"]
         assert 'git merge-base --is-ancestor "$tagged" refs/remotes/origin/main' in check["run"]
@@ -639,9 +641,144 @@ def test_the_release_publishes_only_what_it_checked():
     assert steps["Create GitHub Release with installer"]["with"]["files"] == "${{ steps.files.outputs.files }}"
     publish = steps["Publish installer and appcast to the Pages site"]["run"]
     assert '$msi = "${{ steps.pages-files.outputs.msi }}"' in publish and "Test-Path" not in publish
+    # push_pages.py checks the staged installers against the record too, as Pages will serve them.
+    push = steps["Push the Pages site"]
+    assert push["env"] == {"WINDOWS_SIGN_RECORD": RECORD} and "--signed $env:WINDOWS_SIGN_RECORD" in push["run"]
     # The action records each file where the check reads it.
     action = {step.get("name"): step for step in _load(SIGNING_ACTION)["runs"]["steps"]}
     assert action["Sign and check"]["env"]["WINDOWS_SIGN_RECORD"] == RECORD
+
+
+def _handover_jobs() -> list[tuple[str, str, dict, dict]]:
+    """(workflow, job name, job, workflow) for every job that signs or publishes: release.yml's, and any
+    other in the `release` environment."""
+    found = []
+    for name, workflow in _workflows().items():
+        for job_name, job in workflow["jobs"].items():
+            if name == "release.yml" or job.get("environment") == "release":
+                found.append((name, job_name, job, workflow))
+    return found
+
+
+def test_signing_jobs_take_artifacts_only_by_id_and_check_their_digest():
+    # Any job in a run can delete an artifact and upload another under its
+    # name (`test` holds the token that can). Only a job output, which no other
+    # job can change, names what a signing job takes, and the files must match
+    # the digest the job that made them took (packaging/tree_digest.py).
+    downloads = 0
+    for workflow_name, job_name, job, workflow in _handover_jobs():
+        steps = job.get("steps", [])
+        for index, step in enumerate(steps):
+            if not str(step.get("uses", "")).startswith("actions/download-artifact@"):
+                continue
+            downloads += 1
+            where = f"{workflow_name}: {job_name}"
+            options = step.get("with", {})
+            assert "name" not in options and "pattern" not in options, f"{where} downloads by name"
+            match = re.fullmatch(r"\$\{\{ needs\.([\w-]+)\.outputs\.artifact-id \|\| 'none' \}\}",
+                                 str(options.get("artifact-ids", "")))
+            assert match, f"{where} must download by the ID a job it needs recorded: {options}"
+            maker = match.group(1)
+            needs = job.get("needs", [])
+            assert maker in ([needs] if isinstance(needs, str) else needs), where
+            assert options.get("merge-multiple") is True and options.get("path"), where
+            # Right after it, before anything reads the files: the digest.
+            check = steps[index + 1]
+            assert check.get("env") == {"HANDOVER_DIGEST": f"${{{{ needs.{maker}.outputs.digest }}}}"}, where
+            assert f'python packaging/tree_digest.py {options["path"]} --expect "$env:HANDOVER_DIGEST"' \
+                in check["run"] and "$LASTEXITCODE -ne 0" in check["run"], where
+            # And the job that made it: the digest of what it uploads, then the upload, as job outputs.
+            made = workflow["jobs"][maker]
+            assert made["outputs"]["artifact-id"] == "${{ steps.upload.outputs.artifact-id }}", maker
+            assert made["outputs"]["digest"] == "${{ steps.handover.outputs.digest }}", maker
+            ids = [item.get("id") for item in made["steps"]]
+            digest, upload = made["steps"][ids.index("handover")], made["steps"][ids.index("upload")]
+            assert ids.index("handover") < ids.index("upload"), maker
+            assert "packaging/tree_digest.py" in digest["run"], maker
+            assert upload["uses"].startswith("actions/upload-artifact@"), maker
+            assert upload["with"]["include-hidden-files"] is True, maker  # everything the digest covers
+    assert downloads == 2  # release's bundle and publish-macos's release files
+
+
+def test_the_handover_is_rehearsed_with_the_swap_it_stops():
+    # build-check.yml runs the same handover on every packaging change, then
+    # deletes the artifact and uploads other files under its name, as `test`
+    # could: the download by ID must fail, and the digest must refuse the
+    # files a download by name gets.
+    jobs = _workflows()["build-check.yml"]["jobs"]
+    swap = jobs["handover-swap"]["steps"][-1]
+    assert swap["uses"].startswith("actions/upload-artifact@") and swap["with"]["overwrite"] is True
+    after = {step.get("id"): step for step in jobs["handover-after-swap"]["steps"]}
+    assert after["by-id"]["with"]["artifact-ids"] == "${{ needs.handover-upload.outputs.artifact-id || 'none' }}"
+    assert after["by-id"]["continue-on-error"] is True and after["by-name"]["continue-on-error"] is True
+    last = jobs["handover-after-swap"]["steps"][-1]["run"]
+    assert '"${{ steps.by-id.outcome }}" -ne "failure"' in last and '"${{ steps.by-name.outcome }}" -ne "failure"' in last
+
+
+class TestTreeDigest:
+    """packaging/tree_digest.py: what one job hands the next, checked on arrival."""
+
+    @staticmethod
+    def module():
+        import tree_digest
+
+        return tree_digest
+
+    @staticmethod
+    def handover(root: Path) -> Path:
+        (root / "lumi" / "_internal").mkdir(parents=True)
+        (root / "lumi" / "lumi.exe").write_bytes(b"MZ")
+        (root / "lumi" / "_internal" / ".hidden").write_bytes(b"hidden too")
+        (root / "sbom.json").write_text("{}", encoding="utf-8")
+        return root
+
+    def test_the_same_files_give_the_same_digest_wherever_they_are(self, tmp_path):
+        digest = self.module().tree_digest
+        first = self.handover(tmp_path / "first")
+        (first / "not-handed-over.json").write_text("{}", encoding="utf-8")
+        second = self.handover(tmp_path / "second")
+        assert digest(first, ["lumi", "sbom.json"]) == digest(second) == digest(second, ["sbom.json", "lumi"])
+
+    @pytest.mark.parametrize("change", ["content", "extra", "missing", "renamed", "hidden"])
+    def test_any_change_to_the_files_changes_it(self, tmp_path, change):
+        digest = self.module().tree_digest
+        root = self.handover(tmp_path / "files")
+        before = digest(root)
+        if change == "content":
+            (root / "lumi" / "lumi.exe").write_bytes(b"MZ!")
+        elif change == "extra":
+            (root / "lumi-1.2.3.msi").write_bytes(b"MSI")
+        elif change == "missing":
+            (root / "sbom.json").unlink()
+        elif change == "renamed":
+            (root / "sbom.json").rename(root / "sbom2.json")
+        else:
+            (root / "lumi" / "_internal" / ".hidden").write_bytes(b"changed")
+        assert digest(root) != before
+
+    def test_expect_fails_on_a_difference_or_no_digest(self, tmp_path, capsys):
+        module = self.module()
+        root = self.handover(tmp_path / "files")
+        good = module.tree_digest(root)
+        assert module.main([str(root), "--expect", good]) == 0
+        assert "byte for byte what was handed over" in capsys.readouterr().out
+        (root / "lumi" / "lumi.exe").write_bytes(b"MZ, swapped")
+        assert module.main([str(root), "--expect", good]) == 1
+        err = capsys.readouterr().err
+        assert "aren't what the job that made them handed over" in err and "lumi/lumi.exe" in err
+        for missing in ("", "none", "0" * 63):
+            assert module.main([str(root), "--expect", missing]) == 1
+            assert "no digest to compare with" in capsys.readouterr().err
+
+    def test_a_link_is_refused(self, tmp_path):
+        module = self.module()
+        root = self.handover(tmp_path / "files")
+        try:
+            (root / "link").symlink_to(root / "sbom.json")
+        except OSError:
+            pytest.skip("this account can't make links")
+        with pytest.raises(ValueError, match="is a link"):
+            module.tree_digest(root)
 
 
 def test_the_signing_action_signs_in_to_azure_only_when_it_is_configured():

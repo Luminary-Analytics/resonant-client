@@ -478,3 +478,160 @@ jobs:
               throw "A refused signing changed the file"
           }
           Write-Host "OK an Artifact Signing account without a sign-in, and required signing without a signer, both fail the release"
+
+  handover-upload:
+    # release.yml's handover from one job to the next, rehearsed with the
+    # attack it stops. `build` (and `macos`) take a digest of the files and
+    # upload them; `release` (and `publish-macos`) download the artifact by the
+    # ID in the job's outputs and check the digest (packaging/tree_digest.py).
+    # Here: an upload on Linux, and a download by ID on Windows that must
+    # match. Then a job deletes the artifact and uploads other files under its
+    # name, as a compromised test dependency in release.yml's `test` could;
+    # after that the download by ID must fail, and the files a download by
+    # name gets must fail the digest.
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      artifact-id: ${{ steps.upload.outputs.artifact-id }}
+      digest: ${{ steps.handover.outputs.digest }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Files to hand over, and their digest
+        id: handover
+        run: |
+          set -euo pipefail
+          mkdir -p handover/lumi/_internal
+          printf 'the bundle\n' > handover/lumi/lumi.exe
+          printf 'a hidden file\n' > handover/lumi/_internal/.hidden
+          printf '{}\n' > handover/lumi-0.0.0-sbom.cdx.json
+          printf 'not handed over\n' > handover/bundle-manifest.json
+          digest="$(python3 packaging/tree_digest.py handover lumi lumi-0.0.0-sbom.cdx.json)"
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+
+      - name: Upload them
+        id: upload
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: lumi-handover-rehearsal
+          path: |
+            handover/lumi/
+            handover/lumi-0.0.0-sbom.cdx.json
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 1
+
+  handover-download:
+    needs: handover-upload
+    runs-on: windows-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.13'
+
+      - name: Fetch them by ID, as release.yml does
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          artifact-ids: ${{ needs.handover-upload.outputs.artifact-id || 'none' }}
+          path: received
+          merge-multiple: true
+
+      - name: Check them as release.yml does
+        shell: pwsh
+        env:
+          HANDOVER_DIGEST: ${{ needs.handover-upload.outputs.digest }}
+        run: |
+          python packaging/tree_digest.py received --expect "$env:HANDOVER_DIGEST"
+          if ($LASTEXITCODE -ne 0) { throw "The files didn't arrive as they were handed over" }
+
+  handover-swap:
+    # What a compromised `test` could do with the run's artifact token.
+    needs: handover-download
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+
+    steps:
+      - name: Other files
+        run: |
+          mkdir -p swapped/lumi
+          printf 'a bundle nobody built\n' > swapped/lumi/lumi.exe
+          printf '{}\n' > swapped/lumi-0.0.0-sbom.cdx.json
+
+      - name: Delete the artifact and upload them under its name
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: lumi-handover-rehearsal
+          path: |
+            swapped/lumi/
+            swapped/lumi-0.0.0-sbom.cdx.json
+          overwrite: true
+          retention-days: 1
+
+  handover-after-swap:
+    needs: [handover-upload, handover-swap]
+    runs-on: windows-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.13'
+
+      - name: Fetch by ID, as release.yml does
+        id: by-id
+        continue-on-error: true
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          artifact-ids: ${{ needs.handover-upload.outputs.artifact-id || 'none' }}
+          path: by-id
+          merge-multiple: true
+
+      - name: Fetch by name, as release.yml did before
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: lumi-handover-rehearsal
+          path: by-name
+
+      - name: Check what the download by name got
+        id: by-name
+        continue-on-error: true
+        shell: pwsh
+        env:
+          HANDOVER_DIGEST: ${{ needs.handover-upload.outputs.digest }}
+        run: |
+          python packaging/tree_digest.py by-name --expect "$env:HANDOVER_DIGEST"
+          if ($LASTEXITCODE -ne 0) { throw "The files fetched by name aren't the ones handed over" }
+
+      - name: The swapped files are never used
+        shell: pwsh
+        run: |
+          if ("${{ steps.by-id.outcome }}" -ne "failure") { throw "The download by ID should have failed: its artifact is gone" }
+          if (Test-Path "by-id/lumi") { throw "The download by ID wrote files" }
+          if ("${{ steps.by-name.outcome }}" -ne "failure") { throw "The swapped files should have failed the digest" }
+          Write-Host "OK the download by ID refused the replaced artifact, and the digest refused what a download by name got"

@@ -168,10 +168,11 @@ Settings › Environments › `release` › Deployment branches and tags ›
 *Selected branches and tags* › add the tag rule `v*`; Required reviewers ›
 the owner. Add a tag ruleset too (Settings › Rules › Rulesets › *New tag
 ruleset*: target `v*`; *Restrict creations*, *Restrict updates* and *Restrict
-deletions*; only the Repository admin role may bypass), so that only the owner
-can push a release tag; the release jobs also refuse a tag whose commit isn't
-on main. Then add each secret to the environment and delete the
-repository copy:
+deletions*), so that only the owner can create, move or delete a release tag.
+Its bypass list takes roles, teams and apps, not people: give it only the
+Repository admin role while the owner is the only admin, or a team with the
+owner alone. The release jobs also refuse a tag whose commit isn't on main.
+Then add each secret to the environment and delete the repository copy:
 
 ```sh
 gh secret set EDDSA_PRIVATE_KEY --env release --repo Luminary-Analytics/resonant-client < eddsa_priv.key

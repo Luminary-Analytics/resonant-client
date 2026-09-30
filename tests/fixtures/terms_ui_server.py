@@ -119,6 +119,13 @@ def main() -> None:
                                           source="fixture machine policy"), machine=True)
         return JSONResponse({"organization": "Acme Corp"})
 
+    async def policy_error(request):
+        # As a Group Policy PolicyFile on a share out of reach: an administrator's policy Lumi can't use.
+        policy.set_for_tests(None, error="The policy file Group Policy names couldn't be read: "
+                             "\\\\fileserver\\it\\lumi-policy.json (the network path was not found). "
+                             "Lumi won't use a policy further down instead.", machine=True)
+        return JSONResponse({"error": policy.blocked_reason()})
+
     async def personal(request):
         # No organization policy again: each person accepts for themselves.
         policy.set_for_tests(None)
@@ -149,6 +156,7 @@ def main() -> None:
                            Route("/__fixture__/forget", forget, methods=["POST"]),
                            Route("/__fixture__/organization", organization, methods=["POST"]),
                            Route("/__fixture__/personal", personal, methods=["POST"]),
+                           Route("/__fixture__/policy-error", policy_error, methods=["POST"]),
                            Route("/__fixture__/scripted", scripted, methods=["POST"]),
                            Route("/__fixture__/clear", clear, methods=["POST"]),
                            Route("/__fixture__/shutdown", shutdown, methods=["POST"])])

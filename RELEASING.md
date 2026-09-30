@@ -102,8 +102,13 @@ version's text.
   it. `tests/test_legal_texts.py` fails while a rendered text isn't what
   `render` writes.
 - **Versions and pins:** any change to what a text says, a correction
-  included, needs a new `version` and a new `sha256` (render prints the hash;
-  the tests and `check` fail while a text doesn't match its version's pin).
+  included, needs a new `version`. `packaging/legal-published-pins.json`
+  records the hash of every published version and never changes: add the
+  new version's hash there, and as its `sha256` in `terms.json` (render
+  prints it). The tests and `check` fail while a text or its pin differs
+  from its version's record, or a version isn't recorded; `release-check`
+  also fails when an entry of the last release tag's record, or a pin in
+  that tag's `terms.json`, changed or went.
   Set `published` to the day the text was written; each version applies to a
   person from the day they accept it, and the release check refuses a
   `published` date after the day of the build. Who is asked again:
@@ -124,12 +129,13 @@ version's text.
   `[[TO BE PROVIDED: ...]]`, a text is stale or doesn't match its pin, a
   `published` date is after the build's, or the version isn't `X.Y.Z` or
   `X.Y.Z-alpha.N`/`-beta.N`/`-rc.N` from 0.20.0 on. Releases under the EULA
-  start at 0.20.0, above every version published under the MIT License: the
-  releases tagged v0.6.3a1 through v0.19.1 (Resonant Client, Resonant and SONN
-  Client) and the source on `main` from commit c00f29c until commit beb2848
-  ([LICENSE](LICENSE), EULA section 5.4). A carve-out names releases and
-  commits, never a version range: `0.19.2.dev11` was built both under MIT and
-  after it.
+  start at 0.20.0, above every version published under the MIT License: every
+  commit whose LICENSE file is the MIT License (from commit c00f29c on, on
+  `main` and on branches) and the releases built from them, tagged v0.6.3a1
+  through v0.19.1 ([LICENSE](LICENSE), EULA section 5.4). The carve-out
+  describes the MIT copies by what their LICENSE file says, never by a
+  version or commit range: `0.19.2.dev11` was built both under MIT and after
+  it, and MIT commits reached `main` after the relicensing through merges.
 - **Installers:** `scripts/build_clean.ps1` renders `dist/legal/license.rtf`
   for Inno Setup's license page, `packaging/build_msi.ps1` renders the MSI's,
   and `packaging/build_macos.sh` the PKG's and the DMG's copies

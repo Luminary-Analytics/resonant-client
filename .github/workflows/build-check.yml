@@ -252,6 +252,13 @@ jobs:
           & $iscc /O- "/DAppVersion=$version" "packaging/installer.iss"
           if ($LASTEXITCODE -ne 0) { throw "ISCC couldn't compile packaging/installer.iss (exit $LASTEXITCODE)" }
           Write-Host "✓ packaging/installer.iss compiles for $version"
+          # A license page rendered for another version (a stable build's has no test terms) stops the compile.
+          $mismatch = & $iscc /O- "/DAppVersion=0.0.1" "packaging/installer.iss" 2>&1 | Out-String
+          if ($LASTEXITCODE -eq 0) { throw "ISCC compiled installer.iss for a version dist\legal wasn't rendered for" }
+          if ($mismatch -notmatch "rendered for another version") { throw "Unexpected ISCC failure: $mismatch" }
+          # That failure was expected: the runner's wrapper exits with the last native exit code otherwise.
+          $global:LASTEXITCODE = 0
+          Write-Host "✓ installer.iss refuses a license page rendered for another version"
 
       # WiX as the release gets it: the tool and its UI extension from their
       # NuGet packages, each checked against its pinned SHA-256 and installed
@@ -273,25 +280,53 @@ jobs:
           ./packaging/build_msi.ps1 -OutDir dist/installer-upgrade `
               -Wix "${{ steps.msi.outputs.wix }}" -UiExtension "${{ steps.msi.outputs.ui-extension }}"
 
-      # The license page an installation with the MSI's UI shows: WixUI_Minimal's
-      # scrolling text holds the RTF packaging/legal_texts.py rendered.
-      - name: Check the MSI's license page
+      # A stable release's package, from the same bundle: its license page holds the
+      # End User License Agreement alone, without the Alpha and Beta Test Terms.
+      - name: Build a stable MSI for the license check
         shell: pwsh
         run: |
-          $msi = (Get-ChildItem "dist/installer/*.msi" | Select-Object -First 1).FullName
-          $installer = New-Object -ComObject WindowsInstaller.Installer
-          $database = $installer.GetType().InvokeMember("OpenDatabase", "InvokeMethod", $null, $installer, @($msi, 0))
-          $query = "SELECT ``Text`` FROM ``Control`` WHERE ``Dialog_`` = 'WelcomeEulaDlg' AND ``Control`` = 'LicenseText'"
-          $view = $database.GetType().InvokeMember("OpenView", "InvokeMethod", $null, $database, @($query))
-          $view.GetType().InvokeMember("Execute", "InvokeMethod", $null, $view, $null) | Out-Null
-          $record = $view.GetType().InvokeMember("Fetch", "InvokeMethod", $null, $view, $null)
-          if (-not $record) { throw "The MSI has no license page (WelcomeEulaDlg's LicenseText)" }
-          $text = $record.GetType().InvokeMember("StringData", "GetProperty", $null, $record, @(1))
-          if ($text -notmatch "Lumi End User License Agreement") { throw "The MSI's license page doesn't show Lumi's terms" }
-          if (-not $text.StartsWith("{\rtf1")) { throw "The MSI's license page isn't RTF" }
-          # An MSI reads [name] in this text as a property; legal_texts.py writes brackets as RTF escapes.
-          if ($text.Contains("[") -or $text.Contains("]")) { throw "The MSI's license text has a bracket it would read as a property" }
-          Write-Host "✓ The MSI's license page shows Lumi's terms ($($text.Length) characters of RTF)"
+          ./packaging/build_msi.ps1 -Version 0.20.0 -OutDir dist/installer-stable `
+              -Wix "${{ steps.msi.outputs.wix }}" -UiExtension "${{ steps.msi.outputs.ui-extension }}"
+
+      # The license page an installation with the MSI's UI shows: WixUI_Minimal's
+      # scrolling text holds the RTF packaging/legal_texts.py rendered, exactly, for the
+      # version built: this development build's with the test terms, a stable one's without.
+      - name: Check the MSIs' license pages
+        shell: pwsh
+        run: |
+          function Get-LicenseText([string]$Msi) {
+              $installer = New-Object -ComObject WindowsInstaller.Installer
+              $database = $installer.GetType().InvokeMember("OpenDatabase", "InvokeMethod", $null, $installer, @($Msi, 0))
+              $query = "SELECT ``Text`` FROM ``Control`` WHERE ``Dialog_`` = 'WelcomeEulaDlg' AND ``Control`` = 'LicenseText'"
+              $view = $database.GetType().InvokeMember("OpenView", "InvokeMethod", $null, $database, @($query))
+              $view.GetType().InvokeMember("Execute", "InvokeMethod", $null, $view, $null) | Out-Null
+              $record = $view.GetType().InvokeMember("Fetch", "InvokeMethod", $null, $view, $null)
+              if (-not $record) { throw "$Msi has no license page (WelcomeEulaDlg's LicenseText)" }
+              return $record.GetType().InvokeMember("StringData", "GetProperty", $null, $record, @(1))
+          }
+          $init = Get-Content lumi/__init__.py -Raw
+          if ($init -notmatch '__version__\s*=\s*"([^"]+)"') { throw "No __version__ in lumi/__init__.py" }
+          $cases = @(
+              @{ Folder = "dist/installer"; Version = $Matches[1]; PreRelease = $true },
+              @{ Folder = "dist/installer-stable"; Version = "0.20.0"; PreRelease = $false }
+          )
+          foreach ($case in $cases) {
+              $msi = (Get-ChildItem "$($case.Folder)/*.msi" | Select-Object -First 1).FullName
+              $expectedDir = Join-Path $env:RUNNER_TEMP "expected-license-$($case.Version)"
+              python packaging/legal_texts.py rtf --out $expectedDir --version $case.Version
+              if ($LASTEXITCODE -ne 0) { throw "legal_texts.py rtf failed for $($case.Version)" }
+              $expected = (Get-Content (Join-Path $expectedDir "license.rtf") -Raw).Replace("`r`n", "`n").TrimEnd()
+              $text = (Get-LicenseText $msi).Replace("`r`n", "`n").TrimEnd()
+              if ($text -ne $expected) {
+                  throw "$msi's license page isn't the text legal_texts.py renders for $($case.Version) ($($text.Length) characters, expected $($expected.Length))"
+              }
+              if ($text.Contains("This pre-release build of Lumi") -ne $case.PreRelease) {
+                  throw "$msi's license page doesn't match a $(if ($case.PreRelease) { 'pre-release' } else { 'stable release' })"
+              }
+              # An MSI reads [name] in this text as a property; legal_texts.py writes brackets as RTF escapes.
+              if ($text.Contains("[") -or $text.Contains("]")) { throw "$msi's license text has a bracket it would read as a property" }
+              Write-Host "✓ Lumi $($case.Version)'s MSI shows exactly the license page rendered for it ($($text.Length) characters of RTF)"
+          }
 
       # The runner is an administrator without UAC prompts, like a device
       # management agent, so this is the silent per-machine install IT runs.
@@ -431,7 +466,19 @@ jobs:
           }
           Write-Host "✓ An upgrade without POLICYFILE keeps the PolicyFile value and its policy"
 
-          Uninstall-Msi $upgrade
+          # An administrator stops using the policy file by deleting the value: the next upgrade
+          # (the first build again, over the second) doesn't bring it back from the package's copy.
+          Remove-ItemProperty -Path $policyKey -Name PolicyFile
+          Install-Msi @() -Package $msi
+          if ((Get-ItemProperty $policyKey -ErrorAction SilentlyContinue).PolicyFile) {
+              throw "The upgrade brought back the PolicyFile value an administrator deleted"
+          }
+          if ((Get-ItemProperty "HKLM:\SOFTWARE\Luminary Analytics\Lumi\Msi" -ErrorAction SilentlyContinue).PolicyFile) {
+              throw "The upgrade kept the package's copy of a PolicyFile an administrator deleted"
+          }
+          Write-Host "✓ A deleted PolicyFile value stays deleted across an upgrade, and the copy goes"
+
+          Uninstall-Msi $msi
           if (Test-Path $exe) { throw "lumi.exe is still there after uninstalling" }
           if ((Get-ItemProperty $policyKey -ErrorAction SilentlyContinue).PolicyFile) { throw "The PolicyFile value was left behind" }
           if ((Get-ItemProperty "HKLM:\SOFTWARE\Luminary Analytics\Lumi\Msi" -ErrorAction SilentlyContinue).PolicyFile) {

@@ -506,7 +506,7 @@ lumi-smoke variance --spec wordcount --model your-model --n 3
 
 ## License
 
-Lumi is commercial software: © 2026 Luminary Analytics, all rights reserved,
+Lumi is commercial software: © 2026 Luminary Analytics, LLC, all rights reserved,
 licensed under the [Lumi End User License Agreement](lumi/legal/EULA.md), with
 the [Alpha and Beta Test Terms](lumi/legal/ALPHA-TERMS.md) for pre-release
 builds. See [LICENSE](LICENSE). The [privacy notice](lumi/legal/PRIVACY.md)
@@ -526,12 +526,13 @@ says what the app sends where.
   build and ship extensions for Lumi. The
   [VS Code extension](lumi/code_editors/vscode/) is part of Lumi, under the
   End User License Agreement.
-- **Earlier copies under the MIT License.** The releases tagged v0.6.3a1
-  through v0.19.1 (as Resonant Client, Resonant and SONN Client), this
-  repository's source from commit c00f29c until commit beb2848 (May 15 to
-  September 27, 2026), and the SDK and the VS Code extension as published
-  here before their current licenses, remain under the MIT License
-  ([LICENSE](LICENSE)). Releases v0.2.0 through v0.6.2 weren't MIT, and
+- **Earlier copies under the MIT License.** Every commit of this repository
+  whose LICENSE file is the MIT License, the releases built from them
+  (tagged v0.6.3a1 through v0.19.1, as Resonant Client, Resonant and SONN
+  Client), and the SDK and the VS Code extension in every commit where
+  their own license file is the MIT License remain under the MIT License
+  ([LICENSE](LICENSE)). The MIT License first appeared in commit c00f29c:
+  nothing before it, such as releases v0.2.0 through v0.6.2, was MIT, and
   releases under the EULA start at 0.20.0.
 - Third-party components keep their own licenses: `THIRD_PARTY_NOTICES.txt`
   in installed copies, which Settings > About Lumi opens.

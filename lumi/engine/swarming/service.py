@@ -124,7 +124,7 @@ def policy_refusal(action: str, *, personal: bool = False, team: Callable[[], st
         # this person accepted them. Reviews and bookkeeping reach no model.
         from ... import terms
 
-        reason = terms.refusal("app")
+        reason = terms.gate("app")[0]  # an unusable machine policy's error comes first
         if reason:
             return reason
     if current_policy() is None:

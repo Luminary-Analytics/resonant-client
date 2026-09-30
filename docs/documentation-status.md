@@ -80,9 +80,13 @@ guidance needs an explicit status notice and a current replacement.
   Packaged qualification and a benefit claim are still pending.
 - [docs/organization-oversight.md](organization-oversight.md)
 - [lumi/legal/EULA.md](../lumi/legal/EULA.md), [ALPHA-TERMS.md](../lumi/legal/ALPHA-TERMS.md)
-  and [PRIVACY.md](../lumi/legal/PRIVACY.md): the texts Lumi ships and asks
-  people to accept, rendered from `lumi/legal/templates/` and
-  `lumi/legal/terms.json`. Edit those, never the rendered files.
+  and [PRIVACY.md](../lumi/legal/PRIVACY.md): the texts Lumi ships. People
+  accept the agreement (and the test terms on a pre-release build) and read
+  the privacy notice. They, the Extension SDK's license (`sdk/LICENSE`) and
+  the VS Code extension's are rendered from `lumi/legal/templates/` and
+  `lumi/legal/terms.json`; `packaging/legal-published-pins.json` keeps each
+  published version's hash. Edit the templates and facts, never the rendered
+  files, and give a changed text a new version.
 - [docs/unreleased.md](unreleased.md)
 
 ## Planning proposals

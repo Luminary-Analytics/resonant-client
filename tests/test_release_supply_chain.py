@@ -156,8 +156,8 @@ class TestNotices:
         text = notices.render(packages, notices.load_components())
         assert text.startswith("Lumi third-party notices")
         # Lumi's own terms, since the bundle doesn't ship the repository's LICENSE.
-        assert "itself is © Luminary Analytics, all rights reserved" in text
-        assert "the Lumi End User License Agreement." in text
+        assert "itself is © Luminary Analytics, LLC, all rights reserved" in text
+        assert "under the Lumi End User License Agreement." in text
         assert "WinSparkle 0.9.2 — MIT" in text
         assert "pi-coding-agent 0.70.6 (Ported source code)" in text
         assert "Copyright (c) 2025 Mario Zechner" in text
@@ -287,7 +287,122 @@ class TestLicenseTexts:
         assert "Python 3.14.1 isn't 3.13" in err and "PyInstaller bootloader 7.0.0 isn't 6" in err
 
 
+def _distribution(folder: Path, name: str, version: str, license_file: str = "") -> metadata.Distribution:
+    """An installed package's metadata, with a license file in its dist-info or none."""
+    info = folder / f"{name}-{version}.dist-info"
+    info.mkdir(parents=True)
+    (info / "METADATA").write_text(f"Metadata-Version: 2.1\nName: {name}\nVersion: {version}\nLicense: MIT\n",
+                                   encoding="utf-8")
+    record = [f"{info.name}/METADATA,,"]
+    if license_file:
+        (info / "LICENSE").write_text(license_file, encoding="utf-8")
+        record.append(f"{info.name}/LICENSE,,")
+    (info / "RECORD").write_text("\n".join(record) + "\n", encoding="utf-8")
+    return metadata.PathDistribution(info)
+
+
+class TestEveryShippedPartHasItsText:
+    """Re-review of PR #104: proxy-tools and pygetwindow shipped without license texts, the build checked only
+    the non-Python components, proxy-tools was labelled MIT, and WinSparkle's entry left out the OpenSSL and
+    wxWidgets code in its DLL."""
+
+    def test_a_shipped_package_without_a_license_text_fails_the_build(self, tmp_path, monkeypatch, capsys):
+        bare = _distribution(tmp_path / "site", "bare-lib", "1.0")
+        monkeypatch.setattr(notices.metadata, "distributions", lambda: [*_some_distributions(), bare])
+        _built_with_pyinstaller(monkeypatch)
+        _with_fetched_license_files(monkeypatch, tmp_path)
+        out = tmp_path / "THIRD_PARTY_NOTICES.txt"
+        assert notices.main(["--out", str(out)]) == 1
+        assert "bare-lib 1.0 ships no license text" in capsys.readouterr().err and not out.exists()
+        # With its text it ships.
+        with_text = _distribution(tmp_path / "site2", "bare-lib", "1.0", "MIT License\n\nCopyright (c) Someone")
+        monkeypatch.setattr(notices.metadata, "distributions", lambda: [*_some_distributions(), with_text])
+        assert notices.main(["--out", str(out)]) == 0
+        assert "Copyright (c) Someone" in out.read_text(encoding="utf-8")
+
+    def test_packages_that_ship_no_text_get_the_committed_one_for_their_version(self, tmp_path):
+        committed = notices.committed_package_licenses()
+        assert set(committed) == {"proxy-tools", "pygetwindow", "pyobjc-core", "pyobjc-framework-security",
+                                  "pyobjc-framework-uniformtypeidentifiers"}
+        pins = _pins(LOCK)
+        for name, entry in committed.items():
+            # The text is the one for the version the release installs.
+            assert pins[name] == entry["version"], name
+            [relative] = entry["license_files"]
+            assert f"-{entry['version']}-" in Path(relative).name, name
+            assert notices.component_texts(entry), name
+        # proxy-tools says MIT in its metadata; its source and repository say BSD.
+        proxy = committed["proxy-tools"]
+        [(_, text)] = notices.component_texts(proxy)
+        assert proxy["license"] == "BSD-2-Clause" and text.startswith("The BSD License (BSD)")
+        assert "Copyright (c) 2013 Armin Ronacher" in text and "Copyright (c) 2014 Jonathan Tushman" in text
+        packages = notices.python_packages([_distribution(tmp_path, "proxy_tools", "0.1.0"),
+                                            _distribution(tmp_path, "pygetwindow", "0.0.10")])
+        assert [item["license"] for item in packages] == ["BSD-2-Clause", "BSD-3-Clause"]
+        # A new release of a package whose text is committed needs its own text checked.
+        assert notices.package_problems(packages) == [
+            "pygetwindow 0.0.10 isn't 0.0.9, the version whose license text python_packages holds"]
+
+    def test_winsparkle_lists_the_libraries_its_dll_links(self):
+        winsparkle = next(item for item in notices.load_components() if item["name"] == "WinSparkle")
+        texts = dict(notices.component_texts(winsparkle))
+        assert "OpenSSL" in winsparkle["license"] and "WxWindows-exception-3.1" in winsparkle["license"]
+        assert "Zlib" in winsparkle["license"]
+        assert "the OpenSSL License and the original SSLeay license apply" in " ".join(
+            texts["openssl-1.0.2u-LICENSE.txt"].split())
+        assert "Original SSLeay License" in texts["openssl-1.0.2u-LICENSE.txt"]
+        assert texts["wxwidgets-3.2.2.1-licence.txt"].startswith("wxWindows Library Licence, Version 3.1")
+        assert "GNU LIBRARY GENERAL PUBLIC LICENSE" in texts["wxwidgets-3.2.2.1-lgpl.txt"]
+        assert texts["ed25519-7fa6712-license.txt"].startswith("Copyright (c) 2015 Orson Peters")
+
+    def test_ripgreps_crates_and_pcre2_come_with_their_texts(self):
+        components = {item["name"]: item for item in notices.load_components(platform="win32")}
+        crates = components["ripgrep's Rust crates and PCRE2"]
+        # The file is for the ripgrep that ships; a new ripgrep needs packaging/ripgrep_crate_licenses.py again.
+        assert crates["version"] == components["ripgrep"]["version"]
+        [(filename, text)] = notices.component_texts(crates)
+        assert filename == f"ripgrep-{crates['version']}-crates-LICENSES.txt"
+        assert text.startswith(f"Third-party code in ripgrep {crates['version']}'s Windows release (rg.exe)")
+        for crate in ("regex-automata 0.4.15", "serde_json 1.0.150", "encoding_rs 0.8.35", "windows-sys 0.61.2"):
+            assert f"\n{crate} (" in text, crate
+        assert "--- LICENSE-WHATWG ---" in text and "PCRE2 10.45 (BSD-3-Clause WITH PCRE2-exception)" in text
+        assert "Philip Hazel" in text
+
+    def test_the_webview2_dlls_pywebview_ships_have_their_text(self):
+        webview2 = next(item for item in notices.load_components(platform="win32")
+                        if item["name"] == "Microsoft WebView2 SDK")
+        # The DLLs come with pywebview: a new pywebview may bring another WebView2 SDK.
+        shipped_by = webview2["shipped_by"]
+        assert _pins(LOCK)[shipped_by["package"]] == shipped_by["version"]
+        texts = dict(notices.component_texts(webview2))
+        assert texts["microsoft.web.webview2-1.0.3856.49-LICENSE.txt"].startswith(
+            "Copyright (C) Microsoft Corporation. All rights reserved.")
+        assert "NOTICES AND INFORMATION" in texts["microsoft.web.webview2-1.0.3856.49-NOTICE.txt"]
+        assert "Microsoft WebView2 SDK" not in {item["name"] for item in notices.load_components(platform="darwin")}
+
+    def test_third_party_texts_keep_upstreams_bytes(self):
+        # .gitattributes spares them git diff --check, so a trailing blank line upstream stays (DOMPurify's).
+        attributes = (ROOT / ".gitattributes").read_text(encoding="utf-8")
+        assert "packaging/licenses/** -whitespace" in attributes.splitlines()
+        assert (PACKAGING / "licenses" / "dompurify-3.0.6-LICENSE.txt").read_bytes().replace(b"\r\n", b"\n") \
+            .endswith(b"Mozilla Public License, v. 2.0.\n\n")
+
+
 class TestSbom:
+    def test_the_bootloader_is_the_locked_pyinstaller_whatever_python_makes_the_sbom(self, tmp_path,
+                                                                                   monkeypatch):
+        # The SBOM step runs outside the build environment, where PyInstaller may be missing or another.
+        _built_with_pyinstaller(monkeypatch, version="6.0.0")
+        sbom = tmp_path / "sbom.cdx.json"
+        sbom.write_text(json.dumps({"bomFormat": "CycloneDX", "specVersion": "1.6", "version": 1}),
+                        encoding="utf-8")
+        notices.add_to_sbom(sbom, notices.load_components())
+        listed = {item["name"]: item for item in json.loads(sbom.read_text(encoding="utf-8"))["components"]}
+        assert listed["PyInstaller bootloader"]["version"] == _pins(LOCK)["pyinstaller"] == "6.22.3"
+        # The notices, made in the build environment, name the same version, or the build fails.
+        assert notices.version_problems(notices.load_components()) == [
+            "PyInstaller bootloader 6.0.0 isn't 6.22.3, the version packaging/requirements-release.txt locks"]
+
     def test_bundled_components_are_appended_once(self, tmp_path):
         sbom = tmp_path / "sbom.cdx.json"
         sbom.write_text(json.dumps({

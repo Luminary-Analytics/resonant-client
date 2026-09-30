@@ -1,0 +1,3 @@
+# Third-party license texts keep the bytes their projects publish (packaging/third-party-components.json),
+# trailing spaces and blank lines included, so whitespace checks such as git diff --check skip them.
+packaging/licenses/** -whitespace

@@ -59,7 +59,8 @@ computer**. Lumi generates a key pair for this computer:
 - Lumi Cloud gets the public key and lists the computer on the organization's
   Devices page.
 
-From then on the computer checks in about once an hour, even after you sign
+From then on the computer checks in about once an hour (as often as every
+five minutes if the organization's Lumi Cloud asks), even after you sign
 out. **Leave on this computer** undoes it.
 
 **The enrollment belongs to the Lumi Cloud it was made with.** Lumi records

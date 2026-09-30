@@ -5,6 +5,8 @@
  * box reaching the model, a second window unlocking with the first, a message refused after the
  * acceptance vanished (the running state ends, the text comes back, its card reads Not sent), About
  * Lumi's texts read offline, an organization's machine policy, the dialog at 375 px in both themes,
+ * the dialog opening at the top of its text again, a machine policy that can't be read (its error
+ * instead of the terms, nothing to accept, nothing recorded),
  * and a model chosen while the terms wait getting no warm-up (a recording Ollama: nothing reaches it
  * until the terms are accepted). Inference is scripted; nothing leaves the loopback
  * (tests/fixtures/terms_ui_server.py).
@@ -149,6 +151,10 @@ test('Lumi’s terms lock the app until the dialog’s own Accept, from the keyb
         }
         record.tabStops = [...visited];
         assert.ok(visited.has('terms-dialog-accept') && visited.has('terms-dialog-decline') && visited.has('terms-dialog-privacy'));
+        // Read down to the end from the keyboard before closing: the dialog opens at the top again (the re-review).
+        await page.locator('#terms-dialog-body').focus();
+        await page.keyboard.press('End');
+        await page.waitForFunction(() => document.getElementById('terms-dialog-body').scrollTop > 200);
         await page.keyboard.press('Escape');
         await page.locator('#terms-dialog').waitFor({state: 'hidden'});
         assert.equal(await active(page), 'terms-notice-review');
@@ -156,9 +162,14 @@ test('Lumi’s terms lock the app until the dialog’s own Accept, from the keyb
         assert.equal(await page.locator('#user-input').isDisabled(), true);
         assert.equal(sent.filter(message => message.command === 'terms_accept').length, 0);
 
-        // Review terms, from the keyboard, opens it again; the privacy notice is one link away.
+        // Review terms, from the keyboard, opens it again, at the top of the text and with the text
+        // focused; the privacy notice is one link away.
         await page.keyboard.press('Enter');
         await dialog.waitFor();
+        record.reopened = await page.evaluate(() => ({body: document.getElementById('terms-dialog-body').scrollTop,
+            card: document.querySelector('.terms-dialog').scrollTop}));
+        assert.deepEqual(record.reopened, {body: 0, card: 0});
+        assert.equal(await active(page), 'terms-dialog-body');
         await page.locator('#terms-dialog-privacy').click();
         await body.getByRole('heading', {name: 'Lumi Privacy Notice'}).waitFor();
         await page.locator('#terms-dialog-back').click();
@@ -313,6 +324,56 @@ test('Lumi’s terms lock the app until the dialog’s own Accept, from the keyb
             for (const [part, ratio] of Object.entries(record.compact[`notice-${theme}`])) assert.ok(ratio >= 4.5, `notice ${part} contrast ${ratio} in ${theme}`);
             await page.screenshot({path: path.join(output, `notice-375-${theme}.png`)});
         }
+
+        // An administrator's policy Lumi can't read (the re-review: a PolicyFile out of reach opened the
+        // terms, and accepting recorded a personal acceptance). Its error shows instead, with nothing to
+        // accept; the server records nothing and refuses messages with the policy's code.
+        record.policyError = await fetch(info.url + '/__fixture__/policy-error', {method: 'POST'}).then(r => r.json());
+        received.length = 0;
+        await page.goto(info.url + '/');
+        await page.waitForFunction(() => Boolean(window.app?.termsStatus?.policy_error));
+        await page.locator('#terms-notice').waitFor();
+        await page.waitForTimeout(500);
+        assert.equal(await page.locator('#terms-dialog').isVisible(), false, 'no terms dialog');
+        assert.equal(await page.locator('#terms-notice-text').innerText(), record.policyError.error);
+        assert.equal(await page.locator('#terms-notice-review').isVisible(), false);
+        // The message box stays open, as for the policy's other refusals.
+        assert.equal(await page.locator('#user-input').isDisabled(), false);
+        for (const theme of ['dark', 'light']) {
+            await page.evaluate(value => window.LumiAppearance.setTheme(value), theme);
+            const fits = await page.evaluate(() => {
+                const box = document.getElementById('terms-notice').getBoundingClientRect();
+                return box.left >= 0 && box.right <= window.innerWidth
+                    && document.documentElement.scrollWidth <= document.documentElement.clientWidth;
+            });
+            assert.ok(fits, `the policy notice fits in ${theme}`);
+            record.compact[`policy-${theme}`] = await page.evaluate(contrastOf, '#terms-notice-text');
+            assert.ok(record.compact[`policy-${theme}`] >= 4.5, `policy notice contrast in ${theme}`);
+            await page.screenshot({path: path.join(output, `policy-error-375-${theme}.png`)});
+        }
+        // A hand-made acceptance gets the policy's answer; a message typed and sent is refused with it,
+        // leaves the running state and comes back to the box. Nothing is recorded or sent.
+        await page.evaluate(() => app.send({command: 'terms_accept', documents: {eula: '1.0', alpha_terms: '1.0'}}));
+        await page.locator('#user-input').fill('a message under a broken policy');
+        await page.keyboard.press('Enter');
+        for (let i = 0; i < 50 && received.filter(event => event.code === 'policy_blocked').length < 2; i++) await page.waitForTimeout(100);
+        record.policyRefusals = received.filter(event => event.code === 'policy_blocked').map(event => event.message);
+        assert.equal(record.policyRefusals.length, 2);
+        assert.match(record.policyRefusals[0], /records no acceptance/);
+        await page.waitForFunction(() => !app.isRunning);
+        record.policyTurn = await page.evaluate(turnState);
+        assert.deepEqual(record.policyTurn, {running: false, stopShown: false,
+            composer: 'a message under a broken policy', label: 'Not sent', retry: false});
+        await page.locator('#user-input').fill('');
+        const underPolicy = await evidence(info);
+        assert.equal(underPolicy.record, null);
+        assert.ok(!underPolicy.requests.includes('a message under a broken policy'));
+        // Readable again, the policy doesn't accept for anyone here: the person is asked, as before.
+        await fetch(info.url + '/__fixture__/personal', {method: 'POST'});
+        await page.goto(info.url + '/');
+        await page.waitForFunction(() => window.app?.termsStatus?.pending === true && !window.app.termsStatus.policy_error);
+        await dialog.waitFor();
+        assert.equal(await page.locator('#terms-dialog-accept').isVisible(), true);
 
         // Choosing a model while the terms wait, as the setup screen's row does: no warm-up reaches it (the
         // review saw Ollama's "hi" leave). Once they're accepted, choosing it warms it up.

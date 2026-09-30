@@ -22,13 +22,15 @@ it all):
   when you send it. Without those, the app's own records stay on the
   computer.
 
-Lumi is commercial software: © Luminary Analytics, all rights reserved,
+Lumi is commercial software: © Luminary Analytics, LLC, all rights reserved,
 licensed under the [Lumi End User License Agreement](../lumi/legal/EULA.md)
 (and, for pre-release builds, the
 [Alpha and Beta Test Terms](../lumi/legal/ALPHA-TERMS.md)), which grants free
 individual use during the alpha. The earlier copies published under the MIT
-License (releases v0.6.3a1 through v0.19.1, and the source before commit
-beb2848; see [LICENSE](../LICENSE)) remain under it. The Extension SDK is under the
+License remain under it: every commit whose LICENSE file is the MIT License,
+from commit c00f29c (May 15, 2026) on, and the releases built from them
+(v0.6.3a1 through v0.19.1); nothing before c00f29c, such as releases v0.2.0
+through v0.6.2, was MIT (see [LICENSE](../LICENSE)). The Extension SDK is under the
 [Lumi Extension SDK License](../sdk/LICENSE), so others can build and ship
 extensions; the VS Code extension is part of Lumi. The installer ships the
 licenses of its third-party components in `THIRD_PARTY_NOTICES.txt`.

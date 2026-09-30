@@ -57,6 +57,33 @@ def test_policyfile_writes_the_value_the_policy_reader_uses(package):
         "HKLM", policy.REGISTRY_KEY, "PolicyFile", "[POLICYFILE]")
 
 
+def test_the_remembered_policyfile_comes_back_only_while_the_value_is_still_in_place(package):
+    """The re-review of PR #104: an upgrade restored the remembered POLICYFILE even after an administrator
+    deleted the PolicyFile value, so it couldn't be cleared."""
+    searches = {search.get("Id"): search for search in package.iter(f"{WIX}RegistrySearch")}
+    live = searches["LivePolicyFile"]
+    assert (live.get("Root"), live.get("Key"), live.get("Name"), live.get("Bitness")) == (
+        "HKLM", policy.REGISTRY_KEY, "PolicyFile", "always64")
+    remembered = searches["RememberedPolicyFile"]
+    assert remembered.get("Key") == r"SOFTWARE\Luminary Analytics\Lumi\Msi" and remembered.get("Name") == "PolicyFile"
+    [restore] = [item for item in package.iter(f"{WIX}SetProperty") if item.get("Id") == "POLICYFILE"]
+    assert restore.get("Condition") == (
+        "NOT POLICYFILE AND REMEMBERED_POLICYFILE AND REMEMBERED_POLICYFILE = LIVE_POLICYFILE")
+    assert (restore.get("Value"), restore.get("After"), restore.get("Sequence")) == (
+        "[REMEMBERED_POLICYFILE]", "AppSearch", "both")
+    for name in ("POLICYFILE", "REMEMBERED_POLICYFILE", "LIVE_POLICYFILE"):
+        assert package.find(f"{WIX}Property[@Id='{name}']").get("Secure") == "yes", name
+    # CI deletes the value, upgrades, and checks it stays deleted and the copy goes.
+    check = (ROOT / ".github" / "workflows" / "build-check.yml").read_text(encoding="utf-8")
+    assert "Remove-ItemProperty -Path $policyKey -Name PolicyFile" in check
+    assert "The upgrade brought back the PolicyFile value an administrator deleted" in check
+    assert "reg delete" in (ROOT / "docs" / "deploy-windows.md").read_text(encoding="utf-8")
+    # The installers name Luminary's legal name as the publisher.
+    assert package.get("Manufacturer") == "Luminary Analytics, LLC"
+    iss = (ROOT / "packaging" / "installer.iss").read_text(encoding="utf-8")
+    assert '#define AppPublisher   "Luminary Analytics, LLC"' in iss
+
+
 def test_it_creates_the_machine_policy_folder_locked(package):
     # Any user may create folders under ProgramData, and one made there inherits every user's
     # right to add files, so the package makes %ProgramData%\Lumi itself: owned by Administrators,

@@ -36,8 +36,12 @@ msiexec /x lumi-X.Y.Z.msi /qn
   file path. The package remembers it (under
   `HKLM\SOFTWARE\Luminary Analytics\Lumi\Msi`), so an upgrade that doesn't
   name `POLICYFILE` again keeps the value; one that names it changes it.
-  Uninstalling removes both. Group Policy or Intune can set the policy
-  instead; see [Organization policy](enterprise-policy.md).
+  The copy only keeps the value while it's still in place: to stop using a
+  policy file, delete the value
+  (`reg delete "HKLM\SOFTWARE\Policies\Luminary Analytics\Lumi" /v PolicyFile /f`,
+  or through Group Policy), and the next upgrade neither brings it back nor
+  keeps the copy. Uninstalling removes both. Group Policy or Intune can set
+  the policy instead; see [Organization policy](enterprise-policy.md).
 - **A `PolicyFile` fails closed.** Lumi uses the file only when it and the
   folders above it can't be changed by anyone but administrators. If it can't
   read the file (a share out of reach, a missing file, a path that isn't a
@@ -201,7 +205,8 @@ Windows runner, then:
   the terms accepted by the policy's organization;
 - upgrades it with a second build of the same version that doesn't name
   `POLICYFILE`, and checks the `PolicyFile` value and the policy's
-  acceptance stay;
+  acceptance stay; then deletes the value and upgrades again, and checks
+  the value stays deleted and the package's copy is gone;
 - uninstalls it and checks nothing is left, `%ProgramData%\Lumi` included;
 - makes `%ProgramData%\Lumi` a folder the Users group owns and may change,
   installs again, checks the package took it over with the same owner and

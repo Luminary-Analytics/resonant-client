@@ -63,12 +63,12 @@ doesn't sell it. By using the SDK, you accept this license.
    Lumi End User License Agreement, and nothing in this license grants rights
    in Lumi.
 
-6. Earlier copies. The SDK was never part of a Lumi release. Before this
-   license, its copies in Luminary's public source repository were published
-   under the MIT License, from September 25, 2026 until this license replaced
-   it there, with the lumi-extension Python package at version 1.0.0. Those
-   copies remain under the MIT License. This license applies to every later
-   copy, starting with lumi-extension 1.1.0.
+6. Earlier copies. The SDK was never part of a Lumi release. Its copies in
+   every commit of Luminary's public source repository where the SDK's
+   license file is the MIT License (with the lumi-extension Python package
+   at version 1.0.0) remain under the MIT License. This license applies to
+   every other copy, starting with lumi-extension 1.1.0
+   (lumi_extension.__version__ says which version a copy is).
 
 7. Feedback. If you give Luminary feedback about the SDK, Luminary may use it
    for any purpose, without obligation to you.
@@ -94,4 +94,8 @@ doesn't sell it. By using the SDK, you accept this license.
     regard to conflict-of-laws rules, and disputes about it are heard
     exclusively in the state and federal courts located in {{venue}}. You
     will comply with the export control and sanctions laws that apply to the
-    SDK and your Extensions. Send notices to Luminary at {{notices_email}}.
+    SDK and your Extensions. If you are a consumer and the law of the place
+    where you live gives you rights that can't be waived by agreement, such
+    as the right to rely on your local consumer protection laws or to bring
+    proceedings in your local courts, nothing in this license takes those
+    rights away. Send notices to Luminary at {{notices_email}}.

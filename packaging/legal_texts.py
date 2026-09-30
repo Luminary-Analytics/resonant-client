@@ -27,10 +27,15 @@ SDK's license (``sdk/LICENSE`` and the copy that travels inside the
 
 **Pins.** Each document's ``sha256`` is the hash of its rendered text (the
 Markdown without the generated-file comment, as lumi/terms.py hashes it; the
-SDK license as written). ``check`` fails when a text no longer matches its
-pin: a change to what a text says needs a new ``version`` and a new pin, and
-render prints the hash to pin. An acceptance records the hash of the text it
-accepted, so the app never counts one for a text it didn't show.
+SDK license as written). ``packaging/legal-published-pins.json`` records the
+hash of every version that has been published, and a recorded version never
+changes (EULA section 16.3). ``check`` fails when a text, or its pin in
+terms.json, isn't what its version was recorded with, so a change to what a
+text says needs a new ``version``; and while a version isn't recorded yet
+(render prints the hash to record). ``release-check`` also compares the record
+with the last release tag's copy, and the pins in that tag's terms.json: none
+of their entries may change or go. An acceptance records the hash of the text
+it accepted, so the app never counts one for a text it didn't show.
 
 ``rtf`` writes what the installers show on their license page:
 ``license.rtf`` (the EULA, followed by the Alpha and Beta Test Terms when the
@@ -44,7 +49,8 @@ as RTF escapes, so an MSI never reads them as properties.
 
 A release (``release-check --release``) fails while a fact still reads
 ``[[TO BE PROVIDED: ...]]`` or any rendered text holds one, a text isn't what
-render writes or isn't its pinned version's, a document's published date is
+render writes or isn't its version's published one, a pin the last release
+tag published changed or went, a document's published date is
 after the day of the build, or the version isn't ``X.Y.Z`` or
 ``X.Y.Z-alpha.N``, ``-beta.N`` or ``-rc.N`` from 0.20.0 on: Lumi's releases
 under these terms start above every version it published under the MIT
@@ -62,6 +68,7 @@ import hashlib
 import json
 import os
 import re
+import subprocess
 import sys
 from datetime import date
 from pathlib import Path
@@ -69,6 +76,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 LEGAL = ROOT / "lumi" / "legal"
 FACTS = LEGAL / "terms.json"
+# Every published version of each pinned document, with its hash; entries are added, never changed.
+PUBLISHED_PINS = ROOT / "packaging" / "legal-published-pins.json"
 TEMPLATES = LEGAL / "templates"
 # (template, output): the texts Lumi ships, rendered from the templates with terms.json.
 OUTPUTS = (
@@ -228,19 +237,91 @@ def text_sha256(doc_id: str, texts: dict[str, str] | None = None) -> str:
     return hashlib.sha256(pinned_text(doc_id, texts).encode("utf-8")).hexdigest()
 
 
-def pin_problems(facts: dict | None = None, texts: dict[str, str] | None = None) -> list[str]:
-    """Documents whose text isn't the one ``terms.json`` pins for their version (``sha256``)."""
+def published_pins(path: Path | None = None) -> dict[str, dict[str, str]]:
+    """``{document: {version: sha256}}`` for every published version (``PUBLISHED_PINS``)."""
+    data = json.loads((PUBLISHED_PINS if path is None else path).read_text(encoding="utf-8"))
+    return {str(doc_id): {str(version): str(digest) for version, digest in versions.items()}
+            for doc_id, versions in data.items() if not str(doc_id).startswith("_") and isinstance(versions, dict)}
+
+
+def pin_problems(facts: dict | None = None, texts: dict[str, str] | None = None,
+                 published: dict[str, dict[str, str]] | None = None) -> list[str]:
+    """Documents whose text, or pin in ``terms.json``, isn't what their version was published with, or whose
+    version isn't recorded in ``PUBLISHED_PINS`` yet."""
     facts = load_facts() if facts is None else facts
     texts = rendered(facts) if texts is None else texts
+    published = published_pins() if published is None else published
     problems = []
     for doc_id in PINNED:
         entry = facts["documents"].get(doc_id) or {}
+        version = str(entry.get("version") or "")
+        pinned = str(entry.get("sha256") or "")
         digest = text_sha256(doc_id, texts)
-        if str(entry.get("sha256") or "") != digest:
+        recorded = published.get(doc_id, {}).get(version)
+        if not recorded:
             problems.append(
-                f"{PINNED[doc_id]} isn't the text pinned for {doc_id} version {entry.get('version')!r} "
-                f"(documents.{doc_id}.sha256 in lumi/legal/terms.json). A change to what a text says needs a new "
-                f"version: raise documents.{doc_id}.version, then pin sha256 {digest}.")
+                f"{doc_id} version {version!r} isn't recorded in packaging/legal-published-pins.json. Once its "
+                f"text is final, record \"{version}\": \"{digest}\" under \"{doc_id}\" there, and pin the same "
+                f"hash as documents.{doc_id}.sha256 in lumi/legal/terms.json.")
+        elif digest != recorded:
+            problems.append(
+                f"{PINNED[doc_id]} isn't the text {doc_id} version {version!r} was published with "
+                f"(packaging/legal-published-pins.json): a published version's text never changes (EULA "
+                f"section 16.3). Give the new text a new version (documents.{doc_id}.version in "
+                f"lumi/legal/terms.json) and record that version's hash.")
+        elif pinned != recorded:
+            problems.append(
+                f"documents.{doc_id}.sha256 in lumi/legal/terms.json isn't {recorded}, the hash {doc_id} version "
+                f"{version!r} was published with (packaging/legal-published-pins.json).")
+    return problems
+
+
+def _git_show(ref: str, path: str) -> str | None:
+    """A file as ``ref`` has it, or None (no git, no such ref or file)."""
+    try:
+        result = subprocess.run(["git", "show", f"{ref}:{path}"], cwd=ROOT, capture_output=True, timeout=60)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return result.stdout.decode("utf-8") if result.returncode == 0 else None
+
+
+def last_release_tag() -> str:
+    """The newest release tag (``v...``) before HEAD, or '' without git or tags (a shallow CI checkout)."""
+    try:
+        result = subprocess.run(["git", "describe", "--tags", "--abbrev=0", "--match", "v[0-9]*", "HEAD^"],
+                                cwd=ROOT, capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return result.stdout.strip() if result.returncode == 0 else ""
+
+
+def history_problems(tag: str | None = None, published: dict[str, dict[str, str]] | None = None) -> list[str]:
+    """Pins the last release tag had that this tree changed or dropped: its published-pins record, and the
+    pins in its terms.json. [] when there's no earlier release tag to compare with."""
+    tag = last_release_tag() if tag is None else tag
+    if not tag:
+        return []
+    published = published_pins() if published is None else published
+    before: dict[str, dict[str, str]] = {}
+    record = _git_show(tag, "packaging/legal-published-pins.json")
+    if record:
+        for doc_id, versions in json.loads(record).items():
+            if not str(doc_id).startswith("_") and isinstance(versions, dict):
+                before.setdefault(doc_id, {}).update({str(k): str(v) for k, v in versions.items()})
+    old_facts = _git_show(tag, "lumi/legal/terms.json")
+    if old_facts:
+        for doc_id, entry in (json.loads(old_facts).get("documents") or {}).items():
+            if doc_id in PINNED and entry.get("version") and entry.get("sha256"):
+                before.setdefault(doc_id, {}).setdefault(str(entry["version"]), str(entry["sha256"]))
+    problems = []
+    for doc_id, versions in sorted(before.items()):
+        for version, digest in sorted(versions.items()):
+            now = published.get(doc_id, {}).get(version)
+            if now != digest:
+                problems.append(
+                    f"{doc_id} version {version!r} was published in {tag} with sha256 {digest}, but "
+                    f"packaging/legal-published-pins.json {'records ' + now if now else 'no longer records it'}: "
+                    "a published version's text and pin never change.")
     return problems
 
 
@@ -296,6 +377,7 @@ def release_problems(version: str, *, release: bool, today: date | None = None) 
     problems += [f"Still to be provided in {item}" for item in unfinished(texts)]
     problems += [f"{output} isn't what `python packaging/legal_texts.py render` writes." for output in stale(texts)]
     problems += pin_problems(facts, texts)
+    problems += history_problems()
     problems += date_problems(facts, today)
     if release:
         problem = version_problem(version)
@@ -455,7 +537,7 @@ def license_versions(version: str, facts: dict | None = None) -> dict[str, str]:
 
 def _iss_string(value: str) -> str:
     if not re.fullmatch(r"[0-9A-Za-z.\-]*", value):
-        raise LegalTextError(f"A document version must be letters, digits, dots and dashes: {value!r}")
+        raise LegalTextError(f"A version must be letters, digits, dots and dashes: {value!r}")
     return value
 
 
@@ -487,7 +569,9 @@ def write_rtf(out: Path, version: str, facts: dict | None = None) -> dict[str, P
     files["license-versions.json"] = json.dumps({"lumi_version": version, "documents": versions}, indent=2) + "\n"
     files["license-versions.iss"] = (
         f"; Rendered by packaging/legal_texts.py rtf for Lumi {version}: the versions of Lumi's terms that\n"
-        "; license.rtf holds. packaging/installer.iss records them and skips its license page when they match.\n"
+        "; license.rtf holds. packaging/installer.iss records them and skips its license page when they match,\n"
+        "; and refuses to compile for another version than LicenseForVersion.\n"
+        f'#define LicenseForVersion "{_iss_string(version)}"\n'
         f'#define LicenseEulaVersion "{_iss_string(versions["eula"])}"\n'
         f'#define LicenseAlphaTermsVersion "{_iss_string(versions["alpha_terms"])}"\n')
     written = {}
@@ -529,7 +613,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "render":
             changed = write(rendered())
             print("\n".join(f"Wrote {path}" for path in changed) or "Every text is up to date.")
-            # A changed text needs a new version and pin; say which, with the hash to pin.
+            # A changed text needs a new version, and a new version its recorded pin; say which, with the hash.
             for problem in pin_problems():
                 print(f"note: {problem}")
             return 0

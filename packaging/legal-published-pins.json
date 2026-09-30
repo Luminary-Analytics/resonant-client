@@ -1,0 +1,15 @@
+{
+  "_comment": "The SHA-256 of every published version of Lumi's legal texts (packaging/legal_texts.py hashes them as lumi/terms.py does). An entry is added when a version is first published and never changes: a changed text is a new version (EULA section 16.3). packaging/legal_texts.py check fails when a text, or its pin in lumi/legal/terms.json, differs from its version's entry or has none; release-check also compares this file with the last release tag's copy and that tag's terms.json.",
+  "eula": {
+    "1.0": "4c07baa43ede636c435b756fe57c5a888aa4bc066868c5567d94a1791f4b9030"
+  },
+  "alpha_terms": {
+    "1.0": "9d79522e34664b61871e152ae7b5063e3220c91afd3c156ac3ed3a3fe46150d5"
+  },
+  "privacy": {
+    "1.0": "67ddadbe281df6ff788959448e68b147bfc34eae23ceb9d607ae2db324782d12"
+  },
+  "sdk_license": {
+    "1.0": "ad562e56b9d91eacdf27316ebbdc89ff99757fb6e2eb3709c9893549a96e6706"
+  }
+}

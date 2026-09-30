@@ -1,0 +1,12 @@
+<?xml version='1.0' encoding='utf-8'?>
+<rss version="2.0">
+    <channel>
+        <title>Lumi updates for macOS</title>
+        <link>https://luminary-analytics.github.io/resonant-client/</link>
+        <description>Stable releases of Lumi for macOS</description>
+        <language>en</language>
+    </channel>
+</rss><!-- sparkle-signatures:
+edSignature: uK9DLm4T3p3cLE3h7VTKu+A75V8q3RE/Fc46QsA7KBXDeAVL1owtWzPxP1yEvcCu7v9GWNSFIWggvdizMCYRBg==
+length: 316
+-->

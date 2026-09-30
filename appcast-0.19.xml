@@ -1,0 +1,25 @@
+<?xml version='1.0' encoding='utf-8'?>
+<rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
+    <channel>
+        <title>Lumi updates (0.19)</title>
+        <link>https://luminary-analytics.github.io/resonant-client/</link>
+        <description>Stable releases of Lumi 0.19</description>
+        <language>en</language>
+        <item>
+            <title>Version 0.19.1</title>
+            <pubDate>Sun, 13 Sep 2026 19:48:55 +0000</pubDate>
+            <sparkle:version>0.19.1</sparkle:version>
+            <sparkle:shortVersionString>0.19.1</sparkle:shortVersionString>
+            <description>&lt;p&gt;Release v0.19.1. See &lt;a href="https://luminary-analytics.github.io/resonant-client/"&gt;the download page&lt;/a&gt;.&lt;/p&gt;</description>
+            <enclosure url="https://luminary-analytics.github.io/resonant-client/downloads/v0.19.1/resonant-setup-0.19.1.exe" sparkle:version="0.19.1" sparkle:shortVersionString="0.19.1" length="26143496" type="application/octet-stream" sparkle:edSignature="SullTrAT1HIko+QU48gjLGYS+PQri+L8qgKIrA+PVgIDM3RRMItTdq4KF/dbcTox8Q52KKlXV43gt7XCDFhuCA==" />
+        </item>
+        <item>
+            <title>Version 0.19.0</title>
+            <pubDate>Sun, 13 Sep 2026 19:18:57 +0000</pubDate>
+            <sparkle:version>0.19.0</sparkle:version>
+            <sparkle:shortVersionString>0.19.0</sparkle:shortVersionString>
+            <description>&lt;p&gt;Release v0.19.0. See the &lt;a href="https://github.com/Luminary-Analytics/resonant-client/releases/tag/v0.19.0"&gt;GitHub release page&lt;/a&gt; for details.&lt;/p&gt;</description>
+            <enclosure url="https://github.com/Luminary-Analytics/resonant-client/releases/download/v0.19.0/resonant-setup-0.19.0.exe" sparkle:version="0.19.0" sparkle:shortVersionString="0.19.0" length="26137679" type="application/octet-stream" sparkle:edSignature="EMfBmBEMpdYd2Gv2kzitFcYHV4zEmPQBV3RMLd3bNvs6ibLMC2AkrcjAWBk5Q7zN0SBHhMqhO/cujYvkN5wZBA==" />
+        </item>
+    </channel>
+</rss>

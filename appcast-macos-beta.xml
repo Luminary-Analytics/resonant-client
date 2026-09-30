@@ -1,0 +1,21 @@
+<?xml version='1.0' encoding='utf-8'?>
+<rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
+    <channel>
+        <title>Lumi updates for macOS (beta)</title>
+        <link>https://luminary-analytics.github.io/resonant-client/</link>
+        <description>Beta and stable releases of Lumi for macOS</description>
+        <language>en</language>
+        <item>
+            <title>Version 0.20.0-alpha.1</title>
+            <pubDate>Wed, 30 Sep 2026 17:34:22 +0000</pubDate>
+            <sparkle:version>0.20.0alpha.1</sparkle:version>
+            <sparkle:shortVersionString>0.20.0-alpha.1</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>12.0</sparkle:minimumSystemVersion>
+            <description>&lt;p&gt;Lumi 0.20.0-alpha.1 for macOS. See &lt;a href='https://luminary-analytics.github.io/resonant-client/'&gt;https://luminary-analytics.github.io/resonant-client/&lt;/a&gt;.&lt;/p&gt;</description>
+            <enclosure url="https://luminary-analytics.github.io/resonant-client/downloads/v0.20.0-alpha.1/lumi-0.20.0-alpha.1.dmg" sparkle:version="0.20.0alpha.1" sparkle:shortVersionString="0.20.0-alpha.1" length="36683645" type="application/octet-stream" sparkle:edSignature="ZaIWuNQ5gQ3Xn3HNnneyyqDiM2fE8UR4lq3O2FX5j2/BeUxrWPMrFqYH8ZEF7Jp5w27vz8KswT18VqdKtCevBw==" sparkle:os="macos" />
+        </item>
+    </channel>
+</rss><!-- sparkle-signatures:
+edSignature: jR48D/PnuriUvum//lt0adYiw5sZEUJ1BhAU3+45smf1wj+j6V+E4KOBZlljDAw3D0uctvgS/QdCVVDe+mcUCw==
+length: 1386
+-->

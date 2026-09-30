@@ -2601,9 +2601,10 @@ def _is_old_index(path: str, root: str) -> bool:
 def _project_display_path(path: str, project_path: str) -> str:
     """A search result as the agent should see it: relative to the project, as the file is spelled.
 
-    The sandbox hands tools a case-folded absolute root ("c:\\users\\...").
-    Paths inside the project are shown relative to it, so what's left is
-    the files' own spelling; anything else stays absolute.
+    The search root can be spelled in another case than the project (a
+    model's own "c:\\users\\..."). Paths inside the project are shown
+    relative to it, so what's left is the files' own spelling; anything
+    else stays absolute.
     """
     relative = _relative_to(path, project_path)
     return path if relative in (None, ".") else relative

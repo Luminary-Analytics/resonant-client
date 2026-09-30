@@ -180,7 +180,7 @@ class TestRunnerInheritance:
 
         assert child.working_subdir == "web"
         # session.project_path should join the runner root with the subdir
-        assert captured["project_path"] == os.path.normcase(
+        assert captured["project_path"] == (
             os.path.realpath(os.path.abspath("/tmp/proj/web"))
         )
 
@@ -209,7 +209,7 @@ class TestRunnerInheritance:
             runner._run_node(child, g)
 
         assert child.working_subdir == "apps/api"
-        assert captured["project_path"] == os.path.normcase(
+        assert captured["project_path"] == (
             os.path.realpath(os.path.abspath("/tmp/proj/apps/api"))
         )
 
@@ -227,7 +227,7 @@ class TestRunnerInheritance:
 
         assert node.working_subdir is None
         # session uses the bare project_path
-        assert captured["project_path"] == os.path.normcase(
+        assert captured["project_path"] == (
             os.path.realpath(os.path.abspath("/tmp/proj"))
         )
 

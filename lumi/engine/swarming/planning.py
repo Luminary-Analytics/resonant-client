@@ -28,19 +28,19 @@ _INPUT_ECHOES = {"objective", "read_roots", "write_roots", "worker_slots", "coor
                  "graph_sha256", "untrusted_messages_to_orchestrator", "checked_changes", "team_record"}
 _ITEM_FIELDS = {"id", "objective", "role", "dependencies", "read_roots", "write_roots", "criteria"}
 _LOGICAL_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,79}\Z")
-_FENCE = re.compile(r"```(?:json)?\r?\n(.*)\r?\n```\Z", re.DOTALL)
-# One fenced JSON block inside prose ("I found both defects... ```json {...} ```").
-_EMBEDDED_FENCE = re.compile(r"```(?:json)?[ \t]*\r?\n(.*?)\r?\n[ \t]*```", re.DOTALL)
+# What may stand between a fence's opening ``` and the plan inside it.
+_FENCE_OPENING = re.compile(r"(?:json)?[ \t]*\r?\n[ \t]*")
 _FILE_READERS = FILE_TOOL_NAMES - {"artifact_read"}
 # One closing tag or special token at the end of a reply: chat-template residue
 # a live model appended after its JSON (a "}" followed by "</function>" and "</tool_call>").
 _TEMPLATE_TAIL = re.compile(r"(?:</[A-Za-z_][^<>\s]{0,40}>|<\|[^|<>\s]{1,40}\|>)\Z")
-# Stray closing brackets after a complete object: a live model ended a closing
-# turn's plan with a second "}". Anything else after the object still refuses it.
-_STRAY_CLOSERS = re.compile(r"[\s}\]]{1,16}\Z")
-# How many "{" a reply without a fence is searched from for its one plan object
-# (_embedded_plan); a reply with more is refused rather than searched further.
+# Reasoning an OpenAI-compatible server leaves in the reply's text when it
+# doesn't separate it (<think>…</think>): the model's draft, not its answer.
+_THINKING_TAG = re.compile(r"</?think(?:ing)?>")
+# How many "{" that start no complete JSON value a reply may hold; a reply with
+# more is refused rather than searched further (each failed parse reads on).
 _PLAN_SCAN_LIMIT = 32
+_ONE_OBJECT = "Coordinator output must be one strict JSON object"
 
 
 class PlanRejected(ValueError):
@@ -168,62 +168,116 @@ def _scoped_id(run_id: str, logical_id: str, namespace: str | None = None) -> st
     return "work_" + hashlib.sha256(encoded).hexdigest()
 
 
-def _json_object(source: str) -> Any:
-    """The proposal's JSON, tolerating two near misses a live model made and nothing else.
+def _without_reasoning(text: str) -> str:
+    """The reply without its ``<think>``/``<thinking>`` blocks, which are the model's draft.
 
-    A complete object followed only by stray closing brackets, or an object
-    whose last closing brace is missing (every value complete, so nothing was
-    cut short), parses as that object. Any other malformed text is refused.
+    A block that is never closed, or a closing tag without its opening one,
+    leaves the answer unclear, so the reply is refused. Searches only move
+    forward, so this takes linear time.
     """
-    def load(text):
-        return json.loads(text, object_pairs_hook=_object, parse_constant=_constant, parse_float=_float)
-    try:
-        return load(source)
-    except json.JSONDecodeError as exc:
-        if not source.startswith("{"):
-            raise
-        failure = exc
-    decoder = json.JSONDecoder(object_pairs_hook=_object, parse_constant=_constant, parse_float=_float)
-    try:
-        value, end = decoder.raw_decode(source)
-    except json.JSONDecodeError:
-        pass
-    else:
-        if _STRAY_CLOSERS.fullmatch(source[end:]):
-            return value
-        raise failure
-    try:
-        return load(source + "}")
-    except json.JSONDecodeError:
-        raise failure from None
+    lowered = text.lower()
+    kept: list[str] = []
+    index = 0
+    while (tag := _THINKING_TAG.search(lowered, index)) is not None:
+        closing = "</" + tag.group(0)[1:]
+        end = -1 if tag.group(0).startswith("</") else lowered.find(closing, tag.end())
+        if end == -1:
+            raise PlanRejected(f"{_ONE_OBJECT}, and the reply has a thinking tag without its pair")
+        kept.append(text[index:tag.start()])
+        index = end + len(closing)
+    kept.append(text[index:])
+    return "".join(kept)
 
 
-def _embedded_plan(source: str) -> str | None:
-    """The one complete JSON object with the plan's own fields in a reply without a fence, or None.
+def _fragment_keys(source: str, start: int) -> set[str]:
+    """The first-level keys of an object at ``start`` that doesn't parse (cut short or malformed).
 
-    Chat models such as Claude and GPT tend to add a sentence before or after
-    the JSON even when told to return only JSON ("Here is my plan:", "This
-    splits the work..."). The prose is dropped only when exactly one object in
-    the reply has ``summary``, ``use_team`` and ``work_items``; two such
-    objects, or none, leave the reply refused as before. The object found is
-    validated like any proposal.
+    A tolerant scan: strings are skipped as JSON strings, brackets counted,
+    and it stops where the object closes or the reply ends.
+    """
+    keys: set[str] = set()
+    depth = 0
+    index = start
+    while index < len(source):
+        char = source[index]
+        if char == '"':
+            end = index + 1
+            while end < len(source) and source[end] != '"':
+                end += 2 if source[end] == "\\" else 1
+            after = end + 1
+            while after < len(source) and source[after] in " \t\r\n":
+                after += 1
+            if depth == 1 and after < len(source) and source[after] == ":":
+                keys.add(source[index + 1:end])
+            index = end + 1
+            continue
+        if char in "{[":
+            depth += 1
+        elif char in "}]":
+            depth -= 1
+            if depth <= 0:
+                break
+        index += 1
+    return keys
+
+
+def _holds_plan(value: Any) -> bool:
+    """Whether a parsed object has one of a plan's fields, or holds an object that does."""
+    pending = [value]
+    while pending:
+        item = pending.pop()
+        if type(item) is dict:
+            if _TOP_FIELDS & set(item):
+                return True
+            pending.extend(item.values())
+        elif type(item) is list:
+            pending.extend(item)
+    return False
+
+
+def _plan_candidates(source: str) -> list[tuple[int, Any]]:
+    """Every object in the reply that looks like a plan, fenced or not: (where it starts, its value).
+
+    An object looks like a plan when it has one of the plan's fields
+    (``summary``, ``use_team``, ``work_items``) or holds an object that does.
+    One that doesn't parse, such as an alternative cut short, looks like a plan
+    when its first-level keys include one; its value is None. A complete
+    object's contents are read with it, never as further candidates.
     """
     decoder = json.JSONDecoder(object_pairs_hook=_object, parse_constant=_constant, parse_float=_float)
-    found: list[str] = []
-    index, tries = source.find("{"), 0
+    found: list[tuple[int, Any]] = []
+    failures = 0
+    index = source.find("{")
     while index != -1:
-        tries += 1
-        if tries > _PLAN_SCAN_LIMIT:
-            return None  # Too many candidates to tell a unique plan apart.
         try:
             value, end = decoder.raw_decode(source, index)
         except (json.JSONDecodeError, PlanRejected, RecursionError, ValueError):
+            failures += 1
+            if failures > _PLAN_SCAN_LIMIT:
+                raise PlanRejected(f"{_ONE_OBJECT}; the reply has too many braces to tell a plan apart") from None
+            if _TOP_FIELDS & _fragment_keys(source, index):
+                found.append((index, None))
             index = source.find("{", index + 1)
             continue
-        if type(value) is dict and _TOP_FIELDS <= set(value):
-            found.append(source[index:end])
+        if _holds_plan(value):
+            found.append((index, value))
         index = source.find("{", end)
-    return found[0] if len(found) == 1 else None
+    return found
+
+
+def _completed(source: str, start: int) -> Any:
+    """The plan at ``start`` that doesn't parse, when only its last closing brace is missing.
+
+    A live model's closing turn left it out, every value complete. The plan
+    runs to the end of its fence if it has one, else of the reply; any other
+    malformed text is refused.
+    """
+    opening = source.rfind("```", 0, start)
+    end = -1
+    if opening != -1 and _FENCE_OPENING.fullmatch(source, opening + 3, start):
+        end = source.find("```", start)
+    unit = source[start:end] if end != -1 else source[start:]
+    return json.loads(unit + "}", object_pairs_hook=_object, parse_constant=_constant, parse_float=_float)
 
 
 def parse_plan(
@@ -232,9 +286,13 @@ def parse_plan(
 ) -> CoordinatorPlan:
     """Parse one strict JSON proposal and admit its complete requested scopes.
 
-    A single optional JSON fence is accepted, with prose before or after it,
-    and so is prose around the one plan object of a reply without a fence
-    (_embedded_plan). No scope is clipped to fit policy;
+    The reply must hold exactly one object that looks like a plan
+    (_plan_candidates), fenced or not, and it must start a line of its own:
+    one quoted inside a sentence or a code span is refused, and so is a reply
+    with a second one, even one cut short. ``<think>`` blocks are dropped first
+    (_without_reasoning). A fence, prose on the lines before the plan and
+    whatever follows it are dropped; a plan missing only its last closing
+    brace is completed. No scope is clipped to fit policy;
     broad requests are denied. Role tools are derived from policy, never from
     model fields. Implement items require actual write scope/capability; explore
     and verify items are read-only. Worker count is scheduling policy, not a cap
@@ -260,41 +318,32 @@ def parse_plan(
         run_id.encode("utf-8")
     except UnicodeError as exc:
         raise PlanRejected("A coordinator proposal must be valid UTF-8 text") from exc
-    source = text.strip()
-    for _ in range(8):  # Residue only: any other text after the JSON still refuses the plan.
+    # Refusals name the rule, never the reply: rejected text may hold credentials.
+    source = _without_reasoning(text).strip()
+    for _ in range(8):  # Chat-template residue at the very end, such as "</function></tool_call>".
         tail = _TEMPLATE_TAIL.search(source)
         if tail is None:
             break
         source = source[:tail.start()].rstrip()
-    fenced = "```" in source
-    if source.startswith("```"):
-        fence = _FENCE.fullmatch(source)
-        if fence is None:
-            # Prose after exactly one fenced block is as unambiguous as prose before it.
-            fences = _EMBEDDED_FENCE.findall(source)
-            if len(fences) != 1:
-                raise PlanRejected("Only one complete JSON fence is permitted")
-            source = fences[0]
-        else:
-            source = fence.group(1)
-    elif not source.startswith("{"):
-        # Prose around exactly one fenced block is still unambiguous; two
-        # blocks, or none, leave the whole text to be the JSON object.
-        fences = _EMBEDDED_FENCE.findall(source)
-        if len(fences) == 1:
-            source = fences[0]
-    try:
+    # Chat models tend to write a sentence before or after the JSON, even when
+    # told to return only JSON, and some fence it. That prose is dropped only
+    # when the plan is unambiguous: one object in the whole reply looks like a
+    # plan, fenced or not, and it starts a line. An example, a draft, a quoted
+    # worker finding or an alternative (even one cut short) makes a second.
+    candidates = _plan_candidates(source)
+    if not candidates:
+        raise PlanRejected(_ONE_OBJECT)
+    if len(candidates) > 1:
+        raise PlanRejected(f"{_ONE_OBJECT}, and the reply has more than one object with a plan's fields "
+                           "(summary, use_team, work_items)")
+    start, proposal = candidates[0]
+    if source[source.rfind("\n", 0, start) + 1:start].strip():
+        raise PlanRejected(f"{_ONE_OBJECT} starting a line of its own, not quoted inside other text")
+    if proposal is None:
         try:
-            proposal = _json_object(source)
-        except (json.JSONDecodeError, RecursionError, ValueError):
-            # Without a fence, prose may surround the one plan object (_embedded_plan).
-            embedded = None if fenced else _embedded_plan(source)
-            if embedded is None:
-                raise
-            proposal = _json_object(embedded)
-    except (json.JSONDecodeError, RecursionError, ValueError) as exc:
-        # Do not echo a model response; rejected extras may contain credentials.
-        raise PlanRejected("Coordinator output must be one strict JSON object") from exc
+            proposal = _completed(source, start)
+        except (json.JSONDecodeError, RecursionError, ValueError) as exc:
+            raise PlanRejected(_ONE_OBJECT) from exc
     if type(proposal) is not dict or not _TOP_FIELDS <= set(proposal) <= _TOP_FIELDS | _INPUT_ECHOES:
         raise PlanRejected("Coordinator proposal has missing or unsupported fields")
     summary = _text(proposal["summary"])

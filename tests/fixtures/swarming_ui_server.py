@@ -5,7 +5,10 @@ worker Session, file tools and durable state execute normally. Never a live-mode
 or packaged-desktop qualification. Invoked by swarm_app.browser.cjs.
 
 The conversation starts in a new install's mode (Auto-edit), or in the one
-``--mode <ask|auto-edit|plan|bypass>`` names; the evidence reports it.
+``--mode <ask|auto-edit|plan|bypass>`` names; the evidence reports it. Its model
+is Ollama's ``fixture-native`` unless ``--session-model <provider>:<model>``
+names another, and ``--providers`` lists several providers' models, as the model
+menu would (no key is saved and nothing reaches them).
 """
 from __future__ import annotations
 
@@ -44,6 +47,13 @@ def main() -> None:
     for key in tuple(os.environ):
         if any(part in key.upper() for part in ("API_KEY", "TOKEN", "SECRET", "PASSWORD")):
             os.environ.pop(key)
+    options = sys.argv[2:]
+    if "--providers" in options:
+        # Settings are written below; nothing may reach the real credential store.
+        os.environ["LUMI_KEYCHAIN"] = "off"
+    # The conversation's provider and model: ``--session-model codex:gpt-5-codex``.
+    session_provider, _, session_name = (options[options.index("--session-model") + 1]
+                                         if "--session-model" in options else "ollama:fixture-native").partition(":")
     os.chdir(workspace)
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
     # Fail closed on accidental provider/account discovery, even if future
@@ -191,11 +201,11 @@ def main() -> None:
     if "--collaboration" in sys.argv[2:]:
         other.append_display_events([{"event": "user_message", "text": "Prepare my independent collaboration investigation."}])
     other.save()
-    current = state.project.create_session("ollama", "fixture-native")
+    current = state.project.create_session(session_provider, session_name)
     current.title = "Team fixture conversation"
     current.append_display_events([{"event": "user_message", "text": "Inspect this isolated fixture project."}])
     current.save()
-    spec = BackendSpec("ollama", "fixture-native")
+    spec = BackendSpec(session_provider, session_name)
     state.backend_spec = spec
     state.backend = StreamingBackend(name=spec.backend_type, model=spec.model)
     state.session = Session(backend=state.backend, project_instructions="Isolated browser fixture.")
@@ -206,6 +216,23 @@ def main() -> None:
         state.apply_permission_mode(arguments[arguments.index("--mode") + 1], session=state.session)
     # An orchestrated fixture also offers a second model for the team's workers.
     state.available_backends = {"ollama": {"models": [spec.model] + (["fixture-worker"] if "--autonomous" in sys.argv[2:] else [])}}
+    if "--providers" in options:
+        # Several providers' models, as the model menu lists them (swarm_providers.browser.cjs):
+        # the Team panel may offer workers only those a team runs on.
+        state.settings.set("connections", None, [
+            {"id": "nim", "name": "NVIDIA NIM", "type": "openai-compatible",
+             "base_url": "https://integrate.api.nvidia.com/v1"},
+            {"id": "vertex", "name": "Claude on Vertex", "type": "anthropic-vertex", "region": "us-east5",
+             "project": "acme-ai", "models": ["claude-sonnet-5@20260901"]}])
+        state.available_backends = {
+            "anthropic": {"label": "Anthropic", "models": ["claude-sonnet-5", "claude-haiku-4-5-20251001"]},
+            "openai": {"label": "OpenAI", "models": ["gpt-5", "gpt-5-mini"]},
+            "codex": {"models": ["gpt-5-codex"]}, "claude-code": {"models": ["sonnet"]},
+            "conn-nim": {"label": "NVIDIA NIM", "models": ["nvidia/nemotron-3-super-120b-a12b"],
+                         "connection_type": "openai-compatible"},
+            "conn-vertex": {"label": "Claude on Vertex", "models": ["claude-sonnet-5@20260901"],
+                            "connection_type": "anthropic-vertex"},
+            "ollama": {"models": ["fixture-native"]}}
     state.detect_backends = lambda *args, **kwargs: None
     state._swarm_desktop = SwarmRuntime(state.settings, backend_factory=factory, state_root=lambda _: root / "swarm-state")
     history_evidence = None

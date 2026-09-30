@@ -11,7 +11,10 @@ and a pywebview desktop shell. Anthropic, OpenAI, Ollama, EXO, Kimi, OpenRouter,
 custom connections supply models to Lumi's engine loop. `anthropic_api.py` (Messages
 API, direct/Bedrock/Vertex) and `openai_api.py` (Responses API, OpenAI/Azure) render
 history with the shared Chat Completions converter, then translate it, so tool-call
-repair behaves the same everywhere. `connections.py` validates user-defined
+repair behaves the same everywhere. `claude_models.py` says how each Claude family
+takes thinking, effort and output length; the Messages adapter sends thinking levels
+in that shape (none to an id it can't place) and replays signed thinking in its
+original place, only while the conversation it is bound to is unchanged. `connections.py` validates user-defined
 connections and builds their backends; `auth_tokens.py` supplies their OAuth
 and Entra ID tokens and client-certificate TLS contexts. Codex and Claude Code adapters instead run installed
 CLIs, whose native tool execution remains inside those CLIs.

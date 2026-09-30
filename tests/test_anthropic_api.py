@@ -38,7 +38,7 @@ def _text_response(text: str = "Hello") -> bytes:
     )
 
 
-def _tool_loop_history(provider_model: str = "claude-a", with_thinking: bool = True) -> list[dict]:
+def _tool_loop_history(provider_model: str = "claude-sonnet-5", with_thinking: bool = True) -> list[dict]:
     details = [{"type": "thinking", "thinking": "Look first.", "signature": "sig-1", "provider": "anthropic"}]
     return [
         {"role": "user", "content": "Read a.py"},
@@ -50,7 +50,7 @@ def _tool_loop_history(provider_model: str = "claude-a", with_thinking: bool = T
 
 
 def test_tool_loop_translates_to_alternating_blocks_with_sanitized_ids():
-    backend = AnthropicBackend("key", "claude-a")
+    backend = AnthropicBackend("key", "claude-sonnet-5")
     payload = backend._payload("", _tool_loop_history(), "Be helpful.", TOOLS, None)
 
     roles = [m["role"] for m in payload["messages"]]
@@ -68,24 +68,47 @@ def test_tool_loop_translates_to_alternating_blocks_with_sanitized_ids():
     assert payload["tools"][0]["input_schema"]["required"] == ["path"]
 
 
+def test_a_request_offering_no_tools_after_a_tool_loop_keeps_them_and_lets_none_run():
+    # A team participant's last request offers no tools. The API still needs
+    # the definitions the history's tool calls refer to, and a thinking block's
+    # signature binds the tool set, so the same ones go out with tool_choice none.
+    backend = AnthropicBackend("key", "claude-sonnet-5", thinking="high")
+    offered = backend._payload("Read a.py", [], "Be helpful.", TOOLS, None)
+    assert "tool_choice" not in offered
+    closing = backend._payload("", _tool_loop_history(), "Be helpful.", [], None)
+    assert closing["tools"] == offered["tools"] and closing["tool_choice"] == {"type": "none"}
+    # The turn keeps one thinking mode: the closing request thinks as the others did.
+    assert closing["thinking"] == offered["thinking"] == {"type": "adaptive"}
+    assert closing["output_config"] == offered["output_config"] == {"effort": "high"}
+    assert closing["messages"][1]["content"][0]["signature"] == "sig-1"
+    # Nothing to keep: a conversation without tool calls, or tools never offered here.
+    assert "tools" not in backend._payload("Hi", [], "Be helpful.", [], None)
+    fresh = AnthropicBackend("key", "claude-sonnet-5")._payload("", _tool_loop_history(), "", [], None)
+    assert "tools" not in fresh and "tool_choice" not in fresh
+
+
 def test_thinking_is_replayed_only_to_the_model_that_produced_it():
-    other = AnthropicBackend("key", "claude-b")
-    payload = other._payload("", _tool_loop_history("claude-a"), "", TOOLS, None)
+    other = AnthropicBackend("key", "claude-opus-4-8")
+    payload = other._payload("", _tool_loop_history("claude-sonnet-5"), "", TOOLS, None)
     assert [b["type"] for b in payload["messages"][1]["content"]] == ["text", "tool_use"]
 
 
-def test_thinking_budget_follows_mode_and_drops_for_an_open_loop_without_thinking():
-    fresh = AnthropicBackend("key", "claude-a", thinking="high")
+def test_a_thinking_budget_follows_the_level_on_models_that_take_one_and_drops_for_an_open_loop():
+    # Claude Haiku 4.5 takes a fixed budget only (lumi/claude_models.py).
+    model = "claude-haiku-4-5-20251001"
+    fresh = AnthropicBackend("key", model, thinking="high")
     payload = fresh._payload("Plan the change", [], "", TOOLS, None)
     assert payload["thinking"] == {"type": "enabled", "budget_tokens": 12288}
-    assert payload["max_tokens"] > 12288
+    assert payload["max_tokens"] > 12288 and "output_config" not in payload
 
-    switched = AnthropicBackend("key", "claude-a", thinking="high")
-    payload = switched._payload("", _tool_loop_history(with_thinking=False), "", TOOLS, None)
+    # With a budget, the API refuses a tool loop whose turn started without
+    # thinking (a switch of models mid-loop), so that request thinks no more.
+    switched = AnthropicBackend("key", model, thinking="high")
+    payload = switched._payload("", _tool_loop_history(model, with_thinking=False), "", TOOLS, None)
     assert "thinking" not in payload
 
     with pytest.raises(ValueError):
-        AnthropicBackend("key", "claude-a", thinking="extreme")
+        AnthropicBackend("key", model, thinking="extreme")
 
 
 def test_stream_emits_text_tool_call_signed_thinking_and_cache_usage():
@@ -109,18 +132,20 @@ def test_stream_emits_text_tool_call_signed_thinking_and_cache_usage():
             {"type": "message_stop"},
         ))
 
-    backend = AnthropicBackend("sk-test", "claude-a", thinking="low", transport=httpx.MockTransport(handler))
+    backend = AnthropicBackend("sk-test", "claude-opus-4-8", thinking="low", transport=httpx.MockTransport(handler))
     events = list(backend.stream("Read a.py", [], "System.", TOOLS))
 
     assert requests[0].url.path == "/v1/messages"
     assert requests[0].headers["x-api-key"] == "sk-test"
     assert requests[0].headers["anthropic-version"] == anthropic_api.API_VERSION
+    body = json.loads(requests[0].content)
+    assert body["thinking"] == {"type": "adaptive"} and body["output_config"] == {"effort": "low"}
     assert (EVENT_TEXT_DELTA, {"delta": "Reading."}) in events
     call = next(payload for kind, payload in events if kind == EVENT_TOOL_CALL)
     assert call["arguments"] == '{"path": "a.py"}' and call["call_id"] == "toolu_1"
     assert call["reasoning_details"] == [{"type": "thinking", "thinking": "Need a.py", "signature": "sig-9",
                                           "provider": "anthropic"}]
-    assert call["provider_model"] == "claude-a" and call["assistant_content"] == "Reading."
+    assert call["provider_model"] == "claude-opus-4-8" and call["assistant_content"] == "Reading."
     done = next(payload for kind, payload in events if kind == EVENT_DONE)
     assert done["stats"] == {"input_tokens": 18, "output_tokens": 7, "cached_tokens": 5,
                              "cache_write_tokens": 3, "provider": "anthropic"}

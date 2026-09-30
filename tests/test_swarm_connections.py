@@ -1,4 +1,4 @@
-"""Team workers on a Lumi connection: OpenAI-compatible endpoints such as NVIDIA NIM."""
+"""Team participants on a Lumi connection: NVIDIA NIM, OpenAI, Azure OpenAI, Anthropic, Claude on Bedrock."""
 
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
@@ -30,28 +30,64 @@ def _connection(**changes):
             "base_url": "https://integrate.api.nvidia.com/v1", "auth": "bearer", **changes}
 
 
-def test_only_openai_compatible_connections_without_sign_in_reach_team_workers(tmp_path):
+AZURE = {"id": "azure", "name": "Azure OpenAI", "type": "azure-openai", "base_url": "https://acme.openai.azure.com/openai/v1",
+         "models": ["gpt-5-deployment"]}
+BEDROCK = {"id": "bedrock", "name": "Claude on Bedrock", "type": "anthropic-bedrock", "region": "us-east-1",
+           "models": ["us.anthropic.claude-sonnet-5-v1:0"], "auth": "bearer"}
+VERTEX = {"id": "vertex", "name": "Claude on Vertex", "type": "anthropic-vertex", "region": "us-east5",
+          "project": "acme-ai", "models": ["claude-sonnet-5@20260901"]}
+
+
+def test_connections_whose_adapter_keeps_the_contract_and_use_a_key_reach_team_participants(tmp_path):
     assert team_connection(_connection())["base_url"] == "https://integrate.api.nvidia.com/v1"
     assert team_connection(_connection(auth="header", auth_header="x-api-key"))["auth"] == "header"
     assert team_connection(_connection(auth="none"))["auth"] == "none"
-    with pytest.raises(ValueError, match="OpenAI-compatible"):
-        team_connection({**_connection(), "type": "anthropic"})
+    # The Responses and Messages adapters keep the supervised request contract too.
+    assert team_connection({**_connection(), "type": "anthropic"})["type"] == "anthropic"
+    assert team_connection({**_connection(), "type": "openai", "base_url": ""})["type"] == "openai"
+    assert team_connection(AZURE)["auth"] == "header"
+    assert team_connection(BEDROCK)["type"] == "anthropic-bedrock"
+    # A participant uses a key, never the person's sign-in.
     with pytest.raises(ValueError, match="signs in with oauth"):
         team_connection(_connection(auth="oauth", token_url="https://login.example/token", client_id="lumi"))
+    with pytest.raises(ValueError, match="signs in with entra"):
+        team_connection({**AZURE, "auth": "entra"})
+    with pytest.raises(ValueError, match="AWS credentials.*Bedrock API key"):
+        team_connection({**BEDROCK, "auth": "aws"})
+    with pytest.raises(ValueError, match="Vertex AI with your Google account"):
+        team_connection(VERTEX)
     certificate = tmp_path / "client.pem"
     certificate.write_text("fixture", encoding="utf-8")
     with pytest.raises(ValueError, match="client certificate"):
         team_connection(_connection(client_cert=str(certificate)))
+    # A capability pack's provider runs its own process.
+    with pytest.raises(ValueError, match="capability pack's provider"):
+        team_connection({"id": "pack", "name": "Pack model", "type": "extension", "pack": "acme.models",
+                         "provider": "local", "auth": "none"})
 
 
-def test_policy_admits_connection_names_but_never_cli_loops():
+def test_policy_admits_api_providers_and_connection_names_but_never_cli_loops():
     assert ModelSelection("conn-nim", "moonshotai/kimi-k3").provider == "conn-nim"
     assert PolicyProfile(1, frozenset({"file_read"}), frozenset({"conn-nim", "ollama"})).allowed_providers
-    for name in ("codex", "claude-code", "conn-", "conn_nim", "conn-NIM", "anthropic"):
+    for name in ("anthropic", "openai"):
+        assert ModelSelection(name, "model").provider == name
+        assert PolicyProfile(1, frozenset({"file_read"}), frozenset({name})).allowed_providers == {name}
+    for name in ("codex", "claude-code", "conn-", "conn_nim", "conn-NIM"):
         with pytest.raises(PolicyDenied):
             ModelSelection(name, "model")
         with pytest.raises(ValueError):
             PolicyProfile(1, frozenset({"file_read"}), frozenset({name}))
+
+
+def test_team_providers_come_from_the_adapters_capability():
+    from lumi.backends import native_backend_class
+    from lumi.engine.swarming.policy import NATIVE_PROVIDERS
+
+    assert NATIVE_PROVIDERS == {"anthropic", "exo", "kimi", "ollama", "openai", "openrouter", "sonn"}
+    assert all(native_backend_class(name).supervised_requests is True for name in NATIVE_PROVIDERS)
+    # The CLI adapters run their own tool loops and say so.
+    assert native_backend_class("codex").supervised_requests is False
+    assert native_backend_class("claude-code").supervised_requests is False
 
 
 def _initial(tmp_path, backend, connection):
@@ -66,12 +102,18 @@ def test_the_child_contract_rebuilds_only_its_matching_connection(tmp_path):
     checked = _validate_initial(_initial(tmp_path, spec, _connection()))["connection"]
     assert (checked["id"], checked["type"]) == ("nim", "openai-compatible")
     assert _validate_initial(_initial(tmp_path, BackendSpec("ollama", "chosen"), None))["connection"] is None
+    for native in ("anthropic", "openai"):
+        assert _validate_initial(_initial(tmp_path, BackendSpec(native, "chosen", api_key=KEY), None))["connection"] is None
+    claude = _validate_initial(_initial(tmp_path, BackendSpec("conn-nim", "claude-sonnet-5", api_key=KEY),
+                                        {**_connection(), "type": "anthropic"}))["connection"]
+    assert claude["type"] == "anthropic"
     for backend, connection, reason in (
         (BackendSpec("ollama", "chosen"), _connection(), "native provider takes no connection"),
         (spec, None, "captured connection"),
         (spec, _connection(id="other"), "differs from the captured provider"),
-        (spec, {**_connection(), "type": "anthropic"}, "OpenAI-compatible"),
+        (BackendSpec("conn-vertex", "claude"), VERTEX, "Google account"),
         (BackendSpec("codex", "gpt"), None, "native provider or connection"),
+        (BackendSpec("claude-code", "sonnet"), None, "native provider or connection"),
     ):
         with pytest.raises(ValueError, match=reason):
             _validate_initial(_initial(tmp_path, backend, connection))
@@ -86,18 +128,54 @@ def test_the_runtime_captures_the_connection_behind_a_team_model():
         pass
 
     settings = _Settings(connections=[_connection(), _connection(id="claude", name="Claude", type="anthropic",
-                                                                base_url="https://api.anthropic.com")])
+                                                                base_url="https://api.anthropic.com"),
+                                      AZURE, BEDROCK, VERTEX])
     runtime = SwarmRuntime(settings, backend_factory=lambda spec: None)
-    assert runtime.team_model(BackendSpec("ollama", "chosen")) == {}
+    for native in ("ollama", "anthropic", "openai"):
+        assert runtime.team_model(BackendSpec(native, "chosen")) == {}
     captured = runtime.team_model(BackendSpec("conn-nim", "moonshotai/kimi-k3"))
     assert list(captured) == ["conn-nim"] and captured["conn-nim"]["base_url"].endswith("/v1")
-    for spec, reason in ((BackendSpec("conn-claude", "claude"), "isn't an OpenAI-compatible connection"),
+    assert runtime.team_model(BackendSpec("conn-claude", "claude-sonnet-5"))["conn-claude"]["type"] == "anthropic"
+    assert runtime.team_model(BackendSpec("conn-azure", "gpt-5-deployment"))["conn-azure"]["type"] == "azure-openai"
+    for spec, reason in ((BackendSpec("conn-vertex", "claude"), "Google account.*Team runs on Anthropic"),
                          (BackendSpec("conn-gone", "model"), "connection was removed"),
-                         (BackendSpec("codex", "gpt"), "OpenAI-compatible connection"),
-                         (BackendSpec("conn-nim", ""), "and a model")):
+                         (BackendSpec("codex", "gpt"), "Team can't run on Codex: Codex runs its own tool loop"),
+                         (BackendSpec("claude-code", "sonnet"), "Team can't run on Claude Code"),
+                         (BackendSpec("conn-nim", ""), "Choose a model")):
         with pytest.raises(Conflict, match=reason):
             runtime.team_model(spec)
     assert "connection was removed" in runtime._team_unavailable(BackendSpec("conn-gone", "model"))
+    # The panel names a connection by its own name, whether a team can use it or not.
+    assert [runtime._provider_label(name) for name in ("conn-vertex", "conn-claude", "conn-gone", "anthropic")] == [
+        "Claude on Vertex", "Claude", "conn-gone", "anthropic"]
+    # The refusal says which connections work, and what to do.
+    refusal = runtime._team_unavailable(BackendSpec("codex", "gpt-5-codex"))
+    for supported in ("Anthropic, OpenAI, OpenRouter, Ollama, EXO, Kimi and SONN", "OpenAI-compatible (such as NVIDIA NIM)",
+                      "Azure OpenAI", "Claude on Bedrock with a Bedrock API key", "Switch this conversation"):
+        assert supported in refusal
+    # The panel offers workers' models from these only (swarm_view.js).
+    from lumi.engine.swarming.connections import team_providers
+    assert team_providers(settings) == sorted({"anthropic", "exo", "kimi", "ollama", "openai", "openrouter", "sonn",
+                                               "conn-nim", "conn-claude", "conn-azure", "conn-bedrock"})
+
+
+def test_claude_on_bedrock_needs_its_bedrock_api_key_for_a_team(monkeypatch):
+    from lumi.engine.swarming.connections import key_refusal, participant_refusal, team_connection as checked
+    from lumi.anthropic_api import AnthropicBackend
+
+    bedrock = checked(BEDROCK)
+    monkeypatch.delenv("AWS_BEARER_TOKEN_BEDROCK", raising=False)
+    assert "Bedrock API key" in key_refusal(bedrock, "")
+    assert key_refusal(bedrock, "bedrock-api-key") == "" and key_refusal(checked(_connection()), "") == ""
+    monkeypatch.setenv("AWS_BEARER_TOKEN_BEDROCK", "environment-bedrock-key")
+    assert key_refusal(bedrock, "") == ""
+    monkeypatch.delenv("AWS_BEARER_TOKEN_BEDROCK")
+    # A participant's backend that would sign in (the AWS chain, Google, OAuth) is refused where it's built.
+    keyless = AnthropicBackend("", "m", platform="bedrock", region="us-east-1")
+    assert keyless.uses_sign_in and "never a sign-in" in participant_refusal(keyless)
+    assert participant_refusal(AnthropicBackend("bedrock-api-key", "m", platform="bedrock", region="us-east-1")) == ""
+    assert participant_refusal(AnthropicBackend("", "m", platform="vertex", region="us-east5", project="p"))
+    assert participant_refusal(AnthropicBackend("sk-ant-fixture", "claude-sonnet-5")) == ""
 
 
 # ── A real child worker on a loopback Chat Completions endpoint ──────────────

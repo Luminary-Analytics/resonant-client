@@ -37,7 +37,8 @@ def test_grep_pattern_is_not_rewritten_as_a_project_path(tmp_path):
     )
 
     assert prepared["pattern"] == "needle"
-    assert prepared["path"] == os.path.normcase(os.path.realpath(tmp_path))
+    # As spelled on disk, never case-folded (tests/test_file_name_case.py).
+    assert prepared["path"] == os.path.realpath(tmp_path)
 
 
 @pytest.mark.parametrize("tool_name", ["glob", "grep"])
@@ -86,7 +87,7 @@ def test_grep_file_glob_cannot_supply_a_path(tmp_path):
 
 def test_git_cwd_defaults_to_session_working_directory(tmp_path):
     prepared = _session(tmp_path)._prepare_workspace_tool_args("git_status", {})
-    assert prepared["cwd"] == os.path.normcase(os.path.realpath(tmp_path))
+    assert prepared["cwd"] == os.path.realpath(tmp_path)
 
 
 def test_batch_rejects_mutating_child_before_execution(tmp_path):

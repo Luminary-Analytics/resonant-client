@@ -11,6 +11,8 @@ from dataclasses import asdict, dataclass, replace
 from fnmatch import fnmatchcase
 from typing import Any, Iterable
 
+from .claude_models import ClaudeModel, claude_model
+
 
 _TEXT_MODALITY = ("text",)
 
@@ -132,7 +134,7 @@ class ModelCapabilities:
         return asdict(self)
 
 
-def default_context_window(model: str) -> int:
+def default_context_window(model: str, *, claude: bool = False) -> int:
     lower = str(model or "").lower()
     if lower.startswith("kimi-k3"):
         return 1_048_576
@@ -144,7 +146,7 @@ def default_context_window(model: str) -> int:
         return 131_072
     # Hosted frontier families (API adapters). Conservative published windows;
     # a connection can override them.
-    if "claude" in lower:
+    if claude or "claude" in lower:
         return 200_000
     if lower.startswith("gpt-5") or "gpt-5" in lower:
         return 400_000
@@ -159,7 +161,13 @@ def default_context_window(model: str) -> int:
     return 32_768
 
 
-def infer_model_capabilities(model: str) -> ModelCapabilities:
+def infer_model_capabilities(model: str, *, claude: ClaudeModel | None = None) -> ModelCapabilities:
+    """Conservative capabilities for ``model`` from its name.
+
+    ``claude``: the Claude family the model belongs to, whatever its name
+    (the Anthropic adapter decides: a Bedrock inference profile ARN doesn't
+    say it's Claude). Without it, a name with "claude" in it is looked up.
+    """
     lower = str(model or "").lower()
     base = lower.split(":", 1)[0]
     modalities = {"text"}
@@ -174,12 +182,16 @@ def infer_model_capabilities(model: str) -> ModelCapabilities:
     reasoning_can_disable: bool | None = None
     prompt_caching: bool | None = None
 
-    if "claude" in lower:
+    if claude is not None or "claude" in lower:
+        # How each Claude family takes thinking (lumi/claude_models.py): the
+        # oldest can't think (nor can Lumi set a level for an id it doesn't
+        # recognize), and on the newest "off" is the lowest effort.
+        family = claude or claude_model(model)
         modalities.add("image")
         native_tools = True
         parallel_tools = True
-        reasoning_levels = ("low", "med", "high", "max")
-        reasoning_can_disable = True
+        reasoning_levels = ("low", "med", "high", "max") if family.thinking != "none" else ()
+        reasoning_can_disable = family.can_turn_off
         prompt_caching = True
         concurrency = 4
     elif base.startswith(("gpt-5", "o1", "o3", "o4")):
@@ -246,7 +258,7 @@ def infer_model_capabilities(model: str) -> ModelCapabilities:
 
     return ModelCapabilities(
         model=model,
-        context_window=default_context_window(model),
+        context_window=default_context_window(model, claude=claude is not None),
         modalities=tuple(sorted(modalities, key=("text", "image", "audio", "video", "document").index)),
         native_tools=native_tools,
         parallel_tools=parallel_tools,

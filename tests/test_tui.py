@@ -709,3 +709,39 @@ def test_the_remote_prompt_names_the_folder_as_written(tmp_path, screen, monkeyp
 
     assert prompts == ["R&D ❯ "]
     assert "  ✓ Connected to ws://engine.test/[/]" in screen()
+
+
+
+def test_a_limit_too_small_for_a_models_thinking_is_said_as_written(wide_screen):
+    # The Anthropic adapter keeps an output limit the person set, and says so
+    # when a model's thinking at this level may need more.
+    message = "claude-[/]opus thinks within the output limit you set (4,096 tokens). Your limit stands."
+    tui.consume_events(iter([
+        {"event": "backend.status", "kind": "output_limit", "message": message, "limit": 4096, "needed": 16384},
+        {"event": "backend.status", "kind": "anthropic_retry", "message": "not shown"},
+        {"event": "session.end", "total_elapsed": 0.1, "total_steps": 1},
+    ]))
+    lines = wide_screen()
+    assert f"  {message}" in lines
+    assert not any("not shown" in line for line in lines)
+
+
+@pytest.mark.parametrize(("given", "limit", "chosen"), [(["--max-tokens", "2048"], 2048, True), ([], 4096, False)])
+def test_a_max_tokens_the_person_gives_is_sent_as_their_choice(tmp_path, wide_screen, monkeypatch, given, limit,
+                                                               chosen):
+    from lumi.backends import ChosenMaxTokens
+
+    monkeypatch.chdir(tmp_path)
+    limits = []
+    real = tui.build_session
+
+    def build_session(*args, **kwargs):
+        limits.append(kwargs["max_tokens"])
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(tui, "build_session", build_session)
+    _run_main(monkeypatch, tmp_path, ["--model", "llama3.1:8b", *given], "/quit\r")
+    # Given: the person's own limit, never raised for thinking. Not given: the
+    # terminal's usual 4,096, which an adapter may raise.
+    assert limits == [limit]
+    assert isinstance(limits[0], ChosenMaxTokens) is chosen

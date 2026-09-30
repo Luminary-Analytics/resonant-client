@@ -264,6 +264,48 @@ def test_saved_conversation_captured_before_async_work_and_foreign_target_reject
     assert replies[-1]["model"] == {"provider": "ollama", "model": "chosen", "label": "ollama"}
 
 
+@pytest.mark.parametrize("provider, model, available, notice", [
+    ("anthropic", "claude-sonnet-5", True, "Workers share scoped findings"),
+    ("openai", "gpt-5", True, "Workers share scoped findings"),
+    ("codex", "gpt-5-codex", False, "Team can't run on Codex: Codex runs its own tool loop"),
+    ("claude-code", "sonnet", False, "Team can't run on Claude Code: Claude Code runs its own tool loop"),
+])
+def test_the_team_panel_says_which_models_a_team_runs_on(tmp_path, monkeypatch, provider, model, available, notice):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    saved = tmp_path / "sessions"
+    saved.mkdir()
+    session_id = "20260930_123456_abcd"
+    monkeypatch.setattr(swarming, "is_valid_session_id", lambda value: value == session_id)
+    monkeypatch.setattr(swarming, "_sessions_dir", lambda _: saved)
+    (saved / f"{session_id}.json").write_text("{}")
+    settings = SettingsManager(tmp_path / "settings.json")
+    settings.set("connections", None, [
+        {"id": "nim", "name": "NVIDIA NIM", "type": "openai-compatible", "base_url": "https://integrate.api.nvidia.com/v1"},
+        {"id": "vertex", "name": "Claude on Vertex", "type": "anthropic-vertex", "region": "us-east5",
+         "project": "acme-ai", "models": ["claude-sonnet-5@20260901"]}])
+    service = SwarmRuntime(settings, state_root=lambda _: tmp_path / "state")
+    state = SimpleNamespace(project=SimpleNamespace(project_path=str(workspace), current_session=SimpleNamespace(id=session_id)),
+        backend_spec=BackendSpec(provider, model), settings=settings,
+        session=SimpleNamespace(project_instructions=""), _swarm_desktop=service)
+    replies = []
+
+    async def send(payload):
+        replies.append(payload)
+    try:
+        asyncio.run(swarming.command(state, send, {"request_id": "view", "project": str(workspace), "session_id": session_id}))
+    finally:
+        service.close()
+    view = replies[-1]
+    assert "error" not in view and view["available"] is available and notice in view["message"]
+    if not available:
+        # The refusal names the models a team runs on, and what to do.
+        assert "Anthropic, OpenAI, OpenRouter, Ollama, EXO, Kimi and SONN" in view["message"]
+        assert "Switch this conversation to one of them" in view["message"]
+    # Workers' model choices come from these (swarm_view.js): never a CLI, nor a sign-in connection.
+    assert view["team_providers"] == ["anthropic", "conn-nim", "exo", "kimi", "ollama", "openai", "openrouter", "sonn"]
+
+
 def test_chat_and_model_controls_do_not_replace_active_swarm():
     class Socket:
         def __init__(self):

@@ -29,7 +29,7 @@ from .chat_context import chat_context, team_record
 from .integration import CheckSpec, SwarmIntegration
 from .models import Conflict, IdempotencyConflict, RevisionConflict, ScopeDenied, SwarmError, require_id
 from .organization import TeamGovernance
-from .policy import PolicyProfile, normalize_scopes, team_provider
+from .policy import PolicyProfile, is_connection_provider, normalize_scopes
 from .recovery import SwarmRecovery, record_run_host
 from .scheduler import SwarmScheduler
 from .tools import SWARM_TOOL_NAMES
@@ -447,25 +447,37 @@ class SwarmRuntime:
     def team_model(self, spec: BackendSpec) -> dict[str, dict[str, Any]]:
         """The connections a team on this captured model needs; Conflict says why it can't run.
 
-        A native provider needs none. A connection (``conn-<id>``) must still
-        exist and be OpenAI-compatible (swarming/connections.py). It is read
-        once here, so a run keeps its endpoint and headers while Settings change.
+        A native provider whose adapter keeps the supervised request contract
+        needs none. A connection (``conn-<id>``) must still exist, run on such
+        an adapter and use a key (swarming/connections.py). It is read once
+        here, so a run keeps its endpoint and headers while Settings change.
+        Codex and Claude Code are refused, saying which models Team runs on.
         """
-        if not spec.model or not team_provider(spec.backend_type):
-            raise Conflict("Choose a native provider or an OpenAI-compatible connection, and a model, before starting a team")
+        reason = team_connections.provider_refusal(spec.backend_type, spec.model)
+        if reason:
+            raise Conflict(reason)
         try:
             connection = team_connections.resolve(self.settings, spec.backend_type)
         except ValueError as exc:
-            raise Conflict(str(exc)) from None
+            raise Conflict(f"{exc} {team_connections.SUPPORTED}") from None
         return {spec.backend_type: connection} if connection else {}
+
+    @staticmethod
+    def _key_refusal(connections: dict[str, dict[str, Any]], *specs: BackendSpec | None) -> None:
+        """Refuse a captured connection that has no key for its participants (Claude on Bedrock), once keys are read."""
+        for spec in specs:
+            if spec is not None:
+                reason = team_connections.key_refusal(connections.get(spec.backend_type), spec.api_key)
+                if reason:
+                    raise Conflict(reason)
 
     def _worker_spec(self, capture: CapturedSession, choice: Any) -> BackendSpec | None:
         """The workers' model when the owner chose one other than the session's; else None.
 
         The orchestrator plans, answers and reports with the session's model.
-        Workers may run another native provider or OpenAI-compatible
-        connection (a cheaper, faster or local model), built as ``lumi run``
-        builds a session's backend (headless.build_spec).
+        Workers may run another model a team can run on (a cheaper, faster or
+        local one), built as ``lumi run`` builds a session's backend
+        (headless.build_spec).
         """
         if choice is None:
             return None
@@ -475,8 +487,9 @@ class SwarmRuntime:
         provider, model = choice["provider"].strip().lower(), choice["model"].strip()
         if (provider, model) == (capture.backend_spec.backend_type, capture.backend_spec.model):
             return None
-        if not team_provider(provider):
-            raise Conflict("Team workers use a native provider or an OpenAI-compatible connection")
+        reason = team_connections.provider_refusal(provider, model, workers=True)
+        if reason:
+            raise Conflict(reason)
         from ...headless import build_spec
         return build_spec(self.settings, provider, model, capture.workspace)  # UsageError is a ValueError
 
@@ -489,11 +502,11 @@ class SwarmRuntime:
         return spec
 
     def _provider_label(self, backend_type: str) -> str:
-        """A connection's own name ("NVIDIA NIM") for display; a native provider's id."""
-        try:
-            connection = team_connections.resolve(self.settings, backend_type)
-        except ValueError:
-            connection = None
+        """A connection's own name ("NVIDIA NIM"), usable by a team or not; a native provider's id."""
+        from ...connections import connection_id_from_backend, find_connection
+
+        connection = (find_connection(self.settings, connection_id_from_backend(backend_type))
+                      if is_connection_provider(backend_type) else None)
         return connection["name"] if connection else backend_type
 
     def _team_unavailable(self, spec: BackendSpec) -> str:
@@ -934,6 +947,8 @@ class SwarmRuntime:
                 "kept_everywhere": kept_across(store, capture.scope, sizes=self._kept_sizes.get),
                 "model": {"provider": capture.backend_spec.backend_type, "model": capture.backend_spec.model,
                           "label": self._provider_label(capture.backend_spec.backend_type)},
+                # The providers and connections a team runs on, for the workers' model choices.
+                "team_providers": team_connections.team_providers(self.settings),
                 "execution_mode": self._execution_mode(capture), "managed": self._managed_view(capture, run_id),
                 "run": snapshot,
                 "coordinator_planning": self._planning_view(store, run_id, snapshot) if snapshot else None,
@@ -1258,6 +1273,7 @@ class SwarmRuntime:
         # The workers' model gets its key the same way, once per run.
         if worker_spec is not None:
             worker_spec.api_key = worker_spec.resolve_api_key(self.settings)
+        self._key_refusal(connections, capture.backend_spec, worker_spec)
         workers_spec = worker_spec or capture.backend_spec
         integration = SwarmIntegration(store, capture.workspace,
             root=Path(self._state_root(capture.workspace)) / "swarm" / "worktrees") if write_roots else None
@@ -1827,6 +1843,8 @@ class SwarmRuntime:
         private_spec.api_key = private_spec.resolve_api_key(self.settings)
         capture = replace(capture, backend_spec=private_spec)
         workers_spec = self._saved_worker_spec(capture, setup)
+        connections = {**self.team_model(capture.backend_spec), **self.team_model(workers_spec)}
+        self._key_refusal(connections, capture.backend_spec, workers_spec)
         authority = recovery.authority
         record_run_host(store, authority)
         integration = prepared_integration if setup.get("write_roots") else None
@@ -1838,7 +1856,7 @@ class SwarmRuntime:
         runner = SwarmWorkerRunner(recovery.supervisor, authority, capture.workspace,
                                    backend_factory=self._factory, project_instructions=capture.instructions,
                                    exclusions=self.exclusions_for(capture.workspace),
-                                   connections={**self.team_model(capture.backend_spec), **self.team_model(workers_spec)},
+                                   connections=connections,
                                    managed_readers=self._managed_readers, integration=integration,
                                    managed_runtime=attachment.runtime if attachment else None,
                                    governance=governance,

@@ -37,7 +37,7 @@ from prompt_toolkit.key_binding import KeyBindings
 
 from .events import EngineEvent
 from .network_defaults import get_default_backend, get_default_model, resolve_ollama_url
-from .backends import create_backend, OllamaBackend
+from .backends import ChosenMaxTokens, create_backend, OllamaBackend
 from .engine import Session
 
 logger = logging.getLogger(__name__)
@@ -962,6 +962,10 @@ def consume_events(event_stream, on_permission=None):
             last_model = event.get("model", last_model)
             last_stats = event.get("stats", last_stats)
 
+        elif etype == EngineEvent.BACKEND_STATUS.value and event.get("kind") == "output_limit":
+            # --max-tokens is smaller than the model's thinking may need; the limit stands.
+            _print(f"\n  [{C_WARN}]{_esc(event.get('message', ''))}[/{C_WARN}]")
+
         elif etype == EngineEvent.STEP_END.value:
             if spinner_live:
                 spinner_live.stop()
@@ -1647,7 +1651,9 @@ Terminal UI examples:
     parser.add_argument("--model", type=str, default=None)
     parser.add_argument("--ollama-url", type=str, default=None)
     parser.add_argument("--dir", type=str, default=None)
-    parser.add_argument("--max-tokens", type=int, default=4096)
+    parser.add_argument("--max-tokens", type=int, default=None,
+                        help="Output limit for each response (default 4096). A limit you set is kept even where a "
+                             "model's thinking may need more")
     modes = parser.add_mutually_exclusive_group()
     modes.add_argument("--approve", action="store_true",
                        help="Ask before changes and commands (Ask mode). Without --approve or --full-auto the "
@@ -1846,8 +1852,11 @@ Terminal UI examples:
     # External clients should use `lumi.gui.server` instead.
     # The session is scoped to this folder as `lumi run` scopes its own.
     try:
+        # A limit the person set is sent as is; the default may make room
+        # for a model's thinking (lumi/anthropic_api.py).
+        max_tokens = ChosenMaxTokens(args.max_tokens) if args.max_tokens is not None else 4096
         session = build_session(settings, backend, project=os.getcwd(), mode=mode,
-                                max_tokens=args.max_tokens, auto_plan=args.auto_plan)
+                                max_tokens=max_tokens, auto_plan=args.auto_plan)
     except Exception as exc:  # noqa: BLE001 - never run a session without its rules
         _print_refusal(f"The session couldn't be set up: {exc}")
         return

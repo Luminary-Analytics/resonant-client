@@ -877,6 +877,13 @@ class SwarmRuntime:
 
     def _view(self, capture, store, run_id=None, *, after=0):
         run_id = run_id or self._latest(store, capture.scope)
+        pair = self._runners.get(run_id) if run_id else None
+        # The workers' own state before the stored records: a worker records
+        # its end (termination_recorded) only after its last request and its
+        # submission are stored, so records read after it include them. Read
+        # the other way round, a view could show a worker ended beside records
+        # from before its end (no submission yet).
+        workers = pair[1].inspect_all() if pair else []
         snapshot = store.snapshot(capture.scope, run_id) if run_id else None
         # Counted before the panel's bounded message list is cut.
         record = team_record(snapshot) if snapshot else None
@@ -914,8 +921,7 @@ class SwarmRuntime:
             )} for row in snapshot.get("integration_processes", [])]
             if snapshot["run"]["state"] in _TERMINAL:
                 self._active.discard(run_id)
-            pair = self._runners.get(run_id)
-            snapshot["workers"] = pair[1].inspect_all() if pair else []
+            snapshot["workers"] = workers
             scheduler = self._schedulers.get(run_id)
             snapshot["scheduling"] = scheduler.inspect() if scheduler else None
             recovered = self._recoveries.get(run_id)

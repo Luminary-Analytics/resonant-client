@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import codecs
+from collections.abc import Mapping
 import functools
 import json
 import os
@@ -460,17 +461,20 @@ class OutputDecoder:
         return decode_output(ready, **self._code_pages) if ready else ""
 
 
-def utf8_env(env: dict[str, str] | None = None) -> dict[str, str]:
-    """A child's environment in which Python writes UTF-8 to a pipe: ``PYTHONIOENCODING=utf-8``.
+def utf8_env(env: Mapping[str, str]) -> dict[str, str]:
+    """``env`` with ``PYTHONIOENCODING=utf-8``, so a child Python writes UTF-8 to a pipe.
 
-    Without it a child Python writes the ANSI code page (cp1252). Only its
+    ``env`` is the child's environment, chosen by the caller: for anything
+    the person's project runs, ``secrets_store.child_env()``, never Lumi's
+    own, which holds provider keys (so there is no default). Without the
+    setting a child Python writes the ANSI code page (cp1252). Only its
     standard streams change; ``PYTHONUTF8=1`` would also make ``open()`` read
     and write UTF-8 by default, so a person's script reading a cp1252 CSV
     would fail, or write other bytes, only when Lumi ran it. A
     ``PYTHONIOENCODING`` or ``PYTHONUTF8`` the person set is kept: either
     says how they want their Python to write, and decode_output reads it.
     """
-    environment = dict(os.environ if env is None else env)
+    environment = dict(env)
     if not any(key.upper() in ("PYTHONIOENCODING", "PYTHONUTF8") for key in environment):
         environment["PYTHONIOENCODING"] = "utf-8"
     return environment

@@ -247,6 +247,34 @@ def test_python_children_write_utf8_and_nothing_else_changes():
     assert utf8_env({"PYTHONIOENCODING": "cp1252"}) == {"PYTHONIOENCODING": "cp1252"}
 
 
+def test_the_post_patch_syntax_gate_runs_python_without_lumis_own_keys(monkeypatch, tmp_path):
+    """Its py_compile ran with Lumi's whole environment, provider keys included."""
+    import subprocess
+
+    from lumi.harness import prompts
+
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-not-a-real-key")
+    project = tmp_path / "Jöhn Smith"
+    project.mkdir()
+    (project / "broken.py").write_text("def broken(:\n", encoding="utf-8")
+    seen = []
+    real_run = subprocess.run
+
+    def run(command, **kwargs):
+        seen.append((command, kwargs.get("env")))
+        return real_run(command, **kwargs)
+
+    monkeypatch.setattr(prompts.subprocess, "run", run)
+    app = SimpleNamespace(backend=None, harness_service=SimpleNamespace(get_summary=lambda path: {}),
+                          project_trust=lambda path: SimpleNamespace(trusted=False))
+    _payload, message = prompts.HarnessPrompts(app).apply_generator_post_patch_safety_gate(
+        project_path=str(project), payload={"progress": {"touched_files": ["broken.py"]}},
+        generator_mode="patch", display_events=[])
+    (_command, environment), = [item for item in seen if "py_compile" in item[0]]
+    assert "OPENAI_API_KEY" not in environment and environment["PYTHONIOENCODING"] == "utf-8"
+    assert message.startswith("Post-patch syntax gate failed:") and "Jöhn Smith" in message, message
+
+
 def test_a_scripts_own_files_keep_their_encoding(monkeypatch, tmp_path):
     """A cp1252 CSV read with open()'s default still reads; a file written by default is still cp1252."""
     import subprocess

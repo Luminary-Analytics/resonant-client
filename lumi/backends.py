@@ -563,6 +563,9 @@ class OllamaBackend:
     # capabilities to subsequent requests. This avoids sending dozens of UI,
     # process, REPL, and git schemas through every local-model prefill.
     supports_dynamic_tool_catalog = True
+    # Keeps the supervised request contract (see KimiBackend): with
+    # ``_supervised_single_request`` set, no retry and no generation probe.
+    supervised_requests = True
 
     # Cache of model -> bool (True = supports native tools)
     _tool_support_cache: dict[str, bool] = {}
@@ -2050,6 +2053,14 @@ class KimiBackend:
 
     supports_dynamic_tool_catalog = True
     dynamic_tool_catalog_via_history = True
+    # The supervised request contract (engine/execution_guard.py), which Team
+    # participants run under (engine/swarming): with ``_supervised_single_request``
+    # set, one stream() call is one generation. Only a refusal that generated
+    # nothing (a 429, or an overload before any output) is waited out and sent
+    # again; an error says so with ``status_code`` or ``before_output`` so its
+    # outcome is known. Lumi runs every tool call. A subclass that overrides
+    # stream() keeps this contract itself (anthropic_api.py, openai_api.py).
+    supervised_requests = True
     PROVIDER_LABEL = "Kimi"
     RETRY_EVENT_KIND = "kimi_retry"
     supports_remote_cancel = False
@@ -2123,6 +2134,11 @@ class KimiBackend:
     @property
     def capability_profile(self) -> ModelCapabilities:
         return self._capabilities
+
+    @property
+    def uses_sign_in(self) -> bool:
+        """Whether requests carry a token from a sign-in (OAuth, Entra ID) rather than a key."""
+        return getattr(self, "_token_provider", None) is not None
 
     @classmethod
     def list_available_models(
@@ -3591,6 +3607,10 @@ class ExoBackend(KimiBackend):
 class CodexCliBackend:
     """Subscription/API-auth backed Codex CLI execution."""
 
+    # One turn is the CLI's own tool loop: many model calls and tool calls
+    # Lumi only observes, so it can't keep the supervised request contract.
+    supervised_requests = False
+
     def __init__(
         self,
         model: str,
@@ -3909,6 +3929,9 @@ class ClaudeCodeCliBackend:
     user's Claude Code already has — no separate API key needed.
     """
 
+    # Like Codex: the CLI's own tool loop, outside the supervised request contract.
+    supervised_requests = False
+
     def __init__(
         self,
         model: str,
@@ -4149,6 +4172,50 @@ class ClaudeCodeCliBackend:
 # ---------------------------------------------------------------------------
 # Factory
 # ---------------------------------------------------------------------------
+
+# The native providers create_backend builds, by name. Connections
+# (``conn-<id>``) are data with their own adapters (lumi/connections.py).
+NATIVE_BACKEND_NAMES = ("ollama", "exo", "kimi", "openrouter", "sonn", "anthropic", "openai", "codex", "claude-code")
+
+
+def native_backend_class(backend_type: str):
+    """The adapter class ``create_backend`` builds for a native provider name, or None."""
+    if backend_type == "ollama":
+        return OllamaBackend
+    if backend_type == "exo":
+        return ExoBackend
+    if backend_type == "kimi":
+        return KimiBackend
+    if backend_type == "codex":
+        return CodexCliBackend
+    if backend_type in ("claude-code", "claude_code"):
+        return ClaudeCodeCliBackend
+    if backend_type == "openrouter":
+        from .openrouter import OpenRouterBackend
+        return OpenRouterBackend
+    if backend_type == "sonn":
+        from .sonn import SonnBackend
+        return SonnBackend
+    if backend_type == "anthropic":
+        from .anthropic_api import AnthropicBackend
+        return AnthropicBackend
+    if backend_type == "openai":
+        from .openai_api import OpenAIResponsesBackend
+        return OpenAIResponsesBackend
+    return None
+
+
+def supervised_native_providers() -> frozenset[str]:
+    """Native providers whose adapters keep the supervised request contract.
+
+    An adapter declares it with ``supervised_requests = True`` (see
+    KimiBackend). Team participants run only on these and on connections
+    whose adapter does (engine/swarming/connections.py); the CLI adapters run
+    their own tool loops and never do.
+    """
+    return frozenset(name for name in NATIVE_BACKEND_NAMES
+                     if getattr(native_backend_class(name), "supervised_requests", False) is True)
+
 
 def create_backend(
     backend_type: str,

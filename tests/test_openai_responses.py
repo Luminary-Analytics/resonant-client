@@ -50,6 +50,19 @@ def test_history_becomes_input_items_with_reasoning_for_the_same_model():
         "user", "function_call", "function_call_output"]
 
 
+def test_a_request_offering_no_tools_after_a_tool_loop_keeps_them_and_lets_none_run():
+    # A team participant's last request offers no tools; the definitions its
+    # history's calls refer to go out again, with tool_choice none.
+    backend = OpenAIResponsesBackend("sk", "gpt-5")
+    offered = backend._payload("Find TODOs", [], "", TOOLS, None)
+    assert offered["tool_choice"] == "auto"
+    closing = backend._payload("", _history("gpt-5"), "", [], None)
+    assert closing["tools"] == offered["tools"] and closing["tool_choice"] == "none"
+    assert "parallel_tool_calls" not in closing
+    assert "tools" not in backend._payload("Hi", [], "", [], None)
+    assert "tools" not in OpenAIResponsesBackend("sk", "gpt-5")._payload("", _history("gpt-5"), "", [], None)
+
+
 def test_non_reasoning_models_send_no_reasoning_options():
     payload = OpenAIResponsesBackend("sk", "gpt-4.1")._payload("Hi", [], "", [], None)
     assert "reasoning" not in payload and "include" not in payload

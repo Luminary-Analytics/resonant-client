@@ -29,10 +29,22 @@ class JobManager:
 
     @staticmethod
     def _root(project):
-        return os.path.normcase(str(Path(project).resolve(strict=True)))
+        """The project folder as spelled on disk: the job's working folder, and what status shows."""
+        return str(Path(project).resolve(strict=True))
+
+    @staticmethod
+    def _key(root):
+        """How jobs are matched to a project: case-folded where the OS ignores case.
+
+        Only the match is folded. A job used to run in the case-folded folder
+        itself ("c:\\users\\...\\my app" on Windows), and tools that compare
+        spellings (TypeScript, webpack, Jest) then saw two different paths.
+        """
+        return os.path.normcase(root)
 
     def start(self, project, argv, *, timeout=1200, cancel_event=None, sandbox_roots=()):
         root = self._root(project)
+        key = self._key(root)
         if not isinstance(argv, list) or not argv or any(not isinstance(v, str) or '\0' in v for v in argv):
             raise ValueError('command must be a non-empty array of program and arguments')
         if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or not 1 <= timeout <= 1200:
@@ -42,7 +54,7 @@ class JobManager:
         with self._lock:
             active = [i for i in self._items.values() if i['state'] == 'running']
             for item in active:
-                if item['project'] == root:
+                if item['key'] == key:
                     if item['command'] == argv:
                         return self.status(root, item['id'])
                     raise ValueError('This project already has a running job; inspect or cancel it first')
@@ -64,7 +76,7 @@ class JobManager:
                 process.stdout.close()
                 raise
             handle = uuid.uuid4().hex[:12]
-            item = dict(id=handle, project=root, command=list(argv), process=process,
+            item = dict(id=handle, project=root, key=key, command=list(argv), process=process,
                         job=job, logs=deque(maxlen=64), state='running', exit_code=None,
                         started_at=time.time(), deadline=time.monotonic() + timeout,
                         timeout=timeout, finished_at=None)
@@ -125,10 +137,10 @@ class JobManager:
         item.update(state=state, exit_code=process.returncode, finished_at=time.time())
 
     def status(self, project, handle):
-        root = self._root(project)
+        key = self._key(self._root(project))
         with self._lock:
             item = self._items.get(handle)
-            if item is None or item['project'] != root:
+            if item is None or item['key'] != key:
                 raise ValueError('Job does not belong to this project or this client process')
             return {k: item[k] for k in ('id', 'project', 'command', 'state', 'exit_code',
                     'started_at', 'finished_at', 'timeout')} | {
@@ -137,8 +149,9 @@ class JobManager:
 
     def list(self, project):
         root = self._root(project)
+        key = self._key(root)
         with self._lock:
-            return [self.status(root, k) for k, i in self._items.items() if i['project'] == root]
+            return [self.status(root, k) for k, i in self._items.items() if i['key'] == key]
 
     def cancel(self, project, handle):
         self.status(project, handle)

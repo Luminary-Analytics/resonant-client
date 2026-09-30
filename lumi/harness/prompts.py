@@ -1988,7 +1988,9 @@ class HarnessPrompts:
             completed = subprocess.run(
                 command,
                 cwd=target_path,
-                env=utf8_env(),  # its SyntaxError names paths like "Jöhn Smith" in UTF-8
+                # The person's environment, never Lumi's own provider keys; its
+                # SyntaxError names paths like "Jöhn Smith" in UTF-8.
+                env=utf8_env(child_env()),
                 capture_output=True,
                 timeout=20,
                 **background_process_kwargs(),

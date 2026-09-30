@@ -93,6 +93,178 @@ The final pre-alpha pass on the packaged build found these.
   before a build with an address ships, that text needs a new version and pin
   (RELEASING.md).
 
+## September 30 Team runs on Anthropic and OpenAI keys, Azure OpenAI and Claude on Bedrock; Codex and Claude Code are refused plainly (source only, not released)
+
+Team ran only on OpenRouter, Ollama, EXO, Kimi, SONN and OpenAI-compatible
+connections, so most alpha testers, who bring an Anthropic or OpenAI key, a
+ChatGPT subscription (Codex) or Claude Code, couldn't use it.
+
+- **Why.** The team admitted providers from a fixed list
+  (`engine/swarming/policy.py`: Ollama, EXO, Kimi, OpenRouter, SONN) and
+  connections of type OpenAI-compatible only (`engine/swarming/connections.py`).
+  Underneath the list, the Anthropic (Messages API) and OpenAI (Responses API)
+  adapters, which also serve Azure OpenAI, Bedrock and Vertex, override
+  `stream()` and ignored the team's one-generation rule: they retried 5xx
+  responses, and restarted a stream after an overload even once output had
+  begun, a hidden second generation inside one counted request; and their HTTP
+  errors carried no status, so a refused request (a 401, or a 429 that
+  persisted) was left uncertain, holding its allowance.
+- **Capability, not a list.** An adapter declares that it keeps the contract
+  with `supervised_requests` (`lumi/backends.py`); the team's providers are the
+  native ones whose adapters do (Anthropic, OpenAI, OpenRouter, Ollama, EXO,
+  Kimi, SONN), and a connection qualifies by its adapter and its
+  authentication. The Codex and Claude Code adapters declare they don't.
+- **The Anthropic and OpenAI adapters keep the contract under a team.** Only a
+  429, or an overload that generated nothing (Anthropic's 529 or an in-stream
+  overload before any output), is waited out (Retry-After, else 5, 10, 20 s)
+  and sent again; errors carry `status_code` and `before_output`, so a refusal
+  is settled as known; a response that ends before the provider's end event
+  stays uncertain instead of becoming a finished turn. Chats keep their
+  retries.
+- **A participant's last request keeps its tools.** It offers none, so the
+  model answers instead of spending it on one more call (`engine/session.py`).
+  The Messages API refuses tool calls in the history without their
+  definitions, and binds signed thinking to the tool set, so both adapters send
+  the definitions the conversation last offered again, with tool choice
+  `none`, which lets no tool run.
+- **What a team runs on now,** as orchestrator and as workers alike:
+  Anthropic and OpenAI keys, and connections of type OpenAI, Azure OpenAI (its
+  key), Anthropic, and Claude on Bedrock with a Bedrock API key (the key, or
+  `AWS_BEARER_TOKEN_BEDROCK`), besides the providers before. Connections that
+  sign in with the person's account (Vertex AI's Google credentials, Bedrock's
+  AWS credential chain, Entra ID, OAuth), client certificates and capability
+  pack providers are refused with the reason: a participant holds a model key,
+  never the person's cloud identity. A participant's backend that would sign
+  in is refused where it's built, in the app and in the worker process
+  (`participant_refusal`).
+- **Codex and Claude Code are refused, saying what works.** They run their own
+  tool loops: a turn is many model calls and tool calls, shell included, that
+  Lumi only sees afterwards, so a team can't hold them to a task's folders and
+  tools, count their requests or pause them between steps. Neither an
+  orchestrator-only text handoff nor CLI workers could keep the team's
+  guarantees (the orchestrator reads the project within its scope too), so
+  the Team panel now says "Team can't run on Codex: …" with the list of
+  models a team runs on and "Switch this conversation to one of them".
+- **The Team panel's Worker model list** comes from the server
+  (`team_providers` in the view), not a list in `swarm_view.js`, so it offers
+  Anthropic, OpenAI and qualifying connections and never Codex, Claude Code
+  or a sign-in connection.
+- **Plans with prose around the JSON are read.** Chat models such as Claude and
+  GPT tend to write a sentence before or after the JSON even when told not to.
+  A reply without a fence is read when exactly one object in it has the plan's
+  fields, and a fenced block followed by prose is read like prose before it;
+  two plans, or none, still refuse it (`planning._embedded_plan`).
+- **CI:** `team-tests.yml` also runs on changes to the adapters teams run on
+  (`anthropic_api.py`, `openai_api.py`, `openrouter.py`, `sonn.py`,
+  `connections.py`) and the new provider stub.
+- **Checked** with scripted loopback servers that stream as the Messages and
+  Responses APIs do (`tests/api_provider_stub.py`,
+  `tests/test_swarm_api_providers.py`): an Anthropic orchestrator plans with a
+  file read and signed thinking, its writer writes, the check passes, the
+  change is applied and accepted under the grant, and the closing report is
+  read; an OpenAI orchestrator runs two readers over two rounds with encrypted
+  reasoning replayed; a Claude orchestrator runs workers on an Azure OpenAI
+  connection (its deployment endpoint and `api-key` header, recorded unpriced);
+  a participant's last request on either API, which the scripted Messages
+  server refuses, as the API does, when its history's tool calls come without
+  tool definitions; every participant of an Anthropic team in its own process;
+  Stop mid-stream; and each request priced once from the catalog. Controlled
+  HTTP and in-stream failure checks cover Anthropic direct, an Anthropic
+  connection, Bedrock, OpenAI and Azure (`tests/test_swarm_provider_requests.py`).
+  No Anthropic, OpenAI, Azure or AWS key was used: live runs on these providers
+  are still to do. See [Which models a team runs on](swarming.md#which-models-a-team-runs-on).
+
+## September 30 New files and folders keep their names' case on Windows (source only, not released)
+
+The September 30 clean-PC pass of the packaged build found every file and
+folder the agent created named in lowercase. This fixes it.
+
+- **Files the agent creates keep the case it asked for.** The path sandbox
+  handed tools its boundary key as the path to use
+  (`PathSandbox.validate_path`), and on Windows that key is case-folded
+  (`os.path.normcase`). So "Docs/NewFile.md" was created as
+  `docs\newfile.md`, "MakeFile.TXT" as `makefile.txt` and
+  "notes/Jürgen-ö.txt" as `notes\jürgen-ö.txt`, and the tool's result named
+  the lowercased path. Writer teams committed their new files that way
+  (`src/NewModule.py` as `src/newmodule.py`) and applied them to the person's
+  repository, where imports that name the file and builds on case-sensitive
+  systems break. The sandbox now returns each path as it is spelled: the
+  parts that exist as they are on disk and the rest as given (`realpath`).
+  It folds case only to compare a path with the project (`_canonical_path`).
+  A new file under an existing folder spelled in another case
+  ("SRC/Helper.py" under `src`) goes into that folder as `src\Helper.py`,
+  and paths outside the project are refused in any case, as before. Writing
+  an existing file never changed its name, so only files and folders the
+  agent created are affected; rename any that came out in lowercase.
+- **Commands, the Git tools and code intelligence use the project as it is
+  spelled.** `bash`, the Git tools and the REPLs got a case-folded working
+  folder from the same check (`cd` printed `c:\users\...`), and
+  `code_intel` opened files by a lowercased path. Managed jobs
+  (`job_start`) ran in the case-folded project folder too, and their status
+  showed it. TypeScript ("File name differs from already included file name
+  only in casing"), webpack and Jest treat differently cased folders as
+  different paths. Jobs now run in the folder as it is spelled and fold
+  case only to match a job to its project (`JobManager._key`).
+- **Kept as designed:** a Team worker's path is checked against its
+  assignment's folders as it is spelled, before it is resolved. On Windows,
+  "SRC/x.py" is therefore refused for a worker allowed to write "src" ("File
+  path exceeds the assignment roots"), and the worker can retry with the
+  folder's own spelling. That check fails closed and is unchanged.
+- Tests: `tests/test_file_name_case.py` runs through `Session.run`. It
+  covers new files and folders, a non-ASCII name, and a new file under an
+  existing folder spelled in another case. It also checks the paths the
+  sandbox returns, that escapes are still refused in any case, and a job's
+  working folder. `tests/test_swarm_writers.py` checks that a writer's
+  commit keeps `src/NewModule.py` and a new `src/Nested/Helper.PY`. The
+  boundary and working-subdir tests no longer expect case-folded paths.
+  Checked in a packaged build of the branch on the clean-PC fixture: new
+  files, `cd`, and a writer team's diff and applied commit keep their case.
+
+## September 30 Clean-machine follow-ups: search results keep excluded files out, team controls survive lease renewals (source only, not released)
+
+The final review of the clean-machine fixes (#102) left these.
+
+- **Search results no longer show excluded files' text (security fix).**
+  ripgrep prints a match's path in UTF-8 and then the matched line as the
+  file's own bytes, and `grep` decoded the two as one line. When the text
+  wasn't UTF-8 (a file saved in the ANSI code page), the path was read as
+  cp1252 too: "Jöhn Smith" became "JÃ¶hn Smith", the path no longer matched
+  the project, and an organization's `files.exclude` rule (or one from
+  Settings or `.lumiignore`) let the excluded file's line through. A carriage
+  return inside a matched line did the same by starting a line with no path.
+  ripgrep, and grep off Windows, now run with `--null`: each path is decoded
+  on its own (UTF-8) and the text alone as the file's, and the rules see that
+  path (`tools._null_records`). A match stays on one line; findstr's too.
+  A line without a NUL isn't shown, so BSD grep's (and GNU grep 3.4's)
+  "Binary file ... matches" notes no longer appear.
+- **The harness's post-patch syntax check** ran `python -m py_compile` with
+  Lumi's whole environment, provider keys included; it gets the person's
+  (`secrets_store.child_env()`) now. `processes.utf8_env` takes the child's
+  environment as an argument, with no default, so every caller chooses one.
+- **Team cleanup deletes a branch only against a whole commit id.**
+  `git update-ref -d <ref> <old>` deletes the branch whatever it points at
+  when the old value is empty or all zeros, so anything but 40 (or, in a
+  SHA-256 repository, 64) hex digits that aren't all zero is refused before
+  Git runs, and the branch stays for the next cleanup
+  (`cleanup._delete_branch`).
+- **Team controls are no longer refused by lease renewals.** The runner
+  renews its lease every 5 s with a supervisor command, and every command
+  advanced the run's revision, so a Stop, a worker control or a decision sent
+  from the view read just before a renewal was refused with "Run revision
+  changed; refresh the snapshot" (decisions retried once; Stop and worker
+  controls didn't). A renewal keeps the revision now, unless its checkpoint
+  ends a stopping run. This is why `tests/swarm_participants.browser.cjs`
+  failed on most runs (its Stop Worker 3), and one reason
+  `tests/swarm_followup_stop.browser.cjs` did; that test also pressed Stop
+  while the follow-up planner was still committing, and now waits for it to
+  finish, the case the panel refreshes before Stop for. Neither failure came
+  from #104 or #105: both tests failed the same way at `b95a5fc`
+  (September 27), before either. The browser tests aren't in CI.
+- **Documented as designed** (docs/known-issues.md): a line of a file saved
+  in the OEM code page that reads as well in the ANSI one shows in ANSI
+  characters in search results, and a batch file saved as UTF-8 that names a
+  non-ASCII path needs `chcp 65001 >nul` as its first line.
+
 ## September 27 A new Windows computer: Lumi works without Git, Python or Node.js (source only, not released)
 
 The packaged build of `main` was run the way an alpha tester would: a fresh

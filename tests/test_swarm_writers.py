@@ -137,7 +137,7 @@ def test_a_writer_cancelled_while_its_result_waits_for_the_repository_commits_no
             while runtime.inspect(context.attempt_id)["state"] != "waiting_for_repository":
                 assert time.monotonic() < deadline, explain(runtime)
                 time.sleep(.01)
-            for attempt in range(3):  # a lease renewal can refuse it first, before anything commits
+            for attempt in range(3):  # the team's own work can refuse it first, before anything commits
                 try:
                     runtime.cancel_worker(context.attempt_id, context.epoch, command_id="cancel",
                                           expected_revision=snapshot(fixture)["run"]["revision"])
@@ -191,6 +191,36 @@ def test_model_file_write_and_edit_finalize_to_checked_candidate_without_touchin
         assert git(project, "rev-parse", "HEAD") == base
         assert (project / "src" / "fact.txt").read_text() == "base fact\n"
         assert not (project / "src" / "new.txt").exists()
+    finally:
+        runtime.close()
+
+
+def test_new_files_keep_their_case_in_the_writer_commit(fixture):
+    """The writer's commit names new files as the model spelled them.
+
+    On Windows the path sandbox used to hand tools a case-folded path, so a
+    writer's src/NewModule.py was committed as src/newmodule.py, and applied
+    to the person's repository that way (tests/test_file_name_case.py).
+    """
+    context, writer = assign(fixture)
+    backend = Backend(scripts=[[
+        tool_call("file_write", {"path": "src/NewModule.py", "content": "VALUE = 1\n"}, "write-1"),
+        tool_call("file_write", {"path": "src/Nested/Helper.PY", "content": "HELPER = 2\n"}, "write-2"), done()],
+        [text_delta("Added two modules; checks require host review."), done()],
+    ])
+    runtime = runner(fixture, backend)
+    try:
+        runtime.start(context, BackendSpec("ollama", "chosen"), writer_id=writer["id"])
+        finished(runtime, context)
+        assert runtime.inspect(context.attempt_id)["state"] == "submitted", explain(runtime)
+        state = snapshot(fixture)
+        assert [action["state"] for action in state["action_receipts"]] == ["completed", "completed"], explain(runtime)
+        recorded_writer = state["writer_worktrees"][0]
+        project = fixture[3]
+        names = git(project, "ls-tree", "-r", "--name-only", recorded_writer["result_revision"]).splitlines()
+        # A new folder keeps the model's spelling too.
+        assert {"src/NewModule.py", "src/Nested/Helper.PY"} <= set(names), names
+        assert not {"src/newmodule.py", "src/nested/helper.py"} & set(names), names
     finally:
         runtime.close()
 

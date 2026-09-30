@@ -385,8 +385,13 @@ host enrollment and actual packaged/learned-benefit qualification remain open.
   (including `recover`). A new place that starts team participants must check
   `dispatch_refusal` first and give the runner its governance. Workers get the
   project's file exclusions (`SwarmRuntime.exclusions_for`), in-process and
-  through the child contract, refuse hooks and use only native providers or
-  OpenAI-compatible connections. A worker child keeps its host channel off
+  through the child contract, and refuse hooks. Participants run only on
+  adapters that declare `supervised_requests` (`lumi/backends.py`: one
+  `stream()` is one generation under `_supervised_single_request`, and an
+  error says whether anything was generated; an adapter that overrides
+  `stream()` keeps that itself) and hold a model key, never a sign-in
+  (`engine/swarming/connections.py`); never Codex or Claude Code, whose own
+  tool loops a team can't scope or count. A worker child keeps its host channel off
   standard input and output (`process_worker.stdio_pipes`), and code it runs
   must not rely on an inherited stdin. `@team:<run>` attaches only the
   conversation's own personal team, read-only, as model-written context with
@@ -671,11 +676,16 @@ commands the model or the person asked for run in one `cmd.exe /c`
 terminal: never switch its code page or wrap it in another cmd.exe, which
 changes what batch files, long commands and quoted paths do. Python children
 get `PYTHONIOENCODING=utf-8` (`processes.utf8_env`), never `PYTHONUTF8`, which
-changes what `open()` reads and writes. Output read as text is decoded with
+changes what `open()` reads and writes; `utf8_env` takes the child's
+environment, `secrets_store.child_env()` for anything the project runs, never
+Lumi's own with its provider keys. Output read as text is decoded with
 `processes.decode_output` (per line: UTF-8, else the OEM or ANSI code page;
-OEM wins a tie for commands) or `OutputDecoder` when read in pieces. A command
-with a timeout runs through `processes.run_command`, whose timeout ends every
-process it started and which resolves a program named without a path.
+OEM wins a tie for commands) or `OutputDecoder` when read in pieces. Search
+tools print a file's path and its text in different encodings: ripgrep and
+grep run with `--null`, and the path and the text are decoded apart before
+exclusion rules see the path. A command with a timeout runs through
+`processes.run_command`, whose timeout ends every process it started and
+which resolves a program named without a path.
 
 ## Documentation and releases
 

@@ -480,6 +480,25 @@ def sign_in(connection: dict[str, Any], api_key: str = "", *, transport=None):
     return provider, tls
 
 
+def connection_backend_class(kind: str):
+    """The adapter class a connection of this type runs on (create_connection_backend), or None."""
+    if kind == "openai-compatible":
+        return OpenAICompatibleBackend
+    if kind in {"openai", "azure-openai"}:
+        from .openai_api import OpenAIResponsesBackend
+
+        return OpenAIResponsesBackend
+    if kind in {"anthropic", "anthropic-bedrock", "anthropic-vertex"}:
+        from .anthropic_api import AnthropicBackend
+
+        return AnthropicBackend
+    if kind == "extension":
+        from .engine.provider_extensions import ExtensionBackend
+
+        return ExtensionBackend
+    return None
+
+
 def create_connection_backend(connection: dict[str, Any], model: str, api_key: str = "", *,
                               thinking: str | None = None, transport=None, settings=None):
     """The backend for one connection and model; ``settings`` supplies an extension's pack approvals."""

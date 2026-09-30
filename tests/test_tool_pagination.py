@@ -69,11 +69,12 @@ def test_glob_paginates_sorted_paths(tmp_path):
 
 
 def test_grep_paginates_matches_and_preserves_total(tmp_path):
-    stdout = "\n".join(f"file.py:{index}:match" for index in range(8)).encode()
+    # ripgrep's output: each path, a NUL (--null), then line:text.
+    stdout = "\n".join(f"file.py\0{index}:match" for index in range(8)).encode()
     with patch(
         "lumi.engine.tools._run_subprocess_with_cancel",
         return_value=(0, stdout, b"", False),
-    ):
+    ), patch("lumi.engine.tools._ripgrep_executable", return_value="/usr/bin/rg"):
         result = _exec_grep(
             {"pattern": "match", "path": str(tmp_path), "offset": 3, "limit": 2},
             time.time(),

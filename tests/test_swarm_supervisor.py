@@ -334,7 +334,7 @@ def test_lease_expiry_does_not_replay_or_release_unknown_work(setup):
 def test_renew_requires_live_ownership_and_creation_retry_cannot_renew(setup):
     store, supervisor, scope, authority, now = setup
     now[0] = 1020
-    receipt = command(supervisor, authority, "renew")
+    receipt = command(supervisor, authority, "renew", key="renew")  # keeps the revision: its own key
     assert receipt.result["lease_until"] == 1050
     now[0] = 1035
     command(supervisor, authority, "pause")
@@ -347,6 +347,39 @@ def test_renew_requires_live_ownership_and_creation_retry_cannot_renew(setup):
     with pytest.raises(Conflict, match="active supervisor"):
         supervisor.acquire(scope, authority.run_id, expected_epoch=2, supervisor_id="third", command_id="steal")
     assert recovered.epoch == 2
+
+
+def test_a_lease_renewal_keeps_the_revision_a_person_read(setup):
+    """A renewal (every 5 s while a team runs) changes only the lease.
+
+    It advanced the revision, so a Stop or a decision sent from the view read
+    just before it was refused ("Run revision changed; refresh the snapshot").
+    """
+    store, supervisor, scope, authority, now = setup
+    plan(supervisor, authority)
+    read = store.snapshot(scope, authority.run_id)["run"]
+    now[0] = 1010
+    renewed = command(supervisor, authority, "renew", key="renewal")
+    after = store.snapshot(scope, authority.run_id)["run"]
+    assert renewed.revision == after["revision"] == read["revision"]
+    assert after["lease_until"] == 1040 and after["event_sequence"] == read["event_sequence"] + 1
+    stopped = command(supervisor, authority, "stop", key="person-stop", revision=read["revision"])
+    assert (stopped.revision, stopped.state) == (read["revision"] + 1, "cancelled")
+
+
+def test_a_renewal_that_moves_the_run_on_advances_the_revision(setup):
+    """Its checkpoint ends a stopping run whose last effect resolved without one of its own."""
+    store, supervisor, scope, authority, now = setup
+    plan(supervisor, authority)
+    attempt = start(supervisor, authority)
+    command(supervisor, authority, "stop", key="stop")
+    assert store.snapshot(scope, authority.run_id)["run"]["state"] == "stopping"
+    with sqlite3.connect(store.path) as connection:
+        connection.execute("UPDATE attempts SET process_state='stopped' WHERE id=?", (attempt["attempt_id"],))
+        connection.execute("UPDATE reservations SET state='settled' WHERE attempt_id=?", (attempt["attempt_id"],))
+    before = store.snapshot(scope, authority.run_id)["run"]["revision"]
+    renewed = command(supervisor, authority, "renew", key="renewal")
+    assert (renewed.state, renewed.revision) == ("cancelled", before + 1)
 
 
 def test_request_ids_purposes_accounting_and_unknown_spend(setup):

@@ -30,12 +30,11 @@ them so far:
   admission, an unobservable response) still stop the worker.
 - **Hooks.** Workers don't run your Settings or capability-pack hooks; a
   guarded worker refuses them, unlike chats and plan specialists.
-- **Providers.** Workers use native Ollama, EXO, Kimi, OpenRouter or SONN
-  connections, or a custom connection of type **OpenAI-compatible** (Chat
-  Completions: NVIDIA NIM, vLLM, a gateway) that authenticates with a key or
-  none. A run reads the connection once when it starts. Anthropic, OpenAI
-  Responses, Azure, Bedrock and Vertex connections, OAuth or Entra sign-in and
-  client certificates aren't available to workers yet.
+- **Providers.** The orchestrator and workers run on Anthropic, OpenAI,
+  OpenRouter, Ollama, EXO, Kimi or SONN, or on a connection that uses a key:
+  OpenAI-compatible, OpenAI, Azure OpenAI, Anthropic, or Claude on Bedrock with
+  a Bedrock API key. Not on Codex or Claude Code, and not on a connection that
+  signs in with your account. See [Which models a team runs on](#which-models-a-team-runs-on).
 - **Usage and budgets.** Each participant's model request is checked against
   your spending limits and the organization's before it's sent, and recorded
   once in usage and the audit log by the app, with purpose `team`, the
@@ -142,20 +141,69 @@ organization-managed teams, apart from viewing, stopping, revoking and
 recovery. A policy that arrives while such a team runs stops its new requests,
 and accepting more shared work checks the rules and budgets first. Workers
 also keep the limits listed above: they never read files the project or the
-policy excludes, never run hooks, and use only native providers or
-OpenAI-compatible connections.
+policy excludes, never run hooks, and run only on the models listed under
+[Which models a team runs on](#which-models-a-team-runs-on).
+
+## Which models a team runs on
+
+Every participant (the orchestrator, its workers, and a follow-up or answer
+turn) runs on one of these, with the same rules whichever it is:
+
+- **API keys (Settings > API keys):** Anthropic, OpenAI, OpenRouter, Kimi and
+  SONN; and Ollama and EXO.
+- **Connections (Settings > Connections)** that use a key, or no
+  authentication:
+  - OpenAI-compatible (Chat Completions), such as NVIDIA NIM, vLLM or a gateway;
+  - OpenAI (the Responses API), and Azure OpenAI with its key;
+  - Anthropic (the Messages API), a gateway included;
+  - Claude on Amazon Bedrock with a Bedrock API key: the connection's key, or
+    `AWS_BEARER_TOKEN_BEDROCK`.
+
+A team can't run on these, and the Team panel says so, naming the models above:
+
+- **Codex (ChatGPT sign-in) and Claude Code.** Each runs its own tool loop: one
+  turn is many model calls and tool calls, shell commands included, which Lumi
+  only sees after they happen. A team gives each task its folders and tools and
+  admits every tool call before it runs, counts every model request against
+  the team's allowance and budgets, and pauses between steps; a CLI's own loop
+  allows none of that. Switch the conversation to one of the models above to
+  start a team, and keep using Codex or Claude Code in the chat.
+- **Connections that sign in with your account:** Claude on Vertex AI (your
+  Google credentials), Claude on Bedrock without a Bedrock API key (your AWS
+  credentials), Azure OpenAI with Entra ID and any OAuth sign-in. A participant
+  runs in its own process and holds a model key only, never your cloud
+  identity. Connections with a client certificate aren't available either.
+- **A capability pack's provider**, which runs its own process.
+
+Whatever the model, one admitted request is one generation
+(`supervised_requests` in `lumi/backends.py`). A rate limit (429), or an
+overload before anything was generated (Anthropic's 529, an overload in the
+stream), is waited out (Retry-After, else 5, 10 and 20 s) and sent again,
+since nothing was generated. A server error (5xx) or an error after output
+started is never sent again: the request stays uncertain and keeps its
+allowance until reconciled, and so does an Anthropic or OpenAI response that
+ends before the provider's end event. Stop ends a worker mid-response; its
+interrupted request stays uncertain. Each request is priced once under its
+participant's model: the bundled prices cover Anthropic's and OpenAI's own
+model names, while an Azure deployment name or a Bedrock model id is recorded
+unpriced (never $0) unless you set its price under Settings > Usage & cost.
+
+Team has run live only on NVIDIA NIM so far. Anthropic, OpenAI, Azure OpenAI
+and Bedrock teams have run against scripted servers that stream as those APIs
+do (`tests/test_swarm_api_providers.py`), not against the providers themselves.
 
 ## Start a team
 
 Open a saved conversation in the intended project, then choose **Team** and
 enable **team preview**. The panel displays that conversation's saved provider
 and model. It preserves the explicit choice; it does not select a different
-model for you. The source preview accepts native Ollama, EXO, Kimi, OpenRouter and
-SONN sessions, and OpenAI-compatible connections such as NVIDIA NIM; live
-provider qualification remains pending.
-Codex and Claude Code CLI sessions are not team worker providers.
-The [provider matrix](swarming-provider-matrix.md) distinguishes source eligibility
-and execution checks from live qualification.
+model for you. A team starts from a conversation on Anthropic, OpenAI,
+OpenRouter, Ollama, EXO, Kimi or SONN, or on a connection that uses a key (see
+[Which models a team runs on](#which-models-a-team-runs-on)). In a Codex or
+Claude Code conversation the panel says a team can't run on it and names those
+models, and **Start** stays unavailable. Live provider qualification remains
+pending. The [provider matrix](swarming-provider-matrix.md) distinguishes source
+eligibility and execution checks from live qualification.
 
 The panel captures the project, conversation and run it opened. Closing the
 panel does not stop its workers. Its view refreshes while open and reconnects to
@@ -232,9 +280,11 @@ then works like this:
   your review.
 - A failed task, or an orchestrator turn without a usable plan, is retried once.
   A retried turn is told why its plan was refused. The plan parser accepts
-  a few near misses live models made: one fenced block, chat-template tags
-  after the JSON, stray closing braces after it, or its last closing brace
-  missing. Anything else refuses the plan.
+  a few near misses: one fenced block, chat-template tags after the JSON,
+  stray closing braces after it, or its last closing brace missing (all made
+  by live models on NVIDIA NIM), and prose before or after the JSON, which
+  chat models such as Claude and GPT tend to add, as long as exactly one
+  object in the reply has the plan's fields. Anything else refuses the plan.
 - When a running worker asks the orchestrator a question or reports a blocker,
   the orchestrator answers in the same round: a short answer turn replies with
   `swarm_send` from the objective, the team's work and its findings. It has no
@@ -358,9 +408,11 @@ remaining allowance or missing execution host prevents another request.
 ## Worker model
 
 The coordinator (or orchestrator) always uses the session's model. **Worker
-model** lets the team's workers use another native provider or
-OpenAI-compatible connection, such as a faster or local model, while a stronger
-one plans. The choice is kept with the team, including when the owner continues
+model** lets the team's workers use another model a team runs on (see
+[Which models a team runs on](#which-models-a-team-runs-on)), such as a
+faster or local model, while a stronger one plans: a Claude orchestrator
+with workers on an Azure OpenAI deployment, say. The list offers only those
+models. The choice is kept with the team, including when the owner continues
 a recovered team. The workers' key is read once per run like the session's,
 and the running team shows which model its workers use.
 

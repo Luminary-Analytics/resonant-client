@@ -41,7 +41,7 @@ def prepare(runtime, capture, key):
 
 
 def send(runtime, capture, run_id, action, key, **fields):
-    # A lease renewal can advance the revision between the view and the
+    # The team's own work can advance the revision between the view and the
     # action; it is then refused before anything commits, and the owner
     # refreshes and sends it again (see test_swarm_desktop_writers.operate).
     for attempt in range(3):

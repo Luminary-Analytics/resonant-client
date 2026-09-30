@@ -68,6 +68,21 @@ def test_tool_loop_translates_to_alternating_blocks_with_sanitized_ids():
     assert payload["tools"][0]["input_schema"]["required"] == ["path"]
 
 
+def test_a_request_offering_no_tools_after_a_tool_loop_keeps_them_and_lets_none_run():
+    # A team participant's last request offers no tools. The API still needs
+    # the definitions the history's tool calls refer to, and a thinking block's
+    # signature binds the tool set, so the same ones go out with tool_choice none.
+    backend = AnthropicBackend("key", "claude-a")
+    offered = backend._payload("Read a.py", [], "Be helpful.", TOOLS, None)
+    assert "tool_choice" not in offered
+    closing = backend._payload("", _tool_loop_history(), "Be helpful.", [], None)
+    assert closing["tools"] == offered["tools"] and closing["tool_choice"] == {"type": "none"}
+    # Nothing to keep: a conversation without tool calls, or tools never offered here.
+    assert "tools" not in backend._payload("Hi", [], "Be helpful.", [], None)
+    fresh = AnthropicBackend("key", "claude-a")._payload("", _tool_loop_history(), "", [], None)
+    assert "tools" not in fresh and "tool_choice" not in fresh
+
+
 def test_thinking_is_replayed_only_to_the_model_that_produced_it():
     other = AnthropicBackend("key", "claude-b")
     payload = other._payload("", _tool_loop_history("claude-a"), "", TOOLS, None)

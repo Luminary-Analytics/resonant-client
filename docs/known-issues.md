@@ -4,6 +4,44 @@ Living catalog of known bugs surfaced during real usage. Each entry has reproduc
 
 > **Convention:** issues are numbered chronologically across all sources (dogfood passes, release pipeline, post-release reports). Numbers are stable — even after a fix lands, the issue number stays in this doc as a historical record.
 
+## Claude thinking levels on current models (2026-09-30, open)
+
+A thinking level (low, med, high or max) chosen for a conversation on Claude
+sends a fixed thinking budget (`thinking: {"type": "enabled", "budget_tokens":
+N}`, `lumi/anthropic_api.py`). Anthropic's API reference says Claude Opus 4.7
+and later, Sonnet 5 and later and Fable 5 and later refuse that with HTTP 400:
+they take adaptive thinking with an effort level, and think by default. Only
+Claude Haiku 4.5 among Lumi's listed Claude models still takes a budget. Leave
+the thinking level at its default on the others. A team inherits its
+conversation's level, so its participants would be refused the same way. Found
+while adding Team on Anthropic keys, from the API reference: not seen live, as
+no Anthropic key was used.
+
+## Windows code pages: search results and batch files (2026-09-30, by design)
+
+Lumi decodes what Windows programs print without changing how they run, so
+these two cases read as they would in the person's own terminal:
+
+- **Search results from a file saved in the OEM code page.** `grep` shows
+  each matched line as the file's own text: UTF-8 when the line is, else
+  whichever of the ANSI and OEM code pages it reads better in, and the ANSI
+  one when both read equally well, since Windows programs save text in it
+  (`processes.decode_output(prefer="ansi")`). A line from a file saved in the
+  OEM code page (cp437 or cp850: a DOS-era tool, or `echo ... > file` in a
+  console) that reads as well either way comes back in ANSI characters:
+  "Übersicht" as "šbersicht", "Straße" as "Straáe", and `tree`'s "├───" as
+  "ÃÄÄÄ". `type` in the shell shows it as saved: a command's own output is
+  decoded the other way round, the OEM code page winning a tie.
+- **A batch file saved as UTF-8 that names a non-ASCII path.** cmd.exe reads
+  a batch file in the console's code page (the OEM one), as in the person's
+  own terminal. A `.bat` or `.cmd` saved as UTF-8, or as Notepad's "ANSI",
+  that names "C:\Users\Jöhn Smith\..." fails with "The system cannot find the
+  path specified." unless its first line is `chcp 65001 >nul` or it is saved
+  in the console's code page. Each command runs in its own console, so a
+  `chcp` in one doesn't carry over to the next. Lumi doesn't switch the code
+  page itself: a September 29 review found that doing so broke batch files
+  saved in the console's code page, which work as they are.
+
 ## Desktop views without an entry point (2026-09-25, fixed in source)
 
 v0.14.0 ("conversation-first agent workflow", 8d6d023) removed the Agents pane

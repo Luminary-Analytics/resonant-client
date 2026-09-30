@@ -31,7 +31,7 @@ from ..sandbox import PathSandbox
 from ..session import Session
 from ..tools import AGENT_TOOLS
 from ...connections import backend_key
-from .connections import team_connection
+from .connections import participant_refusal, team_connection
 from .coordinator import CoordinatorPlans
 from .execution import SwarmExecutionGuard
 from .guidance import OwnerGuidance
@@ -636,6 +636,9 @@ class SwarmWorkerRunner:
                 worker.grant.model.provider, worker.grant.model.model,
             ):
                 raise ScopeDenied("Constructed backend differs from the assigned provider/model")
+            refusal = participant_refusal(backend)
+            if refusal:
+                raise ScopeDenied(refusal)
             backend._supervised_single_request = True
             # Each worker has its own stable SONN identity; the parent backend
             # and saved conversation are never rebound or passed into this runner.

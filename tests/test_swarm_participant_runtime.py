@@ -37,9 +37,10 @@ HOLD_SECONDS = 60
 def control(runtime, context, action, **kwargs):
     """One owner control at the revision just read.
 
-    The runner's lease renewal (every 5 s) also advances the revision, so on a
-    busy runner one can land in between; the control is then refused before
-    anything commits, and the owner refreshes and sends it again.
+    The team's own work (its workers' request accounting) also advances the
+    revision, so on a busy runner a change can land in between; the control is
+    then refused before anything commits, and the owner refreshes and sends it
+    again.
     """
     command_id = uuid.uuid4().hex
     for attempt in range(3):
@@ -114,7 +115,7 @@ def test_guidance_replay_is_generated_exactly_once_and_bound_to_next_request(rea
     try:
         runtime.start(context, BackendSpec("ollama", "chosen", api_key="fixture-private-key"))
         assert backend.entered.wait(REACH_SECONDS)
-        for attempt in range(3):  # a lease renewal may refuse it first, before anything commits
+        for attempt in range(3):  # the team's own work may refuse it first, before anything commits
             revision = snapshot(reader)["run"]["revision"]
             envelope = dict(command_id="steer-once", expected_revision=revision, text="Inspect the omitted edge case.")
             try:

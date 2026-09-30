@@ -119,10 +119,10 @@ class ExecutionBoundary:
         self.ensure_open()
         if getattr(backend, "handles_tools", False):
             self.reject("Guarded execution requires a native backend; CLI tool loops are unsupported")
-        from ..backends import KimiBackend, OllamaBackend
-        if isinstance(backend, (OllamaBackend, KimiBackend)):
+        if getattr(backend, "supervised_requests", False) is True:
             # One durable request allowance must not hide additional provider
-            # generations inside a transport's ordinary retry loop.
+            # generations inside a transport's ordinary retry loop. Adapters
+            # that declare the contract (lumi/backends.py) honour this flag.
             backend._supervised_single_request = True
 
     def _persist(self, method: str, *args: Any, **kwargs: Any) -> Any:

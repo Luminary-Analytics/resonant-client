@@ -6,8 +6,11 @@ project's ``origin`` remote points at:
 
 * **GitLab**: gitlab.com, or a self-managed host whose name contains
   "gitlab", the host GitLab CI runs on (``CI_SERVER_HOST``) or one listed in
-  ``LUMI_GITLAB_HOSTS``. Merge requests, their discussions and approvals, and
-  pipeline jobs.
+  Settings (``code_hosts.gitlab_hosts``) or ``LUMI_GITLAB_HOSTS``. Merge
+  requests, their discussions and approvals, and pipeline jobs. The token
+  goes only to gitlab.com and listed or CI hosts
+  (github_tools.check_token_host): a host found by its name alone must be
+  listed first.
 * **Bitbucket Cloud** (bitbucket.org): pull requests, comments, approvals and
   Pipelines steps.
 * **Azure DevOps** (dev.azure.com, ``*.visualstudio.com``): pull requests,
@@ -30,7 +33,7 @@ from dataclasses import dataclass
 from typing import Any, Callable
 from urllib.parse import quote, unquote
 
-from .github_tools import _LOG_TAIL_LINES, GitHubError, _branch, _clip, _git
+from .github_tools import _LOG_TAIL_LINES, GitHubError, _branch, _clip, _git, check_token_host, token_hosts
 
 _key_source: Callable[[str], str] = lambda name: ""  # noqa: E731
 _transport: Any = None  # httpx.MockTransport in tests
@@ -70,7 +73,8 @@ class Remote:
 
 def _gitlab_host(host: str) -> bool:
     extra = {h.strip().lower() for h in os.environ.get("LUMI_GITLAB_HOSTS", "").split(",") if h.strip()}
-    return "gitlab" in host or host == os.environ.get("CI_SERVER_HOST", "").lower() or host in extra
+    return ("gitlab" in host or host == os.environ.get("CI_SERVER_HOST", "").lower() or host in extra
+            or host in token_hosts("gitlab")[0])
 
 
 def parse_remote(url: str) -> Remote | None:
@@ -137,12 +141,31 @@ def _request(remote: Remote, method: str, url: str, *, json: Any = None, params:
 
     from ..net import client_options
 
-    headers = {**_auth(remote), "Accept": "text/plain" if text else "application/json", "User-Agent": "lumi"}
     try:
-        with httpx.Client(**client_options(timeout=30.0, transport=_transport), follow_redirects=True) as client:
+        target = httpx.URL(url).host
+    except httpx.InvalidURL as exc:
+        raise HostError(f"{remote.host} isn't a host Lumi can reach.") from exc
+    if remote.kind == "gitlab":
+        # An issue link can name any host (engine/issue_trackers.py): both the
+        # host named and the one the request goes to must be trusted.
+        check_token_host("gitlab", remote.host, target, error=HostError)
+    headers = {**_auth(remote), "Accept": "text/plain" if text else "application/json", "User-Agent": "lumi"}
+
+    def token_stays_home(request: httpx.Request) -> None:
+        # httpx drops Authorization when a redirect leaves the host, but not
+        # GitLab's PRIVATE-TOKEN header, so drop it here.
+        if request.url.host != target:
+            request.headers.pop("PRIVATE-TOKEN", None)
+
+    try:
+        # Offline mode's check runs first on each request and redirect, then this one.
+        with httpx.Client(**client_options(timeout=30.0, transport=_transport, feature=NAMES[remote.kind],
+                                           request_hooks=(token_stays_home,)), follow_redirects=True) as client:
             response = client.request(method, url, headers=headers, json=json, params=params)
     except httpx.HTTPError as exc:
-        raise HostError(f"{NAMES[remote.kind]} didn't answer: {type(exc).__name__}") from exc
+        from ..offline import message_for
+
+        raise HostError(message_for(exc) or f"{NAMES[remote.kind]} didn't answer: {type(exc).__name__}") from exc
     if response.status_code >= 400:
         message = ""
         try:

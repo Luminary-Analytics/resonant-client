@@ -23,6 +23,7 @@ from typing import Iterator, Tuple
 
 import httpx
 
+from . import dlp, net
 from .protocol import build_tool_system_prompt, parse_dsml_tool_calls, parse_tool_calls
 from .content import content_text, normalize_content, ollama_message_content, text_fallback
 from .capabilities import (
@@ -455,6 +456,7 @@ def _wait_with_cancel(seconds: float, cancel_event) -> bool:
     return False
 
 
+@dlp.guard_backend
 class OllamaBackend:
     """Direct connection to Ollama /api/chat with adaptive tool calling.
 
@@ -783,6 +785,12 @@ class OllamaBackend:
         except Exception as e:
             logger.debug(f"Could not check model info for {self.model}: {e}")
 
+        if getattr(self, "_supervised_single_request", False):
+            # A guarded invocation owns exactly one generation request. A hidden
+            # capability probe would spend outside its immutable request input.
+            # Metadata and the explicit model catalog above remain usable.
+            raise ValueError("Supervised Ollama workers require declared tool capability; generation probes are disabled")
+
         # Probe: send a minimal request with a simple tool and check response format
         try:
             opts = dict(self._ollama_options)
@@ -1036,6 +1044,10 @@ class OllamaBackend:
         handled by this context manager — the caller doesn't need
         to wrap in additional `with` blocks.
         """
+        # Supervised swarms reserve one generation request before invocation.
+        # Retrying a rejected/ambiguous transport here would bypass that ledger;
+        # explicit supervisor reconciliation owns any subsequent request.
+        max_retries = 0 if getattr(self, "_supervised_single_request", False) else _OLLAMA_MAX_RETRIES
         attempt = 0
         while True:
             client = httpx.Client(timeout=stream_timeout)
@@ -1051,7 +1063,7 @@ class OllamaBackend:
                     "POST", f"{self.base_url}/api/chat", json=payload,
                 ) as resp:
                     if (resp.status_code in _OLLAMA_RETRYABLE_STATUS
-                            and attempt < _OLLAMA_MAX_RETRIES):
+                            and attempt < max_retries):
                         try:
                             body_preview = resp.read().decode(
                                 "utf-8", errors="replace",
@@ -1105,7 +1117,7 @@ class OllamaBackend:
                 # the read ceiling. Retry it on the same backoff
                 # curve. A timeout AFTER we yielded is the caller's
                 # mid-stream consumption — we're committed; re-raise.
-                if opened_and_yielded or attempt >= _OLLAMA_MAX_RETRIES:
+                if opened_and_yielded or attempt >= max_retries:
                     raise
                 backoff = _OLLAMA_BASE_BACKOFF * (2 ** attempt)
                 logger.warning(
@@ -1462,7 +1474,7 @@ class OllamaBackend:
                             "kind": "ollama_exhausted",
                             "status_code": resp.status_code,
                             "model": self.model,
-                            "attempts": _OLLAMA_MAX_RETRIES + 1,
+                            "attempts": 1 if getattr(self, "_supervised_single_request", False) else _OLLAMA_MAX_RETRIES + 1,
                             "body_preview": err_body[:200],
                         })
                         # v0.6.5 — a transient-5xx exhaustion counts toward
@@ -1676,7 +1688,7 @@ class OllamaBackend:
                 "status_code": 0,
                 "reason": "timeout",
                 "model": self.model,
-                "attempts": _OLLAMA_MAX_RETRIES + 1,
+                "attempts": 1 if getattr(self, "_supervised_single_request", False) else _OLLAMA_MAX_RETRIES + 1,
                 "body_preview": type(e).__name__,
             })
             # v0.6.5 — repeated open-phase timeouts count toward the breaker.
@@ -1909,6 +1921,7 @@ _CODEX_PERMISSION_PROFILES = {
 }
 
 
+@dlp.guard_backend
 class KimiBackend:
     """Kimi K3 through Moonshot's OpenAI-compatible streaming API."""
 
@@ -2395,9 +2408,25 @@ class KimiBackend:
         """Return whether an in-stream provider error is safe to replay."""
         return False
 
+    @staticmethod
+    def _is_transient_overload(message: str) -> bool:
+        """An in-stream error saying the service is busy (NVIDIA NIM: "Service temporarily overloaded")."""
+        normalized = str(message or "").casefold()
+        return any(marker in normalized for marker in (
+            "overload", "temporarily unavailable", "too many requests", "rate limit", "try again later"))
+
     def _http_retry_delay(self, response: httpx.Response, attempt: int) -> float | None:
         """Delay for an already classified HTTP rejection; None stops retrying."""
         return 1.5 * (2 ** attempt)
+
+    @staticmethod
+    def _rate_limit_delay(response: httpx.Response, attempt: int) -> float:
+        """How long a supervised request waits out a 429: Retry-After, else 5, 10, 20 s (1-30 s)."""
+        try:
+            wanted = float(response.headers.get("retry-after", ""))
+        except ValueError:
+            wanted = 5.0 * (2 ** attempt)
+        return max(1.0, min(30.0, wanted))
 
     def stream(
         self,
@@ -2475,8 +2504,18 @@ class KimiBackend:
             ).start()
 
         try:
-            with httpx.Client(timeout=self._timeout, transport=self._transport, **self._tls_options()) as client:
-                for attempt in range(3):
+            # The shared factory, so offline mode refuses a server it doesn't
+            # allow before connecting (lumi/offline.py). This stream serves
+            # every OpenAI-compatible endpoint, on-premises servers included.
+            with httpx.Client(**net.client_options(timeout=self._timeout, transport=self._transport,
+                                                   feature=self.PROVIDER_LABEL, **self._tls_options())) as client:
+                # This inherited stream also serves SONN/OpenRouter/EXO. A
+                # guarded invocation cannot silently start another generation,
+                # but a rate limit (429) refused the request before generating
+                # anything, so only that is waited out and sent again.
+                supervised = getattr(self, "_supervised_single_request", False)
+                attempts = 4 if supervised else 3
+                for attempt in range(attempts):
                     restart_stream = False
                     if cancel_event is not None and cancel_event.is_set():
                         self._cancel_remote_generation(response_id)
@@ -2492,7 +2531,7 @@ class KimiBackend:
                             error_type, message = self._error_details(response)
                             retryable = self._is_retryable_error(
                                 response.status_code, error_type, message
-                            )
+                            ) and (not supervised or response.status_code == 429)
                             logger.warning(
                                 "%s API request failed: status=%d type=%s retryable=%s model=%s",
                                 self.PROVIDER_LABEL,
@@ -2501,7 +2540,9 @@ class KimiBackend:
                                 retryable,
                                 self.model,
                             )
-                            delay = self._http_retry_delay(response, attempt) if retryable and attempt < 2 else None
+                            delay = ((self._rate_limit_delay(response, attempt) if supervised
+                                      else self._http_retry_delay(response, attempt))
+                                     if retryable and attempt < attempts - 1 else None)
                             if delay is not None:
                                 yield (EVENT_BACKEND_STATUS, {
                                     "kind": self.RETRY_EVENT_KIND,
@@ -2518,7 +2559,10 @@ class KimiBackend:
                             yield (EVENT_ERROR, {
                                 "message": self._user_error_message(
                                     response.status_code, error_type, message
-                                )
+                                ),
+                                # A number, safe to keep where provider text isn't
+                                # (the guarded ledger, benchmark records).
+                                "status_code": response.status_code,
                             })
                             return
 
@@ -2579,11 +2623,15 @@ class KimiBackend:
                                     if isinstance(error, dict)
                                     else str(error)
                                 )
-                                if (
-                                    self._is_retryable_stream_error(message)
-                                    and attempt < 2
+                                # Before any model output, a supervised request
+                                # may wait out a busy service: nothing was
+                                # generated, so resending is still one generation.
+                                before_output = not (content_parts or reasoning_parts or tool_calls)
+                                if attempt < attempts - 1 and (
+                                    (self._is_retryable_stream_error(message) and not supervised)
+                                    or (supervised and before_output and self._is_transient_overload(message))
                                 ):
-                                    delay = 1.5 * (2 ** attempt)
+                                    delay = min(30.0, 5.0 * (2 ** attempt)) if supervised else 1.5 * (2 ** attempt)
                                     yield (EVENT_BACKEND_STATUS, {
                                         "kind": self.RETRY_EVENT_KIND,
                                         "status_code": 0,
@@ -2627,6 +2675,9 @@ class KimiBackend:
                                         self._is_retryable_stream_error(message)
                                         and (content_parts or reasoning_parts)
                                     ),
+                                    # The guarded ledger settles this as known:
+                                    # the provider failed before any output.
+                                    "before_output": before_output,
                                 })
                                 return
                             if isinstance(event.get("usage"), dict):
@@ -2800,7 +2851,8 @@ class KimiBackend:
                 yield (EVENT_ERROR, {"message": self._timeout_error_message()})
             else:
                 yield (EVENT_ERROR, {
-                    "message": f"{self.PROVIDER_LABEL} API connection failed: {type(exc).__name__}"
+                    "message": net.offline_message(exc)
+                    or f"{self.PROVIDER_LABEL} API connection failed: {type(exc).__name__}"
                 })
         except Exception as exc:
             if stream_state["idle_timed_out"]:
@@ -2814,6 +2866,7 @@ class KimiBackend:
             stream_watcher_done.set()
 
 
+@dlp.guard_backend
 class ExoBackend(KimiBackend):
     """EXO distributed inference through its OpenAI-compatible endpoint."""
 
@@ -3053,19 +3106,21 @@ class ExoBackend(KimiBackend):
             self._ensure_instance(self._warmup_cancel_event)
             if self._warmup_cancel_event.is_set():
                 return
-            for event_type, data in KimiBackend.stream(
-                self,
-                user_msg="Call resonant_warmup now.",
-                conversation_history=[],
-                instructions=(
-                    "This is a provider warmup. Call resonant_warmup exactly "
-                    "once and do not write prose."
-                ),
-                tools=[warmup_tool],
-                cancel_event=self._warmup_cancel_event,
-            ):
-                if event_type == EVENT_ERROR and not self._warmup_cancel_event.is_set():
-                    logger.debug("EXO warmup ended with provider error: %s", data)
+            # Fixed text, no conversation content: nothing for DLP rules to check.
+            with dlp.permit():
+                for event_type, data in KimiBackend.stream(
+                    self,
+                    user_msg="Call resonant_warmup now.",
+                    conversation_history=[],
+                    instructions=(
+                        "This is a provider warmup. Call resonant_warmup exactly "
+                        "once and do not write prose."
+                    ),
+                    tools=[warmup_tool],
+                    cancel_event=self._warmup_cancel_event,
+                ):
+                    if event_type == EVENT_ERROR and not self._warmup_cancel_event.is_set():
+                        logger.debug("EXO warmup ended with provider error: %s", data)
         except Exception:
             logger.debug("EXO warmup failed", exc_info=True)
 
@@ -3387,6 +3442,7 @@ class ExoBackend(KimiBackend):
         return f"EXO API request failed ({status_code}): {message}"
 
 
+@dlp.guard_backend
 class CodexCliBackend:
     """Subscription/API-auth backed Codex CLI execution."""
 
@@ -3702,6 +3758,7 @@ def claude_code_credentials_present() -> bool:
     return (Path.home() / ".claude" / ".credentials.json").is_file()
 
 
+@dlp.guard_backend
 class ClaudeCodeCliBackend:
     """Subscription-backed Claude Code CLI execution.
 

@@ -103,7 +103,9 @@ def content_security_policy(scope: Scope) -> str:
     this server, whose WebSocket it opens on a host :func:`allowed_hosts`
     accepts. Images are this server's, or data: and blob: URLs (screenshots,
     attachments); remote images, whose address could carry data away, are
-    refused, and forms submit nowhere.
+    refused, and forms submit nowhere. Frames load only from this server: the
+    sandboxed panels of capability packs (gui/extension_panels.py), which this
+    also keeps from navigating themselves to another site.
     """
     scheme = "wss" if scope.get("scheme") in ("https", "wss") else "ws"
     # A bracketed IPv6 literal is not a valid CSP host source; 'self' covers
@@ -115,6 +117,7 @@ def content_security_policy(scope: Scope) -> str:
         "style-src 'self'",
         "img-src 'self' data: blob:",
         " ".join(("connect-src 'self'", *sockets)),
+        "frame-src 'self'",
         "object-src 'none'",
         "base-uri 'none'",
         "form-action 'none'",

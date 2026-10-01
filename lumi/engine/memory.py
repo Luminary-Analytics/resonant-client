@@ -3,12 +3,27 @@ Engram Memory Integration for the Lumi engine.
 
 Connects to the Engram memory system for persistent, context-aware recall
 across sessions. Uses MCP transport or direct HTTP to the engram server.
+
+What Lumi sends Engram (recall queries, memories, session summaries) passes
+the organization's DLP rules first, like a model request (lumi/dlp.py): text
+a block rule matches isn't sent, redactions apply, and conversation entries
+DLP withheld are left out of summaries.
 """
 
 import logging
 import os
 
 logger = logging.getLogger(__name__)
+
+
+def _checked(text: str):
+    """``text`` as the organization's DLP rules let it go to Engram, or None if they block it."""
+    from ..dlp import Blocked, check_text
+
+    try:
+        return check_text(text, purpose="memory", provider="engram")
+    except Blocked:
+        return None
 
 
 class EngramIntegration:
@@ -59,6 +74,9 @@ class EngramIntegration:
         """
         if not self.enabled:
             return []
+        query = _checked(query)
+        if query is None:
+            return []
 
         ns = namespace or self._namespace
 
@@ -87,6 +105,9 @@ class EngramIntegration:
     def remember(self, text: str, namespace: str = ""):
         """Store a memory."""
         if not self.enabled:
+            return
+        text = _checked(text)
+        if text is None:
             return
 
         ns = namespace or self._namespace
@@ -131,7 +152,13 @@ class EngramIntegration:
         for entry in conversation_history:
             role = entry.get("role", "")
             content = entry.get("content", "")
+            if entry.get("dlp_withheld"):
+                continue  # blocked by the organization's DLP rules: it stays on this computer
             if isinstance(content, str) and role in ("user", "assistant"):
+                # Checked whole, before truncation can cut a match in half.
+                content = _checked(content)
+                if content is None:
+                    continue
                 # Keep short entries as-is, truncate long ones
                 if len(content) < 200:
                     points.append(f"{role}: {content}")

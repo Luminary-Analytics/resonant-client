@@ -1,5 +1,5 @@
 {
-  "_comment": "Third-party parts of the Lumi installer that are not Python packages. packaging/third_party_notices.py adds them to THIRD_PARTY_NOTICES.txt and the release SBOM. Keep versions in step with the fetch scripts and the spec; tests/test_release_supply_chain.py checks that they agree.",
+  "_comment": "Third-party parts of the Lumi installer that are not Python packages, including code ported into Lumi's own modules (kind \"Ported source code\", with the original's license file). packaging/third_party_notices.py adds them to THIRD_PARTY_NOTICES.txt and the release SBOM. Keep versions in step with the fetch scripts and the spec; tests/test_release_supply_chain.py checks that they agree.",
   "not_shipped": {
     "_comment": "Installed as dependencies but excluded from the bundle (packaging/lumi.spec reads this list). The notices leave them out.",
     "mouseinfo": "GPL-3.0-or-later. A PyAutoGUI dependency for its mouseInfo() tool, which Lumi never calls; PyAutoGUI works without it.",
@@ -48,6 +48,16 @@
       "platforms": ["win32"]
     },
     {
+      "name": "Sparkle",
+      "version": "2.10.0",
+      "license": "MIT AND BSD-2-Clause AND Zlib",
+      "url": "https://sparkle-project.org/",
+      "purl": "pkg:github/sparkle-project/Sparkle@2.10.0",
+      "license_files": ["packaging/sparkle/LICENSE"],
+      "note": "macOS update checks (Sparkle.framework in Lumi.app). Includes bsdiff (BSD-2-Clause), sais-lite (MIT), orlp/ed25519 (Zlib) and SUSignatureVerifier (BSD-2-Clause), whose notices are in its license file. Fetched and SHA-256 verified by packaging/fetch_sparkle.sh.",
+      "platforms": ["darwin"]
+    },
+    {
       "name": "marked",
       "version": "12.0.2",
       "license": "MIT",
@@ -78,6 +88,16 @@
       "url": "https://github.com/rsms/inter",
       "purl": "pkg:npm/%40fontsource/inter@5.0.17",
       "note": "Latin subset, weights 400 to 700, from the @fontsource/inter package."
+    },
+    {
+      "name": "pi-coding-agent",
+      "version": "0.70.6",
+      "license": "MIT",
+      "url": "https://github.com/earendil-works/pi",
+      "purl": "pkg:npm/%40mariozechner/pi-coding-agent@0.70.6",
+      "license_files": ["packaging/licenses/pi-coding-agent-LICENSE.txt"],
+      "kind": "Ported source code",
+      "note": "lumi/engine/truncation.py is a Python port of packages/coding-agent/src/core/tools/truncate.ts from the pi monorepo (formerly github.com/badlogic/pi-mono). The file is the same in 0.70.6, the release current when it was ported in April 2026."
     }
   ]
 }

@@ -5,7 +5,9 @@ A policy is a ``lumi.policy/v1`` JSON document, supplied machine-wide by IT:
 * Windows: the registry value ``Policy`` (the JSON text) or ``PolicyFile`` (a
   path) under ``HKLM\\SOFTWARE\\Policies\\Luminary Analytics\\Lumi``, which
   the ADMX template in ``packaging/policy/`` sets through Group Policy or
-  Intune; otherwise ``%ProgramData%\\Lumi\\policy.json``;
+  Intune; otherwise ``Lumi\\policy.json`` in the ProgramData folder Windows
+  reports (``C:\\ProgramData``; never the ``ProgramData`` environment
+  variable, which a person can point anywhere);
 * macOS: the ``Policy`` key of the ``com.luminaryanalytics.lumi`` managed
   preferences (a configuration profile), otherwise
   ``/Library/Application Support/Lumi/policy.json``;
@@ -41,12 +43,40 @@ What a policy can do (every section is optional)::
       "extensions": {"allowed_packs": ["team-*"]},
       "pricing": {"prices": {"anthropic:claude-opus-*": {"input": 3.2, "output": 16}}},
       "budgets": [{"scope": "user", "period": "month", "warn_usd": 200, "block_usd": 400}],
-      "approvals": {"commands": ["git push --force*", "terraform apply*"], "wait_minutes": 30}
+      "approvals": {"commands": ["git push --force*", "terraform apply*"], "wait_minutes": 30},
+      "oversight": {"activity": true, "messages": "redacted", "security_flags": true,
+                    "retention_days": 90, "notice": "Questions: security@acme.example",
+                    "unattended": "record"},
+      "dlp": {"version": 1, "detectors": {"credit_card": "block", "secrets": "redact"},
+              "rules": [{"name": "falcon", "keywords": ["Project Falcon"], "action": "block"}]}
     }
 
 ``approvals`` lists commands (``fnmatch`` patterns over the whole command)
 that a second person in the organization approves in Lumi Cloud before they
 run (engine/second_approval.py).
+
+``oversight`` has Lumi share work with the organization's Lumi Cloud
+(lumi/oversight.py): each turn's activity, messages at a level (``off``,
+``redacted`` or ``full``, secrets removed at every level) and security flags,
+kept there for ``retention_days``. It is off unless a policy turns it on, and
+the person is always told: Lumi shows a notice naming the organization and
+what it receives, and sends nothing to a model until they have confirmed
+they read it. ``unattended`` says what a run with nobody to show the notice
+to does (a scheduled task or ``lumi run`` with no terminal, as its
+environment reports) while nobody has confirmed it as that computer user:
+``record`` (the default) runs it, prints the notice with its output and
+records it; ``block`` refuses it. Its ``version`` (1, the default) says which keys it
+may have. A key or a version this Lumi doesn't know turns oversight off,
+with the reason in Settings, and leaves the rest of the policy in force:
+Lumi never collects less or more than it can describe, and a newer Lumi
+Cloud never blocks model requests on an older Lumi. What it shares has passed
+the ``dlp`` rules too (``dlp.shareable``): text they redact is shared redacted,
+text they block isn't shared.
+
+``dlp`` holds data loss prevention rules for content sent to model providers
+(lumi/dlp.py, docs/dlp.md). A ``dlp`` section that can't be used doesn't make
+the policy vanish: the rest still applies, and model requests are refused
+(``blocked_reason``) until it's fixed.
 
 Locked settings override the user's value and can't be changed in Settings,
 which shows who manages them. Lists match ``fnmatch`` patterns.
@@ -83,6 +113,118 @@ PERMISSION_MODES = ("ask", "auto-edit", "plan", "bypass")
 
 class PolicyError(ValueError):
     """A policy that can't be used; the message says why."""
+
+
+# How much of people's messages an organization's oversight receives (lumi/oversight.py).
+OVERSIGHT_MESSAGE_LEVELS = ("off", "redacted", "full")
+# The section's versions this Lumi understands, and each one's keys.
+# ``unattended`` is a version 1 key: no Lumi that read version 1 without it
+# was released, and one that doesn't know it turns oversight off (fail safe).
+OVERSIGHT_VERSIONS = (1,)
+OVERSIGHT_KEYS = frozenset({"version", "activity", "messages", "security_flags", "retention_days", "notice",
+                            "project_paths", "unattended"})
+OVERSIGHT_NOTICE_LIMIT = 500
+# What a run nobody can be shown the notice to does while nobody confirmed it
+# as that computer user (lumi/oversight.py): run and record it, or refuse it.
+OVERSIGHT_UNATTENDED = ("record", "block")
+
+
+@dataclass(frozen=True)
+class Oversight:
+    """What the organization's policy has Lumi share with its Lumi Cloud; nothing by default.
+
+    * ``activity``: each turn's metadata: session, project folder name,
+      model, outcome, tool names, cost.
+    * ``messages``: the person's message and Lumi's final reply with each
+      turn, and the session's title: ``off``, ``redacted`` (without code
+      blocks or email addresses, shortened) or ``full`` (as written). Secrets
+      are removed at every level.
+    * ``security_flags``: refused dangerous commands, policy and file denials,
+      declined approvals, removed secrets and signs of prompt injection.
+    * ``retention_days``: how long Lumi Cloud keeps it.
+    * ``notice``: the organization's own words, shown with Lumi's description.
+    * ``project_paths``: full project paths instead of folder names.
+    * ``unattended``: what a run with nobody to show the notice to does
+      while nobody confirmed it as that computer user: ``record`` (run it,
+      print the notice with its output, record it) or ``block`` (refuse it).
+    * ``error``: why a section this Lumi can't honor (an unknown key or
+      version) turned oversight off; shown in Settings.
+    """
+
+    activity: bool = False
+    messages: str = "off"
+    security_flags: bool = False
+    retention_days: int = 90
+    notice: str = ""
+    project_paths: bool = False
+    unattended: str = "record"
+    version: int = 1
+    error: str = ""
+
+    @property
+    def enabled(self) -> bool:
+        """Whether anything is shared (messages come only with activity; nothing when ``error``)."""
+        return not self.error and (self.activity or self.security_flags)
+
+    def summary(self) -> dict:
+        return {"version": self.version, "activity": self.activity, "messages": self.messages,
+                "security_flags": self.security_flags, "retention_days": self.retention_days,
+                "notice": self.notice, "project_paths": self.project_paths, "unattended": self.unattended,
+                "enabled": self.enabled, "error": self.error}
+
+
+def _oversight(value: Any) -> Oversight:
+    """The ``oversight`` section.
+
+    A version or a key this Lumi doesn't know turns oversight off with the
+    reason (``Oversight.error``) rather than guessing at what the organization
+    wants collected, and without invalidating the rest of the policy: a
+    newer Lumi Cloud's section must never stop model requests on this
+    computer. Other mistakes (a value of the wrong type) make the policy
+    invalid, like a mistake in any section.
+    """
+    if value is None:
+        return Oversight()
+    if not isinstance(value, dict):
+        raise PolicyError("oversight must be an object.")
+    version = value.get("version", 1)
+    if isinstance(version, bool) or version not in OVERSIGHT_VERSIONS:
+        shown = json.dumps(version) if isinstance(version, (int, float, str, bool)) or version is None else "that"
+        error = (f"The policy's oversight section is version {shown[:40]}, which this version of Lumi doesn't "
+                 "understand, so it collects nothing. Update Lumi, or ask your administrator.")
+        logger.warning("Organization oversight is off: %s", error)
+        return Oversight(error=error)
+    unknown = sorted(str(key) for key in value if key not in OVERSIGHT_KEYS)
+    if unknown:
+        names = ", ".join(name[:40] for name in unknown[:5])
+        error = (f"The policy's oversight section asks for {names}, which this version of Lumi doesn't "
+                 "understand, so it collects nothing. Update Lumi, or ask your administrator.")
+        logger.warning("Organization oversight is off: %s", error)
+        return Oversight(error=error)
+    activity = _flag(value.get("activity"), "oversight.activity")
+    messages = value.get("messages", "off")
+    if messages is None:
+        messages = "off"
+    if messages not in OVERSIGHT_MESSAGE_LEVELS:
+        raise PolicyError('oversight.messages must be "off", "redacted" or "full".')
+    if messages != "off" and not activity:
+        raise PolicyError('oversight.messages needs "activity": true; messages are shared with each turn\'s activity.')
+    retention = value.get("retention_days", 90)
+    if isinstance(retention, bool) or not isinstance(retention, int) or not 1 <= retention <= 3650:
+        raise PolicyError("oversight.retention_days must be a whole number of days from 1 to 3650.")
+    notice = value.get("notice") or ""
+    if not isinstance(notice, str) or len(notice) > OVERSIGHT_NOTICE_LIMIT:
+        raise PolicyError(f"oversight.notice must be text of at most {OVERSIGHT_NOTICE_LIMIT} characters.")
+    unattended = value.get("unattended", "record")
+    if unattended is None:
+        unattended = "record"
+    if unattended not in OVERSIGHT_UNATTENDED:
+        raise PolicyError('oversight.unattended must be "record" or "block".')
+    return Oversight(activity=activity, messages=messages,
+                     security_flags=_flag(value.get("security_flags"), "oversight.security_flags"),
+                     retention_days=retention, notice=" ".join(notice.split()),
+                     project_paths=_flag(value.get("project_paths"), "oversight.project_paths"),
+                     unattended=unattended)
 
 
 @dataclass
@@ -129,6 +271,12 @@ class Policy:
     # Commands a second person approves in Lumi Cloud before they run (engine/second_approval.py).
     approval_commands: tuple[str, ...] = ()
     approval_wait_minutes: int = 30
+    # What Lumi shares with the organization's Lumi Cloud (lumi/oversight.py); nothing unless set.
+    oversight: Oversight = field(default_factory=Oversight)
+    # Data loss prevention rules (lumi/dlp.py: a DlpPolicy), or why the dlp
+    # section can't be used, which refuses model requests (blocked_reason).
+    dlp: Any = None
+    dlp_error: str = ""
     raw: dict = field(default_factory=dict)
 
     # ── Queries ────────────────────────────────────────────────────────────
@@ -210,6 +358,10 @@ class Policy:
             "require_zero_retention": self.require_zero_retention,
             "zero_retention_providers": list(self.zero_retention_providers),
             "approval_commands": list(self.approval_commands),
+            "oversight": self.oversight.summary(),
+            # Rule names and actions only: keywords and patterns can name what they protect.
+            "dlp": self.dlp.summary() if self.dlp is not None else None,
+            "dlp_error": self.dlp_error,
         }
 
 
@@ -328,6 +480,26 @@ def _section(document: dict, name: str) -> dict:
     return value
 
 
+def _dlp_section(document: dict) -> tuple[Any, str]:
+    """The dlp section's rules, or why they can't be used.
+
+    A mistake here is contained: the rest of the policy still applies, and
+    blocked_reason refuses model requests until the section is fixed, so an
+    organization's DLP rules never silently stop applying.
+    """
+    value = document.get("dlp")
+    if value is None:
+        return None, ""
+    from .dlp import DlpError, parse_section
+
+    try:
+        return parse_section(value), ""
+    except DlpError as exc:
+        return None, str(exc)
+    except Exception as exc:  # anything else that stops the rules from being built
+        return None, f"The dlp section couldn't be read ({type(exc).__name__})."
+
+
 def _grace_days(value: Any) -> int:
     """``grace_days`` as a whole number of days; null means none."""
     if value is None:
@@ -366,10 +538,13 @@ def parse(data: Any, *, source: str, trusted_keys: dict[str, str] | None = None,
     settings = _section(document, "settings")
     if not all(isinstance(k, str) and "." in k for k in settings):
         raise PolicyError("'settings' must map 'section.key' names to values.")
+    from .offline_rules import validate_policy_settings as validate_offline_settings
     from .update_channels import validate_policy_settings
 
     try:
         validate_policy_settings(settings)
+        # A list Lumi can't read must not become "no hosts" or "all hosts".
+        validate_offline_settings(settings)
     except ValueError as exc:
         raise PolicyError(str(exc)) from exc
     if "security.shell_sandbox" in settings and settings["security.shell_sandbox"] not in ("off", "project"):
@@ -386,6 +561,17 @@ def parse(data: Any, *, source: str, trusted_keys: dict[str, str] | None = None,
     reviewers = settings.get("review.reviewers", [])
     if not isinstance(reviewers, list) or not all(isinstance(name, str) for name in reviewers):
         raise PolicyError("'review.reviewers' must list GitHub usernames or organization/team names.")
+    for name in ("code_hosts.github_hosts", "code_hosts.gitlab_hosts"):
+        # The hosts that may receive the GitHub or GitLab token (engine/github_tools.token_hosts).
+        if name in settings:
+            from .net import host_names
+
+            if not isinstance(settings[name], list):
+                raise PolicyError(f"'{name}' must list host names.")
+            try:
+                host_names(settings[name])
+            except ValueError as exc:
+                raise PolicyError(f"'{name}': {exc}") from exc
     permissions = _section(document, "permissions")
     modes = permissions.get("allowed_modes")
     allowed_modes = _patterns(modes, "permissions.allowed_modes") if modes is not None else None
@@ -453,6 +639,8 @@ def parse(data: Any, *, source: str, trusted_keys: dict[str, str] | None = None,
     wait_minutes = approvals.get("wait_minutes", 30)
     if isinstance(wait_minutes, bool) or not isinstance(wait_minutes, int) or not 1 <= wait_minutes <= 240:
         raise PolicyError("approvals.wait_minutes must be a whole number from 1 to 240.")
+    oversight = _oversight(document.get("oversight"))
+    dlp, dlp_error = _dlp_section(document)
 
     return Policy(
         organization=str(document.get("organization") or "your organization"),
@@ -490,6 +678,9 @@ def parse(data: Any, *, source: str, trusted_keys: dict[str, str] | None = None,
         capability_overrides=capability_overrides,
         approval_commands=approval_commands,
         approval_wait_minutes=wait_minutes,
+        oversight=oversight,
+        dlp=dlp,
+        dlp_error=dlp_error,
         raw=document,
     )
 
@@ -518,7 +709,7 @@ def _registry_policy() -> tuple[str, str] | None:
                 if name == "Policy" and str(value).strip():
                     return str(value), f"Group Policy (HKLM\\{REGISTRY_KEY})"
                 if name == "PolicyFile" and str(value).strip():
-                    path = Path(os.path.expandvars(str(value)))
+                    path = Path(expand_machine_variables(str(value)))
                     return path.read_text(encoding=ADMIN_TEXT), f"{path} (set by Group Policy)"
     except OSError:
         return None
@@ -575,9 +766,70 @@ def managed_preferences_keys(path: Path) -> str:
     return value if isinstance(value, str) else ""
 
 
+_windows_folders: dict[str, str] = {}
+
+
+def _known_folder(guid: str, fallback: str) -> str:
+    """A Windows folder as the operating system reports it (SHGetKnownFolderPath).
+
+    Never from the environment: a person can start Lumi with ``ProgramData``
+    or ``SystemDrive`` pointing at a folder they control, and a policy or a
+    trusted key found there would be theirs, not an administrator's. The
+    folders read here are fixed ones, which a person can't redirect either.
+    """
+    if guid in _windows_folders:
+        return _windows_folders[guid]
+    folder = fallback
+    try:
+        import ctypes
+        import uuid
+        from ctypes import wintypes
+
+        class _GUID(ctypes.Structure):
+            _fields_ = [("Data1", wintypes.DWORD), ("Data2", wintypes.WORD), ("Data3", wintypes.WORD),
+                        ("Data4", ctypes.c_ubyte * 8)]
+
+        value = uuid.UUID(guid)
+        known = _GUID(value.fields[0], value.fields[1], value.fields[2], (ctypes.c_ubyte * 8)(*value.bytes[8:]))
+        path = ctypes.c_wchar_p()
+        shell32 = ctypes.WinDLL("shell32")
+        shell32.SHGetKnownFolderPath.argtypes = [ctypes.POINTER(_GUID), wintypes.DWORD, wintypes.HANDLE,
+                                                 ctypes.POINTER(ctypes.c_wchar_p)]
+        shell32.SHGetKnownFolderPath.restype = ctypes.c_long
+        result = shell32.SHGetKnownFolderPath(ctypes.byref(known), 0, None, ctypes.byref(path))
+        try:
+            if result == 0 and path.value:
+                folder = path.value
+        finally:
+            ctypes.WinDLL("ole32").CoTaskMemFree(path)
+    except Exception:  # not Windows, or no shell: the default location
+        logger.debug("The known folder %s couldn't be read; using %s", guid, fallback, exc_info=True)
+    _windows_folders[guid] = folder
+    return folder
+
+
+def _program_data() -> str:
+    return _known_folder("62AB5D82-FDC1-4DC3-A9DD-070D1D495D97", r"C:\ProgramData")  # FOLDERID_ProgramData
+
+
+def expand_machine_variables(text: str) -> str:
+    """``%ProgramData%`` and other machine folders in a path an administrator set, from the operating system.
+
+    Only machine folders expand (ProgramData, ALLUSERSPROFILE, ProgramFiles,
+    SystemRoot, windir, SystemDrive); anything else stays as written, so a
+    path that depends on a person's environment isn't found rather than
+    pointing at a folder they chose.
+    """
+    windows = _known_folder("F38BF404-1D43-42F2-9305-67DE0B28FC23", r"C:\Windows")  # FOLDERID_Windows
+    values = {"programdata": _program_data(), "allusersprofile": _program_data(),
+              "programfiles": _known_folder("905E63B6-C1BF-494E-B29C-65B732D3D21A", r"C:\Program Files"),
+              "systemroot": windows, "windir": windows, "systemdrive": windows[:2]}
+    return re.sub(r"%([^%]+)%", lambda match: values.get(match.group(1).lower(), match.group(0)), text)
+
+
 def machine_policy_file() -> Path:
     if sys.platform == "win32":
-        return Path(os.environ.get("ProgramData", r"C:\ProgramData")) / "Lumi" / "policy.json"
+        return Path(_program_data()) / "Lumi" / "policy.json"
     if sys.platform == "darwin":
         return Path("/Library/Application Support/Lumi/policy.json")
     return Path("/etc/lumi/policy.json")
@@ -800,6 +1052,17 @@ def current() -> Policy | None:
     return load().policy
 
 
+def oversight_settings() -> Oversight:
+    """What the policy in force has Lumi share with the organization's Lumi Cloud (off without one)."""
+    policy = current()
+    return policy.oversight if policy is not None else Oversight()
+
+
+def enrolled_device() -> dict:
+    """This computer's Lumi Cloud enrollment from settings.json ({} when it isn't enrolled)."""
+    return dict(_joined_device())
+
+
 def blocked_reason() -> str:
     """Why model requests are refused under policy, or an empty string."""
     state = load()
@@ -810,6 +1073,12 @@ def blocked_reason() -> str:
         return (
             f"{policy.organization}'s policy expired on {policy.expires_at} and its offline grace "
             "period has ended. Connect so Lumi can fetch a current policy, or ask your administrator."
+        )
+    if policy and policy.dlp_error:
+        # Fail closed: without its rules, nothing may leave for a model provider.
+        return (
+            f"{policy.organization}'s data loss prevention rules can't be applied: {policy.dlp_error} "
+            "Lumi won't send model requests until your administrator fixes the policy's dlp section."
         )
     return ""
 

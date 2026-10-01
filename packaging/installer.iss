@@ -59,6 +59,10 @@
 AppId={{F324242E-23A7-45B0-BEB9-0961AAD3745A}
 AppName={#AppName}
 AppVersion={#AppVersion}
+; Installing an update from a file (lumi/update_file.py) trusts the release
+; named here, inside the EdDSA-signed installer, not the unsigned feed's.
+; Keep it the release version (Inno Setup's default, made explicit).
+VersionInfoProductTextVersion={#AppVersion}
 AppPublisher={#AppPublisher}
 AppPublisherURL={#AppURL}
 AppSupportURL={#AppURL}

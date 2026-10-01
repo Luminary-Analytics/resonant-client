@@ -11,6 +11,7 @@ import copy
 import json
 import os
 import re
+import string
 import sys
 import time
 import logging
@@ -29,7 +30,7 @@ from ..backends import (
     EVENT_BACKEND_STATUS,
     EVENT_EXTERNAL_TOOL,
 )
-from .. import secret_scan
+from .. import dlp, secret_scan
 from ..events import EngineEvent, make_event
 from ..content import build_user_content
 from .tools import (
@@ -44,6 +45,7 @@ from .tools import (
 from .agents import get_agent_type
 from .agent_runtime import AgentHandoff, AgentRegistry, AgentStatus
 from .artifacts import ArtifactKind, ArtifactStore
+from .execution_guard import ExecutionBoundary, ExecutionGuard, ExecutionGuardError, ToolScopeRefused
 from .repair_progress import RepairProgress, recovery_guidance
 from .compression import (
     CONTEXT_HEADROOM_RATIO,
@@ -73,6 +75,30 @@ logger = logging.getLogger(__name__)
 
 class ToolBoundaryViolation(Exception):
     """A tool call escaped the active session's execution boundary."""
+
+
+class ExcludedPathViolation(ToolBoundaryViolation):
+    """A tool call reached a file Lumi never reads (engine/exclusions.py); ``rule`` says which rule."""
+
+    def __init__(self, message: str, rule: Any = None) -> None:
+        super().__init__(message)
+        self.rule = rule
+
+
+# What the engine tells the model when the person answers Deny; the app and
+# the terminal UI recognise it (USER_DENIAL_OUTPUT there).
+USER_DENIAL = "Tool execution denied by user."
+
+
+def _permission_denial_source(denial: str) -> str:
+    """Who refused a call at the approval step, for ``denied_by`` on its result (lumi/security_flags.py)."""
+    if denial == USER_DENIAL:
+        return "user"
+    if denial.startswith("Tool execution denied by permission hook"):
+        return "permission_hook"
+    if denial.startswith("Blocked by policy:"):
+        return "policy"
+    return "unanswered"
 
 
 # ── Doom Loop Detection ────────────────────────────────────────────────
@@ -118,6 +144,17 @@ _CORE_TOOL_DESCRIPTIONS = {
     "search_tools": "Load a specialized tool by capability when the core tools are insufficient.",
     "await_user": "Ask one genuinely blocking question; include and recommend an option when possible.",
 }
+
+
+def _prefixed(stream, first: tuple[str, dict]):
+    """Yield ``first``, then ``stream``'s events; closing this closes ``stream``."""
+    try:
+        yield first
+        yield from stream
+    finally:
+        close = getattr(stream, "close", None)
+        if callable(close):
+            close()
 
 
 def _message_text(message: dict) -> str:
@@ -579,9 +616,26 @@ class Session:
         pause_event: Optional[threading.Event] = None,
         max_model_requests: Optional[int] = None,
         action_guard=None,
+        execution_guard: ExecutionGuard | None = None,
+        guarded_tool_handlers: dict[str, Callable] | None = None,
     ):
         self.backend = backend
         self.action_guard = action_guard
+        if execution_guard is not None and action_guard is not None:
+            raise ValueError("Combining supervised execution with employee action authority is unsupported")
+        self._guarded_tool_handlers = dict(guarded_tool_handlers or {})
+        if self._guarded_tool_handlers and execution_guard is None:
+            raise ValueError("Scoped runtime tools require an execution guard")
+        if self._guarded_tool_handlers and (
+            allowed_tools is None or not set(self._guarded_tool_handlers) <= {
+                _tool_definition_name(tool) for tool in allowed_tools
+            } or not all(callable(handler) for handler in self._guarded_tool_handlers.values())
+        ):
+            raise ValueError("Every scoped runtime handler requires an explicit tool schema")
+        self._execution_boundary = (
+            ExecutionBoundary(execution_guard, runtime_tools=set(self._guarded_tool_handlers))
+            if execution_guard is not None else None
+        )
         try:
             parsed_max_steps = int(max_steps) if max_steps is not None else 0
         except (TypeError, ValueError):
@@ -639,6 +693,18 @@ class Session:
         self.project_content_trusted = True
         # The saved conversation's id, for the audit log (set by the app).
         self.audit_session_id = ""
+        # What the person typed for the next turn, when the model gets it
+        # wrapped (the app's sprint harness); organization oversight
+        # (lumi/oversight.py) shares this, not the wrapper. One turn only.
+        self.display_prompt: Optional[str] = None
+        # What starts this session's turns, for organization oversight
+        # (lumi/oversight.py TRIGGERS; "" means worked out from
+        # audit_session_id), and whether nobody is there to be shown its
+        # notice. Only a surface that sets ``oversight_unattended`` runs
+        # without the person's confirmation, under the policy's
+        # ``oversight.unattended``; every other turn needs it.
+        self.oversight_trigger: str = ""
+        self.oversight_unattended: bool = False
         self.event_logger = None  # EventLogger, set externally for JSONL logging
         self.agent_registry: Optional[AgentRegistry] = None
         self.agent_id: str = ""
@@ -670,6 +736,10 @@ class Session:
         self._windowed_cycle_nudged: bool = False
         self._read_result_cache: dict[str, dict[str, object]] = {}
         self._last_checkpoint_tool_call: str = ""
+        # The kinds of content the turn's instructions are made of, in order
+        # ((kind, text) pairs, see _run_turn), so DLP rules scoped to
+        # attachments or instructions (lumi/dlp.py) apply to the right parts.
+        self._dlp_segments: Optional[list[tuple[str, str]]] = None
 
     @property
     def is_subagent(self) -> bool:
@@ -815,6 +885,10 @@ class Session:
     @property
     def tools(self) -> list[dict]:
         """Get the tools available for this session."""
+        if self._execution_boundary:
+            source = AGENT_TOOLS if self._allowed_tools is None else self._allowed_tools
+            names = self._execution_boundary.file_tools | self._execution_boundary.runtime_tools
+            return [tool for tool in source if _tool_definition_name(tool) in names]
         if self._allowed_tools is not None:
             return self._allowed_tools
         base = AGENT_TOOLS
@@ -1008,12 +1082,172 @@ class Session:
 
     def should_plan(self, user_msg: str) -> bool:
         """Use a quick LLM classification to decide if this request needs planning."""
+        from .. import offline
+
+        if offline.backend_refusal(self.backend):
+            # Nothing goes to a provider offline mode can't reach (a CLI
+            # adapter's classify would start its own program); the turn itself
+            # reports the refusal.
+            return False
         try:
-            prompt = self._CLASSIFY_PROMPT.format(user_msg=user_msg)
-            result = self.backend.classify(prompt, max_tokens=20)
+            self._guarded_no_hooks()
+            if not callable(getattr(self.backend, "classify", None)):
+                return False  # Unsupported classification does not reserve or start a request.
+            # Nothing reaches a model before an organization's oversight notice is
+            # confirmed (lumi/oversight.py): no planning, and the turn's own
+            # refusal (Session.run) says why. It comes before DLP, as in a turn.
+            if self._oversight_checkpoint():
+                return False
+            # The prompt carries the person's message, so DLP checks it like a turn;
+            # a block skips planning, and the turn's own request reports it.
+            prompt = dlp.check_text(
+                self._CLASSIFY_PROMPT.format(user_msg=user_msg), purpose="planning", kind="prompt",
+                provider=str(getattr(self.backend, "name", "") or ""),
+                model=str(getattr(self.backend, "model", "") or ""), audit_fields=self._audit_fields(),
+            )
+            with dlp.permit():  # the prompt passed the check above
+                result = (
+                    self._execution_boundary.classify(self.backend, prompt, max_tokens=20)
+                    if self._execution_boundary else self.backend.classify(prompt, max_tokens=20)
+                )
             return "COMPLEX" in result.upper()
+        except ExecutionGuardError:
+            raise
         except Exception:
+            if self._execution_boundary:
+                self._execution_boundary.ensure_open()
             return False  # On failure, skip planning
+
+    def _model_stream(self, *, purpose="primary", backend=None, **kwargs):
+        """Account for native model input without changing provider identity.
+
+        The organization's DLP rules (lumi/dlp.py) see the request exactly as
+        it will be sent and may redact a copy of it; ``dlp.Blocked`` means
+        nothing was sent (the history entries it came from are marked, so
+        later requests leave them out).
+        """
+        backend = backend or self.backend
+        # Offline mode first (lumi/offline.py): a provider this computer may not
+        # reach gets nothing, not even a DLP check, also when offline mode was
+        # turned on during the turn or the request goes to another backend.
+        from .. import offline
+
+        refusal = offline.backend_refusal(backend)
+        if refusal:
+            return iter([(EVENT_ERROR, {"message": refusal})])
+        if self._execution_boundary:
+            self._guarded_no_hooks()
+        try:
+            checked = dlp.check_request(
+                kwargs, purpose=purpose, provider=str(getattr(backend, "name", "") or ""),
+                model=str(getattr(backend, "model", "") or ""), audit_fields=self._audit_fields(),
+                segments=self._dlp_segments if purpose == "primary" else None,
+            )
+        except dlp.Blocked as exc:
+            if kwargs.get("conversation_history") is self.conversation_history:
+                dlp.mark_withheld(self.conversation_history, exc.entries)
+            raise
+        kwargs = checked.request
+        if self._execution_boundary:
+            # Providers consume the captured request, not the live history that
+            # steering, GUI callbacks or another thread can modify after commit.
+            captured = copy.deepcopy({key: value for key, value in kwargs.items() if key != "cancel_event"})
+            kwargs = {**captured, **({"cancel_event": kwargs["cancel_event"]} if "cancel_event" in kwargs else {})}
+        def invoke():
+            if purpose == "primary":
+                return dlp.send(backend.stream, **kwargs)
+            from .request_purpose import send_checked
+            # A guarded request's usage is recorded by its execution guard's
+            # owner (engine/swarming/organization.py), not a second time here.
+            return send_checked(backend, purpose, record=self._execution_boundary is None, **kwargs)
+        if self._execution_boundary is None:
+            stream = invoke()
+        else:
+            inputs = {key: value for key, value in kwargs.items() if key != "cancel_event"}
+            stream = self._execution_boundary.stream(backend, purpose=purpose, inputs=inputs, invoke=invoke)
+        if checked.notice:
+            # A quiet marker: the person should know the model saw a changed copy.
+            return _prefixed(stream, (EVENT_BACKEND_STATUS, {
+                "kind": "dlp_redacted", "message": checked.notice, "rules": dict(checked.redacted)}))
+        return stream
+
+    def _guarded_no_hooks(self) -> None:
+        """Unqualified lifecycle hooks cannot create effects outside receipts."""
+        if self._execution_boundary and self.hook_runner is not None:
+            self._execution_boundary.reject("Lifecycle hooks are unsupported in guarded execution")
+        if self._execution_boundary and (
+            self.checkpoint_store is not None or self.auto_lint_enabled or self.auto_test_enabled
+        ):
+            self._execution_boundary.reject("Unbound checkpoints and automatic check sidecars are unsupported in guarded execution")
+
+    def _guarded_tool_args(self, name: str, arguments: dict) -> dict:
+        """Check the file-only boundary before hooks and after argument changes."""
+        from .sandbox import SandboxViolation
+
+        boundary = self._execution_boundary
+        self._guarded_no_hooks()
+        allowed = None if self._allowed_tools is None else {
+            tool.get("function", {}).get("name", "") for tool in self._allowed_tools
+        }
+        # Name validation precedes normalization and every special dispatcher.
+        boundary.check_tool(name, arguments, allowed_names=allowed)
+        if name in {"file_read", "glob", "grep", "file_write", "file_edit"} and (
+            self.sandbox is None or not self.sandbox.enabled or not self.project_path
+        ):
+            boundary.reject("Guarded file tools require a captured workspace and enabled sandbox")
+        try:
+            arguments = self._prepare_workspace_tool_args(name, arguments)
+        except (SandboxViolation, ToolBoundaryViolation) as exc:
+            boundary.refuse(f"Guarded tool boundary rejected arguments: {exc}")
+        boundary.check_tool(name, arguments, allowed_names=allowed)
+        return arguments
+
+    def _refused_tool_call(self, name: str, arguments_text: str, call_id: str, reason: Exception):
+        """Report a call the guard refused before running it, like any denied tool.
+
+        The model sees why (a path outside its assignment, a tool it wasn't
+        given) and can narrow the call; the rest of the turn continues.
+        """
+        output = f"Refused before running: {reason}"
+        yield make_event(EngineEvent.TOOL_RESULT, name=name, call_id=call_id,
+                         output=output, is_error=True, denied=True, elapsed=0.0)
+        self.conversation_history.append({"role": "tool_call", "name": name, "arguments": arguments_text,
+                                          "call_id": call_id, "content": f"Called {name}"})
+        self.conversation_history.append({"role": "tool_result", "call_id": call_id, "content": output})
+
+    def _execute_guarded_tool(self, name: str, arguments: dict, call_id: str):
+        """Observe native file, scoped artifact and runtime data-tool results."""
+        from .tools import ToolResult
+
+        def invoke():
+            if name in self._guarded_tool_handlers:
+                return self._guarded_tool_handlers[name](copy.deepcopy(arguments))
+            if name == "artifact_read":
+                try:
+                    reader = getattr(self._execution_boundary.guard, "artifact_reader", None)
+                    if reader is None:
+                        self._execution_boundary.reject("Guarded artifact reads require an attempt-bound reader")
+                    return ToolResult(output=reader.read_text_page(**arguments))
+                except (ValueError, OSError) as exc:
+                    return ToolResult(output=str(exc), is_error=True)
+            # The same boundaries as an ordinary tool call (see _execute_tools):
+            # searches leave out excluded files, sandbox roots and project trust apply.
+            return execute_tool(
+                name, arguments, cancel_event=self._cancel_event,
+                project_path=self.project_path or "", settings=getattr(self, "_settings_ref", None),
+                session_name=self.browser_session_name,
+                exclusions=self.exclusions,
+                sandbox_roots=self._sandbox_roots(),
+                project_trusted=self.project_content_trusted,
+                owned_process_group=getattr(self._execution_boundary.guard, "owns_process_group", False) is True,
+            )
+
+        allowed = None if self._allowed_tools is None else {
+            tool.get("function", {}).get("name", "") for tool in self._allowed_tools
+        }
+        return self._execution_boundary.execute_tool(
+            name, call_id, arguments, allowed_names=allowed, invoke=invoke,
+        )
 
     def clear(self):
         """Clear conversation history."""
@@ -1068,7 +1302,7 @@ class Session:
         """Clear any pending cancellation request before starting a new run."""
         self._cancel_event.clear()
 
-    def steer(self, text: str, *, message_id: str = "") -> bool:
+    def steer(self, text: str, *, message_id: str = "", input_origin: str = "human") -> bool:
         """Queue live user direction for the current agentic run.
 
         Steering is deliberately independent from cancellation. A backend
@@ -1079,11 +1313,16 @@ class Session:
         direction = str(text or "").strip()
         if not direction:
             return False
+        if input_origin not in {"human", "generated"}:
+            raise ValueError("Input origin must be human or generated")
         with self._steering_lock:
-            self._steering_queue.put({
+            item = {
                 "message_id": str(message_id or ""),
                 "text": direction,
-            })
+            }
+            if input_origin == "generated":
+                item["input_origin"] = "generated"
+            self._steering_queue.put(item)
         return True
 
     def _drain_steering(self) -> list[dict[str, str]]:
@@ -1248,7 +1487,7 @@ class Session:
                          decision="approved" if approved else "denied", policy_prompt=policy_prompt)
             if approved:
                 return True, "", tool_args
-            return False, "Tool execution denied by user.", tool_args
+            return False, USER_DENIAL, tool_args
         approved, denial, prepared = self._permission_hook_decision(tool_name, tool_args, call_id)
         audit.record("approval", **self._audit_fields(), tool=tool_name, call_id=call_id, by="hook",
                      decision="approved" if approved else "denied", policy_prompt=policy_prompt)
@@ -1384,6 +1623,13 @@ class Session:
                 "Computer use is turned off (Settings > Privacy & security, or your "
                 "organization's policy)."
             )
+        # Offline mode keeps the network tools offered, and refuses what they
+        # can't reach with the reason (lumi/offline.py).
+        from .. import offline
+
+        offline_refusal = offline.tool_refusal(tool_name, tool_args)
+        if offline_refusal:
+            raise ToolBoundaryViolation(offline_refusal)
         prepared = dict(tool_args)
         working_dir = self.project_path or os.getcwd()
 
@@ -1400,7 +1646,7 @@ class Session:
                     self.sandbox.validate_path(local)
                 rule = self.exclusions.match(local) if self.exclusions else None
                 if rule:
-                    raise ToolBoundaryViolation(self.exclusions.refusal(local, rule))
+                    raise ExcludedPathViolation(self.exclusions.refusal(local, rule), rule)
 
         if tool_name == "batch":
             calls = prepared.get("calls", [])
@@ -1494,7 +1740,7 @@ class Session:
                 else self.exclusions.match(target)
             )
             if rule:
-                raise ToolBoundaryViolation(self.exclusions.refusal(target, rule))
+                raise ExcludedPathViolation(self.exclusions.refusal(target, rule), rule)
 
         return prepared
 
@@ -1686,15 +1932,21 @@ class Session:
         on_choice: Optional[Callable] = None,
         on_user_input: Optional[Callable] = None,
         images: Optional[list[tuple[bytes, str]]] = None,
+        input_origin: str = "human",
     ) -> Iterator[dict]:
         """Run one turn (see ``_run_turn``), recording its usage and audit trail.
 
         Every event the loop yields passes through here, so the usage records
         (lumi/usage.py) and the audit log (lumi/audit.py) see model calls,
         tool calls and results, file changes, redactions and errors from GUI,
-        gateway and worker turns alike.
+        gateway and worker turns alike. So does organization oversight
+        (lumi/oversight.py): while an organization's policy has it in force,
+        a turn whose person hasn't confirmed its notice is refused here
+        before anything reaches a model (``oversight.admit``, asked again
+        before each model request), and an admitted turn is recorded for
+        the organization's Lumi Cloud.
         """
-        from .. import audit
+        from .. import audit, oversight
 
         started = time.time()
         # Budgets count this turn's priced spend and key per-turn approvals.
@@ -1717,7 +1969,19 @@ class Session:
         outcome = "completed"
         written_paths: dict[str, str] = {}
         trace = self._begin_trace_turn()
-        turn = self._run_turn(user_msg, on_permission, on_choice, on_user_input, images)
+        # Organization oversight (never raises): a person who hasn't confirmed
+        # the notice in force gets a refusal and nothing reaches a model.
+        admission = oversight.admit(self)
+        if admission.refusal:
+            self.display_prompt = None
+            tracker = None
+            turn = self._oversight_refused(admission.refusal)
+        else:
+            # None unless the organization's policy records this turn.
+            tracker = oversight.begin_turn(self, user_msg, images=len(images or ()), input_origin=input_origin,
+                                           admission=admission)
+            turn = self._run_turn(user_msg, on_permission, on_choice, on_user_input, images,
+                                  input_origin=input_origin)
         try:
             for event in turn:
                 # A delegated worker's events, passed on for display, were
@@ -1729,6 +1993,9 @@ class Session:
                         # Names this turn's trace, so a client can open it.
                         event = {**event, "trace": trace}
                     self._observe_event(event, common, written_paths)
+                if tracker is not None:
+                    # After _observe_event, which prices the call (cost_usd).
+                    tracker.observe(event)
                 yield event
         except GeneratorExit:
             outcome = "stopped"
@@ -1744,14 +2011,30 @@ class Session:
             if self.cancel_requested:
                 outcome = "cancelled"
             audit.record("turn.end", **common, outcome=outcome, elapsed=round(time.time() - started, 3))
+            if tracker is not None:
+                tracker.finish(outcome)
+
+    def _oversight_checkpoint(self) -> str:
+        """Why organization oversight stops this turn before its next model request, or ''."""
+        from .. import oversight
+
+        return oversight.admit(self).refusal
+
+    @staticmethod
+    def _oversight_refused(message: str) -> Iterator[dict]:
+        """A turn organization oversight refused (lumi/oversight.py): nothing reaches a model or the history."""
+        from ..oversight import REFUSAL_CODE
+
+        yield make_event(EngineEvent.ERROR, message=message, code=REFUSAL_CODE)
 
     def _next_fallback(self, error: str) -> Iterator[dict]:
         """Switch to the next usable fallback model; returns whether it did.
 
         A fallback the organization's policy doesn't allow, or one a budget
-        can't price, is skipped, as is one whose backend can't be built.
+        can't price, is skipped, as is one whose backend can't be built or
+        that offline mode can't reach.
         """
-        from .. import audit, budgets
+        from .. import audit, budgets, offline
         from ..policy import current as current_policy
 
         try:
@@ -1776,6 +2059,8 @@ class Session:
             except Exception as exc:
                 logger.info("Fallback %s unavailable: %s", label, exc)
                 continue
+            if offline.backend_refusal(backend):
+                continue
             self.backend = backend
             short = str(error or "").strip().splitlines()[0][:160] if str(error or "").strip() else "an error"
             audit.record("model.fallback", **self._audit_fields(), from_model=current, to_model=str(label),
@@ -1789,6 +2074,12 @@ class Session:
         """Why a turn can't start under the budgets in effect (lumi/budgets.py), or ''."""
         from .. import budgets
 
+        if self._execution_boundary is not None:
+            # A guarded session's requests are checked by the host that admits
+            # them (engine/swarming/organization.py), with the app's approvals
+            # and settings. A worker in its own process has neither, so a
+            # second check here would stop a request the person approved.
+            return ""
         project = self.project_path or ""
         try:
             refusal = budgets.unpriced_refusal(project, provider, model)
@@ -1849,6 +2140,8 @@ class Session:
         """
         from .. import audit, budgets
 
+        if self._execution_boundary is not None:
+            return ""  # The host that admits the request checks it (see _budget_refusal).
         turn = getattr(self, "_turn_token", "")
         try:
             verdicts = budgets.evaluate(self.project_path or "", turn_spend=getattr(self, "_turn_spend", 0.0))
@@ -1926,6 +2219,11 @@ class Session:
             stats = event["stats"]
             if stats.get("_usage_id"):
                 return  # the same call, seen again
+            if self._execution_boundary is not None:
+                # A Team participant's requests are recorded by the host that
+                # admits them (engine/swarming/organization.py), with the team's
+                # purpose, project and conversation; here they would count twice.
+                return
             provider = str(getattr(self.backend, "name", "") or "")
             model = str(event.get("model") or getattr(self.backend, "model", "") or "")
             try:
@@ -1962,6 +2260,7 @@ class Session:
         on_choice: Optional[Callable] = None,
         on_user_input: Optional[Callable] = None,
         images: Optional[list[tuple[bytes, str]]] = None,
+        input_origin: str = "human",
     ) -> Iterator[dict]:
         """
         Run the agentic loop for a user message.
@@ -1981,9 +2280,15 @@ class Session:
                           on a threading.Event until the GUI replies.
                           If None, await_user returns "(no user available)".
             images: Optional list of (image_bytes, media_type) for multimodal input
+            input_origin: Human input by default; runtime assignments use generated.
         """
         # Delegated workers ask through this turn's prompt (see _execute_task).
         self._permission_prompt = on_permission
+        if input_origin not in {"human", "generated"}:
+            raise ValueError("Input origin must be human or generated")
+        if self._execution_boundary:
+            self._execution_boundary.check_backend(self.backend)
+            self._guarded_no_hooks()
         turn_text_blocks: list[str] = []
         turn_tool_names: list[str] = []
         turn_successful_tools: list[str] = []
@@ -2013,6 +2318,15 @@ class Session:
             )
         if refusal:
             yield make_event(EngineEvent.ERROR, message=refusal)
+            return
+        # Offline mode (lumi/offline.py): a provider this computer may not
+        # reach, or one whose own process Lumi can't check (Codex, Claude Code,
+        # extensions), is refused before anything is sent.
+        from .. import offline
+
+        refusal = offline.backend_refusal(self.backend)
+        if refusal:
+            yield make_event(EngineEvent.ERROR, message=refusal, code="offline")
             return
         refusal = self._budget_refusal(backend_name, str(last_done_model or ""))
         if refusal:
@@ -2086,6 +2400,8 @@ class Session:
             "role": "user",
             "content": build_user_content(user_msg, images),
         }
+        if input_origin == "generated":
+            user_entry["input_origin"] = "generated"
         if input_artifacts:
             user_entry["artifacts"] = [artifact.to_dict() for artifact in input_artifacts]
         self.conversation_history.append(user_entry)
@@ -2116,6 +2432,7 @@ class Session:
         model_requests = 0
         request_limit_reached = False
         budget_stop = ""
+        oversight_stop = ""
         implementation_started = False
         cli_tool_starts = {}
 
@@ -2129,6 +2446,13 @@ class Session:
             directions = []
             for item in messages:
                 direction = item["text"]
+                if item.get("input_origin") == "generated":
+                    self.conversation_history.append({
+                        "role": "user", "input_origin": "generated",
+                        **({"message_id": item["message_id"]} if item["message_id"] else {}),
+                        "content": f"<runtime_message>\n{direction}\n</runtime_message>",
+                    })
+                    continue
                 directions.append(direction)
                 self.conversation_history.append({
                     "role": "user",
@@ -2139,9 +2463,10 @@ class Session:
                     ),
                 })
             combined = "\n\n".join(directions)
-            active_goal = (
-                f"{active_goal}\n\nAdditional live user direction:\n{combined}"
-            )
+            if directions:
+                active_goal = (
+                    f"{active_goal}\n\nAdditional live user direction:\n{combined}"
+                )
             # The steer is already in conversation_history. An empty current
             # message tells provider adapters to continue directly from that
             # appended state instead of duplicating the direction and goal.
@@ -2289,12 +2614,18 @@ class Session:
         # prompt byte-stable across every tool step.
         turn_context = ""
         turn_sources: dict[str, str] = {}
+        # What each part of turn_context is, for DLP rules scoped by kind:
+        # notes and memory are instructions, indexed code is file contents
+        # (tool_result), @mentions are attachments.
+        context_segments: list[tuple[str, str]] = []
         if self.project_path and self.project_content_trusted:
             try:
                 from .project_memory import ProjectMemory
                 notes = ProjectMemory(self.project_path).context(user_msg)
                 if notes:
-                    turn_context += '\n\n--- PROJECT MEMORY ---\n' + notes + '\n--- END PROJECT MEMORY ---'
+                    block = '\n\n--- PROJECT MEMORY ---\n' + notes + '\n--- END PROJECT MEMORY ---'
+                    turn_context += block
+                    context_segments.append(("instructions", block))
                     turn_sources['project_memory'] = notes
             except (OSError, ValueError) as exc:
                 logger.warning('Project memory unavailable: %s', exc)
@@ -2305,7 +2636,9 @@ class Session:
                 from ..team_library import team_notes_context
                 team_notes = team_notes_context(self.project_path, user_msg)
                 if team_notes:
-                    turn_context += '\n\n--- TEAM PROJECT NOTES ---\n' + team_notes + '\n--- END TEAM PROJECT NOTES ---'
+                    block = '\n\n--- TEAM PROJECT NOTES ---\n' + team_notes + '\n--- END TEAM PROJECT NOTES ---'
+                    turn_context += block
+                    context_segments.append(("instructions", block))
                     turn_sources['team_notes'] = team_notes
             except (OSError, ValueError) as exc:
                 logger.warning('Team project notes unavailable: %s', exc)
@@ -2314,6 +2647,7 @@ class Session:
                 memory_context = self._engram.get_context_for_prompt(user_msg) or ""
                 turn_context += memory_context
                 if memory_context:
+                    context_segments.append(("instructions", memory_context))
                     turn_sources["memory"] = memory_context
             except Exception as e:
                 logger.warning(f"Engram recall failed: {e}")
@@ -2322,6 +2656,7 @@ class Session:
                 rag_context = self._codebase_index.get_context_for_prompt(user_msg) or ""
                 turn_context += rag_context
                 if rag_context:
+                    context_segments.append(("tool_result", rag_context))
                     turn_sources["rag"] = rag_context
             except Exception as e:
                 logger.warning(f"RAG context failed: {e}")
@@ -2331,6 +2666,7 @@ class Session:
                 skill_text = getattr(skill_context, "block", skill_context) or ""
                 turn_context += skill_text
                 if skill_text:
+                    context_segments.append(("instructions", skill_text))
                     turn_sources["skills"] = skill_text
             except Exception as e:
                 logger.warning(f"Interactive skill lookup failed: {e}")
@@ -2348,6 +2684,7 @@ class Session:
                 explicit_context = self.context_broker.render(explicit_items)
                 turn_context += explicit_context
                 if explicit_context:
+                    context_segments.append(("attachment", explicit_context))
                     turn_sources["explicit"] = explicit_context
                     for item in explicit_items:
                         turn_sources[f"attachment:{item.id}"] = item.content
@@ -2364,19 +2701,24 @@ class Session:
         # Freeze the provider prefix for the entire model/tool loop. Volatile
         # state belongs in append-only messages; rebuilding or reordering the
         # system/tool prefix forces local models to prefill it again.
-        base_instructions = get_system_instructions(
+        system_instructions = get_system_instructions(
             plan_mode=self.plan_mode,
             project_instructions=self.project_instructions,
             working_directory=self.project_path or os.getcwd(),
             model_name=backend_model,
             prompt_role=self.prompt_role,
             role_instructions=self.role_instructions,
-        ) + turn_context
+        )
+        base_instructions = system_instructions + turn_context
+        dlp_segments = [("instructions", system_instructions), *context_segments]
         from .editor_integrations import workflow_instructions
         editor_context = workflow_instructions(getattr(self, "_settings_ref", None))
         if editor_context:
-            base_instructions += "\n\n--- CREATIVE EDITORS ---\n" + editor_context + "\n--- END CREATIVE EDITORS ---"
+            block = "\n\n--- CREATIVE EDITORS ---\n" + editor_context + "\n--- END CREATIVE EDITORS ---"
+            base_instructions += block
+            dlp_segments.append(("instructions", block))
         self._active_instructions = base_instructions
+        self._dlp_segments = dlp_segments
 
         while True:
             if self.max_model_requests is not None and model_requests >= self.max_model_requests:
@@ -2384,6 +2726,12 @@ class Session:
                 break
             budget_stop = yield from self._budget_checkpoint(on_user_input)
             if budget_stop:
+                break
+            # Organization oversight, again before every model request: a
+            # policy that arrives mid-turn with a notice the person hasn't
+            # confirmed stops the turn here (lumi/oversight.py).
+            oversight_stop = self._oversight_checkpoint()
+            if oversight_stop:
                 break
             if self.max_steps is not None and iteration >= self.max_steps:
                 step_limit_reached = True
@@ -2471,6 +2819,9 @@ class Session:
                                     "summary": summary,
                                 },
                             )
+                except ExecutionGuardError as exc:
+                    yield make_event(EngineEvent.ERROR, message=str(exc), code="execution_guard_blocked")
+                    return
                 except Exception as e:
                     logger.warning(f"Context compression failed: {e}")
             if self.cancel_requested:
@@ -2542,17 +2893,27 @@ class Session:
             # hashes the name and arguments), so the same write in a later
             # response or turn must still get its own checkpoint.
             self._last_checkpoint_tool_call = ""
+            model_stream = None
             try:
                 model_requests += 1
-                for event_type, data in self.backend.stream(
+                # A Team participant's last request offers no tools: a call there
+                # could never be followed up (live workers spent it on one more
+                # read and submitted nothing), so the model has to answer.
+                final_request = (self._execution_boundary is not None and self.max_model_requests is not None
+                                 and model_requests >= self.max_model_requests)
+                model_stream = self._model_stream(
                     user_msg=current_msg,
                     conversation_history=self.conversation_history,
                     instructions=instructions,
-                    tools=[] if is_planning else self.provider_tools,
+                    tools=[] if is_planning or final_request else self.provider_tools,
                     max_tokens=self.max_tokens,
                     cancel_event=self._cancel_event,
-                ):
+                )
+                for event_type, data in model_stream:
                     if self.cancel_requested:
+                        if self._execution_boundary:
+                            model_stream.close()
+                            model_stream = None
                         yield from self._cancelled_events(total_start, exec_step)
                         return
                     if event_type == EVENT_TEXT_DELTA:
@@ -2686,6 +3047,18 @@ class Session:
                 self.cancel()
                 yield from self._cancelled_events(total_start, exec_step)
                 return
+            except dlp.Blocked as exc:
+                # Nothing was sent, and another model would get the same content:
+                # no fallback or retry. The message names rules, never content.
+                model_requests -= 1  # it never left, so it isn't a request made
+                terminal_error = exc.message
+                yield make_event(EngineEvent.ERROR, message=exc.message, code=exc.code)
+                elapsed = time.time() - total_start
+                yield make_event(EngineEvent.SESSION_END,
+                                total_elapsed=elapsed,
+                                total_steps=exec_step,
+                                **completion_payload(elapsed, exec_step))
+                return
             except Exception as e:
                 terminal_error = f"Stream error: {e}"
                 if not collected_text and not tool_calls and not self.cancel_requested:
@@ -2700,6 +3073,11 @@ class Session:
                                     total_steps=exec_step,
                                     **completion_payload(elapsed, exec_step))
                     return
+            finally:
+                if self._execution_boundary and model_stream is not None:
+                    close_stream = getattr(model_stream, "close", None)
+                    if callable(close_stream):
+                        close_stream()
 
             if fallback_retry:
                 # The same step again, now with the fallback model.
@@ -2707,9 +3085,22 @@ class Session:
 
             step_elapsed = time.time() - step_start
 
+            if self._execution_boundary:
+                try:
+                    self._guarded_no_hooks()
+                except ExecutionGuardError as exc:
+                    yield make_event(EngineEvent.ERROR, message=str(exc), code="execution_guard_blocked")
+                    return
+
             # ── Process collected text ──
             full_text = "".join(collected_text).strip()
             full_text = strip_tool_call_tags(full_text)
+            # A reply that is only template tokens and punctuation says nothing
+            # (Kimi K3 on NVIDIA NIM once answered "<|close|>!!!!…"): treat it as
+            # empty so the empty-response recovery below asks again.
+            if full_text and all(character in string.punctuation or character.isspace()
+                                 for character in re.sub(r"<\|[A-Za-z_]{1,32}\|>", "", full_text)):
+                full_text = ""
             if self.hook_runner:
                 after_model = self.hook_runner.emit(
                     HookType.AFTER_MODEL,
@@ -2805,7 +3196,10 @@ class Session:
                         selected = choices[0]
 
                     self.conversation_history.append({"role": "assistant", "content": full_text})
-                    self.conversation_history.append({"role": "user", "content": selected})
+                    choice_entry = {"role": "user", "content": selected}
+                    if self._execution_boundary and on_choice is None:
+                        choice_entry["input_origin"] = "generated"
+                    self.conversation_history.append(choice_entry)
                     current_msg = selected
                     tool_calls = []
 
@@ -2867,6 +3261,16 @@ class Session:
                 call_id = item.get("call_id", "")
                 fn_args = item.get("_normalized_arguments", {})
                 argument_error = item.get("_argument_error", "")
+                if self._execution_boundary:
+                    try:
+                        fn_args = self._guarded_tool_args(fn_name, fn_args)
+                    except ToolScopeRefused as exc:
+                        turn_failed_tools.append(fn_name)
+                        yield from self._refused_tool_call(fn_name, fn_args_str, call_id, exc)
+                        continue
+                    except ExecutionGuardError as exc:
+                        yield make_event(EngineEvent.ERROR, message=str(exc), code="execution_guard_blocked")
+                        return
                 if self.action_guard is not None:
                     try:
                         self.action_guard.validate_tool(fn_name)
@@ -2974,7 +3378,7 @@ class Session:
                         yield make_event(EngineEvent.TOOL_RESULT,
                                         name=fn_name, call_id=call_id,
                                         output=result_output, is_error=False,
-                                        denied=True, elapsed=0.0)
+                                        denied=True, elapsed=0.0, denied_by="hook")
                         self.conversation_history.append({
                             "role": "tool_call", "name": fn_name,
                             "arguments": fn_args_str, "call_id": call_id,
@@ -2997,17 +3401,21 @@ class Session:
                 # Execution policy check (declarative rules, evaluated first)
                 policy_prompt = False
                 if self.execution_policy:
-                    from .policies import PolicyAction
+                    from .policies import PolicyAction, denial_source
                     policy_action = self.execution_policy.evaluate(fn_name, fn_args)
                     policy_prompt = policy_action == PolicyAction.PROMPT
                     if policy_action == PolicyAction.DENY:
                         turn_failed_tools.append(fn_name)
                         reason = self.execution_policy.get_reason(fn_name, fn_args)
                         result_output = f"Blocked by policy: {reason or 'denied'}"
+                        # Which layer refused it (the guardrails, the
+                        # organization, the repository...), for security flags.
                         yield make_event(EngineEvent.TOOL_RESULT,
                                         name=fn_name, call_id=call_id,
                                         output=result_output, is_error=True,
-                                        denied=True, elapsed=0.0)
+                                        denied=True, elapsed=0.0,
+                                        denied_by=denial_source(self.execution_policy, fn_name, fn_args),
+                                        denied_rule=reason)
                         self.conversation_history.append({
                             "role": "tool_call", "name": fn_name,
                             "arguments": fn_args_str, "call_id": call_id,
@@ -3034,7 +3442,8 @@ class Session:
                     yield make_event(EngineEvent.TOOL_RESULT,
                                     name=fn_name, call_id=call_id,
                                     output=result_output, is_error=False,
-                                    denied=True, elapsed=0.0)
+                                    denied=True, elapsed=0.0,
+                                    denied_by=_permission_denial_source(str(denial or "")))
                     self.conversation_history.append({
                         "role": "tool_call", "name": fn_name,
                         "arguments": fn_args_str, "call_id": call_id,
@@ -3045,6 +3454,18 @@ class Session:
                         "content": result_output,
                     })
                     continue
+
+                if self._execution_boundary:
+                    try:
+                        fn_args = self._guarded_tool_args(fn_name, fn_args)
+                        fn_args_str = json.dumps(fn_args, ensure_ascii=False, sort_keys=True)
+                    except ToolScopeRefused as exc:
+                        turn_failed_tools.append(fn_name)
+                        yield from self._refused_tool_call(fn_name, fn_args_str, call_id, exc)
+                        continue
+                    except ExecutionGuardError as exc:
+                        yield make_event(EngineEvent.ERROR, message=str(exc), code="execution_guard_blocked")
+                        return
 
                 # Commands the organization's policy lists also need a second
                 # person's approval in Lumi Cloud (engine/second_approval.py).
@@ -3068,7 +3489,8 @@ class Session:
                     if approval.state != "approved":
                         turn_failed_tools.append(fn_name)
                         yield make_event(EngineEvent.TOOL_RESULT, name=fn_name, call_id=call_id,
-                                         output=approval.message, is_error=False, denied=True, elapsed=0.0)
+                                         output=approval.message, is_error=False, denied=True, elapsed=0.0,
+                                         denied_by="second_approval", denied_rule=approval.state)
                         self.conversation_history.append({
                             "role": "tool_call", "name": fn_name,
                             "arguments": fn_args_str, "call_id": call_id,
@@ -3382,10 +3804,18 @@ class Session:
                     except (SandboxViolation, ToolBoundaryViolation) as exc:
                         turn_failed_tools.append(fn_name)
                         result_output = f"Blocked by tool boundary: {exc}"
+                        # An excluded file's flag says only whose rule it was
+                        # (organization policy, Settings, .lumiignore): a
+                        # pattern can be a file's name (lumi/security_flags.py).
+                        excluded = isinstance(exc, ExcludedPathViolation)
+                        rule = getattr(exc, "rule", None)
                         yield make_event(EngineEvent.TOOL_RESULT,
                                         name=fn_name, call_id=call_id,
                                         output=result_output, is_error=True,
-                                        denied=True, elapsed=0.0)
+                                        denied=True, elapsed=0.0,
+                                        denied_by=("exclusion" if excluded else "sandbox"
+                                                   if isinstance(exc, SandboxViolation) else "boundary"),
+                                        denied_rule=str(getattr(rule, "source", "") or "") if excluded else "")
                         self.conversation_history.append({
                             "role": "tool_call", "name": fn_name,
                             "arguments": fn_args_str, "call_id": call_id,
@@ -3397,7 +3827,16 @@ class Session:
                         })
                         continue
 
-                    if fn_name == "artifact_read":
+                    if self._execution_boundary:
+                        try:
+                            result = self._execute_guarded_tool(fn_name, fn_args, call_id)
+                        except ToolScopeRefused as exc:
+                            from .tools import ToolResult
+                            result = ToolResult(output=f"Refused before running: {exc}", is_error=True)
+                        except Exception as exc:
+                            yield make_event(EngineEvent.ERROR, message=str(exc), code="execution_guard_unresolved")
+                            return
+                    elif fn_name == "artifact_read":
                         from .tools import ToolResult
                         try:
                             if self.artifact_store is None:
@@ -3751,6 +4190,14 @@ class Session:
                     # Do not append a synthetic "continue" user turn: keeping
                     # history append-only and sparse improves KV-prefix reuse.
                     current_msg = ""
+                # A Team participant about to spend its last request answers now,
+                # rather than stopping mid-exploration with nothing submitted (live
+                # workers hit their allowance while still reading files).
+                if (self._execution_boundary is not None and self.max_model_requests is not None
+                        and model_requests == self.max_model_requests - 1):
+                    current_msg = (f"{current_msg}\n\n" if current_msg else "") + (
+                        "This is your last model request for this assignment, and it has no tools. Give "
+                        "your final answer now from what you have found, saying what you could not check.")
                 continue
             else:
                 if self.hook_runner:
@@ -3794,7 +4241,9 @@ class Session:
         total_elapsed = time.time() - total_start
 
         # ── Engram: auto-remember session summary ──
-        if self._engram and self._engram.enabled and not self.is_subagent:
+        # Not after the organization's oversight notice stopped the turn: nothing
+        # of it leaves this computer until the person confirms (lumi/oversight.py).
+        if self._engram and self._engram.enabled and not self.is_subagent and not oversight_stop:
             try:
                 self._engram.session_summary(self.conversation_history)
             except Exception as e:
@@ -3806,6 +4255,11 @@ class Session:
 
         if budget_stop:
             yield make_event(EngineEvent.ERROR, message=budget_stop, code="budget_exceeded", recoverable=True)
+
+        if oversight_stop:
+            from ..oversight import REFUSAL_CODE
+
+            yield make_event(EngineEvent.ERROR, message=oversight_stop, code=REFUSAL_CODE)
 
         if request_limit_reached:
             terminal_error = (

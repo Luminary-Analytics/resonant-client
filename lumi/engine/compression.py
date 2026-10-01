@@ -9,6 +9,7 @@ import json
 import logging
 
 from ..capabilities import infer_model_capabilities
+from .execution_guard import ExecutionGuardError
 
 logger = logging.getLogger(__name__)
 
@@ -180,6 +181,10 @@ def should_compress(
 
 def _extract_text(entry: dict) -> str:
     """Extract text content from a history entry."""
+    if entry.get("dlp_withheld"):
+        # The organization's DLP rules blocked it (lumi/dlp.py): it stays on this
+        # computer, so it can't reach a summary (or block every compaction).
+        return "[Withheld: this content was blocked by your organization's data loss prevention rules.]"
     content = entry.get("content", "")
     if isinstance(content, str):
         return content
@@ -331,14 +336,20 @@ def compress(
     preserved = {"user_requirements": [], "checklist": list(getattr(session, "todos", [])),
                  "tool_evidence": []}
     for entry in old_messages:
-        previous = entry.get("preserved_context") or {}
+        # An entry the organization's DLP rules blocked (lumi/dlp.py) keeps its
+        # content on this computer: none of it, not even a tool call's command
+        # or path, may reach the summary that later requests send.
+        withheld = bool(entry.get("dlp_withheld"))
+        previous = {} if withheld else entry.get("preserved_context") or {}
         for key in ("user_requirements", "tool_evidence"):
             preserved[key].extend(previous.get(key, []))
         if entry.get("role") == "user":
             preserved["user_requirements"].append(_extract_text(entry))
         if entry.get("role") in {"tool_call", "tool_result"}:
             evidence = {key: entry[key] for key in ("role", "name", "call_id", "is_error", "artifact_id") if key in entry}
-            if entry.get("role") == "tool_call":
+            if withheld:
+                evidence["observation"] = _extract_text(entry)  # the withheld notice
+            elif entry.get("role") == "tool_call":
                 try:
                     args = json.loads(entry.get("arguments") or "{}")
                     evidence["targets"] = {key: args[key] for key in ("path", "command") if key in args}
@@ -371,6 +382,8 @@ def compress(
         ])
         if len(summary_prompt) // CHARS_PER_TOKEN > model_context_budget(model_name, context_window=context_window):
             return history, (f"Evicted {evicted} stale tool output(s)." if evicted else "")
+    guarded = getattr(session, "_execution_boundary", None) is not None
+    summary_stream = None
     try:
         summary = ""
         stream_options = {}
@@ -381,25 +394,37 @@ def compress(
             usage_context = session._audit_fields()
         except AttributeError:
             usage_context = {}
-        for event_type, data in auxiliary_stream(backend, "compression", usage_context=usage_context,
+        request_args = dict(
             user_msg=summary_prompt,
             conversation_history=[],
             instructions="You are a conversation summarizer. Be concise and factual.",
             tools=[],
             max_tokens=1024,
             **stream_options,
-        ):
+        )
+        summary_stream = (
+            session._model_stream(purpose="compression", backend=backend, **request_args)
+            if guarded else auxiliary_stream(backend, "compression", usage_context=usage_context, **request_args)
+        )
+        for event_type, data in summary_stream:
             if event_type == "text.delta":
                 summary += data.get("delta", "")
             elif event_type in {"error", "cancelled"}:
                 # Format recovery must not turn an uncertain provider failure
                 # or cancellation into another automatic paid dispatch.
                 return history, ""
-            elif event_type == "done":
+            elif event_type == "done" and not guarded:
                 break
+    except ExecutionGuardError:
+        raise
     except Exception as e:
         logger.error(f"Compression failed: {e}")
         return history, ""
+    finally:
+        if guarded and summary_stream is not None:
+            close_stream = getattr(summary_stream, "close", None)
+            if callable(close_stream):
+                close_stream()
 
     structured_summary = _validated_summary(summary)
     if structured_summary is None:

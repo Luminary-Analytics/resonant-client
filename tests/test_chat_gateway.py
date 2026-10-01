@@ -150,6 +150,8 @@ def test_commands_with_or_without_the_slash():
     assert parse_command("/stop@lumi_bot") == ("stop", "")  # Telegram groups
     assert parse_command("approve 1a2b") == ("approve", "1a2b")
     assert parse_command("/DENY") == ("deny", "")
+    # The oversight notice's button (lumi/oversight.py) arrives as /acknowledge <token>.
+    assert parse_command("/acknowledge 5f3a9c01d2e4b6a8") == ("acknowledge", "5f3a9c01d2e4b6a8")
     for text in ("stop the server", "status report please", "clear 1a2b", "approved", "", "/unknown"):
         assert parse_command(text) == ("", ""), text
 
@@ -216,17 +218,21 @@ def test_telegram_buttons_and_allowlist():
                                             "message": {"chat": {"id": 42}}}},
         {"update_id": 4, "callback_query": {"id": "q2", "data": "approve:ab12", "from": {"username": "mallory"},
                                             "message": {"chat": {"id": 99}}}},
+        {"update_id": 5, "callback_query": {"id": "q3", "data": "acknowledge:fp01", "from": {"username": "alice"},
+                                            "message": {"chat": {"id": 42}}}},
     ]
     api = TelegramApi([updates])
     channel = TelegramChannel("123:ABC", ["42"], client=httpx.Client(transport=httpx.MockTransport(api)))
     api.channel = channel
     received = []
     channel.run(received.append)
-    assert [(m.chat_id, m.text) for m in received] == [("42", "hello"), ("42", "/approve ab12")]
+    assert [(m.chat_id, m.text) for m in received] == [("42", "hello"), ("42", "/approve ab12"),
+                                                        ("42", "/acknowledge fp01")]
     polls = [body for method, body in api.calls if method == "getUpdates"]
-    assert polls[0]["allowed_updates"] == ["message", "callback_query"] and polls[1]["offset"] == 5
+    assert polls[0]["allowed_updates"] == ["message", "callback_query"] and polls[1]["offset"] == 6
     answers = [body for method, body in api.calls if method == "answerCallbackQuery"]
-    assert [(a["callback_query_id"], a["text"]) for a in answers] == [("q1", "Approved"), ("q2", "Not allowed")]
+    assert [(a["callback_query_id"], a["text"]) for a in answers] == [("q1", "Approved"), ("q2", "Not allowed"),
+                                                                        ("q3", "Thanks")]
     rejected = [body for method, body in api.calls if method == "sendMessage"]
     assert rejected[0]["chat_id"] == "99" and "Your chat ID is: 99" in rejected[0]["text"]
 
@@ -235,6 +241,11 @@ def test_telegram_buttons_and_allowlist():
     assert method == "sendMessage" and body["text"] == "Lumi wants to run `ls`."
     assert body["reply_markup"] == {"inline_keyboard": [[{"text": "Approve", "callback_data": "approve:cd34"},
                                                          {"text": "Deny", "callback_data": "deny:cd34"}]]}
+    # The organization's oversight notice comes with an "I've read this" button.
+    assert channel.notice("42", "Organization oversight: Acme receives …", "fp01") is True
+    method, body = api.calls[-1]
+    assert method == "sendMessage" and body["text"] == "Organization oversight: Acme receives …"
+    assert body["reply_markup"] == {"inline_keyboard": [[{"text": "I've read this", "callback_data": "acknowledge:fp01"}]]}
     with pytest.raises(ValueError, match="Telegram bot token"):
         TelegramChannel("")
 
@@ -304,6 +315,9 @@ def test_slack_socket_mode(monkeypatch):
         {"envelope_id": "i2", "type": "interactive", "payload": {
             "type": "block_actions", "user": {"id": "UMALLORY"}, "channel": {"id": "D9"},
             "actions": [{"action_id": "lumi_deny", "value": "ab12"}]}},
+        {"envelope_id": "i3", "type": "interactive", "payload": {
+            "type": "block_actions", "user": {"id": "UALICE"}, "channel": {"id": "D1"},
+            "actions": [{"action_id": "lumi_acknowledge", "value": "fp01"}]}},
         {"type": "disconnect", "reason": "refresh_requested"},
     ]
     sockets = []
@@ -317,9 +331,10 @@ def test_slack_socket_mode(monkeypatch):
         ("D1", "UALICE", "Fix the bug (https://x.test/a) & test"),
         ("C1", "UBOB", "run the tests"),  # allowed through the channel
         ("D1", "UALICE", "/approve ab12"),
+        ("D1", "UALICE", "/acknowledge fp01"),
     ]
     assert len(sockets) == 2  # reconnected after "disconnect"
-    assert [ack["envelope_id"] for ack in sockets[0].sent] == ["e1", "e2", "e3", "e4", "e5", "e6", "i1", "i2"]
+    assert [ack["envelope_id"] for ack in sockets[0].sent] == ["e1", "e2", "e3", "e4", "e5", "e6", "i1", "i2", "i3"]
     opens = [auth for method, auth, _ in api.calls if method == "apps.connections.open"]
     assert opens == ["Bearer xapp-app", "Bearer xapp-app"]
     posts = [(auth, body) for method, auth, body in api.calls if method == "chat.postMessage"]
@@ -331,6 +346,11 @@ def test_slack_socket_mode(monkeypatch):
     buttons = body["blocks"][1]["elements"]
     assert [(b["action_id"], b["value"]) for b in buttons] == [("lumi_approve", "cd34"), ("lumi_deny", "cd34")]
     assert body["blocks"][0]["text"] == {"type": "plain_text", "text": "Lumi wants to run `ls`."}
+    # The organization's oversight notice comes with an "I've read this" button.
+    assert channel.notice("D1", "Organization oversight: Acme receives …", "fp01") is True
+    _, _, body = api.calls[-1]
+    assert body["blocks"][0]["text"]["text"] == "Organization oversight: Acme receives …"
+    assert [(b["action_id"], b["value"]) for b in body["blocks"][1]["elements"]] == [("lumi_acknowledge", "fp01")]
     for bot, app in (("xapp-x", "xapp-y"), ("xoxb-x", "xoxb-y")):
         with pytest.raises(ValueError):
             SlackChannel(bot, app)

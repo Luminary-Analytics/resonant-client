@@ -18,7 +18,7 @@ from typing import Any, Iterator, Tuple
 
 import httpx
 
-from . import net
+from . import dlp, net
 from .backends import (
     EVENT_BACKEND_STATUS,
     EVENT_DONE,
@@ -139,6 +139,7 @@ def response_tools(tools: list) -> list[dict]:
     return converted
 
 
+@dlp.guard_backend
 class OpenAIResponsesBackend(KimiBackend):
     """OpenAI models through the Responses API (OpenAI or Azure OpenAI)."""
 
@@ -232,7 +233,8 @@ class OpenAIResponsesBackend(KimiBackend):
         if not str(api_key or "").strip():
             return []
         try:
-            with httpx.Client(**net.client_options(timeout=timeout, transport=transport, verify=verify)) as client:
+            with httpx.Client(**net.client_options(timeout=timeout, transport=transport, verify=verify,
+                                                   feature="OpenAI")) as client:
                 response = client.get(f"{str(base_url or DEFAULT_BASE_URL).rstrip('/')}/models",
                                       headers={"Authorization": f"Bearer {api_key}"})
                 response.raise_for_status()
@@ -247,7 +249,8 @@ class OpenAIResponsesBackend(KimiBackend):
             return list(DEFAULT_MODELS)
 
     def health(self) -> dict:
-        with httpx.Client(**net.client_options(timeout=10.0, transport=self._transport, verify=self._tls)) as client:
+        with httpx.Client(**net.client_options(timeout=10.0, transport=self._transport, verify=self._tls,
+                                               feature=self.PROVIDER_LABEL)) as client:
             response = client.get(self._url("models"), headers=self._request_headers())
         if response.status_code >= 400:
             error_type, message = self._error_details(response)
@@ -371,7 +374,7 @@ class OpenAIResponsesBackend(KimiBackend):
         last_status = 0.0
         try:
             with httpx.Client(**net.client_options(timeout=self._timeout, transport=self._transport,
-                                                   verify=self._tls)) as client:
+                                                   verify=self._tls, feature=self.PROVIDER_LABEL)) as client:
                 attempt = 0
                 while True:
                     if cancel_event is not None and cancel_event.is_set():
@@ -472,7 +475,8 @@ class OpenAIResponsesBackend(KimiBackend):
             yield (EVENT_ERROR, {"message": self._timeout_error_message()})
             return
         except httpx.HTTPError as exc:
-            yield (EVENT_ERROR, {"message": f"{self.PROVIDER_LABEL} connection failed: {type(exc).__name__}"})
+            yield (EVENT_ERROR, {"message": net.offline_message(exc)
+                                 or f"{self.PROVIDER_LABEL} connection failed: {type(exc).__name__}"})
             return
         output = final_output or [items[index] for index in sorted(items)]
         yield from self._finish(output, reasoning_text, usage, response_id)

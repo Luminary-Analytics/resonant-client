@@ -245,6 +245,23 @@ class TestRunEmptyResponseRecovery:
         assert not events_of_kind(events, "error")
         assert "no user-visible text" in backend.stream_calls[1]["user_msg"]
 
+    def test_a_reply_of_only_template_tokens_and_punctuation_is_asked_again(self):
+        # Kimi K3 on NVIDIA NIM once answered "<|close|>!!!!..." instead of its plan.
+        backend = StreamingBackend(scripts=[
+            [text_delta("<|close|>!!!!!!!!!!!!!!!!"), done()],
+            [text_delta("Recovered answer"), done()],
+        ])
+        events = list(Session(backend=backend, max_steps=1).run("plan it"))
+        assert backend.stream_count == 2
+        assert first_of_kind(events, "backend.status")["kind"] == "empty_response_retry"
+        assert [event["text"] for event in events_of_kind(events, "text.done")] == ["Recovered answer"]
+
+    def test_a_short_symbolic_reply_is_still_an_answer(self):
+        backend = StreamingBackend(scripts=[[text_delta("👍"), done()]])
+        events = list(Session(backend=backend, max_steps=1).run("React with an emoji"))
+        assert backend.stream_count == 1
+        assert first_of_kind(events, "text.done")["text"] == "👍"
+
     def test_repeated_empty_responses_fail_visibly(self):
         backend = StreamingBackend(events=[done()])
         session = Session(backend=backend, max_steps=1)

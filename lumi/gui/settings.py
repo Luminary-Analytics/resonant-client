@@ -220,10 +220,13 @@ DEFAULTS = {
         "enabled": False,
         "server_url": "",
     },
-    # The first-run checklist (lumi/gui/onboarding.py).
+    # The first-run checklist (lumi/gui/onboarding.py), and whether the launch
+    # offer to sign in to Lumi Cloud was answered (lumi/cloud.py: signing in,
+    # or continuing without an account).
     "onboarding": {
         "dismissed": False,
         "first_task_done": False,
+        "cloud_prompted": False,
     },
     # Settings > Lumi account (lumi/cloud.py): the Lumi Cloud address, the
     # signed-in account and this computer's enrollment. The sign-in's refresh

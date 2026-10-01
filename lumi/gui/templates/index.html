@@ -242,6 +242,7 @@
                 </div>
                 <div id="account-popover" class="account-popover" role="dialog" aria-label="Your profile and account" hidden>
                     <div class="account-summary"><strong id="account-menu-name">Profile</strong><span id="account-menu-detail">Settings and connections</span><small id="account-menu-status" hidden></small></div>
+                    <button type="button" id="account-cloud" aria-haspopup="dialog">Sign in to Lumi Cloud</button>
                     <button type="button" id="account-usage">SONN account &amp; credits</button>
                     <button type="button" id="account-connections">Provider connections <span aria-hidden="true">↗</span></button>
                     <button type="button" id="account-pet" aria-pressed="false">Show Echo <span aria-hidden="true">✧</span></button>
@@ -697,6 +698,33 @@
                     <button type="button" id="terms-dialog-done" class="dialog-btn allow" hidden>Close</button>
                 </div>
             </div>
+        </div>
+    </div>
+
+    <!-- ═══ Sign in to Lumi Cloud (settings_view.js openCloudWelcome) ═══
+         Offered once at first launch, after Lumi's terms: sign in with the browser,
+         or continue without an account. The profile menu opens it again. -->
+    <div id="cloud-welcome" class="dialog-overlay cloud-welcome-overlay" data-start-hidden role="dialog" aria-modal="true" aria-labelledby="cloud-welcome-title" aria-describedby="cloud-welcome-text">
+        <div class="dialog cloud-welcome">
+            <svg class="lumi-mark cloud-welcome-mark" viewBox="0 0 64 64" width="44" height="44" aria-hidden="true"><path d="M16 16V48H48" fill="none" stroke="currentColor" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/><circle cx="36" cy="28" r="9.5" fill="#10122B"/><circle cx="36" cy="28" r="7" fill="#FFC24B"/></svg>
+            <h2 id="cloud-welcome-title" class="cloud-welcome-title">Welcome to Lumi</h2>
+            <p id="cloud-welcome-text" class="cloud-welcome-text" role="status"></p>
+            <ul id="cloud-welcome-benefits" class="cloud-welcome-benefits">
+                <li>Your skills, prompts and project notes in your workspace, on every computer you sign in on</li>
+                <li>Invite teammates to your workspace when you’re ready</li>
+                <li>Feedback you send comes with your account, so we can reply</li>
+            </ul>
+            <p id="cloud-welcome-error" class="editor-error cloud-welcome-error" role="alert" hidden></p>
+            <div class="cloud-welcome-actions">
+                <div id="cloud-welcome-methods" class="cloud-welcome-methods" role="group" aria-label="Sign in or create an account">
+                    <button type="button" class="dialog-btn cloud-welcome-method" data-provider="google"><svg viewBox="0 0 18 18" width="18" height="18" aria-hidden="true"><path fill="#4285F4" d="M17.64 9.2c0-.64-.06-1.25-.16-1.84H9v3.48h4.84a4.14 4.14 0 0 1-1.8 2.72v2.26h2.92c1.7-1.57 2.68-3.88 2.68-6.62z"/><path fill="#34A853" d="M9 18c2.43 0 4.47-.8 5.96-2.18l-2.92-2.26c-.8.54-1.84.86-3.04.86-2.34 0-4.32-1.58-5.03-3.7H.96v2.33A9 9 0 0 0 9 18z"/><path fill="#FBBC05" d="M3.97 10.72A5.4 5.4 0 0 1 3.68 9c0-.6.1-1.18.29-1.72V4.95H.96A9 9 0 0 0 0 9c0 1.45.35 2.82.96 4.05l3.01-2.33z"/><path fill="#EA4335" d="M9 3.58c1.32 0 2.5.45 3.44 1.35l2.58-2.58A9 9 0 0 0 .96 4.95l3.01 2.33C4.68 5.16 6.66 3.58 9 3.58z"/></svg><span>Continue with Google</span></button>
+                    <button type="button" class="dialog-btn cloud-welcome-method" data-provider="microsoft"><svg viewBox="0 0 18 18" width="18" height="18" aria-hidden="true"><path fill="#F25022" d="M0 0h8.5v8.5H0z"/><path fill="#7FBA00" d="M9.5 0H18v8.5H9.5z"/><path fill="#00A4EF" d="M0 9.5h8.5V18H0z"/><path fill="#FFB900" d="M9.5 9.5H18V18H9.5z"/></svg><span>Continue with Microsoft</span></button>
+                    <button type="button" class="dialog-btn cloud-welcome-method" data-provider="email"><svg viewBox="0 0 18 18" width="18" height="18" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="1.75" y="3.75" width="14.5" height="10.5" rx="2"/><path d="m2.5 5 6.5 5 6.5-5"/></svg><span>Continue with email</span></button>
+                </div>
+                <button type="button" id="cloud-welcome-primary" class="dialog-btn allow" hidden></button>
+                <button type="button" id="cloud-welcome-secondary" class="dialog-btn cloud-welcome-secondary">Continue without an account</button>
+            </div>
+            <p id="cloud-welcome-note" class="cloud-welcome-note"></p>
         </div>
     </div>
 

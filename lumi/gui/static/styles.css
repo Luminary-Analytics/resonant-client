@@ -11244,6 +11244,62 @@ a.runtime-banner-action { display: inline-block; text-decoration: none; }
 /* Decline is a real choice: full text contrast, not the muted Deny style. */
 #terms-dialog-decline { color: var(--text); }
 .about-legal-documents { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+
+/* Sign in to Lumi Cloud, offered at first launch (settings_view.js openCloudWelcome). */
+.cloud-welcome-overlay { z-index: 1090; padding: 16px; box-sizing: border-box; }
+.cloud-welcome {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    width: 440px;
+    max-width: 100%;
+    max-height: calc(100vh - 32px);
+    overflow: auto;
+    padding: 28px 28px 20px;
+    box-sizing: border-box;
+    text-align: center;
+}
+.cloud-welcome-mark { color: var(--text); margin-bottom: 12px; flex: none; }
+.cloud-welcome-title { margin: 0 0 8px; font-size: 20px; font-weight: 600; color: var(--text); }
+.cloud-welcome-text { margin: 0 0 12px; color: var(--text); font-size: 13.5px; line-height: 1.5; }
+.cloud-welcome-benefits {
+    margin: 0 0 16px;
+    padding: 0;
+    list-style: none;
+    text-align: left;
+    color: var(--text-secondary, var(--text));
+    font-size: 13px;
+    line-height: 1.45;
+}
+.cloud-welcome-benefits li { position: relative; padding-left: 20px; }
+.cloud-welcome-benefits li + li { margin-top: 6px; }
+.cloud-welcome-benefits li::before { content: "\2713"; position: absolute; left: 0; color: var(--accent); }
+.cloud-welcome-benefits[hidden], .cloud-welcome-error[hidden], .cloud-welcome-note[hidden],
+.cloud-welcome-text[hidden], .cloud-welcome-actions .dialog-btn[hidden] { display: none; }
+.cloud-welcome-error { margin: 0 0 12px; text-align: left; align-self: stretch; }
+.cloud-welcome-actions { display: flex; flex-direction: column; gap: 8px; align-self: stretch; }
+.cloud-welcome-actions .dialog-btn { width: 100%; min-height: 38px; justify-content: center; }
+.cloud-welcome-methods { display: flex; flex-direction: column; gap: 8px; }
+.cloud-welcome-methods[hidden] { display: none; }
+.cloud-welcome-actions .cloud-welcome-method {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    background: var(--bg);
+    border: 1px solid var(--border-strong);
+    color: var(--text);
+    font-weight: 600;
+}
+.cloud-welcome-actions .cloud-welcome-method:hover { background: var(--bg-elem); }
+.cloud-welcome-method svg { flex: none; }
+.cloud-welcome-method span { flex: 1; text-align: center; margin-right: 28px; }
+.cloud-welcome-actions .cloud-welcome-secondary { margin-top: 4px; background: transparent; border: 1px solid transparent; color: var(--text); text-decoration: underline; text-underline-offset: 3px; }
+.cloud-welcome-actions .cloud-welcome-secondary:hover { background: var(--bg-elem); text-decoration: none; }
+.cloud-welcome-note { margin: 12px 0 0; color: var(--text-secondary, var(--text)); font-size: 12px; line-height: 1.45; }
+@media (max-width: 600px) {
+    .cloud-welcome-overlay { padding: 8px; }
+    .cloud-welcome { padding: 20px 16px 16px; }
+}
 @media (max-width: 600px) {
     .terms-notice { flex-wrap: wrap; }
     .terms-notice-review { margin-left: auto; }

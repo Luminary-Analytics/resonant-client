@@ -3990,7 +3990,8 @@ async def _cmd_cloud_status(ctx: CommandContext) -> None:
 async def _cmd_cloud_sign_in(ctx: CommandContext) -> None:
     """Open the browser to sign in; the result arrives later as a cloud_status event."""
     url = str(ctx.msg.get("url") or "")
-    await _cloud_run(ctx, lambda client: client.begin_sign_in(url))
+    provider = str(ctx.msg.get("provider") or "")  # how the person chose to sign in (lumi/cloud.py)
+    await _cloud_run(ctx, lambda client: client.begin_sign_in(url, provider))
 
 
 @command("cloud_cancel")
@@ -4703,7 +4704,7 @@ _SOCKET_SETTING_KEYS: dict[str, frozenset[str]] = {
                            "editor_bridge", "extension_panels"}),
     "updates": frozenset({"mode", "channel", "pin"}),
     "offline": frozenset({"enabled", "allowed_hosts"}),
-    "onboarding": frozenset({"dismissed"}),
+    "onboarding": frozenset({"dismissed", "cloud_prompted"}),
     "model_favorites": frozenset({"models"}),
     "voice": frozenset({"engine", "service", "model", "language"}),
 }
@@ -4816,7 +4817,7 @@ def _socket_setting_value(section: Any, key: Any, value: Any) -> Any:
         return validate_setting(key, value)
     if (section, key) in {
         ("network", "system_certificates"), ("privacy", "secret_scan"), ("privacy", "audit_log"),
-        ("onboarding", "dismissed"),
+        ("onboarding", "dismissed"), ("onboarding", "cloud_prompted"),
     } or (section == "security" and key != "shell_sandbox"):
         if not isinstance(value, bool):
             raise ValueError(f"{section}.{key} must be on or off.")

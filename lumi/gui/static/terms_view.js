@@ -79,6 +79,8 @@ class LumiTermsView {
         if (pending && !policyError && !this._termsDialog && this._termsDeclinedFor !== asked) this.openTermsDialog();
         else if (this._termsDialog) this._renderTermsDialog();
         if (this.currentView === 'settings') this.renderSettingsView?.();
+        // Accepted: the first launch's offer to sign in to Lumi Cloud comes next (settings_view.js).
+        if (!this._termsDialog && this.cloudStatus) this._applyCloudStatus?.(this.cloudStatus);
     }
 
     _termsNoticeText(status) {

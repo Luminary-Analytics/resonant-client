@@ -2683,7 +2683,17 @@ class AppState:
             # Lumi's terms and whether this person accepted them (lumi/terms.py):
             # the page asks for them at first launch and when their version changes.
             "terms": _terms_status(),
+            # The Lumi Cloud sign-in (lumi/cloud.py), read locally: the profile corner
+            # names the account, and the first launch offers signing in.
+            "cloud": self._cloud_status_for_init(),
         }
+
+    def _cloud_status_for_init(self) -> dict | None:
+        try:
+            return self.cloud.status()
+        except Exception:
+            logger.exception("Lumi Cloud status unavailable at startup")
+            return None
 
 
 def _oversight_status() -> dict:

@@ -9,6 +9,7 @@ const fs=require('node:fs');
 const path=require('node:path');
 const os=require('node:os');
 const {chromium}=require(process.argv[2]||'playwright');
+const {managedGovernanceSkip}=require('./managed_governance.cjs');
 
 async function runCase(hold){
     assert.ok(process.env.SONN_GOVERNANCE_TEST_CONFIG,'Explicit disposable PostgreSQL configuration required');
@@ -122,5 +123,5 @@ async function runCase(hold){
         if(!result)server.kill();fs.writeFileSync(path.join(output,'server.log'),stdout+'\n'+stderr);
     }
 }
-test('Managed ownership is explicit, private, and remotely controllable', {timeout:90000},()=>runCase(false));
-test('Local Stop remains responsive with governance offline', {timeout:90000},()=>runCase(true));
+test('Managed ownership is explicit, private, and remotely controllable', {timeout:90000, skip:managedGovernanceSkip()},()=>runCase(false));
+test('Local Stop remains responsive with governance offline', {timeout:90000, skip:managedGovernanceSkip()},()=>runCase(true));

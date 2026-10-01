@@ -10,6 +10,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
 const {chromium} = require(process.argv[2] || 'playwright');
+const {managedGovernanceSkip}=require('./managed_governance.cjs');
 
 async function runRecovery(missingAdmission = false) {
     assert.ok(process.env.SONN_GOVERNANCE_TEST_CONFIG && process.env.SWARM_MANAGED_PYTHON);
@@ -126,5 +127,5 @@ async function runRecovery(missingAdmission = false) {
     }
 }
 
-test('Managed restart reconciles retained proof and resumes enforced execution through the browser', {timeout: 120000}, () => runRecovery());
-test('Lost uncommitted worker admission requires an explicit server absence fence in the browser', {timeout: 120000}, () => runRecovery(true));
+test('Managed restart reconciles retained proof and resumes enforced execution through the browser', {timeout: 120000, skip:managedGovernanceSkip()}, () => runRecovery());
+test('Lost uncommitted worker admission requires an explicit server absence fence in the browser', {timeout: 120000, skip:managedGovernanceSkip()}, () => runRecovery(true));

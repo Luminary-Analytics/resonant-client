@@ -43,8 +43,8 @@ def main():
         if any(part in key.upper() for part in ("API_KEY", "TOKEN", "SECRET", "PASSWORD", "PROXY")):
             os.environ.pop(key)
     source = Path(__file__).resolve().parents[2]
-    sys.path[:0] = [str(source), str(source / "services" / "governance" / "src"),
-                   str(source / "services" / "governance" / "tests")]
+    from governance_source import governance_paths
+    sys.path[:0] = [str(source), *governance_paths()]
     import psutil
     from lumi.engine.swarming.managed_client import HostChannelClient
     from lumi.engine.swarming.service import _READ_TOOLS
@@ -190,7 +190,7 @@ def main():
         environment = dict(os.environ)
         environment.update(OLLAMA_HOST=api_url, EXO_API_URL=api_url, EXO_BASE_URL=api_url, SONN_API_URL="", SONN_BASE_URL="")
         for key in tuple(environment):
-            if key.startswith(("SONN_GOVERNANCE_", "SWARM_", "PG")) or key in {"PYTHONPATH", "PYTHONHOME"}:
+            if key.startswith(("SONN_GOVERNANCE_", "LUMI_GOVERNANCE_", "SWARM_", "PG")) or key in {"PYTHONPATH", "PYTHONHOME"}:
                 environment.pop(key)
         if source_mode:
             environment["PYTHONPATH"] = str(source)

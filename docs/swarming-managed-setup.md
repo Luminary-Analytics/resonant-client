@@ -198,4 +198,26 @@ Use `tests/swarm_managed_writers.browser.cjs` with
 `SWARM_PACKAGED_EXECUTABLE` set to an explicit candidate, and
 `tests/swarm_packaged_managed_recovery.browser.cjs <candidate-exe> <playwright>`
 to repeat those isolated packaged workflows. Both require the explicit
-`SWARM_MANAGED_PYTHON` and protected `SONN_GOVERNANCE_TEST_CONFIG` fixture settings.
+`SWARM_MANAGED_PYTHON`, `LUMI_GOVERNANCE_SOURCE` and protected
+`SONN_GOVERNANCE_TEST_CONFIG` fixture settings.
+
+## Running the managed browser tests
+
+The governance service lives in Lumi Cloud, not in this repository. The
+managed browser tests (`tests/swarm_managed*.browser.cjs` and
+`tests/swarm_packaged_managed*.browser.cjs`) import it from an explicit
+external checkout. Without all three settings below each test is reported as
+skipped, naming the missing ones; that is not evidence. A set but wrong
+`LUMI_GOVERNANCE_SOURCE` fails the test instead of skipping it.
+
+- `LUMI_GOVERNANCE_SOURCE`: a Lumi Cloud checkout, or its `services/governance`
+  directory. The fixtures add its `src` and `tests` directories to the path.
+- `SONN_GOVERNANCE_TEST_CONFIG`: a protected JSON file for a disposable
+  PostgreSQL database (`owner_dsn`, `application_dsn`, `application_role`).
+- `SWARM_MANAGED_PYTHON`: an isolated Python with this client's dependencies
+  and the governance service's pinned requirements installed.
+
+```sh
+LUMI_GOVERNANCE_SOURCE=/path/to/lumi-cloud SONN_GOVERNANCE_TEST_CONFIG=/protected/db.json \
+SWARM_MANAGED_PYTHON=/path/to/venv/python node tests/swarm_managed.browser.cjs /path/to/playwright
+```

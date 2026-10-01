@@ -13,6 +13,23 @@ in its own dated section. None yet: everything up to
 [Lumi 0.20.0-alpha.1](v0.20.0-alpha.1-release-notes.md) moved to its
 [change record](v0.20.0-alpha.1-change-record.md).
 
+## October 1 The governance service moves to Lumi Cloud (source only, not released)
+
+- **The server-side governance service left this repository.** The
+  `services/governance/` package (tenant membership, permissions, project
+  policy, host certificate enrollment and request accounting on PostgreSQL)
+  moved to Lumi Cloud (private). Governance and security policy are defined
+  and served by Lumi Cloud; the desktop client fetches, verifies and enforces
+  what the cloud enables. Nothing in the `lumi` package imported the service,
+  and packaging never included it, so the app is unchanged. Its earlier
+  source remains in this repository's history.
+- **Managed-team browser tests skip by name without it.** They now import the
+  service from an external checkout named by `LUMI_GOVERNANCE_SOURCE`, and
+  report themselves skipped, naming the missing settings, when it, the
+  disposable database configuration or the fixture Python is not set (see
+  [managed setup](swarming-managed-setup.md#running-the-managed-browser-tests)).
+  The Team workflow no longer watches `services/governance/`.
+
 ## September 30 Fixes from testing 0.20.0-alpha.1: turn card, Codex replies, profile corner (source only, not released)
 
 Found by the owner on an installed 0.20.0-alpha.1 (upgraded from SONN Client,

@@ -130,7 +130,7 @@ def main():
     environment = dict(os.environ)
     environment.update(OLLAMA_HOST=endpoint, EXO_API_URL=endpoint, EXO_BASE_URL=endpoint, SONN_API_URL="", SONN_BASE_URL="")
     for key in tuple(environment):
-        if key.startswith(("SONN_GOVERNANCE_", "SWARM_", "PG")) or key in {"PYTHONPATH", "PYTHONHOME"}:
+        if key.startswith(("SONN_GOVERNANCE_", "LUMI_GOVERNANCE_", "SWARM_", "PG")) or key in {"PYTHONPATH", "PYTHONHOME"}:
             environment.pop(key)
     with socket.socket() as reservation:
         reservation.bind(("127.0.0.1", 0))

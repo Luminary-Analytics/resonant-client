@@ -39,6 +39,9 @@ host enrollment and actual packaged/learned-benefit qualification remain open.
   `resonant-policy.json`) are still read; do not write new state under them.
   The update feed URL and repository name stay until a bridge release moves
   the feed (see [Unreleased](docs/unreleased.md)).
+- Governance and security policy are defined and served by Lumi Cloud, which
+  also hosts the server-side governance service. The client fetches, verifies
+  and enforces what the cloud enables; it never defines organization policy.
 - Lumi is proprietary ([LICENSE](LICENSE), the EULA in `lumi/legal/`). The
   Extension SDK (`sdk/`) is under the Lumi Extension SDK License, which lets
   developers build and ship extensions for Lumi, and the VS Code extension
@@ -364,8 +367,8 @@ host enrollment and actual packaged/learned-benefit qualification remain open.
   runner built without it loads `HookRunner(settings)`. A new place that
   builds a Session for the person must attach their hooks too.
 
-- The Team preview (`engine/swarming/`, `gui/swarming.py`, `services/governance/`,
-  docs/swarming.md) is off by default. A personal team follows an organization
+- The Team preview (`engine/swarming/`, `gui/swarming.py`, docs/swarming.md;
+  its server-side governance service lives in Lumi Cloud) is off by default. A personal team follows an organization
   policy through `engine/swarming/organization.TeamGovernance`: a
   `swarming.enabled` lock stops all its new work; each model it runs (the
   orchestrator's, the workers') passes `model_allowed` at start and before

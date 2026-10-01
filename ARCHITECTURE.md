@@ -71,8 +71,9 @@ shell rules and the budgets before every participant and every model request
 (the execution guard asks it before reserving a request, in-process or for a
 child), and records the run's usage and audit trail.
 
-Managed teams additionally use the separate `services/governance/` PostgreSQL
-service, authenticated host channels and current policy leases. It enforces
+Managed teams additionally use the separate PostgreSQL governance service,
+which lives in Lumi Cloud (this client only enacts what it enables),
+authenticated host channels and current policy leases. It enforces
 organization permissions, identity/provisioning, quota and audit requirements;
 host credentials stay in the trusted parent process.
 Personal and managed sharing both require explicit disclosure and independently

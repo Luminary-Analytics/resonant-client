@@ -189,6 +189,7 @@ work still completed under its original request allowance and separate review.
 
 ```sh
 python -m pytest tests/test_swarm_managed_collaboration.py
+# In a Lumi Cloud checkout, where the governance service now lives:
 python -m pytest services/governance/tests/test_managed_collaboration.py services/governance/tests/test_managed_collaboration_native.py
 node tests/swarm_managed_collaboration.browser.cjs /path/to/playwright
 ```

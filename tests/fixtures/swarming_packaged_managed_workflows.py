@@ -9,7 +9,8 @@ import sys
 from types import SimpleNamespace
 
 SOURCE = Path(__file__).resolve().parents[2]
-sys.path[:0] = [str(SOURCE), str(SOURCE / "services/governance/src"), str(SOURCE / "services/governance/tests")]
+from governance_source import governance_paths  # noqa: E402  (fixture directory is sys.path[0])
+sys.path[:0] = [str(SOURCE), *governance_paths()]
 
 from lumi.engine.swarming.managed_client import HostChannelClient  # noqa: E402
 from lumi.engine.swarming.service import _READ_TOOLS, _WRITE_TOOLS  # noqa: E402

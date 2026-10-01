@@ -8,6 +8,7 @@ const fs=require('node:fs');
 const path=require('node:path');
 const os=require('node:os');
 const {chromium}=require(process.argv[3]||'playwright');
+const {managedGovernanceSkip}=require('./managed_governance.cjs');
 
 async function runCase(offline){
     assert.ok(process.env.SONN_GOVERNANCE_TEST_CONFIG,'Explicit disposable PostgreSQL configuration required');
@@ -147,5 +148,5 @@ async function runCase(offline){
         if(fs.existsSync(startup))fs.copyFileSync(startup,path.join(output,'startup.log'));
     }
 }
-test('Unmodified managed candidate dispatches an owned reader and reports metadata privately',{timeout:120000},()=>runCase(false));
-test('Unmodified managed candidate preserves local Stop while governance is offline',{timeout:120000},()=>runCase(true));
+test('Unmodified managed candidate dispatches an owned reader and reports metadata privately',{timeout:120000, skip:managedGovernanceSkip()},()=>runCase(false));
+test('Unmodified managed candidate preserves local Stop while governance is offline',{timeout:120000, skip:managedGovernanceSkip()},()=>runCase(true));

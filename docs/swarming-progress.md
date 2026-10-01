@@ -333,7 +333,7 @@ The unrelated existing pause/decision test passed its focused rerun and all seve
 tests in its module. Focused reruns passed the corrected cases; a final full run
 against a stable desktop source snapshot remains required.
 
-The separate `services/governance` foundation passed **61** tests across verified
+The separate `services/governance` foundation (now in Lumi Cloud) passed **61** tests across verified
 resource tokens, real HTTP, PostgreSQL 18 transactions and launch configuration.
 Tests use generated fixture signing keys, an isolated loopback cluster and a
 restricted runtime database role. They cover tenant/project denial, current-grant
@@ -581,7 +581,7 @@ in **29.10s**. The preceding two-owner browser rerun passed in **30.37s**
 the later service test.
 
 Offline retention recovery is now a separate operator workflow in
-[RESTORE.md](../services/governance/RESTORE.md). It uses independently pinned,
+`RESTORE.md` (now in Lumi Cloud). It uses independently pinned,
 complete archive evidence and an explicit one-way source seal. The original and
 restored databases remain quarantined; no current authority or work is resumed.
 Actual `pg_dump`/`pg_restore` fixtures passed **18** current-source tests in

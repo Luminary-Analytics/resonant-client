@@ -39,7 +39,8 @@ def main():
         if any(word in key.upper() for word in ("API_KEY", "TOKEN", "SECRET", "PASSWORD")):
             os.environ.pop(key)
     source = Path(__file__).resolve().parents[2]
-    sys.path[:0] = [str(source), str(source / "services" / "governance" / "src"), str(source / "services" / "governance" / "tests")]
+    from governance_source import governance_paths
+    sys.path[:0] = [str(source), *governance_paths()]
     os.chdir(workspace)
     connect = socket.socket.connect
     def loopback(sock, address):

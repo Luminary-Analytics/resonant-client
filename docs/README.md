@@ -59,7 +59,7 @@ guide belongs in that navigation; historical records stay out of it.
 - [Autonomous sessions (experimental): specs, budgets, spending limits and stop rules](autonomous-sessions.md)
 - [Team preview: investigations, isolated changes, recovery and reports](swarming.md) — source preview, not a qualified release
 - [Team provider eligibility and qualification matrix](swarming-provider-matrix.md)
-- [Managed team operator setup](swarming-managed-setup.md) and [governance operations](../services/governance/OPERATIONS.md)
+- [Managed team operator setup](swarming-managed-setup.md); the governance service and its operations guide live in Lumi Cloud
 - [Personal collaboration](swarming-collaboration.md) and [managed collaboration](swarming-managed-collaboration.md)
 - [Skills and learning](skills.md)
 - [Writing a capability pack: the manifest, hooks, trust and sharing](packs.md)

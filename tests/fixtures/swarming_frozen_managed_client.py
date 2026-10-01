@@ -141,7 +141,7 @@ class FrozenManagedClient:
                     os.environ[key] = value
         environment = {key: value for key, value in os.environ.items()
             if not any(word in key.upper() for word in ("API_KEY", "TOKEN", "SECRET", "PASSWORD", "PROXY"))
-            and not key.startswith(("PG", "SONN_GOVERNANCE_", "SWARM_")) and key not in {"PYTHONPATH", "PYTHONHOME"}}
+            and not key.startswith(("PG", "SONN_GOVERNANCE_", "LUMI_GOVERNANCE_", "SWARM_")) and key not in {"PYTHONPATH", "PYTHONHOME"}}
         environment.update({key: str(home) for key in keys})
         environment.update(OLLAMA_HOST=endpoint, EXO_API_URL=endpoint, EXO_BASE_URL=endpoint, SONN_API_URL="", SONN_BASE_URL="")
         with socket.socket() as reservation:

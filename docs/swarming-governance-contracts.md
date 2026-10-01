@@ -7,6 +7,10 @@ It preserves the [local contracts](swarming-contracts.md) and leaves AI Employee
 work paused. No deployment, external account, paid request, or organization
 enrollment is authorized by publishing this design.
 
+October 1, 2026: the governance service built from this design moved out of
+this repository into Lumi Cloud, at the same `services/governance/` path.
+References to that path below describe the service there.
+
 ## The first implementation seam
 
 Build an independently runnable organization module with a small authenticated

@@ -38,7 +38,6 @@ on:
       - 'lumi/gui/swarming.py'
       - 'lumi/gui/static/swarm_view.*'
       - 'lumi/gui/static/*collaboration_view.*'
-      - 'services/governance/**'
       - 'scripts/swarm_benchmark.py'
       - 'tests/test_swarm_*.py'
       - 'tests/fixtures/swarming*'

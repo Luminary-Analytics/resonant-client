@@ -6,10 +6,11 @@ const fs=require('node:fs');
 const path=require('node:path');
 const os=require('node:os');
 const {chromium}=require(process.argv[2]||'playwright');
+const {managedGovernanceSkip}=require('./managed_governance.cjs');
 const candidate=process.env.SWARM_PACKAGED_EXECUTABLE?path.resolve(process.env.SWARM_PACKAGED_EXECUTABLE):null;
 const retention=process.env.SWARM_SHARING_RETENTION==='1';
 
-test('Two managed owners explicitly disclose selected content and accept independent work', {timeout:150000}, async()=>{
+test('Two managed owners explicitly disclose selected content and accept independent work', {timeout:150000, skip:managedGovernanceSkip()}, async()=>{
     assert.ok(process.env.SONN_GOVERNANCE_TEST_CONFIG);assert.ok(process.env.SWARM_MANAGED_PYTHON);
     const output=fs.mkdtempSync(path.join(os.tmpdir(),'sonn-managed-sharing-browser-'));
     const server=spawn(process.env.SWARM_MANAGED_PYTHON,[path.join(__dirname,'fixtures/swarming_managed_collaboration_ui_server.py'),

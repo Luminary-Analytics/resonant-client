@@ -9,9 +9,10 @@ const fs=require('node:fs');
 const path=require('node:path');
 const os=require('node:os');
 const {chromium}=require(process.argv[2]||'playwright');
+const {managedGovernanceSkip}=require('./managed_governance.cjs');
 const candidate=process.env.SWARM_PACKAGED_EXECUTABLE?path.resolve(process.env.SWARM_PACKAGED_EXECUTABLE):null;
 
-test('Managed writer UI applies exact checked changes and requires separate acceptance', {timeout:120000}, async()=>{
+test('Managed writer UI applies exact checked changes and requires separate acceptance', {timeout:120000, skip:managedGovernanceSkip()}, async()=>{
     assert.ok(process.env.SONN_GOVERNANCE_TEST_CONFIG);
     assert.ok(process.env.SWARM_MANAGED_PYTHON);
     const output=fs.mkdtempSync(path.join(os.tmpdir(),'sonn-managed-writer-browser-'));

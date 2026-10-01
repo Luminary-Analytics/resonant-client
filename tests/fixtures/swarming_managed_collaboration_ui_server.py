@@ -20,7 +20,8 @@ from types import SimpleNamespace
 from urllib.request import Request, urlopen
 
 SOURCE = Path(__file__).resolve().parents[2]
-sys.path[:0] = [str(SOURCE), str(SOURCE / "services/governance/src"), str(SOURCE / "services/governance/tests")]
+from governance_source import governance_paths  # noqa: E402  (fixture directory is sys.path[0])
+sys.path[:0] = [str(SOURCE), *governance_paths()]
 
 
 def isolated_network():

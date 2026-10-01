@@ -6,8 +6,9 @@ const fs=require('node:fs');
 const path=require('node:path');
 const os=require('node:os');
 const {chromium}=require(process.argv[3]||'playwright');
+const {managedGovernanceSkip}=require('./managed_governance.cjs');
 
-test('Frozen managed restart requires proof before a new enforced epoch', {timeout:210000}, async()=>{
+test('Frozen managed restart requires proof before a new enforced epoch', {timeout:210000, skip:managedGovernanceSkip()}, async()=>{
     assert.ok(process.env.SONN_GOVERNANCE_TEST_CONFIG&&process.env.SWARM_MANAGED_PYTHON);
     const candidate=path.resolve(process.argv[2]);assert.ok(fs.existsSync(candidate));
     const output=fs.mkdtempSync(path.join(os.tmpdir(),'sonn-packaged-managed-recovery-'));

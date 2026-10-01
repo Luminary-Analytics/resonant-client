@@ -52,8 +52,8 @@ separately implemented and qualified cost-admission boundary.
 Use an explicitly designated disposable tenant, the selected external OIDC/SCIM
 configuration, and two independently provisioned machines or VMs. Each host needs
 its own member, certificate/private key, protected configuration and local state.
-Use the [managed setup](swarming-managed-setup.md) and service
-[operations guide](../services/governance/OPERATIONS.md).
+Use the [managed setup](swarming-managed-setup.md) and the governance service's
+operations guide in Lumi Cloud.
 
 Retain evidence of current membership and policy denial, revocation, offline
 admission refusal, local Stop, remote Stop acknowledgement versus actual cleanup,

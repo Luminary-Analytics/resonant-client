@@ -12,7 +12,9 @@ def test_about_says_what_this_copy_is(tmp_path):
     [reply] = _command(settings, "about_info")
     assert reply["event"] == "about_info"
     data = reply["data"]
-    assert (data["version"], data["license"], data["organization"], data["installed_by"]) == (__version__, "MIT", "", "")
+    assert (data["version"], data["organization"], data["installed_by"]) == (__version__, "", "")
+    # Lumi is proprietary: the page names the agreement it's licensed under.
+    assert data["license"] == "Lumi End User License Agreement"
     assert data["notices"] == ""  # running from source: no bundled notices
     policy.set_for_tests(policy.parse({"schema": policy.SCHEMA, "organization": "Example Corp"}, source="test"))
     [reply] = _command(settings, "about_info")

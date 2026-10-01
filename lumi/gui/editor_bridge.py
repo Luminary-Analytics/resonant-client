@@ -37,7 +37,6 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from ..paths import state_home
-from ..processes import background_process_kwargs
 
 logger = logging.getLogger(__name__)
 
@@ -281,8 +280,22 @@ def latest_changing_turn(events: list[dict]) -> dict | None:
 
 
 def _git(root: Path, *args: str) -> subprocess.CompletedProcess:
-    return subprocess.run(["git", *args], cwd=root, capture_output=True, check=False, timeout=60,
-                          **background_process_kwargs())
+    """Git's bytes. lumi/safe_git.py: the installed Git without the programs a
+    repository's settings name; none at all in an untrusted project whose
+    settings name some (``cat-file --filters`` would run its smudge filters).
+    Without Git on this computer, or in a folder that is gone, a failed
+    command with the reason, as bytes like the others."""
+    from ..safe_git import GitRefused, run
+
+    try:
+        return run(root, *args, text=False, timeout=60)
+    except GitRefused as exc:
+        raise BridgeError(403, str(exc)) from None
+    except OSError as exc:
+        from ..git_support import MISSING_EXIT_CODE, start_failure_message
+
+        message = start_failure_message(exc, "Comparing with a checkpoint needs", cwd=root)
+        return subprocess.CompletedProcess(["git", *args], MISSING_EXIT_CODE, b"", message.encode("utf-8"))
 
 
 def _checkpoint_record(root: Path, checkpoint_id: str) -> dict | None:

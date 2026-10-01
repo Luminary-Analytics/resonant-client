@@ -10,6 +10,7 @@ import json
 import logging
 import os
 import re
+import sys
 import threading
 import time
 import uuid
@@ -18,6 +19,7 @@ from pathlib import Path
 from typing import Optional
 
 from .session_ledger import SESSION_LEDGER_VERSION, SessionEventLedger
+from ..executables import launch_directory
 from ..paths import state_home
 
 logger = logging.getLogger(__name__)
@@ -115,15 +117,64 @@ _UNSAFE_CWD_PREFIXES_POSIX = (
 )
 
 
+def _system_dirs_win() -> tuple[str, ...]:
+    """The same system folders where Windows says they are (another drive, say)."""
+    names = ("ProgramFiles", "ProgramFiles(x86)", "ProgramW6432", "ProgramData", "SystemRoot")
+    return tuple(os.path.normcase(os.path.normpath(value)) for value in
+                 (os.environ.get(name, "") for name in names) if value)
+
+
+def _app_folder() -> str:
+    """A packaged Lumi's own folder, where its executable is, normalized; "" from source.
+
+    From source ``sys.executable`` is a Python interpreter, which can live in
+    the user's own project (its virtual environment), so only the packaged
+    app counts.
+    """
+    if not getattr(sys, "frozen", False):
+        return ""
+    try:
+        return os.path.normcase(os.path.dirname(os.path.realpath(sys.executable)))
+    except (OSError, ValueError):
+        return ""
+
+
 def _is_unsafe_cwd(path: str) -> bool:
     """True if `path` looks like an OS / app-install location that the
     user clearly didn't pick as a project. Case-insensitive on Windows.
+
+    That includes the running app's own folder, wherever it is (a portable
+    copy in Downloads, a folder on another drive), anything inside it, and
+    any folder that contains it, such as the drive root or Downloads itself:
+    double-clicking lumi.exe starts it there.
+
+    Explorer starts the copy in the folder as the person reached it: through
+    a junction, a symbolic link, a subst drive or a mapped network drive. So
+    the folder is checked both as spelled and where it really is (realpath),
+    as the app's own folder is.
     """
     if not path:
         return True
-    norm = os.path.normpath(path)
+    spellings = [os.path.normcase(os.path.normpath(path))]
+    try:
+        real = os.path.normcase(os.path.realpath(path))
+    except (OSError, ValueError):
+        real = spellings[0]
+    if real not in spellings:
+        spellings.append(real)
+    return any(_is_unsafe_spelling(norm) for norm in spellings)
+
+
+def _is_unsafe_spelling(norm: str) -> bool:
+    app = _app_folder()
+    if app:
+        container = norm.rstrip("\\/") + os.sep
+        if norm == app or norm.startswith(app + os.sep) or app.startswith(container):
+            return True
     if os.name == "nt":
         norm = norm.lower()
+        if any(norm == folder or norm.startswith(folder.rstrip("\\") + "\\") for folder in _system_dirs_win()):
+            return True
         return any(norm.startswith(prefix) for prefix in _UNSAFE_CWD_PREFIXES_WIN)
     return any(norm.startswith(prefix) for prefix in _UNSAFE_CWD_PREFIXES_POSIX)
 
@@ -170,7 +221,7 @@ def _playground_project_path() -> str:
     source_paths: list[str] = []
     if override:
         source_paths.append(os.path.expandvars(os.path.expanduser(override)))
-    cwd = os.getcwd()
+    cwd = launch_directory()
     if cwd and not _is_unsafe_cwd(cwd):
         source_paths.append(cwd)
     for entry in recent_entries:
@@ -235,8 +286,9 @@ def _safe_default_project_path() -> str:
     # Lumi source repo is excluded HERE only — a dev-server launch
     # from the repo shouldn't make Lumi its own project, but a repo
     # the user explicitly opened (and that recents remembers) must still
-    # restore on the next launch.
-    cwd = os.getcwd()
+    # restore on the next launch. The folder Lumi started in: the app itself
+    # works in a system folder (lumi/executables.py).
+    cwd = launch_directory()
     cwd_is_resonant_source = _looks_like_resonant_source(cwd)
     if not _is_unsafe_cwd(cwd) and not cwd_is_resonant_source:
         try:

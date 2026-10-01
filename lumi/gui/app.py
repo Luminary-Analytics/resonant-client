@@ -52,12 +52,13 @@ from ..connections import (
     discover_models as discover_connection_models,
     find_connection,
     list_connections,
+    offline_refusal as connection_offline_refusal,
     secret_setting as connection_secret_setting,
 )
 from ..sonn import SonnBackend
 from ..engine import Session
 from ..network_defaults import default_thinking_for_model, resolve_exo_url, resolve_ollama_url, resolve_sonn_url
-from .. import audit, budgets, net, pricing, secret_scan, usage
+from .. import audit, budgets, git_support, net, pricing, secret_scan, usage
 from . import ws_commands
 from .appearance import page_appearance
 from .chat_loop import ChatRunLoop
@@ -77,9 +78,13 @@ from .ws_commands import (  # noqa: F401  (re-exported public surface)
     _save_resonant_md,
     _skill_list_payload,
     _skill_view_payload,
+    full_auto_granted,
+    needs_full_auto,
+    ollama_address_in_use,
+    refused_turn,
 )
 from .sessions import ProjectManager
-from .settings import SettingsManager
+from .settings import DEFAULT_PERMISSION_MODE, SettingsManager
 from .workspace_trust import WorkspaceTrust
 from .costs import CostTracker
 from .project_instructions import (
@@ -190,6 +195,8 @@ class AppState:
     def __init__(self):
         self._harness_prompts = None
         self.available_backends: dict = {}
+        # Providers offline mode hides from the model picker, with why (lumi/offline.py).
+        self.offline_hidden_backends: dict = {}
         self.backend = None
         self.backend_spec: Optional[BackendSpec] = None
         self.session: Optional[Session] = None
@@ -242,7 +249,7 @@ class AppState:
         self._migrate_stale_defaults()
         self._apply_big_context_preset()
         self.permission_mode = self.policy_permission_mode(
-            self.settings.get("general", "default_permission_mode", "bypass")
+            self.settings.get("general", "default_permission_mode", DEFAULT_PERMISSION_MODE)
         )
         self.costs = CostTracker()
         # Every recorded model call adds to the totals Settings shows: turns,
@@ -268,6 +275,10 @@ class AppState:
         self._project_instructions: str | None = None
         self._ws_ref = None
         self._ws_loop = None
+        # A save that stops reaching settings.json, or the next that does, is
+        # shown at once, whatever saved it (a background task too). Until a
+        # page connects, init brings it.
+        self.settings.on_save_error_changed = self._settings_file_changed
         self.evaluations = EvaluationManager(on_event=self._push_ws_event)
         # Extension systems. The shared hook runner holds settings hooks only;
         # capability-pack hooks ride on per-session scoped runners.
@@ -322,6 +333,18 @@ class AppState:
         except Exception:
             logger.debug("background websocket event failed", exc_info=True)
 
+    def _settings_file_changed(self) -> None:
+        """Tell the page whether settings.json was read and the last save reached it.
+
+        SettingsManager calls this when a save stops reaching the file, or
+        starts again. Only the file's state goes (``settings_file``): the
+        page redraws its notices from it and leaves what's being edited
+        alone, which a whole ``settings`` event wouldn't.
+        """
+        settings = self.settings
+        self._push_ws_event({"event": "settings_file", "load_error": settings.load_error,
+                             "save_error": settings.save_error})
+
     def _migrate_stale_defaults(self) -> None:
         """
         Settings persisted from earlier versions may still pin "default_backend"
@@ -370,6 +393,12 @@ class AppState:
         if not raw:
             raise ValueError("Project path is required.")
         expanded = os.path.expandvars(os.path.expanduser(raw))
+        from ..executables import is_absolute
+
+        if not is_absolute(expanded):
+            # Relative to what? The app's working folder is a system folder,
+            # never a project (lumi/executables.py).
+            raise ValueError("Enter the project folder's full path.")
         try:
             return str(Path(expanded).resolve(strict=False))
         except OSError:
@@ -403,9 +432,10 @@ class AppState:
 
     @classmethod
     def normalize_permission_mode(cls, mode: Any) -> str:
-        """A known permission mode. Empty means the default (Full-auto); an
-        unrecognized value fails closed to Ask instead of granting anything."""
-        value = str(mode or "").strip() or "bypass"
+        """A known permission mode. Empty means a new install's default
+        (Auto-edit, settings.DEFAULT_PERMISSION_MODE); an unrecognized value
+        fails closed to Ask instead of granting anything."""
+        value = str(mode or "").strip() or DEFAULT_PERMISSION_MODE
         return value if value in cls.PERMISSION_MODES else "ask"
 
     @classmethod
@@ -594,6 +624,82 @@ class AppState:
             return policy.allowed_modes[0]
         return normalized
 
+    # Work that runs with nobody there to approve its steps: what it does, and
+    # what the person grants by running just this one in Full-auto
+    # (full_auto_needed; the page's "Run this plan in Full-auto" and the like).
+    _FULL_AUTO_WORK = {
+        "plan": ("A plan runs its steps in Full-auto: they change files and run commands without asking, "
+                 "because nobody is there to approve each one.", "run this plan"),
+        "roadmap": ("A roadmap is built in Full-auto: its steps change files and run commands without asking, "
+                    "because nobody is there to approve each one.", "build this roadmap"),
+        "autonomous": ("An autonomous session runs in Full-auto: its steps change files and run commands, its "
+                       "acceptance checks included, without asking, because nobody is there to approve them.",
+                       "run this session"),
+        "autonomous_resume": ("An autonomous session runs in Full-auto: its steps change files and run commands, "
+                              "its acceptance checks included, without asking, because nobody is there to "
+                              "approve them.", "resume this session"),
+        "team": ("A team the orchestrator runs needs Full-auto: the orchestrator approves its plans and accepts "
+                 "its results for you, without asking.", "run this team"),
+        "team_continue": ("A team the orchestrator runs needs Full-auto: the orchestrator approves its plans and "
+                          "accepts its results for you, without asking.", "continue this team"),
+    }
+    _MODE_NAMES = {"ask": "Ask", "auto-edit": "Auto-edit", "plan": "Plan", "bypass": "Full-auto"}
+
+    def full_auto_needed(self, work: str, *, granted: bool = False, session_id: str = "") -> Optional[dict[str, Any]]:
+        """Why unattended ``work`` can't start from this conversation's mode, or None.
+
+        Plans, missions, autonomous sessions and a team the orchestrator runs
+        take their steps with nobody there to answer an approval, so they run
+        in Full-auto whatever mode the conversation is in. Starting one from
+        Auto-edit, Ask or Plan without asking would quietly give it more than
+        the person chose, so it's refused with ``code: "needs_full_auto"``,
+        and the page offers to run just that one in Full-auto. Choosing that
+        sends the same request again with ``granted`` (``full_auto: true``,
+        ws_commands.full_auto_granted): that run goes ahead in Full-auto, as
+        such work always has, and the conversation keeps its mode, so nothing
+        else runs in Full-auto because of it. Pausing and resuming work that
+        is still running doesn't ask again; resuming an interrupted
+        autonomous session or continuing an interrupted orchestrated team
+        starts it again, and does.
+
+        None when the conversation is in Full-auto, when ``granted``, or when
+        the organization doesn't allow Full-auto: then no grant can apply,
+        and policy.full_auto_refusal (for a team the orchestrator runs,
+        swarming.organization.mode_refusal) refuses the work in the
+        organization's words wherever it starts, granted or not.
+
+        Each grant it lets through is recorded in the audit log
+        (``permission.full_auto_grant``: the work, the conversation's mode,
+        the conversation, ``session_id`` when the work belongs to one that
+        isn't open yet, and the project), so work run in Full-auto stays on
+        record although the conversation's mode didn't change.
+        """
+        if self.permission_mode == "bypass":
+            return None
+        from ..policy import current
+
+        policy = current()
+        if policy and not policy.mode_allowed("bypass"):
+            return None
+        if granted:
+            from .. import audit
+
+            project = getattr(self, "project", None)
+            session = getattr(project, "current_session", None)
+            audit.record("permission.full_auto_grant", work=work, mode=self.permission_mode,
+                         session=str(session_id or getattr(session, "id", "") or ""),
+                         project=audit.name(str(getattr(project, "project_path", "") or "")))
+            return None
+        what, grant = self._FULL_AUTO_WORK[work]
+        mode = self._MODE_NAMES.get(self.permission_mode, self.permission_mode)
+        return {
+            "message": f"{what} This conversation is in {mode}, and stays in {mode} if you {grant} in Full-auto.",
+            "code": "needs_full_auto",
+            "can_grant": True,
+            "work": work,
+            "permission_mode": self.permission_mode,
+        }
+
     def apply_permission_mode(self, mode: str, session: Optional[Session] = None) -> str:
         self.permission_mode = self.policy_permission_mode(mode)
         target = session or self.session
@@ -621,8 +727,16 @@ class AppState:
         return "", "", "", ""
 
     def apply_project_context(self, project_path: str, refresh_index: bool = True) -> str:
-        project_path = self.ensure_project_path(project_path or self.project.project_path or os.getcwd())
-        os.chdir(project_path)
+        from .sessions import _safe_default_project_path
+
+        project_path = self.ensure_project_path(
+            project_path or self.project.project_path or _safe_default_project_path())
+        # The project never becomes the process's working folder: Windows
+        # looks for programs, DLLs and ShellExecute targets there, and every
+        # command names its own folder (lumi/executables.py). MCP servers,
+        # which pack commands expect to run in the project, get it here.
+        if getattr(self, "mcp_manager", None) is not None:
+            self.mcp_manager.working_folder = project_path
 
         if self._normalize_path(project_path) != self._normalize_path(self.project.project_path):
             self.project.set_project(project_path)
@@ -730,6 +844,7 @@ class AppState:
         from ..engine.artifacts import ArtifactStore
         from ..engine.checkpoint_timeline import SessionCheckpointStore
         from ..engine.context_broker import ContextBroker
+        from .swarming import chat_context as _swarm_chat_context
         from ..engine.flight_recorder import FlightRecorder
         from ..engine.model_roles import ModelRoleRouter
         from ..engine.worktrees import WorktreeManager
@@ -793,6 +908,9 @@ class AppState:
         )
         session.flight_recorder = flight_recorder
         session.context_broker = context_broker
+        # ``@team:<run>`` attaches one of this conversation's teams (gui/swarming.py).
+        context_broker.team_reader = lambda run_id, workspace=target_path: _swarm_chat_context(
+            self, workspace, getattr(self.project.current_session, "id", "") or "", run_id)
         session.model_role_router = role_router
         session.fallback_provider = lambda path=target_path: self._fallback_chain(path)
         # Director Mode was retired in favor of the standard agent loop. Clear
@@ -1127,10 +1245,23 @@ class AppState:
         self.refresh_network_defaults()
         ollama_url = self.ollama_url
         available: dict = {}
+        # Offline mode (lumi/offline.py): providers this computer may not
+        # reach aren't probed or offered; the model picker says why.
+        from .. import offline
+
+        hidden: dict[str, dict] = {}
+
+        def offline_hidden(provider: str, label: str, url: str = "") -> bool:
+            reason = offline.provider_refusal(provider, url, label=label)
+            if reason:
+                hidden[provider] = {"label": label, "reason": reason}
+            return bool(reason)
 
         # Short connect timeout so an unreachable host doesn't block
         # startup — the wizard handles the unreachable case explicitly.
         _timeout = httpx.Timeout(connect=2.0, read=4.0, write=4.0, pool=4.0)
+        ollama_blocked = offline_hidden("ollama", "Ollama", ollama_url)
+        exo_blocked = offline_hidden("exo", "EXO", self.exo_url)
 
         # Ollama and EXO are probed concurrently. Run in sequence they add up:
         # with both hosts down — a laptop away from the desk, an inference box
@@ -1139,6 +1270,8 @@ class AppState:
         # switch. Six and a half seconds of a dead interface reads as "nothing
         # is loading", which is exactly how it was reported.
         def _probe_ollama():
+            if ollama_blocked:
+                return None
             try:
                 resp = httpx.get(f"{ollama_url}/api/tags", timeout=_timeout)
                 resp.raise_for_status()
@@ -1155,12 +1288,16 @@ class AppState:
             return None
 
         def _probe_exo():
+            if exo_blocked:
+                return {"models": [], "downloaded_models": [], "running_models": []}
             try:
                 return ExoBackend.discover_models(base_url=self.exo_url, timeout=4.0)
             except Exception:
                 return {"models": [], "downloaded_models": [], "running_models": []}
 
         router_key, router_source, router_env, router_setting = self._api_key_details("openrouter", "OPENROUTER_API_KEY")
+        if router_key and offline_hidden("openrouter", "OpenRouter", OpenRouterBackend.DEFAULT_BASE_URL):
+            router_key = ""
         def _probe_router():
             if not router_key:
                 return []
@@ -1171,6 +1308,8 @@ class AppState:
 
         sonn_key, sonn_source, sonn_env, sonn_setting = self._api_key_details("sonn", "SONN_API_KEY")
         sonn_url = resolve_sonn_url(settings_data=self.settings.get_all())
+        if sonn_key and sonn_url and offline_hidden("sonn", "SONN", sonn_url):
+            sonn_key = ""
         def _probe_sonn():
             if not sonn_key or not sonn_url:
                 return []
@@ -1181,9 +1320,19 @@ class AppState:
 
         anthropic_key, anthropic_source, anthropic_env, anthropic_setting = self._api_key_details(
             "anthropic", "ANTHROPIC_API_KEY")
+        if anthropic_key and offline_hidden("anthropic", "Anthropic", AnthropicBackend.DEFAULT_BASE_URL):
+            anthropic_key = ""
         openai_key, openai_source, openai_env, openai_setting = self._api_key_details(
             "openai", "OPENAI_API_KEY")
-        connections = list_connections(self.settings)
+        if openai_key and offline_hidden("openai", "OpenAI", OpenAIResponsesBackend.DEFAULT_BASE_URL):
+            openai_key = ""
+        connections = []
+        for connection in list_connections(self.settings):
+            reason = connection_offline_refusal(connection)
+            if reason:
+                hidden[connection_backend_key(connection["id"])] = {"label": connection["name"], "reason": reason}
+            else:
+                connections.append(connection)
 
         def _probe_connection(connection):
             key = str(self.settings.get("api_keys", connection_secret_setting(connection["id"]), "") or "")
@@ -1257,7 +1406,7 @@ class AppState:
         # approvals, exclusions and secret scan; Settings or policy can hide them.
         cli_allowed = self.cli_adapters_allowed()
         codex_cli = resolve_codex_cli_path() if cli_allowed else None
-        if codex_cli:
+        if codex_cli and not offline_hidden("codex", "ChatGPT / Codex"):
             available["codex"] = {
                 "models": CodexCliBackend.list_available_models(),
                 "model_labels": codex_cli_model_labels(),
@@ -1265,7 +1414,7 @@ class AppState:
             }
 
         claude_cli = resolve_claude_cli_path() if cli_allowed else None
-        if claude_cli:
+        if claude_cli and not offline_hidden("claude-code", "Claude Code"):
             available["claude-code"] = {
                 "models": ClaudeCodeCliBackend.list_available_models(),
                 "model_labels": claude_code_model_labels(),
@@ -1275,6 +1424,9 @@ class AppState:
         kimi_key, kimi_source, kimi_env, kimi_setting = self._api_key_details(
             "kimi", "MOONSHOT_API_KEY"
         )
+        if kimi_key and offline_hidden("kimi", "Kimi API",
+                                       os.environ.get("MOONSHOT_BASE_URL", KimiBackend.DEFAULT_BASE_URL)):
+            kimi_key = ""
         if kimi_key:
             available["kimi"] = {
                 "url": os.environ.get("MOONSHOT_BASE_URL", KimiBackend.DEFAULT_BASE_URL),
@@ -1312,6 +1464,7 @@ class AppState:
             available["codex"]["models"] = [row.get("model") or row["id"] for row in rows]
             available["codex"]["model_labels"] = {row.get("model") or row["id"]: row.get("displayName") or row["id"] for row in rows}
         self.available_backends = available
+        self.offline_hidden_backends = hidden
         self._last_backend_probe = time.time()
         return available
 
@@ -2137,12 +2290,17 @@ class AppState:
         self.base_engram.set_mcp_manager(self.mcp_manager)
         self.apply_project_context(self.project.project_path, refresh_index=True)
         self.refresh_network_defaults()
+        if section == "offline":
+            # WinSparkle connects from native code: offline mode stops it at once (lumi/updater.py).
+            from .. import updater
+
+            updater.apply_offline_mode()
         # Settings may have changed a provider URL — must re-probe.
         self.detect_backends(force=True)
 
         if section == "general" and key == "default_permission_mode":
             configured_mode = str(
-                self.settings.get("general", "default_permission_mode", self.permission_mode) or "bypass"
+                self.settings.get("general", "default_permission_mode", self.permission_mode) or ""
             )
             self.apply_permission_mode(configured_mode, session=self.session)
         elif self.session:
@@ -2193,7 +2351,9 @@ class AppState:
             self.backend_spec and
             (self.backend_spec.backend_type in {"ollama", "exo", "kimi", "openrouter", "sonn", "anthropic", "openai"}
              or self.backend_spec.backend_type.startswith("conn-")) and
-            section in {"api_keys", "engram", "general", "network", "connections"}
+            (section in {"api_keys", "engram", "general", "network", "connections"}
+             # Settings › Ollama runtime: the next request carries the new context window and keep-alive.
+             or (section == "local_backends" and self.backend_spec.backend_type == "ollama"))
         ):
             try:
                 if section == "network" and self.backend_spec.backend_type == "ollama":
@@ -2258,6 +2418,10 @@ class AppState:
         from ..engine import os_sandbox
 
         os_sandbox.configure(self.settings)
+        # And the context window and keep-alive each Ollama backend asks for (Settings › Ollama runtime).
+        from ..backends import configure_ollama_runtime
+
+        configure_ollama_runtime(self.settings)
 
     @property
     def cloud(self):
@@ -2275,6 +2439,13 @@ class AppState:
     def _cloud_changed(self, status: dict) -> None:
         """Lumi Cloud's status changed (a sign-in, an enrollment, a check-in)."""
         self._push_ws_event({"event": "cloud_status", "data": status})
+        # Signing out or leaving forgets the oversight notice's confirmation
+        # (lumi/oversight.py): the page shows the notice, and locks, at once.
+        from .. import feedback, oversight
+
+        self._push_ws_event({"event": "oversight_status", "data": oversight.status()})
+        # Feedback waiting for an address or a sign-in may go now (lumi/feedback.py).
+        feedback.wake()
         marker = (status.get("policy_version"), status.get("policy_source"))
         if marker == getattr(self, "_cloud_policy_marker", None):
             return
@@ -2282,9 +2453,15 @@ class AppState:
         try:
             self.apply_policy_change()
             self._push_ws_event({"event": "settings", "data": self.settings.get_masked()})
+            # The init refresh carries the oversight notice for the new policy.
             self._push_ws_event(self.get_init_data(refresh_only=True))
         except Exception:
             logger.exception("Applying the new organization policy failed")
+        # Queued oversight records go now, or are deleted if the policy stopped
+        # asking, even while sending backs off after a failure.
+        from .. import oversight
+
+        oversight.wake(urgent=True)
 
     def apply_policy_change(self) -> None:
         """Apply a different organization policy (from Lumi Cloud) to the running app.
@@ -2294,6 +2471,9 @@ class AppState:
         the open session's file exclusions.
         """
         self.refresh_network_defaults()
+        from .. import updater
+
+        updater.apply_offline_mode()  # a policy that turns offline mode on stops WinSparkle too
         self.apply_permission_mode(self.permission_mode, session=self.session)
         if self.codebase_index is not None:
             self.codebase_index.exclusions = self.exclusions_for(self.project.project_path)
@@ -2355,6 +2535,18 @@ class AppState:
     def audit_status(self) -> dict:
         """The audit log's location, chain verification and export health."""
         return {"event": "audit_status", **audit.audit_log().status()}
+
+    def offline_status(self) -> dict:
+        """Settings > Offline mode: what applies now, what it hides, updates and the license."""
+        from .. import license as lumi_license, offline, updater
+
+        config = offline.current()
+        hidden = [{"provider": key, **info} for key, info in getattr(self, "offline_hidden_backends", {}).items()]
+        lumi_license.load(force=True)  # a license installed since Lumi started shows at once
+        license_info = lumi_license.status()
+        return {**config.as_dict(), "hidden": hidden if config.enabled else [],
+                "updates": updater.status().get("offline", ""),
+                "license": {**license_info, "describe": lumi_license.describe(license_info)}}
 
     def update_setting_value(
         self,
@@ -2421,11 +2613,21 @@ class AppState:
             if profile is not None and hasattr(profile, "to_dict"):
                 model_capabilities = profile.to_dict()
 
+        from .. import offline
+
+        offline_config = offline.current()
         return {
             "event": "init",
             "runtime_loading": bool(getattr(self, "_discovery_pending", False)),
             "refresh_only": refresh_only,
             "backends": backends_info,
+            # What offline mode hides from the model picker, and why.
+            "offline": {
+                "enabled": offline_config.enabled,
+                "managed_by": offline_config.managed_by,
+                "hidden": [{"provider": key, **info} for key, info in
+                           (getattr(self, "offline_hidden_backends", {}).items() if offline_config.enabled else ())],
+            },
             "current_backend": current_backend,
             "current_model": current_model,
             "handles_tools": handles_tools,
@@ -2440,6 +2642,10 @@ class AppState:
             # chosen provider, which can be set while no usable runtime exists.
             "runtime_ready": self.session is not None,
             "runtime_error": self.runtime_unavailable_reason(),
+            # Settings > Connections' Ollama card: the address in use, the one
+            # saved, and OLLAMA_HOST when it takes the saved one's place.
+            "ollama_address": ollama_address_in_use(
+                self, lambda: resolve_ollama_url(settings_data=self.settings.get_all())),
             "mcp_load_error": self.mcp_load_error,
             "mcp_unavailable": self.mcp_unavailable_servers(),
             # Repository packs that stay off until the user reviews them.
@@ -2474,10 +2680,43 @@ class AppState:
             # Includes running + complete + paused + failed, sorted
             # newest-first by autonomous_started_at.
             "autonomous_missions": _list_autonomous_missions(self),
+            # What the organization's oversight collects, for the notice
+            # beside the message box (lumi/oversight.py). The page shows
+            # it before anything is recorded.
+            "oversight": _oversight_status(),
+            # Git is optional (lumi/git_support.py): the page says what needs it.
+            "git": git_support.status(),
+            # Lumi's terms and whether this person accepted them (lumi/terms.py):
+            # the page asks for them at first launch and when their version changes.
+            "terms": _terms_status(),
         }
 
 
+def _oversight_status() -> dict:
+    from .. import oversight
+
+    return oversight.status()
+
+
+def _terms_status() -> dict:
+    from .. import terms
+
+    return terms.status()
+
+
 state = AppState()
+
+
+def configure_managed_startup(managed_desktop) -> None:
+    """Inject an operator-validated parent helper before GUI ownership discovery.
+
+    There is deliberately no WebSocket/configuration endpoint for this function.
+    The startup caller owns the private helper; browser responses use its safe
+    projection and cannot replace identities or switch existing personal runs.
+    """
+    if getattr(state, "_swarm_desktop", None) is not None or getattr(state, "_swarm_managed", None) is not None:
+        raise ValueError("Managed configuration must be supplied before GUI startup")
+    state._swarm_managed = managed_desktop
 
 
 async def _discover_for_navigation(target_state):
@@ -2668,6 +2907,22 @@ def _make_autonomous_event_forwarder(
 
 async def _process_chat_message(ws: WebSocket, msg: dict[str, Any]) -> None:
     """Run one serialized chat turn without blocking the WS receive loop."""
+    from .swarming import busy as swarm_busy, busy_refusal
+    if swarm_busy(state):
+        await ws.send_json(busy_refusal(state))
+        return
+    # Lumi's terms (lumi/terms.py), then organization oversight (lumi/oversight.py):
+    # nothing reaches a model, and nothing is saved or titled, before the person
+    # accepts the terms and confirms the notice. Every queued or steered message
+    # (and employee task) passes here; Session.run refuses as well.
+    from .. import oversight
+
+    if msg.get('command') == 'employee_task' or str(msg.get("text") or "").strip():
+        refusal, code = await asyncio.to_thread(oversight.gate, "app")
+        if refusal:
+            await ws.send_json(await asyncio.to_thread(ws_commands.gate_status_event, code))
+            await ws.send_json(refused_turn(msg, refusal, code=code))
+            return
     if msg.get('command') == 'employee_task':
         from .employee_tasks import command as task_command
         await task_command(state, ws.send_json, msg)
@@ -2676,10 +2931,15 @@ async def _process_chat_message(ws: WebSocket, msg: dict[str, Any]) -> None:
     if not text:
         return
     if not state.session:
-        await ws.send_json({
-            "event": "error",
-            "message": state.runtime_unavailable_reason(),
-        })
+        await ws.send_json(refused_turn(msg, state.runtime_unavailable_reason()))
+        return
+    # The organization's policy refuses every turn while it can't be used, or
+    # for a model it doesn't allow (Session.run refuses too). Said before the
+    # message is saved or titled, so it goes back to the message box.
+    policy_refusal = getattr(state.session, "policy_refusal", None)
+    refusal = await asyncio.to_thread(policy_refusal) if callable(policy_refusal) else ""
+    if isinstance(refusal, str) and refusal:
+        await ws.send_json(refused_turn(msg, refusal, code="policy_blocked"))
         return
 
     images = None
@@ -2851,11 +3111,15 @@ async def websocket_endpoint(ws: WebSocket):
                         "message": state.runtime_unavailable_reason(),
                     })
                     continue
+                from .swarming import busy as swarm_busy, busy_refusal
                 if runs.busy:
                     await ws.send_json({
                         "event": "error",
                         "message": "Finish or stop the active run before restarting an agent.",
                     })
+                    continue
+                if swarm_busy(state):
+                    await ws.send_json(busy_refusal(state, "restarting an agent"))
                     continue
                 try:
                     # Resolve the assignment before spawning anything, so an
@@ -2912,6 +3176,10 @@ async def websocket_endpoint(ws: WebSocket):
                 # session is flagged with mission_state, which gates the
                 # spec-extraction scan and drives the header badge.
                 # See docs/long-running-agents.md (Phase 1).
+                from .swarming import busy as swarm_busy, busy_refusal
+                if swarm_busy(state):
+                    await ws.send_json(busy_refusal(state, "starting a mission"))
+                    continue
                 feature = (msg.get("feature") or "").strip()
                 if not feature:
                     await ws.send_json({"event": "error",
@@ -2937,6 +3205,14 @@ async def websocket_endpoint(ws: WebSocket):
                 if requested_path:
                     try:
                         norm_requested = os.path.normpath(requested_path)
+                        # With its drive: a rooted path without one is on the working folder's drive.
+                        from ..executables import is_absolute
+
+                        if not is_absolute(norm_requested):
+                            # The app's working folder is never a project (lumi/executables.py).
+                            await ws.send_json({"event": "error",
+                                                "message": "Enter the project folder's full path."})
+                            continue
                         if not os.path.isdir(norm_requested):
                             try:
                                 os.makedirs(norm_requested, exist_ok=True)
@@ -3080,6 +3356,12 @@ async def websocket_endpoint(ws: WebSocket):
                     await ws.send_json({"event": "error", "source": "mission_dispatch",
                                         "message": "spec_markdown required for autonomous dispatch"})
                     continue
+                # It runs in Full-auto; outside it, say so and offer to run
+                # this one session in Full-auto (sent again with the grant).
+                needed = state.full_auto_needed("autonomous", granted=full_auto_granted(msg))
+                if needed:
+                    await ws.send_json(needs_full_auto(needed, source="mission_dispatch"))
+                    continue
                 feature = (
                     state.project.current_session.title
                     or ms.get("seed_feature", "")
@@ -3183,6 +3465,14 @@ async def websocket_endpoint(ws: WebSocket):
                 if not target_intent:
                     await ws.send_json({"event": "error",
                                         "message": "intent_id required for resume"})
+                    continue
+                # Resuming starts its daemon again, in Full-auto: before the
+                # conversation switch below, so a refusal changes nothing.
+                needed = state.full_auto_needed("autonomous_resume", granted=full_auto_granted(msg),
+                                                session_id=str(msg.get("session_id") or ""))
+                if needed:
+                    await ws.send_json(needs_full_auto(needed, source="autonomous_resume", intent_id=target_intent,
+                                                       session_id=str(msg.get("session_id") or "")))
                     continue
 
                 # Optional: switch to the originating session first so
@@ -3331,11 +3621,14 @@ async def websocket_endpoint(ws: WebSocket):
                     })
                     continue
 
-                project_path = (
-                    state.project.project_path
-                    if state.project and state.project.project_path
-                    else os.getcwd()
-                )
+                from ..executables import NoProject, current_project
+
+                try:
+                    project_path = current_project(
+                        state.project.project_path if state.project and state.project.project_path else None)
+                except NoProject as exc:
+                    await ws.send_json({"event": "error", "message": str(exc)})
+                    continue
 
                 # Reuse the bash tool's executor so timeout, cancellation, and
                 # truncation are consistent with what the model's bash tool sees.
@@ -3402,6 +3695,9 @@ async def websocket_endpoint(ws: WebSocket):
         state._navigation_viewers.discard(ws)
         if getattr(state, "_ws_ref", None) is ws:
             state._ws_ref = None
+        # The page is gone, and with it any panel it showed.
+        from .extension_panels import grants as panel_grants
+        panel_grants.revoke_owner(id(ws))
 
 
 _STREAM_DELTA_COALESCE_SECONDS = 0.012
@@ -3493,6 +3789,10 @@ async def _run_session_streaming(
     active_record = getattr(state.project, "current_session", None)
     # Audit records of this run name the saved conversation.
     session.audit_session_id = str(getattr(active_record, "id", "") or "")
+    # Organization oversight shares what the person typed, not a wrapper
+    # the model gets around it (lumi/oversight.py).
+    if event_source is None and display_user_msg and display_user_msg != user_msg:
+        session.display_prompt = display_user_msg
     # So do its checkpoints, which its Timeline lists.
     state.bind_conversation_checkpoints(session)
     if event_source is None:
@@ -3916,6 +4216,12 @@ async def editor_endpoint(request):
     return await handle(request, state)
 
 
+async def extension_panel_endpoint(request):
+    """A file of an open capability-pack panel, for its sandboxed frame (gui/extension_panels.py)."""
+    from .extension_panels import serve
+    return await serve(request, state, bridge_file=_STATIC_DIR / "panel_frame.js")
+
+
 async def ui_state_endpoint(request):
     from starlette.responses import JSONResponse
     from .ui_state import ui_state
@@ -3947,8 +4253,23 @@ async def ui_state_endpoint(request):
 @asynccontextmanager
 async def _app_lifespan(app):
     try:
+        from .swarming import discover as discover_swarm_ownership
+        try:
+            await asyncio.to_thread(discover_swarm_ownership, state)
+        except Exception:
+            # The Team preview is optional: its discovery must never keep the
+            # app from starting. Without it, new team work stays refused
+            # (gui/swarming.py) until a restart discovers ownership again.
+            logger.exception("Team ownership discovery failed at startup")
+            state._swarm_discovery_failed = True
         yield
     finally:
+        swarm_desktop = getattr(state, "_swarm_desktop", None)
+        if swarm_desktop is not None:
+            await asyncio.to_thread(swarm_desktop.close)
+        swarm_managed = getattr(state, "_swarm_managed", None)
+        if swarm_managed is not None:
+            await asyncio.to_thread(swarm_managed.close)
         from ..engine.previews import previews
         from ..codex_account import codex_account
         await asyncio.to_thread(codex_account.close)
@@ -3962,6 +4283,8 @@ app = Starlette(
         Route("/api/access", access_endpoint, methods=['GET', 'POST']),
         Route("/api/ui-state", ui_state_endpoint, methods=['GET', 'POST']),
         Route("/api/editor/{action}", editor_endpoint, methods=['GET', 'POST']),
+        # Checked by its own panel tokens, which only this app's socket issues.
+        Route("/panels/{token}/{path:path}", extension_panel_endpoint, methods=['GET', 'HEAD']),
         WebSocketRoute("/ws", websocket_endpoint),
         Mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static"),
     ],

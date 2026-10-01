@@ -38,6 +38,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from .tools import ToolResult
+from ..executables import find_program, is_absolute
 from ..paths import state_home
 
 logger = logging.getLogger(__name__)
@@ -89,7 +90,8 @@ def set_browser_session_name(
 def _find_chrome() -> Optional[str]:
     """Locate the installed Chrome executable, or None."""
     override = os.environ.get("LUMI_BROWSER_CHROME_PATH")
-    if override and os.path.isfile(override):
+    # A full path only: a relative one would name a file in the working folder.
+    if override and is_absolute(override) and os.path.isfile(override):
         return override
     if sys.platform.startswith("win"):
         candidates = [
@@ -109,9 +111,8 @@ def _find_chrome() -> Optional[str]:
     else:
         candidates = ["google-chrome", "google-chrome-stable", "chromium", "chromium-browser"]
     for candidate in candidates:
-        if os.path.isfile(candidate):
-            return candidate
-        found = shutil.which(candidate)
+        # Full paths as listed; names from PATH, never from the working folder.
+        found = find_program(candidate)
         if found:
             return found
     return None
@@ -272,6 +273,8 @@ class BrowserManager:
         self._extension_id: str = ""
         self._session_name: str = _browser_session_name
         self._extension_context_signature: tuple[str, str] = ("", "")
+        # The offline mode switches the Chrome this manager started has (lumi/offline.py).
+        self._network_rules: tuple[str, ...] = ()
         self._lock = threading.RLock()
 
     # ── lifecycle ────────────────────────────────────────────────────
@@ -279,6 +282,37 @@ class BrowserManager:
     @property
     def is_connected(self) -> bool:
         return self._conn is not None
+
+    def _offline_problem(self) -> str:
+        """Why the Chrome at hand can't be used under offline mode now, or "".
+
+        A Chrome this manager started with other network rules is closed, so
+        ensure_started starts it again with the current ones. One it didn't
+        start can't be limited, so it isn't used while offline mode is on.
+        """
+        from .. import offline
+
+        rules = tuple(offline.chrome_arguments())
+        if self._launched_by_us:
+            if rules != self._network_rules:
+                self.close()
+            return ""
+        if rules and (self.is_connected or _port_is_open(_CDP_PORT)):
+            return ("Error: Offline mode: browsing needs a browser Lumi starts itself, so it can limit where it "
+                    "connects. Close the Chrome window Lumi opened earlier and try again.")
+        return ""
+
+    def apply_network_rules(self) -> None:
+        """Offline mode changed: close the Chrome this manager started with other rules now.
+
+        Its open pages could keep connecting until the next browser tool
+        otherwise; that tool starts Chrome again with the current rules.
+        """
+        from .. import offline
+
+        with self._lock:
+            if self._launched_by_us and tuple(offline.chrome_arguments()) != self._network_rules:
+                self.close()
 
     def _http(self, path: str, method: str = "GET") -> Any:
         import httpx
@@ -296,6 +330,10 @@ class BrowserManager:
     def ensure_started(self) -> str:
         """Launch Chrome if needed and attach to a tab. Returns a status line."""
         with self._lock:
+            # Offline mode limits Lumi's browser by how Chrome is started.
+            problem = self._offline_problem()
+            if problem:
+                return problem
             if self.is_connected:
                 self._sync_session_indicator()
                 return "Browser already connected"
@@ -507,6 +545,12 @@ class BrowserManager:
         ]
         if _HEADLESS:
             args.append("--headless=new")
+        # Offline mode: Chrome reaches only this computer and allowed hosts,
+        # pages' own requests and scripts included (lumi/offline.py).
+        from .. import offline
+
+        rules = tuple(offline.chrome_arguments())
+        args.extend(rules)
 
         self._extension_path = _prepare_extension(profile, self._session_name, _GROUP_COLOR)
         if self._extension_path:
@@ -530,6 +574,7 @@ class BrowserManager:
         except Exception as exc:
             return f"Error: could not start Chrome: {exc}"
         self._launched_by_us = True
+        self._network_rules = rules
 
         deadline = time.time() + _LAUNCH_TIMEOUT
         while time.time() < deadline:
@@ -614,6 +659,7 @@ class BrowserManager:
                         pass
             self._proc = None
             self._launched_by_us = False
+            self._network_rules = ()
 
     # ── page helpers ─────────────────────────────────────────────────
 
@@ -666,6 +712,23 @@ def shutdown_browser() -> None:
         if _manager is not None:
             _manager.close()
             _manager = None
+
+
+def _offline_changed(_config: Any) -> None:
+    """Offline mode changed (lumi/offline.py): close a Chrome started under other rules, off the caller's thread."""
+    with _manager_lock:
+        manager = _manager
+    if manager is not None:
+        threading.Thread(target=manager.apply_network_rules, name="lumi-browser-offline", daemon=True).start()
+
+
+def _listen_for_offline_mode() -> None:
+    from .. import offline
+
+    offline.add_listener(_offline_changed)
+
+
+_listen_for_offline_mode()
 
 
 # ── helpers shared by the tool implementations ───────────────────────
@@ -764,11 +827,22 @@ def _normalize_url(url: str) -> str:
     return url
 
 
+def _offline_refusal(tool_name: str, args: dict, start: float) -> Optional[ToolResult]:
+    """Offline mode's refusal of an address, also for callers that skip the session's check (lumi/offline.py)."""
+    from .. import offline
+
+    reason = offline.tool_refusal(tool_name, args)
+    return ToolResult(f"Error: {reason}", is_error=True, elapsed=time.time() - start) if reason else None
+
+
 def exec_browser_navigate(args: dict, start: float) -> ToolResult:
     """Navigate to a URL, starting Chrome if it is not already running."""
     url = args.get("url", "")
     if not url:
         return ToolResult("Error: 'url' is required", is_error=True, elapsed=time.time() - start)
+    refused = _offline_refusal("browser_navigate", args, start)
+    if refused:
+        return refused
     url = _normalize_url(url)
 
     failure = _ensure(start)
@@ -1221,6 +1295,9 @@ def exec_browser_back(args: dict, start: float) -> ToolResult:
 def exec_browser_tabs(args: dict, start: float) -> ToolResult:
     """List, switch to, open, or close tabs."""
     action = (args.get("action") or "list").lower()
+    refused = _offline_refusal("browser_tabs", args, start)
+    if refused:
+        return refused
 
     failure = _ensure(start)
     if failure:

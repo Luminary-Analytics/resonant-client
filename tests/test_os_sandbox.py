@@ -57,7 +57,7 @@ def test_what_the_check_finds_without_a_sandbox(monkeypatch):
     monkeypatch.setattr(os_sandbox.sys, "platform", "win32")
     assert "Windows" in os_sandbox._probe().reason
     monkeypatch.setattr(os_sandbox.sys, "platform", "linux")
-    monkeypatch.setattr(os_sandbox.shutil, "which", lambda name: None)
+    monkeypatch.setattr(os_sandbox, "find_program", lambda name, **kwargs: None)
     info = os_sandbox._probe()
     assert not info.available and "bubblewrap" in info.reason
 

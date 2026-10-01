@@ -36,6 +36,16 @@ class FakeWinSparkle:
         return [args for called, args in self.calls if called == name]
 
 
+@pytest.fixture(autouse=True)
+def _windows_feeds(monkeypatch):
+    # These tests describe WinSparkle and the Windows feeds, whichever OS runs
+    # them (CI runs them on macOS too); tests/test_sparkle.py covers macOS.
+    monkeypatch.setattr(update_channels, "platform_name", lambda: "windows")
+    # A stable build unless a test says otherwise (TestPreReleaseBuilds), whatever
+    # version this checkout is: a pre-release follows beta until someone chooses.
+    monkeypatch.setattr(update_channels, "_running_version", lambda: "0.20.0")
+
+
 def write_settings(path, **updates):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps({"updates": updates}), encoding="utf-8")
@@ -62,6 +72,20 @@ class TestPreferences:
         assert UpdatePreferences(channel="beta").feed_url == base + "appcast-beta.xml"
         # A pin wins over the channel.
         assert UpdatePreferences(channel="beta", pin="0.20").feed_url == base + "appcast-0.20.xml"
+
+    def test_macos_reads_its_own_feeds_and_the_windows_ones_keep_their_addresses(self):
+        base = update_channels.FEED_BASE
+        assert UpdatePreferences(platform="macos").feed_url == base + "appcast-macos.xml" == updater.MACOS_APPCAST_URL
+        assert UpdatePreferences(platform="macos", channel="beta").feed_url == base + "appcast-macos-beta.xml"
+        assert UpdatePreferences(platform="macos", channel="beta", pin="0.20").feed_url == base + "appcast-macos-0.20.xml"
+        # Linux never updates itself; it names the Windows feeds as before.
+        assert UpdatePreferences(platform="linux").feed_url == base + "appcast.xml" == updater.APPCAST_URL
+
+    def test_the_running_copy_says_whose_feeds_it_reads(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(update_channels, "platform_name", lambda: "macos")
+        prefs = read(tmp_path / "settings.json", SimpleNamespace(policy=None, error=""))
+        assert prefs.platform == "macos" and prefs.feed_url.endswith("/appcast-macos.xml")
+        assert prefs.as_dict()["platform"] == "macos" and prefs == UpdatePreferences()
 
     def test_settings_json_and_its_mistakes(self, tmp_path):
         path = tmp_path / "settings.json"
@@ -92,6 +116,81 @@ class TestPreferences:
             org_policy(pin="latest")
         with pytest.raises(policy.PolicyError, match="updates.window"):
             org_policy(window="night")
+
+
+class TestPreReleaseBuilds:
+    """An alpha, beta or release candidate follows the beta channel until someone chooses one.
+
+    Pre-releases are published only to the beta feeds, and every new install
+    started on the stable channel, so an alpha tester was never offered the next alpha.
+    """
+
+    @pytest.mark.parametrize(("version", "channel"), [
+        ("0.20.0-alpha.1", "beta"), ("0.20.0-beta.2", "beta"), ("0.20.0-rc.1", "beta"), ("v0.21.0-alpha.3", "beta"),
+        ("0.20.0b1", "beta"),  # as a Mac bundle spells a beta
+        ("0.20.0", "stable"), ("0.20.0.dev0", "stable"), ("not a version", "stable"),
+    ])
+    def test_the_default_follows_what_the_build_is(self, version, channel):
+        assert update_channels.default_channel(version) == channel
+
+    def test_fresh_settings_on_a_pre_release_read_the_beta_feed(self, tmp_path):
+        from lumi.gui.settings import SettingsManager
+
+        path = tmp_path / "settings.json"
+        SettingsManager(path)  # a new install writes its defaults, choosing no channel
+        nobody = SimpleNamespace(policy=None, error="")
+        prefs = read(path, nobody, installer="", version="0.20.0-alpha.1")
+        assert (prefs.channel, prefs.channel_chosen, prefs.default_channel) == ("beta", False, "beta")
+        assert prefs.feed_url == update_channels.FEED_BASE + "appcast-beta.xml"
+        assert prefs.as_dict()["describe"] == "the beta channel" and prefs.problems == ()
+        # No settings file at all, the same.
+        assert read(tmp_path / "missing.json", nobody, installer="", version="0.20.0-rc.1").channel == "beta"
+        # A stable build of the same settings stays on the stable channel.
+        stable = read(path, nobody, installer="", version="0.20.0")
+        assert (stable.channel, stable.feed_url) == ("stable", update_channels.FEED_BASE + "appcast.xml")
+        # A pin still wins over the channel.
+        write_settings(path, pin="0.20")
+        assert read(path, nobody, installer="", version="0.20.0-alpha.1").feed_url.endswith("/appcast-0.20.xml")
+
+    def test_a_saved_choice_and_a_policy_lock_win(self, tmp_path):
+        path = tmp_path / "settings.json"
+        nobody = SimpleNamespace(policy=None, error="")
+        write_settings(path, channel="stable")
+        prefs = read(path, nobody, installer="", version="0.20.0-alpha.1")
+        assert (prefs.channel, prefs.channel_chosen) == ("stable", True)
+        write_settings(path, channel="beta")
+        locked = SimpleNamespace(policy=org_policy(channel="stable"), error="")
+        prefs = read(path, locked, installer="", version="0.20.0-alpha.1")
+        assert (prefs.channel, prefs.channel_chosen, prefs.managed_by) == ("stable", True, "Example Corp")
+        assert read(tmp_path / "missing.json", locked, installer="", version="0.20.0-alpha.1").channel == "stable"
+        # A saved value Lumi can't use isn't a choice: it's reported, and the build's default applies.
+        write_settings(path, channel="nightly")
+        prefs = read(path, nobody, installer="", version="0.20.0-alpha.1")
+        assert (prefs.channel, prefs.channel_chosen) == ("beta", False) and len(prefs.problems) == 1
+
+    def test_winsparkle_starts_on_the_beta_feed(self, monkeypatch, tmp_path):
+        from lumi.gui.settings import SettingsManager
+
+        SettingsManager(tmp_path / "settings.json")
+        prefs = read(tmp_path / "settings.json", SimpleNamespace(policy=None, error=""), installer="",
+                     version="0.20.0-alpha.1")
+        fake = FakeWinSparkle()
+        monkeypatch.setattr(updater, "_load_dll", lambda: fake)
+        assert updater.init_updater(prefs)
+        assert fake.called("win_sparkle_set_appcast_url") == [(update_channels.FEED_BASE.encode() + b"appcast-beta.xml",)]
+        # Settings shows the channel in effect and that nobody chose it.
+        monkeypatch.setattr(updater, "read_update_preferences", lambda: prefs)
+        info = updater.status()
+        assert (info["channel"], info["channel_chosen"], info["default_channel"], info["pending"]) == (
+            "beta", False, "beta", None)
+
+    def test_settings_shows_the_builds_default_while_nobody_chose(self, tmp_path, monkeypatch):
+        from lumi.gui.settings import SettingsManager
+
+        settings = SettingsManager(tmp_path / "settings.json")
+        assert settings.get_masked()["_meta"]["updates"] == {"default_channel": "stable"}
+        monkeypatch.setattr(update_channels, "_running_version", lambda: "0.20.0-alpha.1")
+        assert settings.get_masked()["_meta"]["updates"] == {"default_channel": "beta"}
 
 
 class TestWinSparkleWrapper:
@@ -162,7 +261,8 @@ class TestSettingsCommands:
 
         monkeypatch.setattr(updater, "_load_dll", lambda: FakeWinSparkle())
         settings = SettingsManager(tmp_path / "settings.json")
-        assert settings.get("updates") == {"mode": "automatic", "channel": "stable", "pin": ""}
+        # "" until someone chooses: this build's default (update_channels.default_channel).
+        assert settings.get("updates") == {"mode": "automatic", "channel": "", "pin": ""}
         updater.init_updater(UpdatePreferences())
         monkeypatch.setattr(updater, "read_update_preferences",
                             lambda: read(tmp_path / "settings.json", SimpleNamespace(policy=None, error="")))

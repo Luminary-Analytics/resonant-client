@@ -54,8 +54,9 @@ class _Window:
 
 @pytest.fixture
 def window(monkeypatch):
-    """A window with the bridge installed; pywebview's loader is restored afterwards."""
+    """A window with the bridge installed; pywebview's loader and dispatcher are restored afterwards."""
     monkeypatch.setattr(webview_util, "load_js_files", webview_util.load_js_files)
+    monkeypatch.setattr(webview_util, "js_bridge_call", webview_util.js_bridge_call)
     window = _Window()
     webview_bridge.install(window)
     return window

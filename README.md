@@ -22,6 +22,12 @@ provider selection, or the [documentation index](docs/README.md) for contributor
 guides. [0.19.1](docs/v0.19.1-release-notes.md) fixes Codex live progress and completion evidence;
 [Unreleased](docs/unreleased.md) tracks subsequent changes.
 
+The source checkout also includes an opt-in [Team preview](docs/swarming.md)
+for scoped workers, reviewed file changes and explicit collaboration. Managed
+teams require separate [operator setup](docs/swarming-managed-setup.md).
+This is not a qualified release; the [swarming evidence ledger](docs/swarming-progress.md)
+tracks packaged checks and the remaining live-provider and deployment gates.
+
 Version 0.19.0 adds a bottom-left SONN account menu, local display
 name, and optional Echo companion. Settings opens a dedicated searchable category
 sidebar with focused pages for preferences, connections, and integrations.
@@ -102,7 +108,7 @@ for their context-handoff and verification boundaries.
   in Lumi Cloud ([second-person approval](docs/second-approval.md))
 - Built-in browser control (native CDP) and desktop computer use, with an
   on-screen indicator while the agent drives the machine
-- Permission modes and a project-root path sandbox
+- Permission modes (new installs start in Auto-edit) and a project-root path sandbox
 - Optional codebase indexing, RAG, and Engram memory
 
 ### Desktop client
@@ -117,7 +123,7 @@ for their context-handoff and verification boundaries.
 - Recommended decision prompts and a non-interrupting Check status control
 - Diagnostics export and cost tracking
 - Standard agentic workflow with tools, MCP integrations, and bounded task delegation
-- Signed Windows update feed with in-app update checks
+- Signed update feeds with in-app update checks (WinSparkle on Windows, Sparkle on macOS)
 
 ### Optional orchestration
 
@@ -143,8 +149,13 @@ IT departments can deploy the MSI package (`lumi-X.Y.Z.msi`) silently per
 machine through Intune, Configuration Manager or Group Policy; see
 [Deploying on Windows](docs/deploy-windows.md).
 
-A macOS build (`Lumi.app` in a DMG, Apple silicon) is built in CI but not yet
-released; see [Lumi on macOS](docs/macos.md).
+A macOS build (`Lumi.app` in a DMG, Apple silicon, macOS 12 or later) is built
+in CI, and the release workflow publishes it beside the Windows installer from
+the next release on. It updates itself with Sparkle from its own feeds, in
+the same format, and reads only a feed signed with the release key. Until
+it's notarized by Apple, macOS asks you to approve it once in
+System Settings › Privacy & Security › **Open Anyway**; see
+[Lumi on macOS](docs/macos.md).
 
 Windows SmartScreen may show "Unrecognized publisher" for the v0.x line. Code
 signing is planned for v1.0.
@@ -315,11 +326,22 @@ There is no automatic cross-provider fallback or role routing in this workflow.
   messages. The model sees `[REDACTED ...]` instead, and the chat notes what was
   removed. Codex and Claude Code read files with their own tools and are not
   scanned.
+- **Your organization's data loss prevention rules**, when its policy has
+  them, check every request before it goes to a model: matches are recorded,
+  redacted in the copy that's sent, or the request is refused with the rule's
+  name. **Settings > Privacy & security** lists the rules. See
+  [data loss prevention](docs/dlp.md).
 - **Corporate networks:** TLS is verified with your operating system's
   certificate store, so a company root certificate works. Set a proxy and hosts
   that bypass it under **Settings > Connections > Network**, or use
   `HTTPS_PROXY`/`NO_PROXY`. Local addresses always connect directly. Proxies that
   need a user name and password aren't supported yet.
+- **Offline mode:** under **Settings > Offline mode** (or your organization's
+  policy) Lumi reaches only this computer and the hosts you allow, such as an
+  on-premises inference server, and refuses everything else at once with the
+  reason. Updates can be installed from a verified file, and an offline
+  license shows under `lumi license status`. See
+  [Offline and air-gapped operation](docs/offline.md).
 - **Save diagnostics** removes your actual key values and masks secrets in the
   bundled `settings.json` before anything is written.
 - **Files Lumi never reads:** gitignore-style patterns under **Settings >
@@ -411,18 +433,28 @@ now that browsing works out of the box.
 | `GOOGLE_APPLICATION_CREDENTIALS` | none | Service account for Claude on Vertex AI connections |
 | `LUMI_ANTHROPIC_READ_TIMEOUT_SEC` / `LUMI_OPENAI_READ_TIMEOUT_SEC` | `600` | Stream read timeouts for the Anthropic and OpenAI adapters |
 | `MOONSHOT_BASE_URL` | `https://api.moonshot.ai/v1` | Kimi-compatible API URL |
-| `LUMI_OLLAMA_NUM_CTX` | capability-derived | Ollama context override |
+| `LUMI_OLLAMA_NUM_CTX` | capability-derived | Ollama context override, when Settings › Ollama runtime sets none |
 | `LUMI_OLLAMA_NUM_BATCH` | Ollama default | Optional batch override |
 | `LUMI_OLLAMA_NUM_GPU` | Ollama default | Optional GPU layer override |
-| `LUMI_OLLAMA_KEEP_ALIVE` | `120m` | Ollama keep-alive |
+| `LUMI_OLLAMA_KEEP_ALIVE` | `120m` | Ollama keep-alive, when Settings › Ollama runtime sets none |
 | `LUMI_OLLAMA_HTTP_TIMEOUT_SEC` | `360` | Ollama request timeout |
 | `LUMI_OLLAMA_HTTP_READ_TIMEOUT_SEC` | `300` | Ollama stream read timeout |
 | `HTTPS_PROXY` / `HTTP_PROXY` / `NO_PROXY` | none | Proxy for outbound traffic and hosts that bypass it; a proxy set in Settings takes precedence |
 | `LUMI_KEYCHAIN` | `on` | `off` keeps API keys in `settings.json` instead of the OS credential store |
 | `LUMI_KEYCHAIN_SERVICE` | `Lumi` | Service name for keys in the OS credential store |
+| `LUMI_DEVELOPER_TOOLS` | off | `1` shows Lumi's own developer tools in Settings (the GLM / DeepSeek model evaluations), as `general.developer_tools` in `settings.json` does |
 
 Persistent configuration lives in `~/.lumi/settings.json` and is managed
-through the desktop Settings view.
+through the desktop Settings view. Each save keeps the file as it was in
+`settings.json.bak`, without API keys or other credentials (after restoring
+it, enter again any the OS credential store doesn't hold), then replaces it
+in one step; on Windows, when another program has the file open, it's written
+in place instead. A save that still can't reach the file is shown in Settings
+and above the message box, and the change lasts until Lumi closes. A file
+Lumi can't read or parse (after a moment's retry, for a file another program
+holds) is never written over: Lumi runs on defaults, saves no change, and the
+app, the terminal UI and `lumi run` say so, so you can fix or restore the
+file.
 
 ## Run
 
@@ -437,9 +469,10 @@ From the desktop window, use **File > Open in Browser**. The local server refuse
 pages that were not opened from such a link.
 
 `lumi` without a subcommand opens the [terminal UI](docs/terminal-ui.md) in the
-current folder. It runs tools without asking unless you pass `--approve`; the
-project's rules, project trust and your organization's policy apply as in the
-app.
+current folder. It starts in the default permission mode from Settings, as the
+app does (Auto-edit on a new install); `--approve` asks before every change and
+`--full-auto` runs tools without asking. The project's rules, project trust and
+your organization's policy apply as in the app.
 
 For servers, containers and CI, `lumi run` runs one task without a UI and
 prints a JSON result with an exit code a job can act on:
@@ -484,6 +517,40 @@ lumi-smoke variance --spec wordcount --model your-model --n 3
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+Lumi is commercial software: © 2026 Luminary Analytics, LLC, all rights reserved,
+licensed under the [Lumi End User License Agreement](lumi/legal/EULA.md), with
+the [Alpha and Beta Test Terms](lumi/legal/ALPHA-TERMS.md) for pre-release
+builds. See [LICENSE](LICENSE). The [privacy notice](lumi/legal/PRIVACY.md)
+says what the app sends where.
+
+- **Accepting the terms.** Lumi asks each person to accept them at first
+  launch, and again when their version changes; until then nothing is sent to
+  a model. The installers show them on their license page. `lumi run` in CI
+  accepts them with `--accept-terms <value>` or `LUMI_ACCEPT_TERMS` naming
+  each document's version (`lumi terms` prints the value; a pre-release or
+  development build also needs the test terms, as in
+  `eula-1.0,alpha-terms-1.0`), and an organization can accept them for its
+  people in its machine policy only
+  ([Organization policy](docs/enterprise-policy.md#lumis-terms-for-your-organization)).
+- **Extensions.** The [Extension SDK](sdk/) is under the
+  [Lumi Extension SDK License](sdk/LICENSE), which lets developers use it to
+  build and ship extensions for Lumi. The
+  [VS Code extension](lumi/code_editors/vscode/) is part of Lumi, under the
+  End User License Agreement.
+- **Earlier copies under the MIT License.** Every commit of this repository
+  whose LICENSE file is the MIT License, the releases built from them
+  (tagged v0.6.3a1 through v0.19.1, as Resonant Client, Resonant and SONN
+  Client), and the SDK and the VS Code extension in every commit where
+  their own license file is the MIT License remain under the MIT License
+  ([LICENSE](LICENSE)). The MIT License first appeared in commit c00f29c:
+  nothing before it, such as releases v0.2.0 through v0.6.2, was MIT, and
+  releases under the EULA start at 0.20.0.
+- Third-party components keep their own licenses: `THIRD_PARTY_NOTICES.txt`
+  in installed copies, which Settings > About Lumi opens.
+- The facts these texts depend on (Luminary's legal entity, the governing
+  law, the venue and the notices address) and each text's version live in one
+  file, `lumi/legal/terms.json` ([RELEASING.md](RELEASING.md#lumis-terms)).
+- Individuals use the app free during the alpha (see [Plans](docs/plans.md)).
+- Whether this repository stays public hasn't been decided.
 
 Managed previews, named acceptance checks, Kimi effort controls, and sourced project notes are described in [Priority improvements](docs/priority-improvements.md).

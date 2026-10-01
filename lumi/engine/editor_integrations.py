@@ -7,9 +7,10 @@ owns their configuration contract, not their tool implementations.
 from __future__ import annotations
 
 import json
-import shutil
 from pathlib import Path
 from urllib.parse import urlsplit
+
+from .. import executables
 
 
 EDITORS = {
@@ -84,7 +85,9 @@ def build_config(editor: str, value: str, *, check_dependencies: bool = True) ->
             raise ValueError("The bridge port must be between 1 and 65535.")
         return {**config, "transport": "http", "url": value}
     executable = "uvx" if editor == "blender" else "uv"
-    command = shutil.which(executable)
+    # Saved as the full path: the MCP server then starts the installed uv,
+    # never one from a project (lumi/executables.py).
+    command = executables.find_program(executable)
     if check_dependencies and not command:
         raise ValueError(f"Install uv and restart Lumi so {executable} is available, then connect again.")
     if editor == "blender":

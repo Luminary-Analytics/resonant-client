@@ -43,6 +43,7 @@ import re
 import shlex
 import threading
 import time
+import unicodedata
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any, Iterable
@@ -94,6 +95,8 @@ class CapabilityPack:
     mcp_servers: dict[str, dict[str, Any]] = field(default_factory=dict)
     commands: list[dict[str, Any]] = field(default_factory=list)
     recipes: list[dict[str, Any]] = field(default_factory=list)
+    # Panels the app shows in a sandboxed frame (gui/extension_panels.py):
+    # {"id", "title", "entry"}, checked when the pack loads.
     ui_panels: list[dict[str, Any]] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
     # "project" for packs inside the open project, otherwise "user".
@@ -364,6 +367,70 @@ def _providers(value: Any) -> list[dict[str, Any]]:
     return providers
 
 
+# Panels (docs/extensions.md#panels): pages a pack shows in the app, each
+# served from the pack's own files into a sandboxed frame (gui/extension_panels.py).
+MAX_UI_PANELS = 10
+MAX_PANEL_TITLE = 60
+MAX_PANEL_ENTRY_BYTES = 1024 * 1024
+# Characters Windows gives a meaning in paths, and controls.
+_UNSAFE_PATH_CHARACTERS = re.compile(r'[\x00-\x1f\x7f\\:*?"<>|]')
+_DEVICE_NAMES = frozenset({"con", "prn", "aux", "nul", *(f"com{n}" for n in range(1, 10)),
+                           *(f"lpt{n}" for n in range(1, 10))})
+
+
+def pack_relative_path(value: Any) -> str | None:
+    """``value`` as a plain path inside a pack (``panels/stats/index.html``), or None.
+
+    Refused: empty and absolute paths, ``.`` and ``..``, any part starting with
+    a dot (hidden files, and ``.git``, which the digest leaves out), backslashes,
+    drive letters and other characters Windows treats specially, device names
+    such as ``nul``, and parts ending in a dot or space, which Windows drops.
+    Callers still look the result up among the files an approval covered, so a
+    name that passes here but isn't one of the pack's files names nothing.
+    """
+    if not isinstance(value, str) or not value or len(value) > 300 or _UNSAFE_PATH_CHARACTERS.search(value):
+        return None
+    parts = value.split("/")
+    if len(parts) > 16:
+        return None
+    for part in parts:
+        if (not part or part.startswith(".") or part.endswith((".", " ")) or len(part) > 120
+                or part.split(".")[0].strip().lower() in _DEVICE_NAMES):
+            return None
+    return value
+
+
+def _ui_panels(value: Any, directory: Path) -> list[dict[str, Any]]:
+    """The manifest's panels, checked: ``[{"id", "title", "entry"}]``; CapabilityPackError for a bad one."""
+    if value is None:
+        return []
+    if not isinstance(value, list) or len(value) > MAX_UI_PANELS:
+        raise CapabilityPackError(f"'ui_panels' must be a list of up to {MAX_UI_PANELS} panels")
+    panels: list[dict[str, Any]] = []
+    for entry in value:
+        if not isinstance(entry, dict) or not _PROVIDER_ID.match(str(entry.get("id") or "")):
+            raise CapabilityPackError("each panel needs an id of lowercase letters, digits and dashes")
+        panel_id = entry["id"]
+        if any(panel["id"] == panel_id for panel in panels):
+            raise CapabilityPackError(f"two panels are called {panel_id}")
+        raw_title = entry.get("title")
+        title = " ".join(raw_title.split()) if isinstance(raw_title, str) else ""
+        if (not title or len(title) > MAX_PANEL_TITLE
+                or any(unicodedata.category(ch) in ("Cc", "Cf") for ch in title)):
+            raise CapabilityPackError(f"panel {panel_id} needs a title of up to {MAX_PANEL_TITLE} characters")
+        entry_path = pack_relative_path(entry.get("entry"))
+        if entry_path is None or not entry_path.lower().endswith((".html", ".htm")):
+            raise CapabilityPackError(f"panel {panel_id}'s entry must be an .html file inside the pack, "
+                                      f"such as panels/{panel_id}/index.html")
+        file = directory / entry_path
+        if _is_link(file) or not file.is_file():
+            raise CapabilityPackError(f"panel {panel_id}'s entry {entry_path} isn't a file in the pack")
+        if file.stat().st_size > MAX_PANEL_ENTRY_BYTES:
+            raise CapabilityPackError(f"panel {panel_id}'s entry {entry_path} is larger than 1 MB")
+        panels.append({"id": panel_id, "title": title, "entry": entry_path})
+    return panels
+
+
 def _strings(value: Any) -> list[str]:
     return [str(item) for item in value if isinstance(item, (str, int, float))] if isinstance(value, list) else []
 
@@ -398,10 +465,12 @@ class CapabilityPackManager:
             *(folder / "packs" for folder in project_dirs(self.project_path)),
             state_home() / "packs",
         ]
-        self.roots = [Path(root).expanduser() for root in (*default_roots, *roots)]
+        # A relative folder is the project's, never Lumi's working folder
+        # (the system folder in the app, lumi/executables.py).
+        self.roots = [self.project_path / Path(root).expanduser() for root in (*default_roots, *roots)]
         for value in self.configured.values():
             if isinstance(value, dict) and (value.get("path") or value.get("directory")):
-                self.roots.append(Path(value.get("path") or value.get("directory")).expanduser())
+                self.roots.append(self.project_path / Path(value.get("path") or value.get("directory")).expanduser())
         self._packs: dict[str, CapabilityPack] = {}
         self._manifests: dict[str, dict[str, Any]] = {}
         self._reported_changes: set[str] = set()
@@ -482,6 +551,23 @@ class CapabilityPackManager:
             )
         return False
 
+    def verified_files(self, pack: CapabilityPack) -> dict[str, str] | None:
+        """Each of the pack's files' SHA-256, by path in the pack, while it still has its trusted digest.
+
+        None when the pack changed or can't be verified. Code that serves a
+        pack's files (gui/extension_panels.py) hashes what it reads and
+        compares it with this, so a file edited after the check isn't served.
+        """
+        data = self._manifests.get(pack.id)
+        if data is None or not pack.digest:
+            return None
+        hashes: dict[str, str] = {}
+        try:
+            digest, _ = self._digest(Path(pack.path), data, pack.scope, hashes)
+        except (CapabilityPackError, OSError):
+            return None
+        return hashes if digest == pack.digest else None
+
     def get_agent_type(self, name: str) -> AgentType | None:
         for pack in self.active():
             root = Path(pack.path).resolve()
@@ -520,7 +606,7 @@ class CapabilityPackManager:
             "packs": [pack.to_dict() for pack in active],
             "commands": [command for pack in active for command in pack.commands],
             "recipes": [recipe for pack in active for recipe in pack.recipes],
-            "ui_panels": [panel for pack in active for panel in pack.ui_panels],
+            "ui_panels": [{**panel, "pack": pack.id} for pack in active for panel in pack.ui_panels],
         }
 
     def skill_context(self, query: str, *, max_skills: int = 6, max_tokens: int = 500) -> str:
@@ -589,6 +675,7 @@ class CapabilityPackManager:
             problem = f"The pack cannot be verified because {exc}."
         manifest_version = data.get("manifest_version", 0)
         providers: list[dict[str, Any]] = []
+        ui_panels: list[dict[str, Any]] = []
         if not isinstance(manifest_version, int) or isinstance(manifest_version, bool) or manifest_version < 0:
             problem = problem or "Its manifest_version must be a whole number."
             manifest_version = 0
@@ -598,8 +685,10 @@ class CapabilityPackManager:
             if data.get("lumi") and not version_satisfies(_lumi_version(), str(data["lumi"])):
                 problem = problem or f"It needs Lumi {data['lumi']}; this is {_lumi_version()}."
             providers = _providers(data.get("providers"))
-        except CapabilityPackError as exc:
+            ui_panels = _ui_panels(data.get("ui_panels"), directory)
+        except (CapabilityPackError, OSError) as exc:
             problem = problem or f"Its manifest is invalid: {exc}."
+            providers, ui_panels = [], []
         configured = self.configured.get(pack_id)
         from ..policy import current as current_policy
         from .pack_signing import check as check_signature
@@ -648,7 +737,7 @@ class CapabilityPackManager:
             mcp_servers=_named_dicts(data.get("mcp_servers")),
             commands=_dicts(data.get("commands")),
             recipes=_dicts(data.get("recipes")),
-            ui_panels=_dicts(data.get("ui_panels")),
+            ui_panels=ui_panels,
             metadata={**metadata, "manifest": str(manifest_path)},
             scope=scope,
             status=status,
@@ -722,11 +811,18 @@ class CapabilityPackManager:
             return True, enabled, "approved" if enabled else "disabled"
         return False, False, "needs_approval"
 
-    def _digest(self, directory: Path, data: dict[str, Any], scope: str) -> tuple[str, list[str]]:
-        """Digest of the pack's files and the repository files its commands run."""
+    def _digest(self, directory: Path, data: dict[str, Any], scope: str,
+                hashes: dict[str, str] | None = None) -> tuple[str, list[str]]:
+        """Digest of the pack's files and the repository files its commands run.
+
+        ``hashes``, when given, receives each pack file's SHA-256 by its path in the pack.
+        """
         digest = hashlib.sha256(_DIGEST_VERSION)
         for relative, path in _pack_files(directory):
-            digest.update(f"pack\0{relative}\0{_file_sha256(path)}\n".encode("utf-8"))
+            file_hash = _file_sha256(path)
+            if hashes is not None:
+                hashes[relative] = file_hash
+            digest.update(f"pack\0{relative}\0{file_hash}\n".encode("utf-8"))
         pinned: list[str] = []
         if scope == "project":
             for relative, path in self._referenced_project_files(directory, data):

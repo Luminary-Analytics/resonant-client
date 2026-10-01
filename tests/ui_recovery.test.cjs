@@ -528,6 +528,23 @@ test('a !command turn counts only its own actions', () => {
     assert.deepEqual(app.cards().map(card => card.worked), ['Worked for 1s · 4 actions', 'Worked for 1s · 2 actions']);
 });
 
+test('a stopped turn says Stopped where it collapses, live and replayed', () => {
+    // Saved, a stop is the engine's "Interrupted" and then the turn's end (Session._cancelled_events).
+    const app = turnSummaryApp();
+    app.replayDisplayEvents([...savedTurn('stopped', 2, 0, {ended: false}), {event: 'step.end', step: 1, elapsed: 2.5},
+        {event: 'error', message: 'Interrupted'}, {event: 'session.end', total_elapsed: 2.5, total_steps: 1},
+        ...savedTurn('next', 1, 1.5)]);
+    assert.deepEqual(app.cards().map(card => card.worked), ['Stopped after 2s · 2 actions', 'Worked for 1s · 1 action']);
+
+    // Live: the person pressed Stop, then the same two events arrive.
+    const live = turnSummaryApp();
+    live.replayDisplayEvents(savedTurn('running', 2, 0, {ended: false}), {activeRun: true});
+    live._cancelInFlight = 'cancel-1';
+    live.handleEvent({event: 'error', message: 'Interrupted'});
+    live.handleEvent({event: 'session.end', total_elapsed: 3.2, total_steps: 1});
+    assert.deepEqual(live.cards().map(card => card.worked), ['Stopped after 3s · 2 actions']);
+});
+
 // The application account must never inherit another provider's identity.
 function accountView(settings = {}, sonnAccount, document = {}) {
     const context = vm.createContext({window: {}, document});
@@ -540,32 +557,61 @@ function accountView(settings = {}, sonnAccount, document = {}) {
     return app;
 }
 
+// Someone who uses SONN: a SONN key or project URL is set (settings_view.js _sonnConfigured).
+const SONN = {_meta: {api_keys_present: {sonn: true}}};
+
 test('a Codex connection never supplies the SONN account identity', () => {
     const app = accountView();
-    assert.equal(app._accountSummary().name, 'SONN account');
-    assert.equal(app._accountSummary().detail, 'Not connected to SONN');
-    assert.equal(app._accountSummary().initials, 'S');
+    assert.equal(app._accountSummary().name, 'Profile');
+    assert.equal(app._accountSummary().detail, 'Settings and connections');
+    assert.equal(app._accountSummary().initials, 'P');
+    app.settings = {...SONN};
+    assert.equal(app._accountSummary().name, 'Profile');
+    assert.equal(app._accountSummary().detail, 'SONN not connected');
+});
+
+test('the profile shows SONN only to someone who uses it', () => {
+    // An account answer left from before the key was removed says nothing now.
+    const app = accountView({general: {display_name: 'Alex Morgan'}}, {user: 'user-fixture', billing: {enabled: true}});
+    const summary = app._accountSummary();
+    assert.equal(summary.name, 'Alex Morgan');
+    assert.equal(summary.detail, 'Settings and connections');
+    assert.equal(summary.status, '');
+    assert.equal(summary.sonn, false);
+    app.settings = {network: {sonn_url: 'https://sonn.example.test/v1/projects/p'}};
+    assert.equal(app._accountSummary().sonn, true);
+});
+
+test('Settings lists SONN’s account page, and Lumi’s own evaluations, only for those who use them', () => {
+    const app = accountView();
+    const page = id => app._settingsPages().find(item => item.id === id);
+    assert.equal(page('sonn_account'), undefined);
+    // The GLM / DeepSeek evaluations are a developer tool (gui/settings.py developer_tools).
+    assert.deepEqual(Array.from(page('model_evaluations').sections), ['model_comparisons']);
+    app.settings = {...SONN, _meta: {...SONN._meta, developer_tools: true}};
+    assert.equal(page('sonn_account').title, 'SONN account & credits');
+    assert.deepEqual(Array.from(page('model_evaluations').sections), ['model_comparisons', 'model_evaluations']);
 });
 
 test('local display name preserves the authenticated SONN identifier and prepaid status', () => {
-    const app = accountView({general: {display_name: 'Alex Morgan'}}, {
+    const app = accountView({...SONN, general: {display_name: 'Alex Morgan'}}, {
         user: 'user-fixture', billing: {enabled:true},
     });
     const summary = app._accountSummary();
     assert.equal(summary.name, 'Alex Morgan');
     assert.equal(summary.initials, 'AM');
     assert.equal(summary.detail, 'SONN · Prepaid credits');
-    assert.equal(summary.status, 'Account: user-fixture');
+    assert.equal(summary.status, 'SONN account: user-fixture');
     app.settings.general.display_name = ' ';
     assert.equal(app._accountSummary().name, 'user-fixture');
 });
 
 test('billing-off and failed SONN discovery never appear as a paid subscription', () => {
-    const app = accountView({}, {user:'user-fixture',billing:{enabled:false}});
+    const app = accountView({...SONN}, {user:'user-fixture',billing:{enabled:false}});
     assert.equal(app._accountSummary().detail, 'SONN · Billing off');
     app.sonnAccount = {error:'Account unavailable'};
-    assert.equal(app._accountSummary().detail, 'Not connected to SONN');
-    assert.equal(app._accountSummary().name, 'SONN account');
+    assert.equal(app._accountSummary().detail, 'SONN not connected');
+    assert.equal(app._accountSummary().name, 'Profile');
 });
 
 test('Settings say device management updates an MSI or PKG copy', () => {
@@ -581,8 +627,10 @@ test('Settings say device management updates an MSI or PKG copy', () => {
     assert.match(app._renderUpdateStatus(), /managed by Acme/);
     app.updateStatus.installed_by = 'deb';
     assert.match(app._renderUpdateStatus(), /installed from the Debian package, so your package manager updates it/);
-    app.aboutInfo = {version: '0.20.0', license: 'MIT', installed_by: 'pkg'};
+    app.aboutInfo = {version: '0.20.0', license: 'Lumi End User License Agreement', installed_by: 'pkg'};
     assert.match(app._renderAbout(), /Installed from the macOS installer package; your organization’s device management updates it\./);
+    assert.match(app._renderAbout(), /© Luminary Analytics, LLC\. All rights reserved\. Licensed under the Lumi End User License Agreement\./);
+    assert.doesNotMatch(app._renderAbout(), /MIT|source is available/);
     app.aboutInfo.installed_by = 'rpm';
     assert.match(app._renderAbout(), /Installed from the RPM package; your package manager updates it\./);
 });
@@ -1732,7 +1780,7 @@ test('a step\'s prose stays above its calls, and a finished step stays open whil
     assert.ok(prose.classList.contains('plan-step-text'));
     assert.equal(prose.querySelector('.message-content').textContent, 'Reading the styles first.');
     assert.equal(readRow.getAttribute('data-tool'), 'file_read');
-    assert.equal(readRow.querySelector('.tool-status').textContent, '1 lines');
+    assert.equal(readRow.querySelector('.tool-status').textContent, '1 line');
 
     // Someone tabbed into the step's rows before it finished: it stays open.
     Object.getPrototypeOf(body).contains = function (node) {
@@ -2265,7 +2313,7 @@ test('a closed group\'s waiting item answers only results drawn in its own turn'
         answer(again, 'a.py:1: TODO', {metadata: {count: 1}}));
 
     const row = nextActivity.children.find(el => el.getAttribute('data-call-id') === 'call_5f2a9c01');
-    assert.equal(row.querySelector('.tool-status').textContent, '1 matches');
+    assert.equal(row.querySelector('.tool-status').textContent, '1 match');
     assert.ok(staleItem.classList.contains('pending'));
     assert.equal(staleItem.querySelector('.tool-status').textContent, '…');
 });
@@ -2698,4 +2746,1017 @@ test('a stopped plan shows the steps that will never run as abandoned', () => {
     const statuses = Object.fromEntries(
         [...canvas.innerHTML.matchAll(/class="pgn pgn-(\w+)" data-id="(\w+)"/g)].map(([, status, id]) => [id, status]));
     assert.deepEqual(statuses, {n1: 'done', n2: 'abandoned', n3: 'abandoned'});
+});
+
+// Organization oversight (settings_view.js, app.js): while the notice beside the
+// message box waits to be confirmed, the message box is locked and nothing can be
+// sent. Only the notice's "I've read this" button confirms it: a status push, a
+// timer or a window in the background never does, and focus never lands on the
+// button by itself, so a key meant for the message box can't confirm it.
+function oversightNotice() {
+    const element = (id, extra = {}) => {
+        const listeners = {};
+        const classes = new Set();
+        return {
+            id, hidden: true, disabled: false, textContent: '', placeholder: 'Message Lumi', listeners, style: {},
+            classList: {toggle: (name, on) => (on ? classes.add(name) : classes.delete(name)), has: name => classes.has(name),
+                add: name => classes.add(name), remove: name => classes.delete(name)},
+            addEventListener: (type, fn) => { listeners[type] = fn; },
+            setAttribute() {},
+            focus() { if (!this.disabled) document.activeElement = this; },
+            ...extra,
+        };
+    };
+    const wrapper = element('input-wrapper');
+    const elements = {
+        'oversight-notice': element('oversight-notice', {hidden: true}),
+        'oversight-notice-text': element('oversight-notice-text'),
+        'oversight-notice-lock': element('oversight-notice-lock'),
+        'oversight-notice-details': element('oversight-notice-details'),
+        'oversight-notice-confirm': element('oversight-notice-confirm'),
+        'user-input': element('user-input', {value: 'a draft kept while locked', closest: selector => (selector === '.input-wrapper' ? wrapper : null)}),
+        'send-btn': element('send-btn'),
+        'add-context-btn': element('add-context-btn'),
+        'mic-btn': element('mic-btn'),
+        'composer-autonomous-btn': element('composer-autonomous-btn'),
+        'composer-prompts-btn': element('composer-prompts-btn'),
+    };
+    const document = {activeElement: null, getElementById: id => elements[id] || null};
+    const timers = [];
+    const context = vm.createContext({console, window: {}, document, WebSocket: {OPEN: 1}, setTimeout: fn => timers.push(fn),
+        clearTimeout: () => {}});
+    vm.runInContext(source + '\nthis.App = LumiApp;', context);
+    vm.runInContext(fs.readFileSync(path.join(__dirname, '../lumi/gui/static/settings_view.js'), 'utf8')
+        + '\nthis.View = LumiSettingsView;', context);
+    // As applyMixin does: the settings view's methods on the app.
+    for (const name of Object.getOwnPropertyNames(context.View.prototype)) {
+        if (name !== 'constructor') Object.defineProperty(context.App.prototype, name, Object.getOwnPropertyDescriptor(context.View.prototype, name));
+    }
+    const app = Object.create(context.App.prototype);
+    const toasts = [];
+    Object.assign(app, {
+        sent: [], userInput: elements['user-input'], sendBtn: elements['send-btn'], stopBtn: element('stop-btn'),
+        currentView: 'agents', isRunning: false, ws: {readyState: 1}, _queuedMessages: new Map(),
+        showToastMessage: message => toasts.push(message), toasts,
+        _renderAccountMenu() {}, _clearPromptSuggestion() {}, _setSessionActivity() {}, _startLiveRun() {}, _stopLiveRun() {},
+    });
+    app.send = message => app.sent.push({...message});
+    app._initOversightNotice();
+    return {app, elements, wrapper, document, runTimers: () => timers.splice(0).forEach(fn => fn())};
+}
+
+const PENDING = {configured: true, destination: true, acknowledged: false, required: true, fingerprint: 'fp-1', reason: '',
+    notice: 'Acme receives your sessions and what they did from Lumi on this computer.', organization_notice: 'Ask security@acme.example.',
+    notice_text: 'Acme receives your sessions and what they did from Lumi on this computer. Ask security@acme.example.'};
+const LOCKED = ['user-input', 'send-btn', 'add-context-btn', 'mic-btn', 'composer-autonomous-btn', 'composer-prompts-btn'];
+
+test('the oversight notice is confirmed only by its button, never by arriving or being painted', () => {
+    const {app, elements, runTimers} = oversightNotice();
+    app._applyOversight(PENDING);
+    runTimers();  // no delayed confirmation either
+    const notice = elements['oversight-notice'];
+    const confirm = elements['oversight-notice-confirm'];
+    assert.equal(notice.hidden, false);
+    assert.equal(confirm.hidden, false);
+    assert.equal(elements['oversight-notice-text'].textContent, PENDING.notice_text);
+    assert.equal(elements['oversight-notice-lock'].hidden, false);
+    assert.deepEqual(app.sent, []);
+
+    // A click a script makes (element.click(), dispatchEvent) isn't the person's.
+    confirm.listeners.click({isTrusted: false});
+    confirm.listeners.click();
+    assert.deepEqual(app.sent, []);
+    confirm.listeners.click({isTrusted: true});
+    // The server checks both: this policy's fingerprint, and its notice as the page showed it.
+    assert.deepEqual(app.sent, [{command: 'oversight_notice_shown', fingerprint: 'fp-1', notice: PENDING.notice_text}]);
+});
+
+test('the message box is locked until the notice is confirmed, and nothing can be sent', () => {
+    const {app, elements, wrapper, document} = oversightNotice();
+    document.activeElement = elements['user-input'];
+    app._applyOversight(PENDING);
+    for (const id of LOCKED) assert.equal(elements[id].disabled, true, id);
+    assert.equal(wrapper.classList.has('is-oversight-locked'), true);
+    assert.equal(elements['user-input'].placeholder, 'Confirm the notice above to start');
+    // Focus leaves the locked box for the notice itself, never for its button.
+    assert.equal(document.activeElement, elements['oversight-notice']);
+    // No send path gets through: Enter, the send button, a retry, a turn that ends.
+    app.sendMessage();
+    app.sendMessage({autoRetry: true});
+    app.setRunning(false);
+    assert.equal(elements['user-input'].disabled, true);
+    assert.deepEqual(app.sent, []);
+    assert.match(app.toasts[0], /Confirm your organization’s oversight notice/);
+    assert.equal(elements['user-input'].value, 'a draft kept while locked');
+
+    // The server's answer unlocks it; focus goes from the button to the message box.
+    elements['oversight-notice-confirm'].focus();
+    app._applyOversight({...PENDING, acknowledged: true, required: false});
+    for (const id of LOCKED) assert.equal(elements[id].disabled, false, id);
+    assert.equal(wrapper.classList.has('is-oversight-locked'), false);
+    assert.equal(elements['oversight-notice-confirm'].hidden, true);
+    assert.equal(elements['oversight-notice-lock'].hidden, true);
+    assert.equal(document.activeElement, elements['user-input']);
+    assert.equal(elements['user-input'].placeholder, 'Message Lumi');
+    app.setRunning(false);
+    assert.equal(elements['user-input'].disabled, false);
+});
+
+test('a policy that collects more locks the message box again', () => {
+    const {app, elements} = oversightNotice();
+    app._applyOversight({...PENDING, acknowledged: true, required: false});
+    assert.equal(elements['user-input'].disabled, false);
+    app._applyOversight({...PENDING, fingerprint: 'fp-2'});
+    assert.equal(elements['user-input'].disabled, true);
+    elements['oversight-notice-confirm'].listeners.click({isTrusted: true});
+    assert.deepEqual(app.sent, [{command: 'oversight_notice_shown', fingerprint: 'fp-2', notice: PENDING.notice_text}]);
+});
+
+test('nothing dictates while the notice locks the message box, and the page asks again once it unlocks', () => {
+    const {app} = oversightNotice();
+    const cancelled = [];
+    app.settings = {_meta: {voice: {engine: 'auto', browser: true, service_ready: false}}};
+    app._dictation = {state: 'listening', cancel: options => cancelled.push({...options}),  // a copy made here, not in the vm
+        available: () => ({engine: null, reason: ''})};
+    app._applyOversight(PENDING);
+    // Listening stops, and no engine may start: the browser's recognizer included.
+    assert.deepEqual(cancelled, [{focus: false}]);
+    const locked = app._dictationStatus();
+    assert.equal(locked.browser, false);
+    assert.equal(locked.service_ready, false);
+    assert.match(locked.reason, /oversight notice/);
+    assert.equal(app.settings._meta.voice.browser, true, 'the server\'s own status is left as it was');
+    app._dictation.state = 'idle';
+    app._applyOversight({...PENDING, acknowledged: true, required: false});
+    assert.equal(app._dictationStatus().browser, true);
+    // The server's status follows the notice too: the page asks for it again.
+    assert.deepEqual(app.sent, [{command: 'voice_status'}]);
+});
+
+test('a notice that says nothing is collected asks for no confirmation and locks nothing', () => {
+    const {app, elements} = oversightNotice();
+    app._applyOversight({...PENDING, destination: false, required: false,
+        reason: "This computer isn't enrolled in Acme's Lumi Cloud, so nothing is collected."});
+    assert.equal(elements['oversight-notice'].hidden, false);
+    assert.equal(elements['oversight-notice-confirm'].hidden, true);
+    assert.equal(elements['user-input'].disabled, false);
+    app._confirmOversightNotice();
+    assert.deepEqual(app.sent, []);
+    // Nor does a policy that isn't there any more.
+    app._applyOversight({configured: false});
+    assert.equal(elements['oversight-notice'].hidden, true);
+    assert.equal(elements['user-input'].disabled, false);
+    app._confirmOversightNotice();
+    assert.deepEqual(app.sent, []);
+});
+
+test('a refused message ends the running state and gives its text back', () => {
+    const dom = withElementMethods(fakeDom());
+    const app = setup(async () => ({ok: true}), {document: dom.document});
+    let running = true;
+    app.setRunning = value => { running = value; };
+    app.clearTerminals = () => {};
+    app._markDraftEdited = () => {};
+    app._saveDraft = () => {};
+    app._syncComposerQueue = () => {};
+    app.userInput.focus = () => {};
+    app.composerQueue = dom.document.createElement('div');
+    app._queuedMessages = new Map();
+    app._pendingTurnText = 'Fix the failing test';
+    // Nothing more to skip: the refusal is shown as the turn's error.
+    assert.equal(app._endRefusedTurn({refused: true, message: 'No model is running.'}), false);
+    assert.equal(running, false);
+    assert.equal(app.userInput.value, 'Fix the failing test');
+    assert.equal(app._pendingTurnText, '');
+    // A draft typed since then is never replaced, and the refused message isn't lost:
+    // it waits under the message box as "Not sent".
+    app._pendingTurnText = 'another message';
+    app.userInput.value = 'typing';
+    app._endRefusedTurn({refused: true, message: 'Busy'});
+    assert.equal(app.userInput.value, 'typing');
+    const [unsent] = app.composerQueue.children;
+    assert.equal(unsent.querySelector('strong').textContent, 'Not sent');
+    assert.equal(unsent.querySelector('small').textContent, 'another message');
+});
+
+test('a refused follow-up leaves the queue and the turn it followed keeps running', () => {
+    const app = setup(async () => ({ok: true}));
+    let running = true;
+    const removed = [], toasts = [];
+    app.setRunning = value => { running = value; };
+    app.clearTerminals = () => {};
+    app._syncComposerQueue = () => {};
+    app.showToastMessage = text => toasts.push(text);
+    app._queuedMessages = new Map([['m-2', {text: 'also update the docs', el: {remove: () => removed.push('m-2')}}]]);
+    assert.equal(app._endRefusedTurn({refused: true, message_id: 'm-2', message: 'The team is still working.'}), true);
+    assert.equal(running, true);
+    assert.deepEqual(removed, ['m-2']);
+    assert.equal(app._queuedMessages.size, 0);
+    assert.equal(app.userInput.value, 'also update the docs');
+    assert.deepEqual(toasts, ['The team is still working.']);
+});
+
+test('"Connect a model" is done only once a model answered', () => {
+    const app = setup(async () => ({ok: true}));
+    app.settings = {onboarding: {}};
+    // Listed but never checked: a Codex CLI nobody signed in to.
+    app.backends = {codex: {models: ['gpt-5-codex']}};
+    assert.equal(app._onboardingSteps().model, false);
+    app.providerConnections = {codex: {error: 'Signing in with ChatGPT uses the Codex CLI'}};
+    assert.equal(app._onboardingSteps().model, false);
+    app.backends.ollama = {models: ['qwen3-coder:30b']};  // the Ollama probe found chat models
+    assert.equal(app._onboardingSteps().model, true);
+    delete app.backends.ollama;
+    app._modelRunning = true;  // this conversation's model runs
+    assert.equal(app._onboardingSteps().model, true);
+    app._modelRunning = false;
+    app.providerConnections = {openrouter: {status: 'ready'}};  // a connection check succeeded
+    assert.equal(app._onboardingSteps().model, true);
+});
+
+test('Full-auto is called sandboxed only while the shell sandbox is on', () => {
+    const app = setup(async () => ({ok: true}));
+    app.settings = {security: {shell_sandbox: 'off'}};
+    assert.equal(app._fullAutoCopy().name, 'Full-auto');
+    assert.match(app._fullAutoCopy().description, /shell commands run without a sandbox/);
+    app.settings.security.shell_sandbox = 'project';
+    assert.equal(app._fullAutoCopy().name, 'Full-auto (sandboxed)');
+    app.permissionMode = 'auto-edit';
+    assert.match(app._onboardingModeNote(), /changes files in this project without asking, and asks before running commands/);
+    app.permissionMode = 'ask';
+    assert.match(app._onboardingModeNote(), /asks before changing files/);
+});
+
+// ── PR #105 review: one-run Full-auto grants, refused turns, the Ollama card ──
+
+// fakeDom() with the few element methods the notices, the "Not sent" item and
+// the Team panel use, a body to be connected to, and focus. Only the elements
+// of this fakeDom change.
+function withElementMethods(dom) {
+    const {document} = dom;
+    const proto = Object.getPrototypeOf(document.createElement('div'));
+    const body = document.createElement('body');
+    Object.defineProperty(proto, 'isConnected', {configurable: true, get() {
+        let node = this;
+        while (node.parentNode) node = node.parentNode;
+        return node === body;
+    }});
+    Object.assign(proto, {
+        append(...nodes) {
+            for (const node of nodes) {
+                if (typeof node !== 'string') { this.appendChild(node); continue; }
+                const span = document.createElement('span');
+                span.textContent = node;
+                this.appendChild(span);
+            }
+        },
+        after(node) {
+            const siblings = this.parentNode.childNodes;
+            this.parentNode.insertBefore(node, siblings[siblings.indexOf(this) + 1] || null);
+        },
+        closest(selector) {
+            const matches = selector.startsWith('#') ? node => node.getAttribute('id') === selector.slice(1)
+                : node => node.matches(selector);
+            for (let node = this; node && node.nodeType === 1; node = node.parentNode) {
+                if (matches(node)) return node;
+            }
+            return null;
+        },
+        focus() { document.activeElement = this; },
+    });
+    Object.assign(document, {body, activeElement: body});
+    dom.body = body;
+    return dom;
+}
+
+// The real handlers of app.js with autonomous_view.js, settings_view.js and
+// swarm_view.js mixed in, as applyMixin does, over that DOM. `sent` records
+// what the page sends; setPermissionMode must never be reached.
+function grantApp() {
+    const dom = withElementMethods(fakeDom());
+    const context = vm.createContext({console, document: dom.document, CSS: dom.CSS, window: {},
+        WebSocket: {OPEN: 1}, crypto: {randomUUID: () => 'uuid'}, setTimeout, clearTimeout});
+    vm.runInContext(source + '\nthis.App = LumiApp;', context);
+    for (const file of ['autonomous_view.js', 'settings_view.js', 'swarm_view.js']) {
+        vm.runInContext(fs.readFileSync(path.join(__dirname, '../lumi/gui/static', file), 'utf8'), context);
+    }
+    const app = Object.create(context.App.prototype);
+    for (const mixin of [context.window.LumiAutonomousView, context.window.LumiSettingsView, context.window.LumiSwarmView]) {
+        const own = Object.getOwnPropertyDescriptors(mixin.prototype);
+        delete own.constructor;
+        Object.defineProperties(Object.getPrototypeOf(app), own);
+    }
+    const sent = [];
+    const composer = dom.document.createElement('textarea');
+    dom.body.appendChild(composer);
+    const chatMessages = dom.document.createElement('div');
+    dom.body.appendChild(chatMessages);
+    Object.assign(app, {
+        dom, sent, composer, chatMessages,
+        permissionMode: 'auto-edit',
+        send: message => sent.push(JSON.parse(JSON.stringify(message))),
+        setPermissionMode: mode => { throw new Error(`the mode changed to ${mode}`); },
+        scrollToBottom: () => {}, showStatusMessage: () => {}, openPlanTab: () => {}, pushPreviewConsole: () => {},
+        _collapseDispatchCardToChip: card => card,
+        el: (tag, className = '') => {
+            const element = dom.document.createElement(tag);
+            if (className) element.className = className;
+            return element;
+        },
+    });
+    return app;
+}
+
+const NEEDS_PLAN = {event: 'error', code: 'needs_full_auto', can_grant: true, work: 'plan',
+    message: 'intent_start failed: A plan runs its steps in Full-auto.',
+    detail: 'A plan runs its steps in Full-auto: they change files and run commands without asking. This conversation is in Auto-edit, and stays in Auto-edit if you run this plan in Full-auto.'};
+
+test('a refused /plan offers to run just that plan in Full-auto, and never takes the typing focus', () => {
+    const app = planApp();
+    withElementMethods(app.dom);
+    const sent = [];
+    Object.assign(app, {permissionMode: 'auto-edit', send: message => sent.push(JSON.parse(JSON.stringify(message))),
+        setPermissionMode: mode => { throw new Error(`the mode changed to ${mode}`); }});
+    app.dom.body.appendChild(app.chatMessages);
+    const composer = app.dom.document.createElement('textarea');
+    app.dom.body.appendChild(composer);
+    app.startIntent('Add a counter');
+    // The person keeps typing in the message box: a space or Enter mustn't press anything.
+    composer.focus();
+    app.handleEvent({...NEEDS_PLAN});
+    const [card] = app.chatMessages.children;
+    const notice = card.querySelector('.full-auto-notice');
+    assert.equal(notice.getAttribute('role'), 'status');
+    assert.match(notice.querySelector('.full-auto-notice-text').textContent, /stays in Auto-edit if you run this plan in Full-auto/);
+    const button = notice.querySelector('.full-auto-grant');
+    assert.equal(button.textContent, 'Run this plan in Full-auto');
+    assert.equal(app.dom.document.activeElement, composer);
+    assert.deepEqual(sent, [{command: 'intent_start', text: 'Add a counter'}]);
+    button.listeners.click();
+    // The same plan, granted Full-auto for this run only; the conversation's mode stays.
+    assert.deepEqual(sent.at(-1), {command: 'intent_start', text: 'Add a counter', full_auto: true});
+    assert.equal(card.querySelector('.full-auto-notice'), null);
+    assert.equal(app.permissionMode, 'auto-edit');
+});
+
+test('a notice takes focus itself, never its button, only when the control that asked lost it', () => {
+    const app = grantApp();
+    const run = () => app.send({command: 'mission_dispatch_roadmap', full_auto: true});
+    // Focus was lost (the Build button was disabled): the notice, not its button, takes it.
+    app.dom.document.activeElement = app.dom.body;
+    const notice = app._showFullAutoNotice({...NEEDS_PLAN, work: 'roadmap'}, run, 'roadmap');
+    assert.equal(app.dom.document.activeElement, notice);
+    assert.equal(notice.tabIndex, -1);
+    assert.equal(notice.querySelector('.full-auto-grant').textContent, 'Build this roadmap in Full-auto');
+    // Someone typing keeps their place.
+    app.composer.focus();
+    app._showFullAutoNotice({...NEEDS_PLAN, work: 'autonomous'}, run, 'autonomous');
+    assert.equal(app.dom.document.activeElement, app.composer);
+    // Without the organization's leave to grant Full-auto, there is no button at all.
+    const refused = app._fullAutoNotice({...NEEDS_PLAN, can_grant: false}, run, 'plan');
+    assert.equal(refused.querySelector('button'), null);
+});
+
+test('a refused Build this roadmap is built again in Full-auto for that run only', () => {
+    const app = grantApp();
+    const message = app.el('div', 'msg-assistant');
+    app.chatMessages.appendChild(message);
+    app._currentMissionIsAutonomous = () => false;
+    app.handleMissionSpecReady({refined_intent: 'A counter', spec_markdown: '## Final spec', session_id: 's1'});
+    // No real innerHTML parsing here for the button's label: press it through its handler.
+    const build = message.querySelector('.mission-build-btn');
+    build.listeners.click();
+    assert.deepEqual(app.sent.at(-1), {command: 'mission_dispatch_roadmap', session_id: 's1',
+        spec_markdown: '## Final spec', refined_intent: 'A counter'});
+    app.handleEvent({event: 'error', source: 'mission_dispatch', code: 'needs_full_auto', can_grant: true,
+        message: 'A roadmap is built in Full-auto.'});
+    assert.equal(build.disabled, false);  // the Build button is back
+    const notice = app.chatMessages.querySelector('.full-auto-notice');
+    const grant = notice.querySelector('.full-auto-grant');
+    assert.equal(grant.textContent, 'Build this roadmap in Full-auto');
+    grant.listeners.click();
+    assert.deepEqual(app.sent.at(-1), {command: 'mission_dispatch_roadmap', session_id: 's1',
+        spec_markdown: '## Final spec', refined_intent: 'A counter', full_auto: true});
+    assert.match(notice.querySelector('.full-auto-notice-text').textContent,
+        /^This roadmap is built in Full-auto; this conversation stays in Auto-edit\.$/);
+    // A later click on Build itself carries no grant.
+    build.listeners.click();
+    assert.equal(app.sent.at(-1).full_auto, undefined);
+});
+
+test('a resume refusal reaches only the page\'s own banner, never a card a model wrote', () => {
+    const app = grantApp();
+    // A model's reply earlier in the page holds a look-alike card for the same session.
+    const reply = app.el('div', 'message-content');
+    reply.innerHTML = '<div class="autonomous-orphan-card" data-intent-id="auto-1"><button type="button" class="autonomous-orphan-resume" data-intent-id="auto-1">Resume</button></div>';
+    app.chatMessages.appendChild(reply);
+    const banner = app.el('div', 'autonomous-orphans-banner');
+    banner.setAttribute('id', 'autonomous-orphans-banner');
+    const card = app.el('div', 'autonomous-orphan-card');
+    card.dataset.intentId = 'auto-1';
+    const resume = app.el('button', 'autonomous-orphan-resume');
+    resume.dataset.intentId = 'auto-1';
+    card.appendChild(resume);
+    banner.appendChild(card);
+    app.dom.body.appendChild(banner);
+    app.dom.document.getElementById = id => (id === 'autonomous-orphans-banner' ? banner : null);
+
+    app._handleResumeOrphanClick('auto-1', 's1', resume);
+    assert.deepEqual(app.sent.at(-1), {command: 'autonomous_mission_resume', intent_id: 'auto-1', session_id: 's1'});
+    app.dom.document.activeElement = app.dom.body;  // the disabled Resume button lost focus
+    app.handleEvent({event: 'error', source: 'autonomous_resume', code: 'needs_full_auto', can_grant: true,
+        intent_id: 'auto-1', session_id: 's1', message: 'An autonomous session runs in Full-auto.'});
+    assert.equal(reply.querySelector('.full-auto-notice'), null);
+    const notice = card.querySelector('.full-auto-notice');
+    assert.equal(app.dom.document.activeElement, notice);
+    assert.equal(resume.disabled, false);
+    const grant = notice.querySelector('.full-auto-grant');
+    assert.equal(grant.textContent, 'Resume this session in Full-auto');
+    grant.listeners.click();
+    assert.deepEqual(app.sent.at(-1), {command: 'autonomous_mission_resume', intent_id: 'auto-1', session_id: 's1',
+        full_auto: true});
+    // Without a card in the banner, the notice goes in the conversation instead.
+    const elsewhere = grantApp();
+    elsewhere.chatMessages.appendChild(reply);
+    elsewhere.handleEvent({event: 'error', source: 'autonomous_resume', code: 'needs_full_auto', can_grant: true,
+        intent_id: 'auto-1', session_id: '', message: 'An autonomous session runs in Full-auto.'});
+    assert.equal(reply.querySelector('.full-auto-notice'), null);
+    assert.ok(elsewhere.chatMessages.children.some(node => node.classList.contains('full-auto-notice-chat')));
+});
+
+test('Run this team in Full-auto grants the one Start it sends, and nothing after it', () => {
+    const app = grantApp();
+    const notice = app.el('p', 'swarm-notice');
+    notice.setAttribute('role', 'status');
+    app.dom.body.appendChild(notice);
+    const form = {requestSubmit: () => app.requestSwarm('start', {objective: 'Check the CSV export', autonomy: {rounds: 2}})};
+    Object.assign(app, {
+        _swarmDialog: {open: true}, ws: {readyState: 1}, _swarmRequestCounter: 0, _swarmCursor: 0,
+        _swarmScope: {project: 'p', session_id: 's', run_id: ''}, _renderSwarmControls: () => {},
+        _swarmNodes: {notice, form, 'continue-form': form},
+    });
+    app.composer.focus();
+    app._swarmOfferFullAuto('start');
+    const button = notice.querySelector('.swarm-full-auto-grant');
+    assert.equal(button.textContent, 'Run this team in Full-auto');
+    assert.equal(app.dom.document.activeElement, app.composer);  // never moved onto the button
+    button.listeners.click();
+    const [granted] = app.sent;
+    assert.equal(granted.action, 'start');
+    assert.equal(granted.full_auto, true);
+    assert.equal(button.disabled, true);
+    app._swarmPending = null;
+    app.requestSwarm('start', {objective: 'Another team', autonomy: {rounds: 2}});
+    assert.equal(app.sent.at(-1).full_auto, undefined);
+    // A Start the form keeps from sending leaves the offer, and grants nothing later.
+    const blocked = grantApp();
+    const blockedNotice = blocked.el('p', 'swarm-notice');
+    Object.assign(blocked, {_swarmNodes: {notice: blockedNotice, form: {requestSubmit: () => {}}}});
+    blocked._swarmOfferFullAuto('start');
+    const offer = blockedNotice.querySelector('.swarm-full-auto-grant');
+    offer.listeners.click();
+    assert.equal(offer.disabled, false);
+    assert.equal(blocked._swarmFullAutoGrant, null);
+});
+
+test('a refused message gives its images back, and waits as Not sent under a busy message box', () => {
+    const app = grantApp();
+    const images = [{data: 'AAA', media_type: 'image/png', dataUrl: 'data:image/png;base64,AAA'}];
+    let rendered = 0;
+    const saved = [];
+    Object.assign(app, {
+        userInput: {value: '', style: {}, scrollHeight: 40, focus: () => {}},
+        attachedImages: [], renderAttachedImages: () => { rendered += 1; },
+        _markDraftEdited: () => {}, _saveDraft: () => saved.push(app.userInput.value),
+        _syncComposerQueue: () => {}, clearTerminals: () => {}, setRunning: running => { app.isRunning = running; },
+        composerQueue: app.el('div', 'composer-queue'), _queuedMessages: new Map(), currentSessionId: 's1',
+    });
+    app._pendingTurnText = 'Fix the chart';
+    app._pendingTurnImages = images.map(image => ({...image}));
+    app._endRefusedTurn({refused: true, message: 'No model is running.'});
+    assert.equal(app.userInput.value, 'Fix the chart');
+    assert.deepEqual(JSON.parse(JSON.stringify(app.attachedImages)), images);
+    assert.equal(rendered, 1);
+    // A queued follow-up refused while something is typed: kept, not dropped.
+    app.userInput.value = 'typing the next one';
+    const removed = [];
+    app._queuedMessages.set('m-2', {text: 'also update the docs', images, el: {remove: () => removed.push('m-2')}});
+    app._endRefusedTurn({refused: true, message_id: 'm-2', message: 'Busy'});
+    assert.deepEqual(removed, ['m-2']);
+    assert.equal(app.userInput.value, 'typing the next one');
+    const unsent = app.composerQueue.children.at(-1);
+    assert.ok(unsent.classList.contains('is-unsent'));
+    assert.equal(unsent.dataset.sessionId, 's1');
+    assert.equal(unsent.querySelector('small').textContent, 'also update the docs');
+    // Edit adds it after what's typed, images included; the item goes.
+    unsent.querySelector('.steer-queue-promote').listeners.click();
+    assert.equal(app.userInput.value, 'typing the next one\n\nalso update the docs');
+    assert.equal(app.attachedImages.length, 2);
+    assert.equal(app.composerQueue.children.length, 0);
+    // × discards another one.
+    app.userInput.value = 'more typing';
+    app._restoreRefusedText('discard me', []);
+    app.composerQueue.children.at(-1).querySelector('.steer-queue-remove').listeners.click();
+    assert.equal(app.composerQueue.children.length, 0);
+    assert.equal(app.userInput.value, 'more typing');
+});
+
+test('an ordinary error or an ended turn leaves no text for a later refusal to bring back', () => {
+    const app = grantApp();
+    const restored = [];
+    const noop = () => {};
+    Object.assign(app, {
+        _restoreRefusedText: text => restored.push(text), clearTerminals: noop, _queuedMessages: new Map(),
+        removeThinking: noop, _finalizeLiveCollapsedGroup: noop, ensureStepRendered: noop, _finishActiveTask: noop,
+        getRenderTarget: () => app.chatMessages, _renderAccountMenu: noop, _setSessionActivity: noop,
+        _clearPromptSuggestion: noop, _startLiveRun: noop, _stopLiveRun: noop,
+        sendBtn: {style: {}, setAttribute: noop}, stopBtn: {style: {}},
+        userInput: {value: '', style: {}, focus: noop, closest: () => null},
+    });
+    // An ordinary error before the turn started: the text isn't coming back.
+    app.isRunning = true;
+    app._pendingTurnText = 'first message';
+    app._pendingTurnImages = [{data: 'A'}];
+    app.handleEvent({event: 'error', message: 'The model stopped responding.'});
+    assert.equal(app._pendingTurnText, '');
+    assert.equal(app._pendingTurnImages.length, 0);
+    // So a team_active refusal of the next command brings nothing back.
+    app.handleEvent({event: 'error', code: 'team_active', message: 'The team is still working.'});
+    assert.deepEqual(restored, []);
+    // Nor does one after the running state ended: setRunning(false) clears what waited.
+    app.setRunning(true);
+    app._pendingTurnText = 'left over';
+    app.setRunning(false);
+    assert.equal(app._pendingTurnText, '');
+    app.handleEvent({event: 'error', code: 'team_active', message: 'The team is still working.'});
+    assert.deepEqual(restored, []);
+    // While a sent message waits to start, team_active refuses it like any refusal.
+    app.setRunning(true);
+    app._pendingTurnText = 'the waiting one';
+    app.handleEvent({event: 'error', code: 'team_active', message: 'The team is still working.'});
+    assert.deepEqual(restored, ['the waiting one']);
+    assert.equal(app.isRunning, false);
+});
+
+test('the Ollama card says when OLLAMA_HOST overrides the saved address, and a Test ticks nothing', () => {
+    const app = grantApp();
+    Object.assign(app, {
+        settings: {network: {ollama_url: 'http://gpu-box:11434'}, onboarding: {}},
+        _ollamaAddress: {in_use: 'http://127.0.0.1:9', saved: 'http://gpu-box:11434', environment: 'OLLAMA_HOST'},
+        backends: {},
+    });
+    assert.match(app._ollamaOverrideNote(), /^OLLAMA_HOST is set to http:\/\/127\.0\.0\.1:9 in Lumi’s environment, so Lumi uses that address instead of the one saved here \(http:\/\/gpu-box:11434\)\. To use the saved address, remove OLLAMA_HOST/);
+    // Save: stored, but never named as the address Lumi now uses.
+    app.providerConnections = {ollama: {status: 'unreachable', url: 'http://127.0.0.1:9', saved: true, action: 'save',
+        error: 'Nothing answered as Ollama at http://127.0.0.1:9.', address: app._ollamaAddress}};
+    assert.equal(app._ollamaCardStatus(), 'Saved http://gpu-box:11434, but Lumi uses http://127.0.0.1:9 from OLLAMA_HOST. Nothing answered as Ollama at http://127.0.0.1:9.');
+    // A Test found a server at the typed address: nothing saved, and "Connect a model" isn't done.
+    app.providerConnections = {ollama: {status: 'ready', url: 'http://gpu-box:11434', model_count: 2, saved: false,
+        action: 'test', address: app._ollamaAddress}};
+    assert.match(app._ollamaCardStatus(), /Nothing was saved; while OLLAMA_HOST is set, Lumi uses its address instead\./);
+    assert.equal(app._onboardingSteps().model, false);
+    // Without the override, the help never promises what a save does beyond storing it.
+    app._ollamaAddress = {in_use: 'http://gpu-box:11434', saved: 'http://gpu-box:11434', environment: ''};
+    assert.equal(app._ollamaOverrideNote(), '');
+    app.providerConnections = {ollama: {status: 'ready', url: 'http://gpu-box:11434', model_count: 2, saved: true,
+        action: 'save', address: app._ollamaAddress}};
+    assert.equal(app._ollamaCardStatus(), 'Connected to http://gpu-box:11434 · 2 chat models. Choose one in the model menu.');
+    assert.equal(app._onboardingSteps().model, true);  // a saved, working connection
+});
+
+test('a check updates only the Ollama card: other fields and focus stay as they are', () => {
+    const app = grantApp();
+    const body = app.el('div');
+    const card = app.el('div');
+    card.setAttribute('data-ollama-card', '');
+    const status = app.el('p');
+    status.setAttribute('data-ollama-status', '');
+    const override = app.el('p');
+    override.setAttribute('data-ollama-override', '');
+    const input = app.el('input');
+    input.setAttribute('data-ollama-url', '');
+    input.value = 'typed-but-not-saved';
+    const buttons = ['test', 'save'].map(action => {
+        const button = app.el('button');
+        button.setAttribute('data-ollama-action', action);
+        button.textContent = action === 'test' ? 'Testing…' : 'Save';
+        button.setAttribute('aria-disabled', 'true');
+        return button;
+    });
+    card.append(status, override, input, ...buttons);
+    const key = app.el('input');  // an API key being typed further down the page
+    key.value = 'sk-ant-half-typ';
+    body.append(card, key);
+    app.dom.body.appendChild(body);
+    key.focus();
+    let rendered = 0;
+    Object.assign(app, {settingsBody: body, currentView: 'settings', settings: {network: {ollama_url: ''}},
+        renderSettingsView: () => { rendered += 1; }, _renderAccountMenu: () => {}, _ollamaPending: 'test',
+        _ollamaUrlDraft: 'typed-but-not-saved'});
+    app.handleEvent({event: 'provider_connection', provider: 'ollama', data: {status: 'ready',
+        url: 'http://127.0.0.1:11434', model_count: 1, saved: false, action: 'test',
+        address: {in_use: 'http://127.0.0.1:11434', saved: '', environment: ''}}});
+    assert.equal(rendered, 0);
+    assert.equal(app.dom.document.activeElement, key);
+    assert.equal(key.value, 'sk-ant-half-typ');
+    assert.equal(input.value, 'typed-but-not-saved');
+    assert.match(status.textContent, /^Ollama answered at http:\/\/127\.0\.0\.1:11434 with 1 chat model\. Nothing was saved/);
+    assert.deepEqual(buttons.map(button => [button.textContent, button.getAttribute('aria-disabled')]),
+        [['Test', null], ['Save', null]]);
+    assert.equal(override.hidden, true);
+});
+
+test('the diagnostics note names Luminary Analytics support and its address', () => {
+    const app = grantApp();
+    app._showDiagnosticsToast('C:/Users/x/Downloads/lumi-diagnostics-1.zip', 2048, true);
+    const toast = app.chatMessages.querySelector('.diagnostics-toast');
+    assert.match(toast.querySelector('.diagnostics-toast-meta').textContent,
+        /email it with your report to Luminary Analytics support at rich\.bellantoni@luminaryanalytics\.com\./);
+    assert.ok(toast.querySelector('.diagnostics-toast-copy-email'));
+    assert.doesNotMatch(toast.textContent, /GitHub/);
+});
+
+test('a "Not sent" message stays with its conversation when another one loads', () => {
+    const app = grantApp();
+    Object.assign(app, {
+        userInput: {value: 'typing', style: {}, scrollHeight: 40, focus: () => {}},
+        attachedImages: [], renderAttachedImages: () => {}, _markDraftEdited: () => {}, _saveDraft: () => {},
+        _syncComposerQueue: () => {}, composerQueue: app.el('div', 'composer-queue'), currentSessionId: 's1',
+    });
+    app._restoreRefusedText('the refused message', []);
+    const [item] = app.composerQueue.children;
+    // Another conversation loads (init rebuilds the queue): the message waits aside.
+    app.currentSessionId = 's2';
+    app.composerQueue.replaceChildren = (...nodes) => {
+        app.composerQueue.textContent = '';
+        nodes.forEach(node => app.composerQueue.appendChild(node));
+    };
+    app.composerQueue.replaceChildren(...app._unsentMessagesFor('s2'));
+    assert.equal(app.composerQueue.children.length, 0);
+    // Back to the first conversation: the same message, under its message box again.
+    app.currentSessionId = 's1';
+    app.composerQueue.replaceChildren(...app._unsentMessagesFor('s1'));
+    assert.deepEqual(app.composerQueue.children, [item]);
+    assert.equal(item.querySelector('small').textContent, 'the refused message');
+});
+
+test('Settings says when settings.json was not read or not saved, even while a field is being edited', () => {
+    const app = grantApp();
+    const body = app.el('div');
+    const field = app.el('input');
+    body.appendChild(field);
+    app.dom.body.appendChild(body);
+    field.focus();
+    Object.assign(app, {settingsBody: body, currentView: 'settings', _renderAccountMenu: () => {},
+        _syncAutonomousSwitch: () => {}, _syncDictationButton: () => {}, renderSettingsView: () => {},
+        _renderPermissionCopy: () => {}, _applyRuntimeError: () => {}});
+    Object.getPrototypeOf(body).prepend = function (node) { this.insertBefore(node, this.childNodes[0] || null); };
+    const save = 'Lumi couldn\u2019t save its settings to C:/Users/x/.lumi/settings.json: Access is denied.';
+    app.handleEvent({event: 'settings', data: {general: {}, _meta: {load_error: '', save_error: save}}});
+    const banners = body.querySelectorAll('.settings-file-banner');
+    assert.deepEqual(banners.map(node => node.textContent), [save]);
+    assert.equal(banners[0].getAttribute('role'), 'alert');
+    assert.equal(app.dom.document.activeElement, field);
+    // A save that lands clears it.
+    app.handleEvent({event: 'settings', data: {general: {}, _meta: {load_error: '', save_error: ''}}});
+    assert.equal(body.querySelectorAll('.settings-file-banner').length, 0);
+});
+
+test('a save that fails elsewhere is shown at once, and drafts and the field being edited stay', () => {
+    const app = grantApp();
+    const body = app.el('div');
+    const field = app.el('input');
+    body.appendChild(field);
+    app.dom.body.appendChild(body);
+    field.focus();
+    const drafts = {general: {display_name: 'Alex'}};
+    const above = [];
+    Object.assign(app, {settingsBody: body, currentView: 'settings', _settingsDrafts: drafts,
+        settings: {general: {theme: 'dark'}, _meta: {load_error: '', save_error: '', locked: {}}},
+        renderSettingsView: () => { throw new Error('the page was redrawn'); },
+        _applyRuntimeError: event => above.push(event.settings._meta.save_error)});
+    Object.getPrototypeOf(body).prepend = function (node) { this.insertBefore(node, this.childNodes[0] || null); };
+    const save = 'Lumi couldn\u2019t save its settings to C:/Users/x/.lumi/settings.json: Access is denied.';
+    app.handleEvent({event: 'settings_file', load_error: '', save_error: save});
+    assert.deepEqual(body.querySelectorAll('.settings-file-banner').map(node => node.textContent), [save]);
+    assert.deepEqual(above, [save]);  // the banner above the message box says it too
+    assert.equal(app._settingsDrafts, drafts);
+    assert.equal(app.settings.general.theme, 'dark');
+    assert.deepEqual(Object.keys(app.settings._meta).sort(), ['load_error', 'locked', 'save_error']);
+    assert.equal(app.dom.document.activeElement, field);
+    app.handleEvent({event: 'settings_file', load_error: '', save_error: ''});
+    assert.equal(body.querySelectorAll('.settings-file-banner').length, 0);
+    assert.deepEqual(above, [save, '']);
+    // Before init brings the settings (with the file's state), there's nothing to update.
+    const early = grantApp();
+    Object.assign(early, {settings: {}, _applyRuntimeError: () => { throw new Error('not yet'); }});
+    early.handleEvent({event: 'settings_file', load_error: '', save_error: save});
+    assert.deepEqual(Object.keys(early.settings), []);
+});
+
+// Lumi's terms (terms_view.js, settings_view.js): at first launch the dialog shows
+// them and the message box stays locked until the dialog's own Accept button, on
+// a click the browser reports as the person's, accepts the versions it showed.
+// Decline leaves a notice whose Review terms opens the dialog again.
+function termsView() {
+    const element = (id, extra = {}) => {
+        const listeners = {};
+        const classes = new Set();
+        return {
+            id, hidden: false, disabled: false, textContent: '', innerHTML: '', placeholder: 'Message Lumi', listeners,
+            style: {}, dataset: {}, scrollTop: 0,
+            classList: {toggle: (name, on) => (on ? classes.add(name) : classes.delete(name)), has: name => classes.has(name),
+                add: name => classes.add(name), remove: name => classes.delete(name)},
+            addEventListener: (type, fn) => { listeners[type] = fn; },
+            setAttribute() {},
+            focus() { if (!this.disabled) document.activeElement = this; },
+            ...extra,
+        };
+    };
+    const wrapper = element('input-wrapper');
+    const ids = ['terms-notice', 'terms-notice-text', 'terms-notice-review', 'terms-dialog', 'terms-dialog-title',
+        'terms-dialog-intro', 'terms-dialog-body', 'terms-dialog-error', 'terms-dialog-consent', 'terms-dialog-back',
+        'terms-dialog-privacy', 'terms-dialog-decline', 'terms-dialog-accept', 'terms-dialog-done', 'terms-dialog-close',
+        'oversight-notice', 'send-btn', 'add-context-btn', 'mic-btn', 'composer-autonomous-btn', 'composer-prompts-btn'];
+    const elements = Object.fromEntries(ids.map(id => [id, element(id)]));
+    elements['terms-notice'].hidden = true;
+    elements['user-input'] = element('user-input', {value: 'a draft', closest: selector => (selector === '.input-wrapper' ? wrapper : null)});
+    const document = {activeElement: null, getElementById: id => elements[id] || null, contains: () => true};
+    const context = vm.createContext({console, window: {}, document, WebSocket: {OPEN: 1}, setTimeout: () => {}, clearTimeout: () => {}});
+    vm.runInContext(source + '\nthis.App = LumiApp;', context);
+    for (const [file, name] of [['settings_view.js', 'LumiSettingsView'], ['terms_view.js', 'LumiTermsView']]) {
+        vm.runInContext(fs.readFileSync(path.join(__dirname, '../lumi/gui/static/' + file), 'utf8') + `\nthis.View = ${name};`, context);
+        for (const key of Object.getOwnPropertyNames(context.View.prototype)) {
+            if (key !== 'constructor') Object.defineProperty(context.App.prototype, key, Object.getOwnPropertyDescriptor(context.View.prototype, key));
+        }
+    }
+    const app = Object.create(context.App.prototype);
+    const toasts = [];
+    Object.assign(app, {
+        sent: [], userInput: elements['user-input'], sendBtn: elements['send-btn'], stopBtn: element('stop-btn'),
+        currentView: 'agents', isRunning: false, ws: {readyState: 1}, _queuedMessages: new Map(),
+        showToastMessage: message => toasts.push(message), toasts,
+        _renderAccountMenu() {}, _clearPromptSuggestion() {}, _setSessionActivity() {}, _startLiveRun() {}, _stopLiveRun() {},
+    });
+    app.send = message => app.sent.push({...message});
+    return {app, elements, wrapper, document};
+}
+
+const TERMS = {pending: true, prerelease: true, organization: '', acceptance_value: 'eula-1.0,alpha-terms-1.0',
+    required: [
+        {id: 'eula', title: 'Lumi End User License Agreement', version: '1.0', published: '2026-09-29', published_text: 'September 29, 2026', accepted: false, previous_version: ''},
+        {id: 'alpha_terms', title: 'Lumi Alpha and Beta Test Terms', version: '1.0', published: '2026-09-29', published_text: 'September 29, 2026', accepted: false, previous_version: ''}],
+    documents: {}};
+
+test('Lumi’s terms open at first launch and lock the message box until Accept', () => {
+    const {app, elements, wrapper, document} = termsView();
+    document.activeElement = elements['user-input'];
+    app._applyTerms(TERMS);
+    assert.equal(elements['terms-dialog'].style.display, 'flex');
+    assert.equal(elements['terms-notice'].hidden, false);
+    assert.equal(elements['user-input'].disabled, true);
+    assert.equal(wrapper.classList.has('is-oversight-locked'), true);
+    assert.equal(elements['user-input'].placeholder, 'Accept Lumi’s terms to start');
+    // Reading starts in the text; focus never lands on Accept by itself.
+    assert.equal(document.activeElement, elements['terms-dialog-body']);
+    assert.deepEqual(app.sent.map(message => message.command + ':' + message.id), ['legal_document:eula', 'legal_document:alpha_terms']);
+    app._receiveLegalDocument({id: 'eula', format: 'text', text: 'The agreement'});
+    app._receiveLegalDocument({id: 'alpha_terms', format: 'text', text: 'The test terms'});
+    assert.match(elements['terms-dialog-body'].innerHTML, /The agreement[\s\S]*The test terms/);
+    assert.match(elements['terms-dialog-consent'].innerHTML, /version 1\.0, published September 29, 2026\) and the Lumi Alpha/);
+    assert.equal(elements['terms-dialog-accept'].hidden, false);
+    // Nothing is sent: not the page's own send, not a script's click on Accept.
+    app.sent.length = 0;
+    app.sendMessage();
+    assert.deepEqual(app.sent, []);
+    assert.match(app.toasts[0], /Accept Lumi’s terms first/);
+    elements['terms-dialog-accept'].listeners.click({isTrusted: false});
+    elements['terms-dialog-accept'].listeners.click();
+    assert.deepEqual(app.sent, []);
+    elements['terms-dialog-accept'].listeners.click({isTrusted: true});
+    assert.deepEqual(Array.from(app.sent, message => JSON.stringify(message)),
+        [JSON.stringify({command: 'terms_accept', documents: {eula: '1.0', alpha_terms: '1.0'}})]);
+    // The server's answer closes the dialog and unlocks the message box, which takes the focus.
+    app._applyTerms({...TERMS, pending: false, required: TERMS.required.map(doc => ({...doc, accepted: true}))});
+    assert.equal(elements['terms-dialog'].style.display, 'none');
+    assert.equal(elements['terms-notice'].hidden, true);
+    assert.equal(elements['user-input'].disabled, false);
+    assert.equal(elements['user-input'].placeholder, 'Message Lumi');
+    assert.equal(document.activeElement, elements['user-input']);
+    assert.equal(elements['user-input'].value, 'a draft');
+});
+
+test('Decline or Escape leaves the notice, and Review terms opens the dialog again', () => {
+    const {app, elements, document} = termsView();
+    app._applyTerms(TERMS);
+    elements['terms-dialog'].listeners.keydown({key: 'Escape', preventDefault() {}, stopPropagation() {}});
+    assert.equal(elements['terms-dialog'].style.display, 'none');
+    assert.equal(document.activeElement, elements['terms-notice-review']);
+    assert.equal(elements['user-input'].disabled, true);
+    // A status push about the same terms doesn't reopen it; the notice's button does.
+    app._applyTerms(TERMS);
+    assert.equal(elements['terms-dialog'].style.display, 'none');
+    elements['terms-notice-review'].listeners.click({currentTarget: elements['terms-notice-review']});
+    assert.equal(elements['terms-dialog'].style.display, 'flex');
+    elements['terms-dialog-decline'].listeners.click({isTrusted: true});
+    assert.equal(elements['terms-dialog'].style.display, 'none');
+    assert.equal(app.sent.filter(message => message.command === 'terms_accept').length, 0);
+    // New terms (another version) ask again.
+    app._applyTerms({...TERMS, acceptance_value: 'eula-2.0,alpha-terms-1.0'});
+    assert.equal(elements['terms-dialog'].style.display, 'flex');
+});
+
+test('the terms come before the organization’s notice, which keeps the box locked once they’re accepted', () => {
+    const {app, elements} = termsView();
+    app._setOversightLock(true);
+    app._applyTerms(TERMS);
+    assert.equal(elements['user-input'].placeholder, 'Accept Lumi’s terms to start');
+    app._applyTerms({...TERMS, pending: false});
+    assert.equal(elements['user-input'].disabled, true);
+    assert.equal(elements['user-input'].placeholder, 'Confirm the notice above to start');
+    assert.match(app._composerLockMessage(), /oversight notice/);
+});
+
+test('About Lumi says who accepted the terms and opens every text', () => {
+    const {app} = termsView();
+    const about = terms => { app.aboutInfo = {version: '0.20.0', license: 'Lumi End User License Agreement', terms}; return app._renderAbout(); };
+    const pending = about(TERMS);
+    assert.match(pending, /Not accepted yet/);
+    for (const id of ['terms', 'eula', 'alpha_terms', 'privacy', 'notices']) assert.match(pending, new RegExp(`data-legal-doc="${id}"`));
+    const accepted = about({...TERMS, pending: false, required: TERMS.required.map(doc => ({...doc, accepted: true, accepted_at: '2026-09-28T12:00:00Z'}))});
+    assert.match(accepted, /You accepted the Lumi End User License Agreement 1\.0 on .*2026 and the Lumi Alpha and Beta Test Terms 1\.0/);
+    assert.doesNotMatch(accepted, /data-legal-doc="terms"/);
+    const organization = about({...TERMS, pending: false, organization: 'Acme <Corp>'});
+    assert.match(organization, /Accepted for everyone who uses Lumi on this computer by Acme &lt;Corp&gt;, through its machine policy\./);
+});
+
+// A message the server refused before any turn started (`refused`: Lumi's terms,
+// the organization's notice or policy) ends the running state sendMessage set,
+// gives the text back to the message box and marks its card "Not sent", with no
+// Retry (the PR #104 review; PR #105's contract). The real turn handlers and
+// run_cards.js, as turnSummaryApp mixes them in.
+function refusedTurnApp() {
+    const app = turnSummaryApp();
+    const calls = [];
+    Object.assign(app, {
+        userInput: {value: '', style: {}, scrollHeight: 40},
+        isRunning: false, _queuedMessages: new Map(), toasts: [],
+        _removeLiveAgentTodoStrip() {}, _syncComposerQueue() {},
+        setRunning(running) { calls.push(`running:${running}`); app.isRunning = running; },
+        clearTerminals() { calls.push('clearTerminals'); },
+        _markDraftEdited() { calls.push('draftEdited'); },
+        _saveDraft() { calls.push(`draftSaved:${app.userInput.value}`); },
+        showToastMessage(message) { app.toasts.push(message); },
+    });
+    app.calls = calls;
+    // What sendMessage does before the message leaves: the optimistic turn, running.
+    app.sendTurn = text => {
+        app._prepareTurnUI(text, []);
+        app._pendingTurnText = text;
+        app.setRunning(true);
+        app.userInput.value = '';
+    };
+    app.card = () => {
+        const card = app.chatMessages.children.filter(node => node.classList.contains('task-card')).at(-1);
+        const footer = card.children[3];
+        const summary = footer.children.find(child => child.classList.contains('task-run-summary'));
+        return {
+            state: card.dataset.outcome, label: /task-run-label">([^<]*)/.exec(summary?.innerHTML)?.[1] || '',
+            actions: summary.children.filter(child => child.className === 'task-recovery-actions').length,
+            classes: card.className,
+        };
+    };
+    return app;
+}
+
+const TERMS_REFUSAL = 'Lumi won’t send anything to a model until you accept its terms: the Lumi End User License Agreement (version 1.0). Choose Review terms above the message box.';
+
+test('a refused message ends the running state, comes back to the message box and reads Not sent', () => {
+    for (const code of ['terms_not_accepted', 'oversight_notice', 'policy_blocked']) {
+        const app = refusedTurnApp();
+        app.sendTurn('fix the login bug');
+        assert.equal(app.isRunning, true);
+        app.handleEvent({event: 'error', refused: true, code, message: TERMS_REFUSAL});
+        assert.equal(app.isRunning, false, code);
+        assert.equal(app.userInput.value, 'fix the login bug', code);
+        assert.ok(app.calls.includes('clearTerminals') && app.calls.includes('draftSaved:fix the login bug'), code);
+        assert.equal(app._pendingTurnText, '', code);
+        const card = app.card();
+        assert.equal(card.label, 'Not sent', code);
+        assert.equal(card.actions, 0, code);  // nothing to retry: the text is in the message box
+        assert.match(card.classes, /task-card-warning/, code);
+    }
+});
+
+test('a refusal never overwrites what the person typed meanwhile, and a refused follow-up leaves the queue', () => {
+    const app = refusedTurnApp();
+    app.sendTurn('first message');
+    app.userInput.value = 'typed since';
+    app.handleEvent({event: 'error', refused: true, code: 'terms_not_accepted', message: TERMS_REFUSAL});
+    assert.equal(app.userInput.value, 'typed since');
+    // A follow-up queued behind a running turn: that turn keeps running, the follow-up comes back.
+    const queued = refusedTurnApp();
+    queued.sendTurn('running turn');
+    const removed = [];
+    queued._queuedMessages.set('m2', {text: 'the follow-up', el: {remove: () => removed.push('m2')}});
+    queued.handleEvent({event: 'error', refused: true, code: 'terms_not_accepted', message: TERMS_REFUSAL,
+        message_id: 'm2'});
+    assert.equal(queued.isRunning, true);
+    assert.deepEqual(removed, ['m2']);
+    assert.equal(queued._queuedMessages.size, 0);
+    assert.equal(queued.userInput.value, 'the follow-up');
+    assert.deepEqual(queued.toasts, [TERMS_REFUSAL]);
+});
+
+test('a refusal the engine gives after a turn started ends the running state too', () => {
+    // Session.run returns at once when the gate or the policy refuses, with no session.end.
+    for (const code of ['terms_not_accepted', 'oversight_notice', 'policy_blocked', 'offline', 'budget_exceeded']) {
+        const app = refusedTurnApp();
+        app.sendTurn('hello');
+        app.handleEvent({event: 'error', code, message: 'Refused.'});
+        assert.equal(app.isRunning, false, code);
+        assert.equal(app.userInput.value, '', code);  // the message was saved with the turn
+        assert.equal(app.card().label, 'Failed', code);
+    }
+    const other = refusedTurnApp();
+    other.sendTurn('hello');
+    other.handleEvent({event: 'error', code: 'model_error', message: 'The model stopped responding.'});
+    assert.equal(other.isRunning, true);  // an error mid-turn waits for its session.end, as before
+});
+
+test('About Lumi on a stable build offers no test terms, and says what leaves the computer', () => {
+    const {app} = termsView();
+    const about = terms => { app.aboutInfo = {version: '0.20.0', license: 'Lumi End User License Agreement', terms}; return app._renderAbout(); };
+    const stable = about({...TERMS, prerelease: false, pending: false, readable: ['eula', 'privacy'],
+        required: [{...TERMS.required[0], accepted: true, accepted_at: '2026-09-29T12:00:00Z'}]});
+    assert.doesNotMatch(stable, /data-legal-doc="alpha_terms"/);
+    for (const id of ['eula', 'privacy', 'notices']) assert.match(stable, new RegExp(`data-legal-doc="${id}"`));
+    const beta = about({...TERMS, readable: ['eula', 'alpha_terms', 'privacy']});
+    assert.match(beta, /data-legal-doc="alpha_terms"/);
+    // The review: About said Luminary receives only the update check.
+    assert.doesNotMatch(stable, /receives only the update check/);
+    assert.match(stable, /Lumi Cloud receives more only when you sign in or this computer is enrolled/);
+    assert.match(stable, /usage and crash counts/);
+    // The re-review: oversight's records go to Lumi Cloud too.
+    assert.match(stable, /the records your organization’s oversight asks for/);
+});
+
+test('an organization policy that can’t be read shows its error, not the terms, and nothing to accept', () => {
+    // The re-review of PR #104: an unreachable Group Policy PolicyFile opened the terms dialog, and
+    // accepting recorded a personal acceptance while the organization's own acceptance was unknown.
+    const {app, elements, document} = termsView();
+    const error = 'The policy file Group Policy names couldn’t be read: \\\\fileserver\\it\\lumi-policy.json. Ask your administrator to fix it.';
+    document.activeElement = elements['user-input'];
+    app._applyTerms({...TERMS, policy_error: error});
+    assert.notEqual(elements['terms-dialog'].style.display, 'flex');
+    assert.equal(elements['terms-notice'].hidden, false);
+    assert.equal(elements['terms-notice-text'].textContent, error);
+    assert.equal(elements['terms-notice-review'].hidden, true);
+    // The message box stays open, as for the policy's other refusals: the server refuses what's sent.
+    assert.equal(elements['user-input'].disabled, false);
+    assert.equal(elements['user-input'].placeholder, 'Message Lumi');
+    assert.equal(document.activeElement, elements['user-input']);
+    // Opened from About to read, the dialog offers no Accept, and a click on it sends nothing.
+    app.openTermsDialog();
+    assert.equal(elements['terms-dialog-accept'].hidden, true);
+    assert.equal(elements['terms-dialog-error'].textContent, error);
+    elements['terms-dialog-accept'].listeners.click({isTrusted: true});
+    assert.equal(app.sent.filter(message => message.command === 'terms_accept').length, 0);
+    app.closeTermsDialog();
+    // Fixed, the policy accepts for its organization: nothing waits.
+    app._applyTerms({...TERMS, pending: false, organization: 'Acme',
+        required: TERMS.required.map(doc => ({...doc, accepted: false}))});
+    assert.equal(elements['terms-notice'].hidden, true);
+    assert.equal(elements['terms-notice-review'].hidden, false);
+    assert.equal(elements['user-input'].disabled, false);
+    // Fixed without accepting for anyone: now the person is asked.
+    app._applyTerms({...TERMS, acceptance_value: 'eula-1.0,alpha-terms-1.0'});
+    assert.equal(elements['terms-dialog'].style.display, 'flex');
+    assert.equal(elements['terms-dialog-accept'].hidden, false);
+});
+
+test('the terms dialog opens at the top of its text every time', () => {
+    const {app, elements, document} = termsView();
+    const card = {scrollTop: 0};
+    elements['terms-dialog'].querySelector = selector => (selector === '.terms-dialog' ? card : null);
+    app._applyTerms(TERMS);
+    app._receiveLegalDocument({id: 'eula', format: 'text', text: 'The agreement'});
+    app._receiveLegalDocument({id: 'alpha_terms', format: 'text', text: 'The test terms'});
+    // The person reads down, then closes the dialog.
+    elements['terms-dialog-body'].scrollTop = 900;
+    card.scrollTop = 40;
+    elements['terms-dialog'].listeners.keydown({key: 'Escape', preventDefault() {}, stopPropagation() {}});
+    elements['terms-notice-review'].listeners.click({currentTarget: elements['terms-notice-review']});
+    assert.equal(elements['terms-dialog'].style.display, 'flex');
+    assert.equal(elements['terms-dialog-body'].scrollTop, 0);
+    assert.equal(card.scrollTop, 0);
+    assert.equal(document.activeElement, elements['terms-dialog-body']);
+    // So does another text, and the way back to the terms.
+    elements['terms-dialog-body'].scrollTop = 300;
+    elements['terms-dialog-privacy'].listeners.click();
+    assert.equal(elements['terms-dialog-body'].scrollTop, 0);
+    app._receiveLegalDocument({id: 'privacy', format: 'text', text: 'The notice'});
+    elements['terms-dialog-body'].scrollTop = 200;
+    elements['terms-dialog-back'].listeners.click();
+    assert.equal(elements['terms-dialog-body'].scrollTop, 0);
 });

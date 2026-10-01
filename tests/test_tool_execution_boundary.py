@@ -37,7 +37,8 @@ def test_grep_pattern_is_not_rewritten_as_a_project_path(tmp_path):
     )
 
     assert prepared["pattern"] == "needle"
-    assert prepared["path"] == os.path.normcase(os.path.realpath(tmp_path))
+    # As spelled on disk, never case-folded (tests/test_file_name_case.py).
+    assert prepared["path"] == os.path.realpath(tmp_path)
 
 
 @pytest.mark.parametrize("tool_name", ["glob", "grep"])
@@ -86,7 +87,7 @@ def test_grep_file_glob_cannot_supply_a_path(tmp_path):
 
 def test_git_cwd_defaults_to_session_working_directory(tmp_path):
     prepared = _session(tmp_path)._prepare_workspace_tool_args("git_status", {})
-    assert prepared["cwd"] == os.path.normcase(os.path.realpath(tmp_path))
+    assert prepared["cwd"] == os.path.realpath(tmp_path)
 
 
 def test_batch_rejects_mutating_child_before_execution(tmp_path):
@@ -160,6 +161,8 @@ def test_grep_prefers_ripgrep_when_available():
 
     assert command[0] == "/usr/bin/rg"
     assert command[-2:] == ["--", "src"]
+    # A NUL ends each path, so it is decoded apart from the file's own text.
+    assert "--null" in command
     # Dotfile directories like .github/ are working files, not noise.
     assert "--hidden" in command
     assert command[command.index("--glob") + 1] == "!.git/"
@@ -170,6 +173,8 @@ def test_grep_passes_file_glob_through_to_ripgrep():
         command = _build_grep_command("needle", "src", "*.py")
 
     globs = [command[i + 1] for i, arg in enumerate(command) if arg == "--glob"]
+    # VCS internals are never searched; the model's glob follows. The
+    # person's .lumi files (LUMI.md, packs) are searched like any other.
     assert globs == ["!.git/", "*.py"]
 
 
@@ -186,16 +191,18 @@ def test_grep_falls_back_to_findstr_on_windows_without_ripgrep():
     with _with_ripgrep(None), patch("lumi.engine.tools.sys.platform", "win32"):
         command = _build_grep_command("needle", "src", "")
 
-    assert command[0] == "findstr"
+    # The system's own, by its full path (lumi/executables.py).
+    assert Path(command[0]).stem.lower() == "findstr" and Path(command[0]).is_absolute()
 
 
 def test_grep_falls_back_to_posix_grep_without_ripgrep():
     with _with_ripgrep(None), patch("lumi.engine.tools.sys.platform", "linux"):
         command = _build_grep_command("needle", "src", "*.py")
 
-    assert command[0] == "grep"
+    assert Path(command[0]).stem.lower() == "grep" and Path(command[0]).is_absolute()
     # Extended syntax: `a|b`, `x+` and groups mean what they do in ripgrep.
     assert command[1] == "-rnE"
+    assert "--null" in command  # GNU and BSD grep (BSD's -Z decompresses)
     assert "--include=*.py" in command
     assert command[-2:] == ["needle", "src"]
 
@@ -203,7 +210,7 @@ def test_grep_falls_back_to_posix_grep_without_ripgrep():
 def test_bundled_ripgrep_wins_over_whatever_is_on_path(tmp_path):
     """A packaged install ships a pinned, verified rg; it must be preferred so
     every user gets the same search behaviour."""
-    from lumi.engine.tools import _ripgrep_executable
+    from lumi.engine.tools import _bundled_ripgrep, _ripgrep_executable
 
     bundle = tmp_path / "_internal"
     bundle.mkdir()
@@ -211,32 +218,32 @@ def test_bundled_ripgrep_wins_over_whatever_is_on_path(tmp_path):
     bundled = bundle / name
     bundled.write_text("", encoding="utf-8")
 
-    _ripgrep_executable.cache_clear()
+    _bundled_ripgrep.cache_clear()
     try:
         with patch("lumi.engine.tools.sys._MEIPASS", str(bundle), create=True), \
-             patch("lumi.engine.tools.shutil.which", return_value="/usr/bin/rg"):
+             patch("lumi.engine.tools.find_program", return_value="/usr/bin/rg"):
             assert _ripgrep_executable() == str(bundled)
     finally:
-        _ripgrep_executable.cache_clear()
+        _bundled_ripgrep.cache_clear()
 
 
 def test_a_source_checkout_prefers_a_fetched_binary(tmp_path):
     """A developer who ran the fetch script gets the same rg the bundle ships,
     so `grep` behaves identically here and in a packaged install."""
-    from lumi.engine.tools import _ripgrep_executable
+    from lumi.engine.tools import _bundled_ripgrep, _ripgrep_executable
 
     vendored = tmp_path / "vendored"
     vendored.mkdir()
     name = "rg.exe" if os.name == "nt" else "rg"
     (vendored / name).write_text("", encoding="utf-8")
 
-    _ripgrep_executable.cache_clear()
+    _bundled_ripgrep.cache_clear()
     try:
         with patch("lumi.engine.tools._VENDORED_RIPGREP_DIR", vendored), \
-             patch("lumi.engine.tools.shutil.which", return_value="/usr/bin/rg"):
+             patch("lumi.engine.tools.find_program", return_value="/usr/bin/rg"):
             assert _ripgrep_executable() == str(vendored / name)
     finally:
-        _ripgrep_executable.cache_clear()
+        _bundled_ripgrep.cache_clear()
 
 
 def test_a_source_checkout_without_a_fetched_binary_uses_path(tmp_path):
@@ -246,33 +253,33 @@ def test_a_source_checkout_without_a_fetched_binary_uses_path(tmp_path):
     real repo, so this asserts the same thing whether or not the developer
     running it has fetched ripgrep.
     """
-    from lumi.engine.tools import _ripgrep_executable
+    from lumi.engine.tools import _bundled_ripgrep, _ripgrep_executable
 
-    _ripgrep_executable.cache_clear()
+    _bundled_ripgrep.cache_clear()
     try:
         with patch("lumi.engine.tools._VENDORED_RIPGREP_DIR", tmp_path / "absent"), \
-             patch("lumi.engine.tools.shutil.which", return_value="/usr/bin/rg"):
+             patch("lumi.engine.tools.find_program", return_value="/usr/bin/rg"):
             assert _ripgrep_executable() == "/usr/bin/rg"
     finally:
-        _ripgrep_executable.cache_clear()
+        _bundled_ripgrep.cache_clear()
 
 
 def test_a_bundle_without_ripgrep_still_falls_back(tmp_path):
     """Belt and braces: the bundle policy gate should prevent this, but a
     missing binary must degrade rather than crash the tool."""
-    from lumi.engine.tools import _ripgrep_executable
+    from lumi.engine.tools import _bundled_ripgrep, _ripgrep_executable
 
     empty = tmp_path / "_internal"
     empty.mkdir()
 
-    _ripgrep_executable.cache_clear()
+    _bundled_ripgrep.cache_clear()
     try:
         with patch("lumi.engine.tools.sys._MEIPASS", str(empty), create=True), \
              patch("lumi.engine.tools._VENDORED_RIPGREP_DIR", tmp_path / "absent"), \
-             patch("lumi.engine.tools.shutil.which", return_value=None):
+             patch("lumi.engine.tools.find_program", return_value=None):
             assert _ripgrep_executable() is None
     finally:
-        _ripgrep_executable.cache_clear()
+        _bundled_ripgrep.cache_clear()
 
 
 def test_grep_finds_real_matches_through_the_selected_backend(tmp_path):

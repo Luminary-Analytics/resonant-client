@@ -192,6 +192,8 @@ def test_the_template_ships_passing_tests(tmp_path):
     assert "5 passed" in result.stdout
     manifest = json.loads((pack / "lumi-pack.json").read_text(encoding="utf-8"))
     assert (manifest["id"], manifest["name"], manifest["providers"][0]["id"]) == ("my-pack", "Acme models", "my-pack")
+    # The SDK's license (the Lumi Extension SDK License, which lets packs ship it) travels with the copy.
+    assert (pack / "lumi_extension" / "LICENSE").read_text(encoding="utf-8").startswith("Lumi Extension SDK License")
     with pytest.raises(ValueError, match="isn't empty"):
         _new_pack_module().create(pack)
 
@@ -330,9 +332,12 @@ def test_programs_come_from_path_or_the_pack_never_the_current_folder(tmp_path, 
     program.write_text("@echo off\n" if os.name == "nt" else "#!/bin/sh\n", encoding="utf-8")
     program.chmod(0o755)
     monkeypatch.chdir(here)
-    for path in ("", ".", os.pathsep.join([".", "relative"])):
+    # Nor from the working folder named in full (lumi/executables.py).
+    for path in ("", ".", os.pathsep.join([".", "relative"]), str(here)):
         with pytest.raises(extensions.ProviderExtensionError, match="isn't on PATH"):
             extensions.find_program(name, path)
+    (tmp_path / "elsewhere").mkdir()
+    monkeypatch.chdir(tmp_path / "elsewhere")
     assert Path(extensions.find_program(name, str(here))) == program
 
     pack = SimpleNamespace(name="Acme", path=str(tmp_path / "pack"))

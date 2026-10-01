@@ -110,7 +110,7 @@ def test_an_unchanged_index_leaves_the_cache_alone(tmp_path):
     _write(tmp_path, "a.py")
     index = CodebaseIndex(tmp_path)
     index.index()
-    cache = tmp_path / ".lumi" / "index.json"
+    cache = index._index_file  # Lumi's state for the project (~/.lumi/projects/<id>)
     text = cache.read_text(encoding="utf-8")
     assert "\n" not in text  # compact
     before = cache.stat().st_mtime_ns

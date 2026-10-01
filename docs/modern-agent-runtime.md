@@ -258,6 +258,10 @@ each specialist starts, so a change applies from the next one:
   fails blocks the specialist.
 
 Specialists run in Full-auto, since nobody can answer their approval prompts.
+From a conversation in another mode, the desktop asks before it starts a
+plan, a roadmap or an autonomous session, and runs that one in Full-auto only
+once the person chooses it for that run; the conversation keeps its mode
+(`AppState.full_auto_needed`; [permission modes](desktop-workflow.md#permission-modes-and-approvals)).
 Where the organization's `permissions.allowed_modes` leaves out `bypass`,
 missions and autonomous sessions don't run (`policy.full_auto_refusal`):
 **Build this roadmap** and starting or resuming an autonomous session are
@@ -314,13 +318,16 @@ Explicit attachments are inserted in chat with:
 @issue:ENG-12
 @handoff:hof_0123456789abcdef
 @handoff:.lumi/handoffs/api-rename-20260925-1509.json
+@team:swarm_0123456789abcdef…
 ```
 
 `#L10-24` (or `#L10`) attaches only those lines; the [code editor
 extensions](code-editors.md) send selections this way. Quote a path with
 spaces: `@file:"docs/my notes.md#L3-8"`. A `@handoff:` attachment ([hand-offs](hand-offs.md))
 stays for the rest of the conversation: later messages and a reopened
-conversation get it without mentioning it again. Every resolved item carries a
+conversation get it without mentioning it again. So does `@team:<run id>`:
+one of this conversation's own teams ([Team preview](swarming.md#use-a-teams-results-in-the-chat)),
+its report and accepted results as model-written context. Every resolved item carries a
 provider, label, provenance, freshness metadata, and estimated size. The Context cockpit lists available providers. Repository
 maps use Python ASTs and optional `tree-sitter-language-pack` grammars before
 falling back to conservative regex extraction.

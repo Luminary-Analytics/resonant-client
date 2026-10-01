@@ -46,9 +46,15 @@ WORK="$(mktemp -d)"
 VENV="$WORK/venv"
 python3 -m venv "$VENV"
 PY="$VENV/bin/python"
-"$PY" -m pip install --disable-pip-version-check --no-cache-dir --upgrade pip
+# What this build is made with (its feedback address, from LUMI_BUILD_FEEDBACK_URL),
+# before Lumi is installed and bundled; removed when the script ends.
+trap 'rm -f "$ROOT/lumi/_build_config.py"' EXIT
+"$PY" packaging/build_config.py
+# Only hash-pinned packages: the pip that comes with this Python, the locked
+# dependencies, then Lumi from this checkout with the pinned setuptools and no
+# index, so nothing is resolved or downloaded again.
 "$PY" -m pip install --disable-pip-version-check --no-cache-dir --require-hashes -r packaging/requirements-release.txt
-"$PY" -m pip install --disable-pip-version-check --no-cache-dir --no-deps "$ROOT"
+"$PY" -m pip install --disable-pip-version-check --no-cache-dir --no-index --no-deps --no-build-isolation "$ROOT"
 
 NOTICES="$WORK/THIRD_PARTY_NOTICES.txt"
 "$PY" packaging/third_party_notices.py --out "$NOTICES"

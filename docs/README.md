@@ -38,6 +38,7 @@ guide belongs in that navigation; historical records stay out of it.
 - [Install, configure providers, and run](../README.md)
 - [Plans: free for individuals, and what's planned for organizations](plans.md)
 - [Lumi account and Lumi Cloud: signing in, enrolling this computer, sharing a conversation, managed enrollment](lumi-cloud.md)
+- [Sending feedback: what a report holds, what never leaves, and the contract with Lumi Cloud](feedback.md)
 - [Projects, sessions, search, and provider selection](desktop-workflow.md)
 - [The terminal UI: permission modes, project trust and commands](terminal-ui.md)
 - [Previews, project notes, skills, and named acceptance checks](priority-improvements.md)
@@ -50,9 +51,13 @@ guide belongs in that navigation; historical records stay out of it.
 - [Code review: agent changes wait for a named reviewer](code-review.md)
 - [A second person approves risky commands before they run](second-approval.md)
 - [Autonomous sessions (experimental): specs, budgets, spending limits and stop rules](autonomous-sessions.md)
+- [Team preview: investigations, isolated changes, recovery and reports](swarming.md) — source preview, not a qualified release
+- [Team provider eligibility and qualification matrix](swarming-provider-matrix.md)
+- [Managed team operator setup](swarming-managed-setup.md) and [governance operations](../services/governance/OPERATIONS.md)
+- [Personal collaboration](swarming-collaboration.md) and [managed collaboration](swarming-managed-collaboration.md)
 - [Skills and learning](skills.md)
 - [Writing a capability pack: the manifest, hooks, trust and sharing](packs.md)
-- [Extensions: add a model provider with the Extension SDK (manifest, protocol, template, checker)](extensions.md)
+- [Extensions: add a model provider with the Extension SDK (manifest, protocol, template, checker), or a sandboxed panel](extensions.md)
 - [Dictation: talking instead of typing, and the transcription service it uses](voice-input.md)
 - [Accessibility conformance report (draft, self-assessed WCAG 2.1 AA)](accessibility.md)
 - [Blender, Unity, and Unreal Engine 5 setup](creative-editors.md)
@@ -63,6 +68,13 @@ guide belongs in that navigation; historical records stay out of it.
 - [Shared agent/contributor instructions](../AGENTS.md)
 - [Architecture and module ownership](../ARCHITECTURE.md)
 - [Organization policy for administrators](enterprise-policy.md)
+- Lumi's terms: the [End User License Agreement](../lumi/legal/EULA.md), the
+  [Alpha and Beta Test Terms](../lumi/legal/ALPHA-TERMS.md), the
+  [privacy notice](../lumi/legal/PRIVACY.md) and the
+  [Extension SDK License](../sdk/LICENSE) (rendered from
+  `lumi/legal/terms.json`; see [RELEASING.md](../RELEASING.md#lumis-terms))
+- [Organization oversight: activity, messages and security flags](organization-oversight.md)
+- [Data loss prevention: the organization's rules for what's sent to model providers](dlp.md)
 - [Shell sandbox and command guardrails](shell-sandbox.md)
 - [Audit log and OpenTelemetry export](audit-log.md)
 - [Usage records and prices](usage-and-costs.md)
@@ -73,8 +85,9 @@ guide belongs in that navigation; historical records stay out of it.
 - [Fallback models, roles and capability overrides](models.md)
 - [Signing in to enterprise model endpoints (OAuth, Entra ID, client certificates)](connection-sign-in.md)
 - [Updates: channels, pins and turning them off](updates.md)
+- [Offline and air-gapped operation: offline mode, allowed hosts, updates from a file and the offline license](offline.md)
 - [Deploying on Windows: the MSI, Intune, Configuration Manager and Group Policy](deploy-windows.md)
-- [Lumi on macOS: building, signing and notarizing the app](macos.md)
+- [Lumi on macOS: installing, updates with Sparkle, building, signing and notarizing](macos.md)
 - [Deploying on macOS: the PKG, Jamf Pro, Intune and configuration profiles](deploy-macos.md)
 - [Lumi on Linux: the .deb, .rpm, AppImage and tarball, the desktop app in the browser, and servers](deploy-linux.md)
 - [Product and engineering priorities](agentic-harness-north-star.md)
@@ -88,6 +101,7 @@ guide belongs in that navigation; historical records stay out of it.
 
 - [Release runbook](../RELEASING.md)
 - [Release pipeline architecture](release-pipeline.md)
+- [Swarming live qualification plan and required environment](swarming-live-qualification.md)
 - [0.19.1 release notes and validation](v0.19.1-release-notes.md)
 - [0.19.0 release notes and validation](v0.19.0-release-notes.md)
 - [0.18.2 release notes and validation](v0.18.2-release-notes.md)
@@ -100,6 +114,20 @@ guide belongs in that navigation; historical records stay out of it.
 - [0.16.0 release notes](v0.16.0-release-notes.md)
 - [September 5 startup evaluation](ui-performance-pass-2026-09-05.md)
 - [September 8 recovery validation](recovery-validation-2026-09-08.md)
+
+## Planning proposals
+
+- [Swarming: product and implementation plan](swarming-plan.md): September 26
+  proposal for local session swarms, durable messaging, supervision, and later
+  enterprise governance. Added to the [feature roadmap](../ROADMAP.md#planned-feature-swarming-2026-09-26)
+  with P0–P7 milestones; P0/P1 foundations are checked and P2–P4 are in progress.
+- [Swarming implementation contracts](swarming-contracts.md): ownership, commands,
+  persistence and validation boundaries; not a release claim.
+- [Swarming delivery/evidence ledger](swarming-progress.md): current work, validation
+  and next steps through the full P0–P7 MVP target.
+- [Swarming benchmark fixtures](swarming-benchmarks.md): predeclared inputs and
+  acceptance harness; no measured model baseline or performance claim.
+- [Swarming terminology](../CONTEXT.md): glossary for the proposal.
 
 ## Historical design and evaluation
 

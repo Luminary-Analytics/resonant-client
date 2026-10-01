@@ -40,6 +40,72 @@
   tabs, while a Mission's plan ran. They were used with real key presses in
   both themes and at 375 px wide, and their names and states were read from
   Chrome's accessibility tree.
+- **Added September 27**: the dialog a capability pack's panel opens in
+  ([Panels](extensions.md#panels)), with real key presses in headless Edge
+  (tests/extension_panels.browser.cjs), in both themes and at 390 px wide.
+  - It is named by the panel's title. Focus starts on its close button, Tab
+    goes into the panel and, past the panel's last control, back to the close
+    button, and Shift+Tab goes the other way.
+  - Escape closes it from the close button or from inside the panel, and
+    focus returns to the Menu button or the command palette's button,
+    whichever opened it. It never goes to the message box, where the next
+    Enter would send text a panel added.
+  - A panel's notices show in its dialog as a status line, apart from Lumi's.
+  - Panels are listed under View, which is used with the pointer, and in the
+    command palette for the keyboard. Contrast inside a panel is the pack's
+    own, not measured here.
+- **Also added September 27**: the Send feedback dialog
+  ([Sending feedback](feedback.md)), with real key presses in headless Edge
+  (tests/feedback.browser.cjs), in both themes and at 375 px wide.
+  - It opens from Help with the pointer, and from the command palette, the
+    profile menu and About Lumi by keyboard; focus starts in the message.
+  - Tab and Shift+Tab stay inside it, and Escape closes it and returns focus
+    to what opened it (the Menu button when it came from Help). When the
+    control holding focus goes away (the waiting reports' **Send now** once
+    they're sent), focus moves to the message box, not out of the dialog.
+  - A field's error is tied to it (`aria-describedby`, `aria-invalid`), and
+    Send moves focus to the first field to fix and says the error on the
+    status line, since a field that already had focus isn't read again.
+    Refusals are announced (`role="alert"`), progress politely
+    (`role="status"`), and the report it will send can be scrolled from the
+    keyboard. When no report could be made (offline mode), its empty box is
+    hidden rather than left as a tab stop. A result that arrives after the
+    dialog closed is announced through a polite live region outside the
+    dialog (`#feedback-announcer`) as well as shown as a notification, and a
+    refusal from the last time is cleared when the dialog opens again.
+  - Each report waiting on this computer is a list item saying what it waits
+    for, with its own **Copy**, **Send to** and **Discard** buttons named for
+    it ("Discard the bug report"). An organization's switch is said in the
+    dialog's text, not only by a disabled button.
+  - The character counter counts what's sent (an emoji is one character) and
+    turns to the error color over the limit; the message box has no
+    `maxlength`, which browsers count in UTF-16 units.
+  - The report, its status line and notices, the error text, the character
+    counter, the destination line, the organization's switch and a waiting
+    report's text measured at least 4.5:1 in both themes. At 375 px the dialog
+    and the waiting reports' list stay on screen with no sideways scrolling,
+    and their buttons are at least 24 px.
+- **Added September 27, later**: the dialog that asks for Lumi's terms at
+  first launch, the notice it leaves above the message box, and the same
+  dialog reading a text from About Lumi, with real key presses in headless
+  Edge (tests/terms_acceptance.browser.cjs), in both themes and at 375 px.
+  - It is named "Lumi’s terms" (or the text it shows). Focus starts in the
+    text, which the arrow keys scroll, and never on Accept by itself; Tab
+    goes through the privacy notice link, Decline, Accept and the close
+    button and stays inside the dialog.
+  - Escape declines, never accepts, and focus goes to the notice's Review
+    terms button, whose Enter opens the dialog again. From About Lumi,
+    Escape returns focus to the button that opened the text.
+  - Text contrast measured 6.2:1 or more (Accept in the light theme) in both
+    themes, and the dialog fits at 375 px without a horizontal scroll.
+- **Added September 29**: a message refused because the terms wait again
+  (their acceptance no longer counts) leaves the running state: Stop goes,
+  the text comes back to the message box and its card reads "Not sent",
+  with no Retry; the terms dialog opens again, and accepting from the
+  keyboard returns focus to the message box with the text in it. At 375 px
+  the card fits in both themes, its label at 15.8:1 (dark) and 16:1 (light)
+  and its reason at 7.8:1 and 6.4:1. Accepting in one window unlocks a second
+  open window without a reload (tests/terms_acceptance.browser.cjs).
 
 ## Fixed during this review
 

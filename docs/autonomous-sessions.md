@@ -67,9 +67,13 @@ your organization's policy) are never read, and the project's instructions,
 notes and language servers are used only once you trust the project.
 
 Autonomous sessions run in Full-auto, since nobody is there to approve each
-step, and the session runs its own `[bash]` checks. If your organization's
-policy doesn't allow Full-auto, **Build autonomously** and **Resume** say so
-and start nothing; the spec card stays as it was. If such a policy arrives
+step, and the session runs its own `[bash]` checks. From another mode (new
+installs start in Auto-edit), **Build autonomously** and **Resume** start
+nothing and say why, with **Run this session in Full-auto** (or **Resume this
+session in Full-auto**): one click sends it again with your consent for that
+session only, and the conversation keeps its mode. If
+your organization's policy doesn't allow Full-auto, **Build autonomously** and
+**Resume** say so and start nothing; the spec card stays as it was. If such a policy arrives
 while a session runs, the step already running finishes, no further step
 starts, and the session stops before its next iteration or reflect pass.
 

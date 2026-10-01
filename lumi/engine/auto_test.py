@@ -12,13 +12,17 @@ The test target is inferred from the edited file path with simple heuristics:
 
 from __future__ import annotations
 
+import re
 import shlex
 import subprocess
 from pathlib import Path
 from typing import Optional
 
+from lumi.executables import configured_program, project_tool
 from lumi.processes import background_process_kwargs
-from lumi.secrets_store import child_env
+from lumi.secrets_store import server_env
+
+_PLAIN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._+-]*")  # a bare program name
 
 
 def find_test_target(project_path: Path | str, edited_file: Path | str) -> Optional[Path]:
@@ -81,9 +85,14 @@ def run_tests_for_edit(
     *,
     command: str = "pytest -x",
     timeout: float = 60.0,
+    trusted: bool = False,
 ) -> dict:
     """
     Find the test target for `edited_file` and run `command` scoped to it.
+
+    ``trusted``: the project is trusted, so a runner named by its bare name
+    (pytest, python) comes from the project's own ``.venv``, ``venv`` or
+    ``node_modules/.bin`` before PATH (lumi/executables.py ``project_tool``).
 
     Returns:
         {
@@ -126,11 +135,31 @@ def run_tests_for_edit(
         target_arg = str(target)
 
     argv = base + [target_arg]
+    # The configured runner by its full path. A bare name comes from a trusted
+    # project's own environment, else from PATH, never from the project
+    # otherwise; a relative path is the project's, as configured
+    # (lumi/executables.py). Programs only: cmd.exe would parse the file name.
+    configured = base[0].strip('"')
+    source, notice = "configured", ""
+    if _PLAIN.fullmatch(configured):
+        runner, source, notice = project_tool(configured, project, trusted=trusted)
+    else:
+        runner = configured_program(configured, folder=project)
+    if not runner or not Path(runner).is_file():
+        return {
+            "ok": True,  # treat "no runner installed" as non-failure (don't block the agent)
+            "target": str(target),
+            "output": "",
+            "skipped_reason": f"{base[0]} not installed",
+            "command": argv,
+            "source": "",
+            "notice": notice,
+        }
     try:
         proc = subprocess.run(
-            argv,
+            [runner, *argv[1:]],
             cwd=str(project),
-            env=child_env(),
+            env=server_env(),
             capture_output=True,
             text=True,
             timeout=max(0.5, timeout),
@@ -146,6 +175,8 @@ def run_tests_for_edit(
             "output": "",
             "skipped_reason": f"{base[0]} not installed",
             "command": argv,
+            "source": source,
+            "notice": notice,
         }
     except subprocess.TimeoutExpired:
         return {
@@ -154,6 +185,8 @@ def run_tests_for_edit(
             "output": f"(test run exceeded {timeout}s timeout)",
             "skipped_reason": "",
             "command": argv,
+            "source": source,
+            "notice": notice,
         }
 
     output = ((proc.stdout or "") + (proc.stderr or "")).strip()
@@ -163,4 +196,6 @@ def run_tests_for_edit(
         "output": output if proc.returncode != 0 else "",
         "skipped_reason": "",
         "command": argv,
+        "source": source,
+        "notice": notice,
     }

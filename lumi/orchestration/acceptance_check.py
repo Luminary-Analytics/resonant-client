@@ -57,7 +57,8 @@ import subprocess
 from dataclasses import dataclass
 from typing import Callable, Optional
 
-from lumi.processes import background_process_kwargs
+from lumi.executables import find_program
+from lumi.processes import decode_output, run_command, utf8_env
 
 from ..gui.roadmap import AcceptanceCriterion
 from ..secrets_store import child_env
@@ -151,55 +152,39 @@ class BashRunner:
             # a no-op there.
             bash_path = self._bash_path
             if bash_path is None:
-                bash_path = _detect_bash()
+                bash_path = _detect_bash(self.cwd)
 
             if bash_path:
                 # Run `bash -c <command>`. The criterion's command
                 # string flows through bash's own parser, which
                 # handles redirects (`<`), pipes, and quoting the
                 # same way on Windows-with-Git-Bash and Linux/macOS.
-                proc = subprocess.run(
-                    [bash_path, "-c", command],
-                    cwd=self.cwd,
-                    env=child_env(),
-                    capture_output=True,
-                    text=True,
-                    timeout=self.timeout_seconds,
-                    check=False,
-                    **background_process_kwargs(),
-                )
+                args, shell = [bash_path, "-c", command], False
             else:
                 # Platform default shell. On Linux/macOS this is bash
                 # / zsh anyway; on Windows it's cmd.exe with the
-                # known POSIX-tool gap.
-                proc = subprocess.run(
-                    command,
-                    shell=True,
-                    cwd=self.cwd,
-                    env=child_env(),
-                    capture_output=True,
-                    text=True,
-                    timeout=self.timeout_seconds,
-                    check=False,
-                    **background_process_kwargs(),
-                )
-            return proc.returncode, proc.stdout, proc.stderr
+                # known POSIX-tool gap. The criterion is a command the
+                # plan asked for: by design it runs as the person's own
+                # shell would (child_env; lumi/executables.py).
+                args, shell = command, True
+            # Bytes, decoded per line (cmd.exe writes the OEM code page,
+            # Python children UTF-8); a timeout ends every process the
+            # check started, not only the shell (lumi/processes.py).
+            proc = run_command(args, shell=shell, cwd=self.cwd, env=utf8_env(child_env()),
+                               timeout=self.timeout_seconds)
+            return proc.returncode, decode_output(proc.stdout), decode_output(proc.stderr)
         except subprocess.TimeoutExpired as exc:
-            return 124, exc.stdout or "", f"timeout after {self.timeout_seconds}s"
+            return 124, decode_output(exc.stdout), f"timeout after {self.timeout_seconds}s"
         except Exception as exc:
             return 127, "", f"subprocess error: {exc}"
 
 
-# Module-level cache for the bash detection — `shutil.which` is
-# cheap but we'd call it on every criterion otherwise.
-_BASH_PATH_CACHE: Optional[str] = None
-_BASH_PATH_CACHED = False
-
-
-def _detect_bash() -> Optional[str]:
+def _detect_bash(project: Optional[str] = None) -> Optional[str]:
     """Return the absolute path to `bash` if it's on PATH, else None.
 
-    Cached per-process. On Windows this typically finds Git Bash's
+    Never a `bash` in the project or Lumi's working folder, nor one found
+    through a relative PATH entry (lumi/executables.py, which remembers
+    what it found). On Windows this typically finds Git Bash's
     `C:\\Program Files\\Git\\bin\\bash.exe`. On macOS / Linux it
     finds the system bash at `/bin/bash` or `/usr/bin/bash`.
 
@@ -207,22 +192,7 @@ def _detect_bash() -> Optional[str]:
     Windows is `cmd.exe` (limited, no POSIX tools) and elsewhere is
     typically a bash-compatible shell.
     """
-    global _BASH_PATH_CACHE, _BASH_PATH_CACHED
-    if _BASH_PATH_CACHED:
-        return _BASH_PATH_CACHE
-    import shutil
-    _BASH_PATH_CACHE = shutil.which("bash")
-    _BASH_PATH_CACHED = True
-    return _BASH_PATH_CACHE
-
-
-def _reset_bash_detection_cache() -> None:
-    """Test helper — forget any cached bash detection. Tests that
-    swap PATH or stub `shutil.which` should call this between
-    runs."""
-    global _BASH_PATH_CACHE, _BASH_PATH_CACHED
-    _BASH_PATH_CACHE = None
-    _BASH_PATH_CACHED = False
+    return find_program("bash", exclude=[project])
 
 
 # ── Bash command extraction ──────────────────────────────────────────
@@ -560,7 +530,22 @@ class VisionRunner:
         ambiguity → False (defensive: when in doubt, the criterion
         does NOT pass; user can re-run or switch models).
         """
-        prompt = self._build_prompt(question)
+        from .. import oversight
+        from ..dlp import Blocked, check_text
+
+        # Nothing reaches a model before an organization's oversight notice is
+        # confirmed (lumi/oversight.py). [vision] checks run in autonomous
+        # sessions' reflect pass, a mission in the app.
+        refusal = oversight.refusal("mission")
+        if refusal:
+            return False, f"<vision model error: {refusal}>"
+        # A model request like any other: the question passes the organization's
+        # DLP rules first (the image is outside them); a block means no verdict.
+        try:
+            prompt = check_text(self._build_prompt(question), purpose="acceptance_vision",
+                                provider="ollama", model=str(self.model or ""))
+        except Blocked as exc:
+            return False, f"<vision model error: {exc.message}>"
         if self._call is not None:
             try:
                 raw = self._call(self.model, prompt, image_bytes)

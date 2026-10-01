@@ -17,7 +17,9 @@ Hooks aren't left out: runs try models you don't rely on yet, unattended and
 often in Bypass, which is where a guard of yours matters most. Repository
 instructions apply only if the project is trusted in the app. The check is
 your own command: it passes the command guardrails and runs in the shell
-sandbox when that's on.
+sandbox when that's on. Under an organization's oversight (lumi/oversight.py)
+a comparison doesn't start, and stops before its next run, until you have
+confirmed the organization's notice; its runs are then recorded as yours.
 
 Comparisons are kept in ``~/.lumi/model_evals/<id>.json``, diffs next to them.
 One comparison runs at a time.
@@ -118,11 +120,24 @@ def load_all() -> list[Comparison]:
     return found
 
 
-def _git(project: str, *args: str, timeout: float = 60) -> subprocess.CompletedProcess:
-    from .processes import background_process_kwargs
+def _git(folder: str, *args: str, timeout: float = 60, project: str | None = None) -> subprocess.CompletedProcess:
+    """Git in ``folder`` (a checkout of ``project``, the folder itself by default).
 
-    return subprocess.run(["git", "-C", project, *args], capture_output=True, text=True, timeout=timeout,
-                          encoding="utf-8", errors="replace", **background_process_kwargs())
+    lumi/safe_git.py: the installed Git without the programs a repository's
+    settings name. In an untrusted project whose settings name some, no Git
+    runs and the result is a failure that says so; so is it without Git, or
+    when Git can't start in ``folder`` (git_support.start_failure_result).
+    """
+    from .safe_git import GitRefused, run
+
+    try:
+        return run(folder, *args, project=project, timeout=timeout)
+    except GitRefused as exc:
+        return subprocess.CompletedProcess(list(args), 128, "", str(exc))
+    except OSError as exc:
+        from .git_support import start_failure_result
+
+        return start_failure_result(["git", *args], exc, "Model comparisons need", cwd=folder)
 
 
 def clean(raw: dict[str, Any]) -> Comparison:
@@ -136,10 +151,15 @@ def clean(raw: dict[str, Any]) -> Comparison:
     project = os.path.abspath(str(raw.get("project") or "").strip() or ".")
     if not os.path.isdir(project):
         raise EvalError(f"{project} isn't a folder.")
+    from .safe_git import refusal
+
     try:
+        refused = refusal(project)
         head = _git(project, "rev-parse", "--verify", "HEAD^{commit}")
     except (OSError, subprocess.TimeoutExpired):
         raise EvalError("Git isn't available, and each run needs its own copy of the project.") from None
+    if refused:
+        raise EvalError(refused)
     if head.returncode != 0:
         raise EvalError(f"{project} needs to be a git repository with a commit: each run starts from HEAD.")
     tasks = []
@@ -261,9 +281,15 @@ class Runner:
         self.running_id = ""
 
     def start(self, comparison_id: str, on_update: Callable[[], None] = lambda: None) -> Comparison:
+        from . import oversight
+
         comparison = get(comparison_id)
         if comparison is None:
             raise EvalError("That comparison no longer exists.")
+        # Nothing reaches a model before the organization's notice is confirmed.
+        refusal = oversight.refusal("app")
+        if refusal:
+            raise EvalError(refusal)
         with self._lock:
             if self.running_id:
                 raise EvalError("Another comparison is running; stop it or wait for it to finish.")
@@ -295,6 +321,7 @@ class Runner:
             thread.join(timeout)
 
     def _run(self, comparison: Comparison, on_update: Callable[[], None]) -> None:
+        from . import oversight
         from .gui.workspace_trust import WorkspaceTrust
 
         try:
@@ -304,6 +331,10 @@ class Runner:
                 for model in comparison.models:
                     if self._stop.is_set():
                         break
+                    # A policy that arrives meanwhile, with a notice not yet confirmed, stops the rest.
+                    refusal = oversight.refusal("app")
+                    if refusal:
+                        raise EvalError(refusal)
                     result = self._one(comparison, task_index, task, model, work, trust)
                     comparison.results.append(result)
                     _save(comparison)
@@ -317,7 +348,9 @@ class Runner:
             _save(comparison)
             with self._lock:
                 self.running_id, self._process = "", None
-            _git(comparison.project, "worktree", "prune")
+            # Each run's worktree went with its own Git record (_remove_worktree);
+            # no `git worktree prune`, which would also forget the person's own
+            # worktrees whose folders are away (an unplugged drive, a move).
             _notify(on_update)
 
     def _one(self, comparison: Comparison, task_index: int, task: dict, model: str, work: Path,
@@ -364,9 +397,7 @@ class Runner:
             result.update(_keep_diff(comparison, worktree, result["start_commit"]))
             return result
         finally:
-            removed = _git(comparison.project, "worktree", "remove", "--force", str(worktree), timeout=120)
-            if removed.returncode != 0:
-                shutil.rmtree(worktree, ignore_errors=True)
+            _remove_worktree(comparison.project, worktree)
 
     def _lumi_run(self, argv: list[str], cwd: str | None, max_minutes: int) -> tuple[dict, str, int | None]:
         from .processes import background_process_kwargs
@@ -390,14 +421,45 @@ class Runner:
         except ValueError:
             parsed = {}
         problems = "; ".join(str(e.get("message") or "") for e in parsed.get("errors") or [] if isinstance(e, dict))
-        return parsed, (problems or (err or "").strip())[:1000], process.returncode
+        # The organization's oversight notice isn't an error (lumi/headless.py prints it first).
+        from .headless import NOTICE_PREFIX
+
+        err = "\n".join(line for line in (err or "").splitlines() if not line.startswith(NOTICE_PREFIX))
+        return parsed, (problems or err.strip())[:1000], process.returncode
+
+
+def _remove_worktree(project: str, worktree: Path) -> None:
+    """Remove a run's worktree, never following a link the run left in it out of it.
+
+    Not `git worktree remove --force`: Git for Windows follows a directory
+    junction inside the worktree (an npm ``file:`` dependency, a link the
+    model's shell made) and deletes the files it points to
+    (lumi/worktree_removal.py).
+    """
+    from .worktree_removal import remove_tree, remove_worktree, repository_common_dir
+
+    common = repository_common_dir(project)
+    if common is not None:
+        removal = remove_worktree(worktree, common_dir=common)
+        error = "" if removal.removed else removal.error
+    else:
+        try:
+            remove_tree(worktree)
+            error = ""
+        except OSError as exc:
+            error = str(exc)
+    if error:
+        logger.warning("Couldn't remove the comparison worktree %s: %s", worktree, error)
 
 
 def _end(process: subprocess.Popen) -> None:
     """End a run and whatever it started."""
     try:
         if os.name == "nt":
-            subprocess.run(["taskkill", "/T", "/F", "/PID", str(process.pid)], capture_output=True, timeout=30)
+            from .executables import system_program
+
+            subprocess.run([system_program("taskkill"), "/T", "/F", "/PID", str(process.pid)], capture_output=True,
+                           timeout=30)
         else:
             import signal
 
@@ -409,7 +471,7 @@ def _end(process: subprocess.Popen) -> None:
 def _check(command: str, worktree: str) -> tuple[bool, str]:
     """Run the task's check in the worktree: (passed, the end of its output)."""
     from .engine import os_sandbox
-    from .processes import background_process_kwargs
+    from .processes import decode_output, run_command, utf8_env
     from .secrets_store import child_env
 
     try:
@@ -417,14 +479,15 @@ def _check(command: str, worktree: str) -> tuple[bool, str]:
     except ValueError as exc:  # the sandbox is on and can't run here
         return False, str(exc)
     try:
-        done = subprocess.run(wrapped or command, shell=wrapped is None, cwd=worktree, capture_output=True,
-                              text=True, encoding="utf-8", errors="replace", timeout=CHECK_SECONDS,
-                              env=child_env(), **background_process_kwargs())
+        # Output decoded per line, and a timeout ends everything the check
+        # started, not only its shell (lumi/processes.py).
+        done = run_command(wrapped or command, shell=wrapped is None, cwd=worktree, timeout=CHECK_SECONDS,
+                           env=utf8_env(child_env()))
     except subprocess.TimeoutExpired:
         return False, f"The check didn't finish within {CHECK_SECONDS // 60} minutes."
     except OSError as exc:
         return False, f"The check didn't start: {exc}"
-    output = ((done.stdout or "") + (done.stderr or "")).strip()
+    output = (decode_output(done.stdout) + decode_output(done.stderr)).strip()
     return done.returncode == 0, f"exit {done.returncode}\n{output[-2000:]}".strip()
 
 
@@ -432,11 +495,12 @@ def _keep_diff(comparison: Comparison, worktree: Path, start: str) -> dict:
     """The run's changes since ``start``, the commit it started from, whether
     it committed them or not: how many files, and the diff saved next to the
     comparison."""
-    _git(str(worktree), "add", "-A")
+    _git(str(worktree), "add", "-A", project=comparison.project)
     # "--" because git refuses a revision that is also a file's name.
-    names = _git(str(worktree), "diff", "--cached", "--name-only", start, "--").stdout.split("\n")
+    names = _git(str(worktree), "diff", "--cached", "--name-only", start, "--",
+                 project=comparison.project).stdout.split("\n")
     changed = [name for name in names if name.strip()]
-    diff = _git(str(worktree), "diff", "--cached", start, "--").stdout
+    diff = _git(str(worktree), "diff", "--cached", start, "--", project=comparison.project).stdout
     folder = _folder() / comparison.id
     folder.mkdir(parents=True, exist_ok=True)
     path = folder / f"{worktree.name}.diff"
@@ -449,8 +513,12 @@ def _work_folder(comparison: Comparison) -> Path:
     from .engine.artifacts import project_state_dir
 
     work = project_state_dir(Path(comparison.project)) / "evals" / comparison.id
-    shutil.rmtree(work, ignore_errors=True)  # anything a stopped app left behind
-    _git(comparison.project, "worktree", "prune")
+    # Worktrees a stopped app left behind, each removed with its own Git
+    # record; not `git worktree prune`, which would also forget the person's
+    # own worktrees whose folders are away (an unplugged drive, a move).
+    if work.is_dir():
+        for leftover in work.iterdir():
+            _remove_worktree(comparison.project, leftover)
     work.mkdir(parents=True, exist_ok=True)
     return work
 

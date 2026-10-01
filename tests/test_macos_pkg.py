@@ -10,6 +10,7 @@ from __future__ import annotations
 import base64
 import importlib.util
 import json
+import os
 import plistlib
 import re
 import subprocess
@@ -117,6 +118,12 @@ def test_the_distribution_installs_system_wide_on_the_apps_minimum_macos():
         macos_pkg.distribution_xml("0.20.1", arch="ppc")
     with pytest.raises(SystemExit, match="Not a version"):
         macos_pkg.distribution_xml("0.20.1\"/><evil", arch="arm64")
+    # Without --license there's no license page; with it, the Installer app shows Lumi's terms.
+    assert root.find("license") is None
+    licensed = ET.fromstring(macos_pkg.distribution_xml("0.20.1", arch="arm64", license="license.rtf"))
+    assert licensed.find("license").attrib == {"file": "license.rtf", "mime-type": "text/rtf"}
+    with pytest.raises(SystemExit, match=r"\.rtf file"):
+        macos_pkg.distribution_xml("0.20.1", arch="arm64", license="../license.rtf")
 
 
 def test_the_command_line_writes_the_pieces(tmp_path):
@@ -256,3 +263,33 @@ def test_managed_preferences_that_cant_be_used_fail_closed(tmp_path, monkeypatch
     state = policy.load(force=True)
     assert state.policy is None and "couldn't be read" in state.error
     assert policy.blocked_reason().endswith("Ask your administrator to fix it.")
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="packaging/build_macos.sh runs on macOS")
+def test_a_release_that_requires_signing_stops_without_the_apple_secrets(tmp_path):
+    # MACOS_SIGNING_REQUIRED (a repository variable once the Developer ID exists) fails a
+    # release whose Apple secrets are missing, before anything is built. Anything past the
+    # check calls these, which fail at once, so a broken check can't start a build here.
+    stubs = tmp_path / "bin"
+    stubs.mkdir()
+    for tool in ("python3", "curl", "pwsh"):
+        (stubs / tool).write_text("#!/bin/sh\nexit 97\n", encoding="utf-8")
+        (stubs / tool).chmod(0o755)
+    env = {key: value for key, value in os.environ.items() if not key.startswith(("MACOS_SIGN", "APPLE_"))}
+    env.update(MACOS_SIGNING_REQUIRED="true", PATH=f"{stubs}{os.pathsep}{os.environ['PATH']}")
+
+    def build():
+        return subprocess.run(["bash", str(ROOT / "packaging" / "build_macos.sh")], capture_output=True, text=True,
+                              timeout=60, env=env)
+
+    result = build()
+    assert result.returncode == 1, result.stderr
+    missing = result.stderr.split("aren't set:")[1]
+    assert "MACOS_SIGN_IDENTITY" in missing and "APPLE_API_KEY_BASE64" in missing
+    # A certificate without notarization credentials isn't enough either.
+    env.update(MACOS_SIGN_IDENTITY="Developer ID Application: Example (TEAMID)", MACOS_SIGN_P12_BASE64="eA==",
+               MACOS_INSTALLER_IDENTITY="Developer ID Installer: Example (TEAMID)")
+    result = build()
+    assert result.returncode == 1, result.stderr
+    missing = result.stderr.split("aren't set:")[1]
+    assert "MACOS_SIGN_IDENTITY" not in missing and "APPLE_ID" in missing

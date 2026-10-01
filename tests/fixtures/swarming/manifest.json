@@ -1,0 +1,8 @@
+{
+  "files": {
+    "acceptance.py": "7205c2201f7b6723f11094548fe380d4789742c421d68c1418fe98f45f065ae8",
+    "references.json": "50ba4d67a4ccf37d83fa161dc67b2c085c1d99d5bff1b4a4cce47a4e74436853",
+    "scenarios.json": "f74f3c613429cfb8383d9c2605d5aa1d0e35c7296f9f1122ae15df461b059343"
+  },
+  "schema_version": 1
+}

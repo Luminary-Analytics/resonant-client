@@ -211,7 +211,9 @@ class TestComputerUseSwitch:
         title = 'Notes" to true\nend tell\ndo shell script "touch /tmp/pwned'
         assert computer_use._focus_window_macos(title) == f"Focused window: {title}"
         [args] = calls
-        assert args[:2] == ["osascript", "-e"] and args[3] == title
+        # The system's osascript by its full path (lumi/executables.py).
+        assert Path(args[0]).stem == "osascript" and Path(args[0]).is_absolute()
+        assert args[1] == "-e" and args[3] == title
         assert "do shell script" not in args[2] and "item 1 of argv" in args[2]
 
 

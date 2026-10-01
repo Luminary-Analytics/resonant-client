@@ -16,9 +16,13 @@ Lumi applies it when it starts. Locked settings show "Managed by" and the organi
 
 See docs/enterprise-policy.md in the Lumi repository for the full format.</string>
       <string id="PolicyFile">Organization policy file</string>
-      <string id="PolicyFile_Help">A path to a lumi.policy/v1 JSON file, for example on a managed share or in %ProgramData%. Environment variables are expanded. Ignored when "Organization policy" is also set.</string>
+      <string id="PolicyFile_Help">A path to a lumi.policy/v1 JSON file, for example on a managed share or in %ProgramData%. Only machine folders expand, from Windows: %ProgramData%, %ALLUSERSPROFILE%, %ProgramFiles%, %SystemRoot%, %windir% and %SystemDrive%. Other variables, which each user can set, stay as written. Ignored when "Organization policy" is also set.
+
+The file and every folder above it must be owned by Administrators, SYSTEM or TrustedInstaller (for a UNC path to a file server also this computer's domain's Domain Admins or Enterprise Admins), and nobody else may change them. Name a share by its UNC path, not a mapped drive letter. A folder created under %ProgramData% lets every user add files until you lock it down (see docs/enterprise-policy.md). If the file can't be read, for example because the share is out of reach, or others can change it, Lumi refuses model requests until that's fixed; it never falls back to another policy.</string>
       <string id="PolicyKeys">Trusted policy signing keys</string>
-      <string id="PolicyKeys_Help">A JSON object mapping key ids to base64 Ed25519 public keys, for example {"acme-2026": "MCowBQ..."}. Lumi accepts a signed policy only when it verifies against one of these keys.</string>
+      <string id="PolicyKeys_Help">A JSON object mapping key ids to base64 Ed25519 public keys, for example {"acme-2026": "MCowBQ..."}. Lumi accepts a signed policy, and a Lumi Cloud policy, only when it verifies against one of these keys or the machine policy's trusted_keys. On Windows this is the only place for them: a policy-keys.json file isn't read.</string>
+      <string id="LicenseKeys">Trusted license signing keys</string>
+      <string id="LicenseKeys_Help">A JSON object mapping key ids to base64 Ed25519 public keys that sign Lumi offline licenses, for example {"luminary-2026": "MCowBQ..."}. Lumi shows a license (lumi license status, Settings &gt; Offline mode) only when it verifies against one of these keys or a key built into Lumi. See docs/offline.md.</string>
     </stringTable>
     <presentationTable>
       <presentation id="Policy">
@@ -32,6 +36,11 @@ See docs/enterprise-policy.md in the Lumi repository for the full format.</strin
       <presentation id="PolicyKeys">
         <textBox refId="PolicyKeys">
           <label>Trusted keys (JSON):</label>
+        </textBox>
+      </presentation>
+      <presentation id="LicenseKeys">
+        <textBox refId="LicenseKeys">
+          <label>Trusted license keys (JSON):</label>
         </textBox>
       </presentation>
     </presentationTable>

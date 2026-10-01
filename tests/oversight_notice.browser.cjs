@@ -1,0 +1,303 @@
+/* Organization oversight in the source app, through the real WebSocket: the locked
+ * message box, a script's click and a capability pack's panel that can't confirm
+ * the notice or send, the notice's keyboard path, the signed confirmation that
+ * unlocks it, the notice at 375 px in both themes, a confirmation waiting under
+ * offline mode, and a policy that can't be used. Inference is scripted;
+ * nothing leaves the loopback (tests/fixtures/oversight_ui_server.py).
+ * node tests/oversight_notice.browser.cjs [absolute-path-to-playwright-module]
+ * Optional OVERSIGHT_PYTHON selects the Python that runs the fixture.
+ */
+const {test} = require('node:test');
+const assert = require('node:assert/strict');
+const {spawn} = require('node:child_process');
+const fs = require('node:fs');
+const path = require('node:path');
+const os = require('node:os');
+const {chromium} = require(process.argv[2] || 'playwright');
+
+const LOCKED = ['#user-input', '#send-btn', '#add-context-btn', '#mic-btn', '#composer-autonomous-btn'];
+
+async function evidence(info) {
+    return (await fetch(info.url + '/__fixture__/evidence')).json();
+}
+
+// WCAG contrast of an element's text on the nearest opaque background behind it.
+function contrastOf(selector) {
+    const parse = value => {
+        const numbers = (value.match(/[\d.]+/g) || []).map(Number);
+        if (value.startsWith('color(')) return {rgb: numbers.slice(0, 3).map(n => n * 255), alpha: numbers[3] ?? 1};
+        return {rgb: numbers.slice(0, 3), alpha: numbers[3] ?? 1};
+    };
+    const luminance = ([r, g, b]) => {
+        const channel = c => { c /= 255; return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4; };
+        return 0.2126 * channel(r) + 0.7152 * channel(g) + 0.0722 * channel(b);
+    };
+    const element = document.querySelector(selector);
+    let node = element, background = null;
+    while (node && node.nodeType === 1) {
+        const color = parse(getComputedStyle(node).backgroundColor);
+        if (color.alpha >= 0.99) { background = color.rgb; break; }
+        node = node.parentElement;
+    }
+    background = background || parse(getComputedStyle(document.body).backgroundColor).rgb;
+    const text = parse(getComputedStyle(element).color).rgb;
+    const [light, dark] = [luminance(text), luminance(background)].sort((a, b) => b - a);
+    return Math.round(((light + 0.05) / (dark + 0.05)) * 10) / 10;
+}
+
+test('the oversight notice locks the message box until its button confirms it', {timeout: 150000}, async () => {
+    const output = fs.mkdtempSync(path.join(os.tmpdir(), 'lumi-oversight-browser-'));
+    const server = spawn(process.env.OVERSIGHT_PYTHON || 'python', [path.join(__dirname, 'fixtures/oversight_ui_server.py'), output],
+        {cwd: output, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe']});
+    let stdout = '', stderr = '', info, browser, page;
+    server.stdout.on('data', chunk => { stdout += chunk; });
+    server.stderr.on('data', chunk => { stderr += chunk; });
+    const exited = new Promise(resolve => server.once('exit', (code, signal) => resolve({code, signal})));
+    const record = {output};
+    try {
+        for (let i = 0; i < 300 && !info; i++) {
+            const line = stdout.split(/\r?\n/).find(item => item.startsWith('{"url":'));
+            if (line) info = JSON.parse(line);
+            else if (server.exitCode !== null) throw Error('Fixture server failed: ' + stderr);
+            else await new Promise(resolve => setTimeout(resolve, 100));
+        }
+        assert.ok(info, 'Fixture server ready metadata missing: ' + stderr);
+        browser = await chromium.launch(process.env.OVERSIGHT_BROWSER_EXECUTABLE
+            ? {headless: true, executablePath: process.env.OVERSIGHT_BROWSER_EXECUTABLE} : {headless: true, channel: 'msedge'});
+        page = await browser.newPage({viewport: {width: 1180, height: 860}});
+        page.setDefaultTimeout(15000);
+        const errors = [], sent = [], received = [];
+        page.on('pageerror', error => errors.push(error.message));
+        page.on('websocket', socket => {
+            socket.on('framesent', frame => { try { sent.push(JSON.parse(frame.payload)); } catch {} });
+            socket.on('framereceived', frame => { try { received.push(JSON.parse(frame.payload)); } catch {} });
+        });
+        await page.route('**/*', route => new URL(route.request().url()).hostname === '127.0.0.1' ? route.continue() : route.abort());
+        // The webview's speech recognizer, which would send audio to its vendor: a stand-in that counts starts.
+        await page.addInitScript(() => {
+            window.__recognitions = 0;
+            class Recognition {
+                start() { window.__recognitions += 1; setTimeout(() => this.onstart && this.onstart(), 0); }
+                stop() { setTimeout(() => this.onend && this.onend(), 0); }
+                abort() { setTimeout(() => this.onend && this.onend(), 0); }
+            }
+            window.SpeechRecognition = Recognition;
+            window.webkitSpeechRecognition = Recognition;
+        });
+        await page.goto((await (await fetch(info.url + '/__fixture__/launch')).json()).url);
+        await page.waitForFunction(() => window.app?.oversightStatus?.required === true);
+
+        // Locked: the notice, why, and its button; the message box and its controls disabled.
+        await page.locator('#oversight-notice').waitFor({state: 'visible'});
+        assert.equal(await page.locator('#oversight-notice-confirm').isVisible(), true);
+        assert.match(await page.locator('#oversight-notice-lock').innerText(), /won’t send anything to a model until you confirm/);
+        const shown = await page.locator('#oversight-notice-text').innerText();
+        assert.match(shown, /^Acme receives your sessions and what they did/);
+        for (const selector of LOCKED) assert.equal(await page.locator(selector).isDisabled(), true, selector);
+        assert.equal(await page.locator('#user-input').getAttribute('placeholder'), 'Confirm the notice above to start');
+        await page.screenshot({path: path.join(output, 'locked-desktop.png')});
+
+        // Nothing gets through: the page's own send, and a raw socket message the server refuses.
+        const before = sent.length;
+        await page.evaluate(() => { app.userInput.value = 'sneak past the lock'; app.sendMessage(); });
+        assert.equal(sent.slice(before).filter(message => message.command === 'message').length, 0);
+        await page.evaluate(() => app.send({command: 'message', text: 'a raw socket message'}));
+        await page.waitForFunction(() => true);
+        for (let i = 0; i < 50 && !received.some(event => event.code === 'oversight_notice'); i++) await page.waitForTimeout(100);
+        const refusal = received.find(event => event.code === 'oversight_notice');
+        assert.ok(refusal && /oversight notice/.test(refusal.message), 'the server refuses the message');
+        assert.deepEqual((await evidence(info)).requests, [], 'nothing reached the model while locked');
+        // Said where the notice is, not as a failed turn to retry.
+        assert.equal(await page.locator('.error-block, .task-card').count(), 0);
+        await page.evaluate(() => { app.userInput.value = ''; });
+
+        // Dictation's shortcut starts nothing while locked: the recognizer never hears a word.
+        await page.keyboard.press('Control+Shift+Space');
+        await page.waitForTimeout(300);
+        assert.equal(await page.evaluate(() => window.__recognitions), 0);
+        assert.equal(await page.evaluate(() => window.app.settings?._meta?.voice?.browser), false,
+            'the server says dictation waits for the notice too');
+
+        // A click a script makes on I've read this confirms nothing: only the person's own does.
+        await page.evaluate(() => document.getElementById('oversight-notice-confirm').click());
+        await page.waitForTimeout(500);
+        assert.equal(sent.filter(message => message.command === 'oversight_notice_shown').length, 0);
+        assert.equal(await page.locator('#user-input').isDisabled(), true);
+
+        // A capability pack's panel (View > Panels) can add text to the locked box, but can't send it,
+        // click the notice's button, confirm it through the bridge or reach the app's socket.
+        const beforePanel = sent.length;
+        await page.locator('.titlebar-menu-button').click();
+        await page.locator('.menubar-item[data-menu="view"]').hover();
+        await page.locator('.extension-panel-menu-item', {hasText: 'Notice probe'}).click();
+        await page.getByRole('dialog', {name: 'Notice probe'}).waitFor();
+        const panel = await (await page.waitForSelector('#extension-panel-dialog iframe.extension-panel-frame')).contentFrame();
+        await panel.locator('#try').click();
+        await panel.waitForSelector('body[data-probe="done"]');
+        const probe = await panel.evaluate(() => window.probe);
+        record.panelProbe = probe;
+        assert.match(probe.clickConfirm, /^blocked: SecurityError/);
+        assert.match(probe.parentApp, /^blocked: /);
+        for (const name of ['acknowledge', 'noticeShown', 'send']) assert.match(probe[name], /^refused: /, name);
+        assert.match(probe.appSocket, /^blocked: /);
+        assert.equal(probe.insert, 'ok');
+        await page.getByRole('button', {name: 'Close Notice probe'}).click();
+        const panelText = 'Text from the panel while the notice waits';
+        assert.equal(await page.locator('#user-input').inputValue(), panelText);
+        assert.equal(await page.locator('#user-input').isDisabled(), true);
+        await page.evaluate(() => app.sendMessage());
+        await page.waitForTimeout(300);
+        assert.equal(sent.slice(beforePanel).filter(message => ['message', 'oversight_notice_shown'].includes(message.command))
+            .length, 0);
+        assert.deepEqual((await evidence(info)).requests, [], 'the panel\'s text reached no model');
+        await page.screenshot({path: path.join(output, 'locked-after-panel.png')});
+
+        // Keyboard: Shift+Tab from the permission mode reaches I've read this, with a visible focus ring; so
+        // does Tab from What's shared. Focus is never put on the button by the page itself.
+        assert.notEqual(await page.evaluate(() => document.activeElement?.id), 'oversight-notice-confirm');
+        await page.locator('#permission-toggle').focus();
+        await page.keyboard.press('Shift+Tab');
+        assert.equal(await page.evaluate(() => document.activeElement.id), 'oversight-notice-confirm');
+        const ring = await page.evaluate(() => {
+            const style = getComputedStyle(document.activeElement);
+            return {style: style.outlineStyle, width: style.outlineWidth, visible: document.activeElement.matches(':focus-visible')};
+        });
+        assert.deepEqual(ring, {style: 'solid', width: '2px', visible: true});
+        await page.locator('#oversight-notice-details').focus();
+        await page.keyboard.press('Tab');
+        assert.equal(await page.evaluate(() => document.activeElement.id), 'oversight-notice-confirm');
+        record.confirmContrastDark = await page.evaluate(contrastOf, '#oversight-notice-confirm');
+        await page.screenshot({path: path.join(output, 'locked-focus.png')});
+
+        // Enter confirms it: the page sends the fingerprint and the text it showed, the box unlocks and takes focus.
+        await page.keyboard.press('Enter');
+        await page.waitForFunction(() => !document.getElementById('user-input').disabled);
+        for (const selector of LOCKED) assert.equal(await page.locator(selector).isDisabled(), false, selector);
+        assert.equal(await page.evaluate(() => document.activeElement.id), 'user-input');
+        assert.equal(await page.locator('#oversight-notice-confirm').isVisible(), false);
+        const confirmation = sent.find(message => message.command === 'oversight_notice_shown');
+        assert.equal(confirmation.notice, shown);
+        const confirmed = await evidence(info);
+        assert.equal(confirmed.notice.record.kind, 'lumi.oversight-acknowledgment/v1');
+        assert.equal(confirmed.notice.record.surface, 'app');
+        assert.equal(confirmed.notice.record.device_id, 'dev_fixture');
+        assert.equal(confirmed.signature_verifies, true, 'signed with the enrolled device key');
+        assert.equal(confirmed.upload.state, 'pending', 'queued for Lumi Cloud in the background');
+        record.acknowledgment = confirmed.notice.record;
+        // The panel's text waits in the box for the person; confirming sent nothing.
+        assert.equal(await page.locator('#user-input').inputValue(), panelText);
+        assert.deepEqual(confirmed.requests, []);
+        // Confirmed: the server says dictation may listen, and the shortcut starts the recognizer.
+        await page.waitForFunction(() => window.app.settings?._meta?.voice?.browser === true);
+        await page.keyboard.press('Control+Shift+Space');
+        await page.waitForFunction(() => window.__recognitions === 1);
+        await page.keyboard.press('Escape');
+        await page.waitForFunction(() => window.app._dictation.state === 'idle');
+        assert.equal(await page.locator('#user-input').inputValue(), panelText);
+
+        // Now a message reaches the model and is recorded as the app's.
+        await page.locator('#user-input').fill('hello after confirming');
+        await page.keyboard.press('Enter');
+        let after;
+        for (let i = 0; i < 100; i++) {
+            after = await evidence(info);
+            if (after.records.some(item => item.type === 'turn')) break;
+            await page.waitForTimeout(100);
+        }
+        assert.ok(after.requests.includes('hello after confirming'));
+        const turn = after.records.find(item => item.type === 'turn');
+        assert.equal(turn.trigger, 'app');
+        assert.equal(turn.unattended, false);
+        await page.getByText('Scripted reply after the notice.').first().waitFor();
+
+        // 375 px, both themes: forgotten (as on signing out), the notice locks the box again and fits.
+        await fetch(info.url + '/__fixture__/forget', {method: 'POST'});
+        await page.setViewportSize({width: 375, height: 812});
+        await page.goto(info.url + '/');
+        await page.waitForFunction(() => window.app?.oversightStatus?.required === true);
+        record.compact = {};
+        for (const theme of ['dark', 'light']) {
+            await page.evaluate(value => window.LumiAppearance.setTheme(value), theme);
+            await page.locator('#oversight-notice-confirm').scrollIntoViewIfNeeded();
+            const layout = await page.evaluate(() => {
+                const box = document.getElementById('oversight-notice-confirm').getBoundingClientRect();
+                return {scroll: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+                    right: box.right, left: box.left, width: window.innerWidth,
+                    locked: document.getElementById('user-input').disabled};
+            });
+            assert.ok(layout.scroll <= 0, `no horizontal scroll in ${theme} (${layout.scroll})`);
+            assert.ok(layout.left >= 0 && layout.right <= layout.width, `the button fits in ${theme}`);
+            assert.equal(layout.locked, true);
+            record.compact[theme] = {
+                text: await page.evaluate(contrastOf, '#oversight-notice-text'),
+                lock: await page.evaluate(contrastOf, '#oversight-notice-lock'),
+                button: await page.evaluate(contrastOf, '#oversight-notice-confirm'),
+            };
+            for (const [part, ratio] of Object.entries(record.compact[theme])) assert.ok(ratio >= 4.5, `${part} contrast ${ratio} in ${theme}`);
+            await page.screenshot({path: path.join(output, `locked-375-${theme}.png`)});
+        }
+        await page.locator('#oversight-notice-confirm').click();
+        await page.waitForFunction(() => !document.getElementById('user-input').disabled);
+
+        // Offline mode, turned on with its own switch, keeps Lumi Cloud out of reach: a confirmation waits,
+        // kept, and Settings says why. The fixture starts the app's uploader only now.
+        await page.setViewportSize({width: 1180, height: 860});
+        await fetch(info.url + '/__fixture__/forget', {method: 'POST'});
+        await page.goto(info.url + '/');
+        await page.waitForFunction(() => window.app?.oversightStatus?.required === true);
+        await page.keyboard.press('Control+Comma');
+        await page.locator('#settings-nav-offline').click();
+        await page.locator('label.settings-toggle', {has: page.locator('input[data-section="offline"][data-key="enabled"]')}).click();
+        for (let i = 0; i < 50 && !(await evidence(info)).offline; i++) await page.waitForTimeout(100);
+        assert.equal((await evidence(info)).offline, true, 'the switch turned offline mode on');
+        await page.locator('#settings-back').click();
+        await page.locator('#oversight-notice-confirm').click();
+        await page.waitForFunction(() => !document.getElementById('user-input').disabled);
+        assert.equal((await (await fetch(info.url + '/__fixture__/upload', {method: 'POST'})).json()).started, true);
+        let waiting;
+        for (let i = 0; i < 100; i++) {
+            waiting = await evidence(info);
+            if (waiting.upload.error) break;
+            await page.waitForTimeout(100);
+        }
+        assert.equal(waiting.upload.state, 'pending', 'kept to send later, not failed');
+        assert.match(waiting.upload.error, /^Offline mode: Lumi Cloud needs cloud\.example\.test/);
+        await page.keyboard.press('Control+Comma');
+        await page.locator('#settings-nav-privacy').click();
+        const mine = page.locator('#org-oversight-confirmation', {hasText: 'Offline mode'});
+        await mine.waitFor();
+        record.offlineConfirmation = (await mine.innerText()).split(/\s+/).join(' ');
+        assert.match(record.offlineConfirmation, /It’s waiting to be sent to Lumi Cloud\. Offline mode: Lumi Cloud needs cloud\.example\.test/);
+        await mine.evaluate(node => node.scrollIntoView({block: 'center'}));
+        await page.screenshot({path: path.join(output, 'offline-waiting.png')});
+
+        // A policy that can't be used isn't one that stopped asking: never "Off", and what waits is kept.
+        // (The page reloads, as the app re-sends Settings when the policy changes.)
+        await fetch(info.url + '/__fixture__/unusable', {method: 'POST'});
+        await page.goto(info.url + '/');
+        await page.waitForFunction(() => window.app?.ws?.readyState === 1);
+        await page.keyboard.press('Control+Comma');
+        await page.locator('#settings-nav-privacy').click();
+        await page.locator('.editor-error[role="alert"]', {hasText: 'The fixture machine policy is not valid JSON. Lumi won’t send model requests until it’s fixed.'}).waitFor();
+        const unusable = page.locator('#org-oversight-start', {hasText: 'can’t be used'});
+        await unusable.waitFor();
+        record.unusablePolicy = (await unusable.innerText()).split(/\s+/).join(' ');
+        assert.match(record.unusablePolicy, /^Your organization’s policy can’t be used, so Lumi can’t tell what it asks to share\. The fixture machine policy is not valid JSON\. Lumi sends no model requests until it’s fixed\. \d+ records? and \d+ confirmations? of the notice wait here, unsent, until then\.$/);
+        await unusable.evaluate(node => node.scrollIntoView({block: 'center'}));
+        await page.screenshot({path: path.join(output, 'policy-unusable.png')});
+        assert.deepEqual(errors, []);
+        record.ok = true;
+    } catch (error) {
+        if (page) await page.screenshot({path: path.join(output, 'failure.png')}).catch(() => {});
+        fs.writeFileSync(path.join(output, 'failure.txt'), String(error?.stack || error));
+        throw error;
+    } finally {
+        fs.writeFileSync(path.join(output, 'result.json'), JSON.stringify(record, null, 2));
+        fs.writeFileSync(path.join(output, 'server.log'), stdout + '\n' + stderr);
+        if (browser) await browser.close().catch(() => {});
+        if (info) await fetch(info.url + '/__fixture__/shutdown', {method: 'POST'}).catch(() => {});
+        const done = await Promise.race([exited, new Promise(resolve => setTimeout(() => resolve(null), 10000))]);
+        if (!done) server.kill();
+        console.log('evidence folder: ' + output);
+    }
+});

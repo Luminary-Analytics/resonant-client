@@ -320,12 +320,15 @@ def start_autonomous_mission(
     4. Constructs + starts the daemon. Registers it on AppState.
     5. Returns the daemon so the caller can stop / inspect it.
 
-    Raises ValueError for malformed input, or when the organization's
-    policy doesn't allow Full-auto (lumi/policy.py), before anything is
-    saved. Caller is responsible for sending an error event to the WS on
-    failure.
+    Raises ValueError for malformed input, when the organization's
+    policy doesn't allow Full-auto (lumi/policy.py), or while the person
+    hasn't confirmed its oversight notice (lumi/oversight.py), before
+    anything is saved. Caller is responsible for sending an error event to
+    the WS on failure.
     """
-    refusal = full_auto_refusal()
+    from .. import oversight
+
+    refusal = full_auto_refusal() or oversight.refusal("mission")
     if refusal:
         raise ValueError(refusal)
     rm, roadmap_path = build_roadmap_from_spec(
@@ -362,7 +365,8 @@ def resume_autonomous_mission(
 
     Raises:
     - ValueError if the organization's policy doesn't allow Full-auto
-      (lumi/policy.py)
+      (lumi/policy.py), or its oversight notice isn't confirmed
+      (lumi/oversight.py)
     - ValueError if no roadmap exists at the expected path
     - ValueError if the roadmap has no acceptance criteria (would
       collide with the daemon's misconfigured-stop rule)
@@ -380,7 +384,9 @@ def resume_autonomous_mission(
     date it. If a user wants strict budget enforcement, they can
     pass a smaller budget on resume; otherwise the budget is fresh.
     """
-    refusal = full_auto_refusal()
+    from .. import oversight
+
+    refusal = full_auto_refusal() or oversight.refusal("mission")
     if refusal:
         raise ValueError(refusal)
 
@@ -460,6 +466,12 @@ def resume_autonomous_mission(
     backend = getattr(state, "backend", None)
     if backend is not None and hasattr(backend, "warm_up"):
         def _warm_on_resume() -> None:
+            # A warm-up is a model request: none while Lumi's terms or the
+            # organization's notice wait (the backends refuse it too, lumi/dlp.py).
+            from ..oversight import gate
+
+            if gate("mission")[0]:
+                return
             try:
                 backend.warm_up()
                 logger.info("Resume warm-up issued for mission %s", intent_id)

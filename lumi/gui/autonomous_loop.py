@@ -9,7 +9,8 @@ and runs the REFLECT pass every K iterations. It stops when:
 
   1. The user clicked Stop                       → "user_stop"
      The organization's policy stopped allowing
-     Full-auto (lumi/policy.py)                  → "mode_not_allowed"
+     Full-auto (lumi/policy.py), or its oversight
+     notice isn't confirmed (lumi/oversight.py)  → "mode_not_allowed"
   2. Wall-clock time budget elapsed              → "time_budget_exhausted"
      Model spending reached the mission's limit   → "spend_limit_reached"
   3. MAX_ITERATIONS=100 hit (defensive backstop) → "iteration_cap"
@@ -921,14 +922,18 @@ class AutonomousMissionDaemon:
 
     @staticmethod
     def _mode_not_allowed() -> Optional[tuple[str, str]]:
-        """Stop when the organization's policy doesn't allow Full-auto.
+        """Stop when the organization's policy doesn't allow Full-auto, or its oversight notice isn't confirmed.
 
         The sub-missions' specialists and the reflect pass's ``[bash]``
-        checks run without anyone approving them (lumi/policy.py). The
-        runner refuses each specialist too; this ends the loop instead of
-        letting it fail iteration after iteration.
+        checks run without anyone approving them (lumi/policy.py), and
+        nothing reaches a model before the person confirms the notice of an
+        organization's oversight (lumi/oversight.py). The runner refuses
+        each specialist too; this ends the loop instead of letting it fail
+        iteration after iteration.
         """
-        refusal = full_auto_refusal()
+        from .. import oversight
+
+        refusal = full_auto_refusal() or oversight.refusal("mission")
         return ("mode_not_allowed", refusal.rstrip(".")) if refusal else None
 
     def _spent(self) -> Optional[float]:

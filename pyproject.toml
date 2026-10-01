@@ -4,19 +4,23 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "lumi"
-version = "0.19.2.dev11"
+version = "0.20.0.dev0"
 description = "Provider-adaptive multimodal coding agent for local and hosted models"
 readme = "README.md"
-# v0.6.2 â€” relicensed Proprietary â†’ MIT. Resonant is now an
-# open-source harness for local-first self-improving autonomous
-# coding. See LICENSE at the repo root.
-license = {text = "MIT"}
+# Proprietary since September 2026: see LICENSE, which describes the earlier
+# copies published under the MIT License (every commit whose LICENSE file is
+# the MIT License, from commit c00f29c on, and the releases v0.6.3a1 through
+# v0.19.1 built from them; nothing before c00f29c, such as v0.2.0 through
+# v0.6.2, was MIT). Versions start at 0.20.0 so none is theirs. The table form, not a
+# PEP 639 SPDX string, keeps the build working with setuptools>=68 and
+# allows the License classifier below.
+license = {text = "Proprietary"}
 requires-python = ">=3.11"
 authors = [
     {name = "Luminary Analytics"}
 ]
 classifiers = [
-    "License :: OSI Approved :: MIT License",
+    "License :: Other/Proprietary License",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
@@ -85,6 +89,8 @@ dev = [
     # change. Raise this bound intentionally, then fix whatever the new
     # version reports. See [tool.ruff.lint] for the rule-set contract.
     "ruff>=0.15.0,<0.17.0",
+    # tests/test_release_supply_chain.py reads the workflows as GitHub does.
+    "pyyaml>=6.0",
 ]
 code-intelligence = [
     "tree-sitter-language-pack>=0.7.0",
@@ -189,4 +195,6 @@ include = ["lumi*"]
 # .exe, and without this a `pip install` silently omits the extension and tabs
 # stop being grouped with no error anywhere.
 # The VS Code extension that `lumi editor vscode` packs into a .vsix.
-"lumi" = ["browser_extension/*", "code_editors/vscode/*"]
+# Lumi's terms, privacy notice and terms.json (lumi/terms.py): without them
+# nothing can reach a model, so every install carries them.
+"lumi" = ["browser_extension/*", "code_editors/vscode/*", "legal/*.md", "legal/terms.json"]

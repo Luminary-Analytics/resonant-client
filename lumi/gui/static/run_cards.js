@@ -329,6 +329,7 @@ class LumiRunCards {
         };
         this._agentRunErrored = false;
         this._agentRunErrorMessage = '';
+        this._agentRunErrorCode = '';
     }
 
 
@@ -450,6 +451,11 @@ class LumiRunCards {
             incomplete: { label: 'Needs attention', mark: '!', state: 'is-warning', card: 'task-card-warning' },
             failed: { label: 'Failed', mark: '!', state: 'is-error', card: 'task-card-error' },
         }[outcome] || { label: 'Completed', mark: 'OK', state: 'is-done', card: 'task-card-done' };
+        // A message the server refused before any turn started is back in the
+        // message box (app.js _endRefusedTurn): nothing here to retry or continue,
+        // and nothing was sent, so it doesn't read as a failed turn.
+        const refusedTurn = outcome === 'failed' && Boolean(this._agentRunRefused);
+        if (refusedTurn) Object.assign(outcomeMeta, { label: 'Not sent', state: 'is-warning', card: 'task-card-warning' });
 
         task.card.classList.remove('task-card-running', 'task-card-done', 'task-card-error', 'task-card-warning');
         task.card.classList.add(outcomeMeta.card);
@@ -518,12 +524,15 @@ class LumiRunCards {
             summary.appendChild(review);
         }
 
-        if (['incomplete', 'failed', 'changed_unverified'].includes(outcome) && !this._replay) {
+        if (['incomplete', 'failed', 'changed_unverified'].includes(outcome) && !this._replay && !refusedTurn) {
             const actions = document.createElement('span');
             actions.className = 'task-recovery-actions';
+            // The organization's DLP rules refused the request (lumi/dlp.py): sending
+            // it again, to this model or another, is refused the same way.
+            const refusedContent = outcome === 'failed' && ['dlp_blocked', 'policy_blocked'].includes(this._agentRunErrorCode);
             actions.innerHTML = `
-                <button type="button" class="task-review-btn" data-recovery="retry">Retry</button>
-                <button type="button" class="task-review-btn" data-recovery="alternate">Retry another model</button>
+                ${refusedContent ? '' : `<button type="button" class="task-review-btn" data-recovery="retry">Retry</button>
+                <button type="button" class="task-review-btn" data-recovery="alternate">Retry another model</button>`}
                 <button type="button" class="task-review-btn" data-recovery="continue">${outcome === 'changed_unverified' ? 'Verify changes' : 'Continue'}</button>
             `;
             actions.querySelector('[data-recovery="retry"]')?.addEventListener('click', () => {

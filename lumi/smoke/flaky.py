@@ -29,6 +29,8 @@ import logging
 import threading
 from typing import Any, Iterator, Tuple
 
+from .. import dlp
+
 logger = logging.getLogger(__name__)
 
 
@@ -55,6 +57,7 @@ _MALFORMED_PLANNER_RESPONSE = (
 )
 
 
+@dlp.guard_backend
 class FlakyPlannerBackend:
     """Wraps a real backend; intercepts the first N planner calls.
 

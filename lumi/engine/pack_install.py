@@ -32,6 +32,7 @@ import urllib.parse
 from dataclasses import dataclass
 from pathlib import Path
 
+from .. import safe_git
 from ..paths import state_home
 
 _COMMIT = re.compile(r"[0-9a-f]{40}")
@@ -81,19 +82,48 @@ def source_allowed(url: str, allowed: tuple[str, ...] | None) -> bool:
     return any(fnmatch.fnmatchcase(candidate, pattern.removesuffix(".git").lower()) for pattern in allowed)
 
 
-def _git(args: list[str], *, cwd: Path | None = None, local: bool = False) -> str:
-    git = shutil.which("git")
-    if not git:
-        raise PackInstallError("Installing from a repository needs Git. Install it and try again.")
+def _git(args: list[str], *, cwd: Path | None = None, local: bool = False, remote: str = "") -> str:
+    """Run Git; ``remote`` is the repository a network command reaches, checked against offline mode."""
+    from .. import offline
+
+    feature = "installing a capability pack from Git"
+    if remote and not local:
+        # Git connects from its own process, so the address is checked here,
+        # before it starts (lumi/offline.py).
+        reason = offline.refusal(remote, feature)
+        if reason:
+            raise PackInstallError(reason)
+    # The installed Git with Lumi's fixed options (lumi/safe_git.py). The
+    # repository is the one made here, so it has no settings of its own.
+    try:
+        git = safe_git.argv(project=cwd)
+    except FileNotFoundError:
+        raise PackInstallError("Installing from a repository needs Git. Install it and try again.") from None
     config = ["-c", "credential.helper=", "-c", "core.askPass=", "-c", "submodule.recurse=false",
               "-c", "advice.detachedHead=false"]
     if not local:
         config += ["-c", "protocol.allow=never", "-c", "protocol.https.allow=always"]
     env = {**os.environ, "GIT_TERMINAL_PROMPT": "0", "GIT_ASKPASS": "", "SSH_ASKPASS": "",
            "GIT_CONFIG_NOSYSTEM": "1", "GCM_INTERACTIVE": "never"}
+    if remote and not local and offline.enabled():
+        # Git may rewrite the address (url.<base>.insteadOf in the person's
+        # Git settings) and follows redirects: check the address it will use,
+        # and don't let it follow a redirect to another host.
+        config += ["-c", "http.followRedirects=false"]
+        try:
+            rewritten = subprocess.run([*git, *config, "ls-remote", "--get-url", "--", remote], cwd=cwd, env=env,
+                                       capture_output=True, text=True, encoding="utf-8", errors="replace",
+                                       timeout=_GIT_TIMEOUT).stdout.strip()
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise PackInstallError(f"Git couldn't run: {exc}") from exc
+        reason = offline.refusal(rewritten or remote, feature)
+        if reason:
+            raise PackInstallError(reason)
     try:
-        completed = subprocess.run([git, *config, *args], cwd=cwd, env=env, capture_output=True,
-                                   text=True, timeout=_GIT_TIMEOUT)
+        # Git writes UTF-8; a text-mode pipe read it as cp1252 and failed on
+        # some names and messages.
+        completed = subprocess.run([*git, *config, *args], cwd=cwd, env=env, capture_output=True,
+                                   text=True, encoding="utf-8", errors="replace", timeout=_GIT_TIMEOUT)
     except subprocess.TimeoutExpired as exc:
         raise PackInstallError("Git took too long; check the address and your network.") from exc
     except OSError as exc:
@@ -125,7 +155,7 @@ def resolve(url: str, ref: str, *, allow_local: bool = False) -> str:
     if not _REF.fullmatch(ref) or ref.startswith("-"):
         raise PackInstallError("Give a commit (40 hex characters), a tag or a branch.")
     output = _git(["ls-remote", "--", url, ref, f"refs/tags/{ref}^{{}}", f"refs/tags/{ref}", f"refs/heads/{ref}"],
-                  local=allow_local)
+                  local=allow_local, remote=url)
     commits: dict[str, str] = {}
     for line in output.splitlines():
         sha, _, name = line.partition("\t")
@@ -163,7 +193,8 @@ def install_from_git(url: str, commit: str, *, subdir: str = "", dest_root: Path
         checkout = Path(scratch) / "checkout"
         checkout.mkdir()
         _git(["init", "--quiet"], cwd=checkout, local=allow_local)
-        _git(["fetch", "--quiet", "--depth", "1", "--no-tags", "--", url, commit], cwd=checkout, local=allow_local)
+        _git(["fetch", "--quiet", "--depth", "1", "--no-tags", "--", url, commit], cwd=checkout, local=allow_local,
+             remote=url)
         # Links would be checked out as plain files; see the check below too.
         _git(["-c", "core.symlinks=false", "checkout", "--quiet", "--detach", commit],
              cwd=checkout, local=allow_local)

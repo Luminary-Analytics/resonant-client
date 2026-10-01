@@ -5,13 +5,15 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import subprocess
 from types import SimpleNamespace
 
 import pytest
 
 from lumi import team_library
-from lumi.cloud import CloudError
+from lumi.cloud import CloudError, Credentials
+from lumi.paths import state_home
 from lumi.engine.tools import execute_tool
 from lumi.gui import ws_commands
 from tests.test_connections import _StubWS
@@ -25,6 +27,22 @@ MIGRATION = {**RELEASE, "id": "lib_2", "slug": "database-migrations", "name": "D
 REVIEW = {"id": "lib_3", "slug": "review-checklist", "kind": "prompt", "name": "Review checklist",
           "description": "Our review checklist", "triggers": [], "body": "Review this change against: tests, docs.",
           "version": 2, "updated_at": "2026-09-25T11:00:00Z", "updated_by": "Bob"}
+
+
+ISSUER = "https://cloud.example.test"
+
+
+def _signed_in_as(account_url: str = ISSUER, user_id: str = "usr_1") -> None:
+    """The sign-in settings.json records (lumi/cloud.py): the Lumi Cloud that issued it, and whose it is."""
+    path = state_home() / "settings.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    account = {"user_id": user_id, "email": "ada@acme.example"} if user_id else {}
+    path.write_text(json.dumps({"cloud": {"account_url": account_url, "account": account}}), encoding="utf-8")
+
+
+@pytest.fixture(autouse=True)
+def signed_in():
+    _signed_in_as()
 
 
 class FakeCloud:
@@ -44,6 +62,9 @@ class FakeCloud:
         if self.refuse:
             raise CloudError(self.refuse)
         return {"organizations": self.library}
+
+    def account_request(self, method, path, **kwargs):
+        return Credentials(ISSUER, "tok", "usr_1", 1), self.account_call(method, path, **kwargs)
 
     def sign_out(self):
         self.signed_in = False
@@ -109,6 +130,20 @@ def test_the_apps_command_syncs_when_old_or_asked_and_sign_out_forgets(monkeypat
 
 async def _call(work, cloud):
     work(cloud)
+
+
+def test_a_copy_is_offered_only_while_its_sign_in_is_the_one_in_use():
+    """The review of #101: the previous organization's library stayed and was offered after a sign-in elsewhere."""
+    team_library.sync(FakeCloud())
+    assert team_library.items() and team_library.matching_skills("Cut the 2.0 release")
+    for account_url, user_id in (("https://b.example.test", "usr_1"), (ISSUER, "usr_2"), ("", "")):
+        _signed_in_as(account_url, user_id)
+        assert team_library.cached() == {"synced_at": 0, "organizations": []}
+        assert team_library.items() == [] and team_library.skill_context("Cut the 2.0 release") == ""
+        assert "No team skill" in team_library.read_skill("team:org_acme/cut-a-release")
+    # The same Lumi Cloud written otherwise is the same sign-in's.
+    _signed_in_as("HTTPS://Cloud.Example.test:443/")
+    assert [item["slug"] for item in team_library.items("skill")] == ["cut-a-release", "database-migrations"]
 
 
 # ── Project notes ────────────────────────────────────────────────────────────

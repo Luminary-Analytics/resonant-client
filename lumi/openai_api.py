@@ -18,7 +18,7 @@ from typing import Any, Iterator, Tuple
 
 import httpx
 
-from . import net
+from . import dlp, net
 from .backends import (
     EVENT_BACKEND_STATUS,
     EVENT_DONE,
@@ -139,6 +139,7 @@ def response_tools(tools: list) -> list[dict]:
     return converted
 
 
+@dlp.guard_backend
 class OpenAIResponsesBackend(KimiBackend):
     """OpenAI models through the Responses API (OpenAI or Azure OpenAI)."""
 
@@ -197,6 +198,8 @@ class OpenAIResponsesBackend(KimiBackend):
             raise ValueError("Reasoning effort must be off, low, med, high or max.")
         self.thinking_mode = mode or "default"
         self._transport = transport
+        # The tool definitions this conversation last offered (_payload).
+        self._offered_tools: list[dict] = []
         profile = infer_model_capabilities(self.model)
         overrides = {
             key: value for key, value in (capability_overrides or {}).items()
@@ -232,7 +235,8 @@ class OpenAIResponsesBackend(KimiBackend):
         if not str(api_key or "").strip():
             return []
         try:
-            with httpx.Client(**net.client_options(timeout=timeout, transport=transport, verify=verify)) as client:
+            with httpx.Client(**net.client_options(timeout=timeout, transport=transport, verify=verify,
+                                                   feature="OpenAI")) as client:
                 response = client.get(f"{str(base_url or DEFAULT_BASE_URL).rstrip('/')}/models",
                                       headers={"Authorization": f"Bearer {api_key}"})
                 response.raise_for_status()
@@ -247,7 +251,8 @@ class OpenAIResponsesBackend(KimiBackend):
             return list(DEFAULT_MODELS)
 
     def health(self) -> dict:
-        with httpx.Client(**net.client_options(timeout=10.0, transport=self._transport, verify=self._tls)) as client:
+        with httpx.Client(**net.client_options(timeout=10.0, transport=self._transport, verify=self._tls,
+                                               feature=self.PROVIDER_LABEL)) as client:
             response = client.get(self._url("models"), headers=self._request_headers())
         if response.status_code >= 400:
             error_type, message = self._error_details(response)
@@ -299,9 +304,18 @@ class OpenAIResponsesBackend(KimiBackend):
         if system.strip():
             payload["instructions"] = system
         if tool_defs:
+            self._offered_tools = list(tool_defs)
             payload["tools"] = tool_defs
             payload["tool_choice"] = "auto"
             payload["parallel_tool_calls"] = True
+        elif self._offered_tools and any(item.get("type") in {"function_call", "function_call_output"}
+                                         for item in items):
+            # A request that offers no tools after this conversation's earlier
+            # ones did (a team participant's last request, engine/session.py):
+            # the same definitions go out, which the calls in the input refer
+            # to and the prompt cache keeps, and tool_choice none lets none run.
+            payload["tools"] = list(self._offered_tools)
+            payload["tool_choice"] = "none"
         if is_reasoning_model(self.model):
             reasoning: dict[str, Any] = {"summary": "auto"}
             effort = REASONING_EFFORT.get(self.thinking_mode)
@@ -369,9 +383,18 @@ class OpenAIResponsesBackend(KimiBackend):
         response_id = ""
         emitted_text = False
         last_status = 0.0
+        # Under a team's supervision (engine/execution_guard.py) one stream()
+        # is one generation (backends.KimiBackend.supervised_requests): only a
+        # refusal that generated nothing, a rate limit or an overload before
+        # any output, is waited out and sent again, and every error says
+        # whether anything was generated. Otherwise server errors and rate
+        # limits are retried as before.
+        supervised = getattr(self, "_supervised_single_request", False)
+        attempts = 4 if supervised else 3
+        completed = False
         try:
             with httpx.Client(**net.client_options(timeout=self._timeout, transport=self._transport,
-                                                   verify=self._tls)) as client:
+                                                   verify=self._tls, feature=self.PROVIDER_LABEL)) as client:
                 attempt = 0
                 while True:
                     if cancel_event is not None and cancel_event.is_set():
@@ -380,12 +403,14 @@ class OpenAIResponsesBackend(KimiBackend):
                     with client.stream("POST", self._url("responses"), headers=headers, json=payload) as response:
                         if response.status_code >= 400:
                             error_type, message = self._error_details(response)
-                            retryable = self._is_retryable_error(response.status_code, error_type, message)
+                            retryable = self._is_retryable_error(response.status_code, error_type, message) and (
+                                not supervised or response.status_code == 429)
                             logger.warning("%s request failed: status=%d type=%s retryable=%s model=%s",
                                            self.PROVIDER_LABEL, response.status_code, error_type or "unknown",
                                            retryable, self.model)
-                            if retryable and attempt < 2:
-                                delay = self._http_retry_delay(response, attempt)
+                            if retryable and attempt < attempts - 1:
+                                delay = (self._rate_limit_delay(response, attempt) if supervised
+                                         else self._http_retry_delay(response, attempt))
                                 yield (EVENT_BACKEND_STATUS, {
                                     "kind": self.RETRY_EVENT_KIND, "status_code": response.status_code,
                                     "attempt": attempt + 1, "max": 3, "model": self.model,
@@ -395,8 +420,11 @@ class OpenAIResponsesBackend(KimiBackend):
                                     return
                                 attempt += 1
                                 continue
-                            yield (EVENT_ERROR, {"message": self._user_error_message(
-                                response.status_code, error_type, message)})
+                            yield (EVENT_ERROR, {
+                                "message": self._user_error_message(response.status_code, error_type, message),
+                                # A number, safe to keep where provider text isn't (the guarded ledger).
+                                "status_code": response.status_code,
+                            })
                             return
                         for line in response.iter_lines():
                             if cancel_event is not None and cancel_event.is_set():
@@ -436,14 +464,24 @@ class OpenAIResponsesBackend(KimiBackend):
                                 done = event.get("response") or {}
                                 usage = done.get("usage") or usage
                                 final_output = [item for item in done.get("output") or [] if isinstance(item, dict)]
+                                completed = True
                                 break
                             elif kind in {"response.failed", "error"}:
                                 error = (event.get("response") or {}).get("error") if kind == "response.failed" else event
                                 error = error if isinstance(error, dict) else {}
                                 message = str(error.get("message") or "Unknown provider error")
                                 code = str(error.get("code") or "")
-                                if code in {"server_error", "rate_limit_exceeded"} and attempt < 2:
+                                # Nothing was generated while no output item (a
+                                # message, reasoning or a function call) has started.
+                                before_output = not (items or reasoning_text or emitted_text)
+                                if supervised:
+                                    again = before_output and (code in {"rate_limit_exceeded", "server_is_overloaded"}
+                                                               or self._is_transient_overload(message))
+                                    delay = min(30.0, 5.0 * (2 ** attempt))
+                                else:
+                                    again = code in {"server_error", "rate_limit_exceeded"}
                                     delay = 1.5 * (2 ** attempt)
+                                if again and attempt < attempts - 1:
                                     yield (EVENT_BACKEND_STATUS, {
                                         "kind": self.RETRY_EVENT_KIND, "status_code": 0,
                                         "attempt": attempt + 1, "max": 3, "model": self.model,
@@ -458,7 +496,10 @@ class OpenAIResponsesBackend(KimiBackend):
                                     attempt += 1
                                     restart = True
                                     break
-                                yield (EVENT_ERROR, {"message": f"{self.PROVIDER_LABEL} generation failed: {message}"})
+                                yield (EVENT_ERROR, {"message": f"{self.PROVIDER_LABEL} generation failed: {message}",
+                                                     # The guarded ledger settles an error before
+                                                     # any output as known: nothing was generated.
+                                                     "before_output": before_output})
                                 return
                             now = time.monotonic()
                             if phase and now - last_status >= 2:
@@ -468,11 +509,17 @@ class OpenAIResponsesBackend(KimiBackend):
                     if restart:
                         continue
                     break
+            if supervised and not completed:
+                # A stream cut short isn't a complete response: whatever it
+                # held stays uncertain rather than becoming a finished turn.
+                yield (EVENT_ERROR, {"message": f"{self.PROVIDER_LABEL} response ended before it was complete."})
+                return
         except httpx.TimeoutException:
             yield (EVENT_ERROR, {"message": self._timeout_error_message()})
             return
         except httpx.HTTPError as exc:
-            yield (EVENT_ERROR, {"message": f"{self.PROVIDER_LABEL} connection failed: {type(exc).__name__}"})
+            yield (EVENT_ERROR, {"message": net.offline_message(exc)
+                                 or f"{self.PROVIDER_LABEL} connection failed: {type(exc).__name__}"})
             return
         output = final_output or [items[index] for index in sorted(items)]
         yield from self._finish(output, reasoning_text, usage, response_id)

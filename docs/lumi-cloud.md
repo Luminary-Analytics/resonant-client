@@ -25,8 +25,30 @@ apps, RFC 8252):
   never in `settings.json`, and keeps the short-lived one only in memory.
 
 This account is separate from your display name and from any SONN or ChatGPT
-sign-in. **Sign out** ends it on Lumi Cloud too. Your organization can also
-sign the app out from Lumi Cloud.
+sign-in. **Sign out** ends it on this computer at once, and on Lumi Cloud too.
+When Lumi Cloud can't be told (offline mode doesn't allow it, or it can't be
+reached), Settings says so: that sign-in stays valid there until it expires,
+and nothing of it is kept here. Your organization can also sign the app out
+from Lumi Cloud. Signing in again, at the same Lumi Cloud or another, ends the
+earlier sign-in where it was issued.
+
+**Your sign-in belongs to the Lumi Cloud that issued it.** Lumi records its
+address when the sign-in completes (a sign-in you cancel changes nothing),
+and refreshes it, uses it and signs it out only there. If this computer later
+uses another Lumi Cloud (your organization's policy enrolls it somewhere
+else, or the address changes), you count as signed out for the new one:
+nothing of your sign-in is sent to it, and Settings > Lumi account says
+you're still signed in to the first one, with **Sign out of** it. An address
+with a user name or password in it (`https://name:secret@…`) isn't accepted.
+Addresses are compared as addresses: a capital letter, the default port
+(`:443`), a trailing slash or an internationalized name written either way
+don't make two of them different Lumi Clouds; any other part does.
+
+Lumi reads the sign-in's address and its tokens together, and sends a token
+only to the address it came with, never to one it reads again afterwards.
+When a sign-in completes (or you sign out) while Lumi is refreshing the
+earlier one, the refreshed tokens aren't kept: the one Lumi Cloud just made
+is revoked where it was made.
 
 ## Using your organization on this computer
 
@@ -37,8 +59,18 @@ computer**. Lumi generates a key pair for this computer:
 - Lumi Cloud gets the public key and lists the computer on the organization's
   Devices page.
 
-From then on the computer checks in about once an hour, even after you sign
+From then on the computer checks in about once an hour (as often as every
+five minutes if the organization's Lumi Cloud asks), even after you sign
 out. **Leave on this computer** undoes it.
+
+**The enrollment belongs to the Lumi Cloud it was made with.** Lumi records
+its address when the computer enrolls, and sends every device request only
+there: device tokens, check-ins, policy downloads, leaving, tasks from
+Slack and Teams, and oversight's records and confirmations. If you later sign
+in to another Lumi Cloud, this computer counts as enrolled elsewhere:
+check-ins and the organization's policy still come from where it enrolled,
+tasks from chat wait, and Settings > Lumi account says so, with **Leave …
+on this computer**. Nothing of the enrollment goes to the other Lumi Cloud.
 
 A check-in sends:
 
@@ -55,6 +87,17 @@ A check-in never sends prompts, responses, code, file names, project paths or
 session titles. Its answer can carry the organization's shared model credit
 and the month's spend so far; Lumi stops model requests when it's used up
 ([shared credit](usage-and-costs.md#an-organizations-shared-credit)).
+
+An organization's policy can also turn on **organization oversight**: each
+turn's activity, optionally your messages and sessions' titles (secrets
+removed), and security flags, sent separately from check-ins. Lumi then
+shows a notice beside the message box naming the organization and what it
+receives, sends nothing to a model until you confirm it with **I've read
+this** (a record signed with this computer's device key goes to
+`/api/v1/oversight/acknowledgments`), and lists exactly what is shared in
+**Settings > Privacy & security**. Leaving the organization or signing out
+forgets the confirmation. See [organization
+oversight](organization-oversight.md).
 
 ### The organization's policy
 
@@ -101,14 +144,23 @@ the chat with **Approve** and **Deny** buttons. No answer within 10 minutes,
 or **stop** in the chat, refuses it. The reply goes back to the chat.
 
 Only your own computer takes your requests: never a managed computer, and
-never a colleague's. Your organization can turn this off with
+never a colleague's. Requests wait while this computer uses another Lumi Cloud
+than the one it enrolled with, and everything about a request (its approvals,
+whether you said stop, its reply) goes back to the Lumi Cloud that handed it
+out, or nowhere. Your organization can turn this off with
 `cloud.remote_tasks` in its policy.
 
 ## Sharing a conversation
 
 To show a colleague how you got somewhere, right-click a conversation in the
-sidebar (or use its **⋯** button) and choose **Share…**. Sign in to your
-organization's Lumi Cloud first; you don't need to enroll this computer.
+sidebar (or use its **⋯** button) and choose **Share in Lumi Cloud…**. Sign in
+to your organization's Lumi Cloud first; you don't need to enroll this
+computer. Without an account the dialog says that sharing needs one, and
+that everything else in Lumi works without it; a teammate hand-off says the
+same, while the CI hand-off works without an account. **Settings > Lumi
+account** says who it's for before anyone signs in. The menu names Lumi Cloud
+instead of hiding the item, so the same menus and documentation hold on every
+computer, and the dialog explains what an account adds.
 
 Lumi Cloud keeps a read-only copy at a link:
 
@@ -125,7 +177,7 @@ Lumi Cloud keeps a read-only copy at a link:
 - **It doesn't change** when the conversation does. To share a newer
   version, stop sharing and share again.
 
-**Share…** shows the link again later, with **Copy link** and **Stop
+**Share in Lumi Cloud…** shows the link again later, with **Copy link** and **Stop
 sharing**. Stopping makes the link show nothing. In Lumi Cloud, **Shared
 sessions** lists what you've shared, and an organization's owners and admins
 see and can stop everything shared in it.
@@ -142,7 +194,24 @@ organization. Lumi Cloud emails them, and their Lumi lists it under
 Skills and prompts your organization publishes in Lumi Cloud's **Library**
 reach your Lumi: matching skills are offered to the agent, and the **❝**
 button beside the message box inserts prompts. **Team library** on this page
-shows what's synced, with **Sync now**. See [team library](team-library.md).
+shows what's synced, with **Sync now**. A synced copy belongs to the sign-in
+it came with: after a sign-in at another Lumi Cloud, or as someone else, it
+isn't offered until the next sync replaces it. See [team
+library](team-library.md).
+
+## Sending feedback
+
+**Help › Send Feedback…** (also in the command palette, the profile menu and
+About Lumi) sends a bug report, an idea or other feedback to a feedback
+inbox, which only its staff can read: the address your organization or
+this build of Lumi sets, else this Lumi Cloud's. You needn't sign in; while
+you're signed in to the Lumi Cloud the report goes to, it carries your
+account so staff see who sent it, and a report written so goes only with your
+account: if you sign out before it goes, it waits for you, unless you choose
+**Send without your account**. When it can't be reached, the report waits
+on this computer and goes later; one written before any address was set goes
+only when you send it to the address shown, as the account its button names. What a report holds, what never
+leaves and how it's checked first: [Sending feedback](feedback.md).
 
 ## For administrators: enrolling managed computers
 
@@ -150,8 +219,10 @@ To enroll computers without anyone signing in:
 
 1. Create an **enrollment token** on the Devices page in Lumi Cloud.
 2. Deploy the machine policy that the page prints, through Group Policy,
-   Intune, a configuration profile or `%ProgramData%\Lumi\policy.json`
-   ([Deploying on Windows](deploy-windows.md)):
+   Intune, a configuration profile or `%ProgramData%\Lumi\policy.json` in a
+   folder only administrators can change
+   ([Deploying on Windows](deploy-windows.md),
+   [the file rules](enterprise-policy.md#only-files-only-administrators-can-change-count)):
 
 ```json
 {
@@ -172,11 +243,21 @@ Lumi enrolls on its next start. After that:
 - The published cloud policy **replaces** the rules in this machine policy.
 - The machine policy's own rules (`models` above) apply until the first
   download, and whenever a download fails to verify.
-- Only keys in `trusted_keys`, the `PolicyKeys` registry value or
-  `policy-keys.json` can sign the cloud policy. The file in `~/.lumi/cloud/`
-  is only a cache.
+- Only keys in `trusted_keys`, the `PolicyKeys` registry value (or
+  configuration profile key), or on macOS and Linux a root-owned
+  `policy-keys.json` beside the machine policy can sign the cloud policy.
+  Windows doesn't read a `policy-keys.json`. The file in `~/.lumi/cloud/` is
+  only a cache.
 - People can't leave a managed enrollment or point Lumi at a different Lumi
   Cloud.
+- **The machine policy's address is authoritative for enrollment.** When it
+  names another Lumi Cloud than the one this computer enrolled with (you
+  moved the computer to another deployment, or it had joined an organization
+  itself), the old enrollment ends: the Lumi Cloud it was made with is told
+  the computer left, with that computer's own device token and nowhere else,
+  and its downloaded policy is deleted. With an `enrollment_token` for the
+  new address, the computer then enrolls there; without one, it stays
+  unenrolled. The old Lumi Cloud's device token is never sent to the new one.
 
 Revoke an enrollment token once the rollout is done. Computers already
 enrolled keep working until they are revoked on the Devices page.

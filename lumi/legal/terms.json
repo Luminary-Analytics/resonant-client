@@ -1,0 +1,40 @@
+{
+  "_comment": "The one source of truth for the facts in Lumi's legal texts. packaging/legal_texts.py renders lumi/legal/templates/ with these values into lumi/legal/*.md, sdk/LICENSE, sdk/python/lumi_extension/LICENSE and lumi/code_editors/vscode/LICENSE.txt, and the installers' license pages. A value still reading [[TO BE PROVIDED: ...]] warns in pull request CI and fails a release build (RELEASING.md). Each document's sha256 pins the text of its version: any change to what a text says needs a new version and a new pin, or tests/test_legal_texts.py and the release check fail. A new version of the EULA, or of the Alpha and Beta Test Terms on a pre-release build, asks everyone to accept it again (lumi/terms.py), as does an accepted text that no longer matches its pin; a new version of the privacy notice or of the SDK license asks no one. published is the day a version's text was written: each version applies to a person from the day they accept it, and a release build refuses a published date after its own.",
+  "entity": {
+    "legal_name": "Luminary Analytics, LLC",
+    "type": "limited liability company",
+    "state_of_formation": "New Hampshire"
+  },
+  "governing_law": "New Hampshire",
+  "venue": "New Hampshire",
+  "notices_email": "rich.bellantoni@luminaryanalytics.com",
+  "documents": {
+    "eula": {
+      "title": "Lumi End User License Agreement",
+      "file": "EULA.md",
+      "version": "1.0",
+      "published": "2026-09-29",
+      "sha256": "4c07baa43ede636c435b756fe57c5a888aa4bc066868c5567d94a1791f4b9030"
+    },
+    "alpha_terms": {
+      "title": "Lumi Alpha and Beta Test Terms",
+      "file": "ALPHA-TERMS.md",
+      "version": "1.0",
+      "published": "2026-09-29",
+      "sha256": "9d79522e34664b61871e152ae7b5063e3220c91afd3c156ac3ed3a3fe46150d5"
+    },
+    "privacy": {
+      "title": "Lumi Privacy Notice",
+      "file": "PRIVACY.md",
+      "version": "1.0",
+      "published": "2026-09-29",
+      "sha256": "67ddadbe281df6ff788959448e68b147bfc34eae23ceb9d607ae2db324782d12"
+    },
+    "sdk_license": {
+      "title": "Lumi Extension SDK License",
+      "version": "1.0",
+      "published": "2026-09-29",
+      "sha256": "ad562e56b9d91eacdf27316ebbdc89ff99757fb6e2eb3709c9893549a96e6706"
+    }
+  }
+}

@@ -13,3 +13,10 @@ Copy the `lumi_extension` folder into your pack, or install this folder with
 `pip install ./sdk/python`. Start from `sdk/templates/provider-python`, and
 see [docs/extensions.md](../../docs/extensions.md) for the manifest and the
 protocol.
+
+The SDK is under the Lumi Extension SDK License (`lumi_extension/LICENSE`,
+which a copy of the folder keeps). It lets you use, change and ship the SDK
+as part of extensions for Lumi; Lumi itself is under the Lumi End User
+License Agreement. The SDK was never part of a Lumi release; its copies in
+every commit of Lumi's repository where its license file is the MIT License
+(version 1.0.0) remain under it.

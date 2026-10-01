@@ -4405,6 +4405,9 @@ body {
 .dialog-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 /* Focus moves to the permission dialog itself; its buttons show the ring. */
 #permission-dialog:focus { outline: none; }
+dialog.reveal-program-dialog { margin: auto; inset: 0; padding: 0; color: var(--text); box-shadow: 0 24px 80px rgba(0,0,0,.5); }
+dialog.reveal-program-dialog::backdrop { background: rgba(0,0,0,.6); }
+dialog.reveal-program-dialog p { margin: 0; overflow-wrap: anywhere; }
 
 /* ── Diff Review Dialog ──────────────────────────────── */
 
@@ -5921,6 +5924,24 @@ body {
     color: var(--text);
     font-size: 12px;
     overflow-wrap: anywhere;
+}
+
+/* The organization's DLP rules, one per line (read-only). */
+.settings-policy-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+}
+
+.settings-policy-list li + li {
+    margin-top: 2px;
+}
+
+/* Values move under their labels on narrow screens: read the list from the left too. */
+@media (max-width: 820px) {
+    .settings-policy-list {
+        text-align: left;
+    }
 }
 
 .settings-subheading {
@@ -10720,6 +10741,8 @@ body {
     background: transparent; color: var(--text); font: inherit; font-size: 12px; text-align: left; cursor: pointer;
 }
 .account-popover button:hover { background: var(--bg-sidebar); }
+/* The rules above set display, which would show a [hidden] item (SONN's account and credits for someone without SONN). */
+.account-popover [hidden] { display: none; }
 .account-popover kbd { color: var(--dim); font: inherit; font-size: 10px; }
 .sidebar-account:focus-visible, .account-popover button:focus-visible, #echo-hide:focus-visible { outline: 2px solid var(--brand); outline-offset: -2px; }
 .sidebar-companion { display: flex; align-items: center; gap: 8px; padding: 2px 6px; color: var(--brand); }
@@ -11012,7 +11035,9 @@ body:not([data-autonomous-sessions="1"]) .autonomous-mission-browser,
     color: var(--muted);
 }
 .runtime-banner-packs,
-.runtime-banner-trust {
+.runtime-banner-trust,
+.runtime-banner-git,
+.runtime-banner-git-missing {
     margin-top: 4px;
 }
 .runtime-banner-action {
@@ -11026,6 +11051,7 @@ body:not([data-autonomous-sessions="1"]) .autonomous-mission-browser,
     cursor: pointer;
 }
 .runtime-banner-action:hover { background: rgba(240, 173, 78, .18); }
+a.runtime-banner-action { display: inline-block; text-decoration: none; }
 .runtime-banner-action:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .runtime-banner-close {
     position: absolute;
@@ -11046,6 +11072,210 @@ body:not([data-autonomous-sessions="1"]) .autonomous-mission-browser,
     background: color-mix(in srgb, var(--text) 10%, transparent);
     color: var(--text);
 }
+
+/* Organization oversight (lumi/oversight.py): beside the message box while an
+   organization's policy has Lumi share work. There is no close button. */
+.oversight-notice {
+    order: -1;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    max-width: var(--content-max-width);
+    margin: 0 auto 8px;
+    padding: 8px 12px;
+    border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
+    border-radius: 8px;
+    background: color-mix(in srgb, var(--accent) 9%, var(--bg));
+    color: var(--text);
+    font-size: 12.5px;
+    line-height: 1.45;
+    box-sizing: border-box;
+}
+.oversight-notice[hidden] { display: none; }
+.oversight-notice-inactive { border-style: dashed; }
+.oversight-notice-icon { flex: 0 0 auto; color: var(--accent); }
+.oversight-notice-text { margin: 0; overflow-wrap: anywhere; }
+.oversight-notice-details {
+    flex: 0 0 auto;
+    padding: 3px 9px;
+    border: 1px solid color-mix(in srgb, var(--accent) 55%, transparent);
+    border-radius: 5px;
+    background: transparent;
+    color: var(--text);
+    font: inherit;
+    white-space: nowrap;
+    cursor: pointer;
+}
+.oversight-notice-details:hover { background: color-mix(in srgb, var(--accent) 16%, transparent); }
+.oversight-notice-details:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+/* Confirming the notice is what unlocks the message box and starts recording: the one explicit action. */
+.oversight-notice-confirm {
+    flex: 0 0 auto;
+    padding: 3px 10px;
+    border: 1px solid var(--brand);
+    border-radius: 5px;
+    background: var(--brand);
+    color: var(--on-brand);
+    font: inherit;
+    font-weight: 600;
+    white-space: nowrap;
+    cursor: pointer;
+}
+.oversight-notice-confirm[hidden] { display: none; }
+.oversight-notice-confirm:hover { opacity: 0.88; }
+.oversight-notice-confirm:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.oversight-notice-pending { border-width: 2px; border-color: var(--accent); }
+.oversight-notice:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.oversight-notice-body { flex: 1 1 auto; min-width: 0; }
+.oversight-notice-lock { margin: 4px 0 0; font-weight: 600; }
+.oversight-notice-lock[hidden] { display: none; }
+/* While the notice waits to be confirmed, the message box can't be used (the
+   footer's mode, project and model controls stay usable and at full contrast). */
+.input-wrapper.is-oversight-locked .input-top { opacity: 0.7; }
+.input-wrapper.is-oversight-locked textarea { cursor: not-allowed; }
+@media (max-width: 600px) {
+    .oversight-notice { flex-wrap: wrap; }
+    .oversight-notice-body { flex-basis: calc(100% - 26px); }
+    .oversight-notice-details { margin-left: 26px; }
+}
+.oversight-list { margin: 4px 0 8px; padding-left: 20px; color: var(--text-secondary); font-size: 12.5px; line-height: 1.5; }
+
+/* Lumi's terms (lumi/terms.py, terms_view.js): the notice above the message box
+   while they wait to be accepted, and the dialog that shows them. */
+.terms-notice {
+    order: -2;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    max-width: var(--content-max-width);
+    margin: 0 auto 8px;
+    padding: 8px 12px;
+    border: 2px solid var(--accent);
+    border-radius: 8px;
+    background: color-mix(in srgb, var(--accent) 9%, var(--bg));
+    color: var(--text);
+    font-size: 12.5px;
+    line-height: 1.45;
+    box-sizing: border-box;
+}
+.terms-notice[hidden] { display: none; }
+.terms-notice:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.terms-notice-text { flex: 1 1 auto; min-width: 0; margin: 0; font-weight: 600; overflow-wrap: anywhere; }
+.terms-notice-review {
+    flex: 0 0 auto;
+    padding: 3px 10px;
+    border: 1px solid var(--brand);
+    border-radius: 5px;
+    background: var(--brand);
+    color: var(--on-brand);
+    font: inherit;
+    font-weight: 600;
+    white-space: nowrap;
+    cursor: pointer;
+}
+.terms-notice-review:hover { opacity: 0.88; }
+.terms-notice-review:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.terms-dialog-overlay { z-index: 1100; padding: 16px; box-sizing: border-box; }
+.terms-dialog {
+    display: flex;
+    flex-direction: column;
+    width: 760px;
+    max-width: 100%;
+    max-height: calc(100vh - 32px);
+    min-height: 0;
+    box-sizing: border-box;
+}
+.terms-dialog-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.terms-dialog-title { margin: 0; font-size: 15px; font-weight: 600; }
+.terms-dialog-intro { margin: 12px 20px 0; color: var(--text); font-size: 13px; line-height: 1.5; }
+.terms-dialog-intro[hidden] { display: none; }
+.terms-dialog-body {
+    flex: 1 1 auto;
+    min-height: 120px;
+    margin: 12px 20px 0;
+    padding: 4px 16px;
+    overflow: auto;
+    overscroll-behavior: contain;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--bg);
+    color: var(--text);
+    font-size: 13px;
+    line-height: 1.55;
+}
+.terms-dialog-body:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.terms-document { overflow-wrap: anywhere; }
+.terms-document h1 { margin: 14px 0 6px; font-size: 18px; line-height: 1.3; }
+.terms-document h2 { margin: 18px 0 6px; font-size: 15px; line-height: 1.3; }
+.terms-document h3 { margin: 14px 0 4px; font-size: 13.5px; }
+.terms-document p, .terms-document li { margin: 0 0 8px; }
+.terms-document ul, .terms-document ol { margin: 0 0 10px; padding-left: 22px; }
+.terms-document code {
+    padding: 1px 4px;
+    border-radius: 4px;
+    background: var(--bg-elem);
+    font-family: var(--font-mono);
+    font-size: 12px;
+}
+.terms-document-plain { margin: 8px 0; white-space: pre-wrap; font-family: var(--font-mono); font-size: 12px; }
+.terms-document-break { margin: 18px 0; border: none; border-top: 1px solid var(--border-strong); }
+.terms-dialog-error { margin: 10px 20px 0; }
+.terms-dialog-error[hidden] { display: none; }
+.terms-dialog-footer { padding: 10px 20px 0; }
+.terms-dialog-consent { margin: 0 0 6px; color: var(--text); font-size: 12.5px; line-height: 1.5; }
+.terms-dialog-consent[hidden] { display: none; }
+.terms-dialog-links { display: flex; flex-wrap: wrap; gap: 4px 14px; }
+.terms-dialog-link {
+    padding: 2px 0;
+    border: none;
+    background: transparent;
+    color: var(--text);
+    font: inherit;
+    font-size: 12.5px;
+    text-decoration: underline;
+    text-underline-offset: 2px;
+    cursor: pointer;
+}
+.terms-dialog-link[hidden] { display: none; }
+.terms-dialog-link:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 3px; }
+.terms-dialog-actions { padding: 12px 0 16px; }
+.terms-dialog-actions .dialog-btn[hidden] { display: none; }
+/* Decline is a real choice: full text contrast, not the muted Deny style. */
+#terms-dialog-decline { color: var(--text); }
+.about-legal-documents { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+@media (max-width: 600px) {
+    .terms-notice { flex-wrap: wrap; }
+    .terms-notice-review { margin-left: auto; }
+    .terms-dialog-overlay { padding: 8px; align-items: stretch; }
+    .terms-dialog { max-height: calc(100vh - 16px); }
+    .terms-dialog-intro, .terms-dialog-body, .terms-dialog-error { margin-left: 12px; margin-right: 12px; }
+    .terms-dialog-body { padding: 2px 10px; }
+    .terms-dialog-footer { padding: 8px 12px 0; }
+    .terms-dialog-actions { flex-wrap: wrap; }
+    .terms-dialog-actions .dialog-btn { flex: 1 1 120px; min-height: 36px; }
+}
+.oversight-list li + li { margin-top: 4px; }
+.oversight-flags { margin: 4px 0 8px; padding: 0; list-style: none; }
+.oversight-flag { display: flex; align-items: flex-start; gap: 10px; padding: 8px 0; border-top: 1px solid var(--border); font-size: 12.5px; }
+.oversight-flag:first-child { border-top: 0; }
+.oversight-flag-copy { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.oversight-severity {
+    flex: 0 0 auto;
+    min-width: 54px;
+    padding: 1px 6px;
+    border: 1px solid var(--border-strong);
+    border-radius: 999px;
+    color: var(--text);
+    font-size: 11px;
+    text-align: center;
+}
+.oversight-severity-high { border-color: var(--err); background: color-mix(in srgb, var(--err) 18%, transparent); }
+.oversight-severity-medium { border-color: var(--warn); background: color-mix(in srgb, var(--warn) 16%, transparent); }
+.oversight-severity-low { background: color-mix(in srgb, var(--text) 6%, transparent); }
+.oversight-excerpt { font-family: var(--font-mono); font-size: 11.5px; }
 
 .live-run-surface {
     order: 4;
@@ -13171,6 +13401,11 @@ body.is-window-dragging * {
 .provider-model-choice:hover, .provider-model-choice[aria-current=true] { background: color-mix(in srgb, var(--brand) 7.8%, transparent); }
 .provider-star { color: var(--text); border: 0; background: transparent; padding: 12px; cursor: pointer; font-size: 19px; }
 .provider-picker-footer { margin-top: 14px; font-size: 11px; color: var(--muted); }
+/* Offline mode: what the model picker hides, and why (lumi/offline.py). */
+.provider-offline-note { margin-top: 12px; }
+.provider-offline-note ul, .settings-offline-list { margin: 4px 0 0; padding-left: 18px; }
+.provider-offline-note li, .settings-offline-list li { margin: 3px 0; overflow-wrap: anywhere; }
+#settings-body .settings-update-file .settings-input { width: 100%; box-sizing: border-box; }
 
 /* New conversations choose their project before changing the active draft. */
 .new-session-project-picker { margin: auto; width: min(480px, calc(100vw - 32px)); max-height: calc(100dvh - 32px); padding: 20px; color: var(--text); background: var(--bg); border: 1px solid var(--border-strong); border-radius: 14px; box-shadow: 0 20px 80px #0008; }
@@ -13655,6 +13890,58 @@ body.is-window-dragging * {
 .share-who { display: grid; gap: 6px; margin: 12px 0 0; padding: 0; border: 0; }
 .share-who label { display: flex; align-items: center; gap: 8px; }
 
+/* Send feedback (feedback_view.js, lumi/feedback.py). Fits a 375 px window:
+   the report scrolls inside its box, never the page sideways. */
+.feedback-dialog { width: 560px; max-width: calc(100vw - 24px); max-height: calc(100dvh - 24px); display: flex; flex-direction: column; }
+.feedback-dialog [hidden] { display: none !important; }
+.feedback-dialog .dialog-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.feedback-dialog .dialog-btn-close { display: inline-flex; align-items: center; justify-content: center; min-width: 32px; min-height: 32px; margin: -6px -8px -6px 0; border-radius: var(--radius-sm); }
+.feedback-dialog .dialog-body { overflow: auto; overscroll-behavior: contain; }
+.feedback-dialog .dialog-actions { flex-wrap: wrap; padding: 12px 0 0; }
+.feedback-kinds { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 18px; margin: 0 0 12px; padding: 0; border: 0; min-width: 0; }
+.feedback-kinds legend { float: left; width: 100%; padding: 0; }
+.feedback-kind { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
+.feedback-dialog textarea { padding: 8px; background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: var(--radius-sm); line-height: 1.5; }
+.feedback-message { min-height: 120px; }
+.feedback-field-foot { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px 12px; margin: 4px 0 12px; font-size: 12px; }
+.feedback-count { margin-left: auto; color: var(--muted); font-variant-numeric: tabular-nums; }
+.feedback-error { display: block; color: var(--err); font-size: 12px; overflow-wrap: anywhere; }
+.feedback-kinds .feedback-error { flex-basis: 100%; }
+.feedback-dialog .feedback-reply-to { display: block; width: 100%; min-width: 0; box-sizing: border-box; padding: 6px 8px; font-family: inherit; font-size: 13px; }
+.feedback-dialog [aria-invalid="true"] { border-color: var(--err); }
+.feedback-optional { color: var(--muted); font-weight: 400; }
+.feedback-hint { margin: 4px 0 12px; font-size: 12px; }
+.feedback-check { display: flex; align-items: center; gap: 8px; margin: 0; font-weight: 600; cursor: pointer; }
+.feedback-preview { margin: 0 0 12px; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius-sm); }
+.feedback-preview h3 { margin: 0 0 6px; }
+.feedback-preview .share-note { margin-bottom: 8px; overflow-wrap: anywhere; }
+.feedback-preview-body { max-height: 260px; margin: 0; padding: 8px 10px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; background: var(--bg-elem); border-radius: var(--radius-sm); color: var(--text); font-family: var(--font-mono); font-size: 11.5px; line-height: 1.45; }
+.feedback-preview-body.is-stale { opacity: .55; }
+.feedback-notices { margin: 8px 0 0; padding-left: 18px; color: var(--muted); font-size: 12px; }
+.feedback-notices:empty { display: none; }
+.feedback-queue { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 0 0 12px; padding: 8px 10px; border: 1px dashed var(--border); border-radius: var(--radius-sm); }
+.feedback-queue > span { flex: 1 1 200px; }
+.feedback-held { flex: 1 1 100%; display: flex; flex-direction: column; gap: 8px; margin: 4px 0 0; padding: 0; list-style: none; }
+.feedback-held li { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px 10px; padding-top: 8px; border-top: 1px solid var(--border); }
+.feedback-held-text { flex: 1 1 220px; min-width: 0; overflow-wrap: anywhere; }
+.feedback-held-actions { display: inline-flex; flex-wrap: wrap; gap: 6px; }
+.feedback-held-actions .btn-sm { min-height: 28px; }
+.feedback-count.is-over { color: var(--err); }
+.feedback-alert { margin: 0 0 8px; color: var(--err); line-height: 1.5; overflow-wrap: anywhere; }
+.feedback-copy-text { min-height: 120px; margin: 0 0 8px; font-family: var(--font-mono); font-size: 11.5px; }
+.feedback-progress { margin: 0; }
+.feedback-progress:empty { display: none; }
+.feedback-done-text { margin: 0; font-size: 14px; line-height: 1.5; overflow-wrap: anywhere; }
+.feedback-done-email { margin: 10px 0 0; overflow-wrap: anywhere; }
+.feedback-done .feedback-copy-text { width: 100%; box-sizing: border-box; margin: 10px 0 0; }
+.feedback-done .feedback-progress { margin: 8px 0 0; }
+.feedback-dialog input:focus-visible, .feedback-dialog textarea:focus-visible, .feedback-preview-body:focus-visible,
+.feedback-dialog .dialog-btn-close:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+@media (max-width: 480px) {
+    .feedback-dialog .dialog-body { padding: 14px; }
+    .feedback-dialog .dialog-actions .dialog-btn { flex: 1 1 auto; }
+}
+
 /* A plan's specialists under its card, one step each (app.js, "Plan activity").
    A step's line spans the card, so a long goal ends in an ellipsis before its status. */
 .plan-step > summary { display: flex; min-width: 0; }
@@ -13723,3 +14010,24 @@ body.is-window-dragging * {
 .resonant-md-popover-body { padding: 12px; display: flex; flex-direction: column; gap: 8px; }
 #resonant-md-editor { font-family: monospace; font-size: 12px; resize: vertical; min-height: 120px; }
 .resonant-md-popover-actions { display: flex; gap: 8px; justify-content: flex-end; }
+
+/* Unattended work needs Full-auto (app.js _fullAutoNotice): why, and running just this request in it. */
+.full-auto-notice { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin: 8px 0 0; padding: 10px 12px; border: 1px solid color-mix(in srgb, var(--warn) 45%, var(--border)); border-radius: 8px; background: color-mix(in srgb, var(--warn) 8%, transparent); color: var(--text); font-size: 12.5px; line-height: 1.45; }
+.full-auto-notice.full-auto-notice-chat { width: min(720px, calc(100% - 24px)); margin: 10px auto 10px 0; }
+.full-auto-notice-text { flex: 1 1 260px; min-width: 0; margin: 0; overflow-wrap: anywhere; }
+.full-auto-notice .full-auto-grant { flex: 0 0 auto; padding: 5px 10px; border: 1px solid color-mix(in srgb, var(--warn) 60%, var(--border)); border-radius: 6px; background: transparent; color: var(--text); font: inherit; cursor: pointer; }
+.full-auto-notice .full-auto-grant:hover:enabled { background: color-mix(in srgb, var(--warn) 16%, transparent); }
+.full-auto-notice .full-auto-grant:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.full-auto-notice .full-auto-grant:disabled { opacity: .6; cursor: default; }
+/* Focused itself (never its button) when the control that asked lost focus (app.js _focusNotice). */
+.full-auto-notice:focus { outline: 2px solid var(--accent); outline-offset: 2px; }
+/* A refused message kept under a message box that had text or images since (app.js _keepUnsentMessage). */
+.steer-queue-item.is-unsent { grid-template-columns: minmax(0, 1fr) auto; border-color: color-mix(in srgb, var(--warn) 45%, var(--border)); }
+.steer-queue-item.is-unsent .steer-queue-copy strong { color: var(--text); }
+.steer-queue-item.is-unsent .steer-queue-promote:focus-visible,
+.steer-queue-item.is-unsent .steer-queue-remove:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.onboarding-mode-note { margin: 12px 0 0; font-size: 12px; color: var(--muted); line-height: 1.45; }
+/* Settings > Connections: the Ollama card's address (settings_view.js _renderOllamaCard). */
+.provider-field { display: grid; gap: 4px; margin: 4px 0 10px; max-width: 420px; font-size: 12px; color: var(--muted); }
+.provider-field input { width: 100%; min-width: 0; padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-input, var(--bg-panel)); color: var(--text); font: inherit; font-size: 13px; }
+.provider-field input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }

@@ -38,9 +38,7 @@ import asyncio
 import json
 import logging
 import os
-import shutil
 import subprocess
-import sys
 import threading
 import time
 import uuid
@@ -49,7 +47,7 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable, Optional
 
 from ..engine.session import inspect_system_instructions
-from ..processes import background_process_kwargs
+from ..executables import NoProject, OpensAsProgram, current_project, open_path, opens_as_program, show_in_folder
 from .autonomous_session import (
     build_roadmap_inspector_payload as _build_roadmap_inspector_payload,
     find_orphaned_autonomous_missions as _find_orphaned_autonomous_missions,
@@ -73,6 +71,48 @@ STATUS_UPDATE_STEER = (
 )
 
 PERMISSION_MODES = frozenset({"ask", "auto-edit", "plan", "bypass"})
+
+
+def refused_turn(msg: dict[str, Any], message: str, **fields: Any) -> dict[str, Any]:
+    """The error for a chat message the server didn't start a turn for.
+
+    The page shows a turn as running from the moment it sends the message;
+    ``refused`` tells it none started, so it ends that state and gives the
+    text back. ``message_id`` names a queued follow-up that won't run.
+    """
+    event: dict[str, Any] = {"event": "error", "message": message, "refused": True, **fields}
+    message_id = msg.get("message_id") if isinstance(msg, dict) else None
+    if message_id:
+        event["message_id"] = str(message_id)
+    return event
+
+
+def full_auto_granted(msg: Any) -> bool:
+    """Whether the command carries the person's Full-auto grant for this one run.
+
+    The page adds ``full_auto: true`` only when the person chose "Run this plan
+    in Full-auto" (or its roadmap, session or team counterpart) on the notice
+    that refused the same request. It covers that run alone: the
+    conversation's mode doesn't change (AppState.full_auto_needed).
+    """
+    return isinstance(msg, dict) and msg.get("full_auto") is True
+
+
+def full_auto_needed(state: Any, work: str, msg: Any = None) -> Optional[dict[str, Any]]:
+    """``AppState.full_auto_needed`` for unattended ``work`` asked for by ``msg``, or None."""
+    check = getattr(state, "full_auto_needed", None)
+    return check(work, granted=full_auto_granted(msg)) if callable(check) else None
+
+
+def needs_full_auto(needed: dict[str, Any], message: str = "", **fields: Any) -> dict[str, Any]:
+    """The error that refuses unattended work outside Full-auto (see full_auto_needed).
+
+    ``detail`` is the explanation alone, for a page that shows ``message``
+    with a prefix it matches on; ``can_grant`` offers to run this one request
+    in Full-auto (the page sends it again with ``full_auto: true``).
+    """
+    return {"event": "error", "message": message or needed["message"], "detail": needed["message"],
+            "code": needed["code"], "can_grant": needed["can_grant"], "work": needed.get("work", ""), **fields}
 
 
 def _is_connection_closed(exc: BaseException) -> bool:
@@ -142,6 +182,10 @@ class CommandContext:
     async def send_error(self, message: str) -> None:
         await self.send({"event": "error", "message": message})
 
+    async def send_refusal(self, message: str, **fields: Any) -> None:
+        """Refuse a chat message before any turn starts (see ``refused_turn``)."""
+        await self.send(refused_turn(self.msg, message, **fields))
+
     @property
     def project_path(self) -> str:
         return self.state.project.project_path
@@ -173,9 +217,27 @@ async def _in_executor(func, *args):
     return await asyncio.get_event_loop().run_in_executor(None, func, *args)
 
 
+def _typed_folder(ctx: CommandContext, text: Any) -> str:
+    """A folder typed in Settings as a full path, "" for none.
+
+    A relative one is relative to the open project, as it was when the project
+    was the app's working folder. The app never is one now
+    (lumi/executables.py), and its own folder is no place for a project.
+    """
+    folder = os.path.expanduser(str(text or "").strip().strip('"'))
+    if not folder:
+        return ""
+    current = str(getattr(getattr(ctx.state, "project", None), "project_path", "") or "")
+    if not os.path.isabs(folder) and current:
+        folder = os.path.join(current, folder)
+    return os.path.abspath(folder)
+
+
 async def _block_active_navigation(ctx: CommandContext) -> bool:
     """The native chat loop owns one active workspace until its turn ends."""
-    if ctx.runs is None or not ctx.runs.busy:
+    from .swarming import navigation_busy as swarm_busy
+    runs = getattr(ctx, "runs", None)
+    if not swarm_busy(ctx.state) and (runs is None or not runs.busy):
         return False
     await ctx.send({"event": "ui_notice", "message":
                     "Finish or stop the current run before changing projects or sessions. Your work is retained."})
@@ -697,6 +759,7 @@ async def _set_capability_pack_approval(ctx: CommandContext, *, approve: bool) -
             "Capability pack approval revoked. Its hooks and MCP servers are off."
         ),
     })
+    await _send_extension_panels(ctx)
 
 
 @command("capability_pack_approve")
@@ -721,6 +784,7 @@ async def _pack_publisher_change(ctx: CommandContext, change, notice: str) -> No
         return
     await ctx.send(payload)
     await ctx.send({"event": "ui_notice", "message": notice})
+    await _send_extension_panels(ctx)
 
 
 @command("capability_pack_trust_publisher")
@@ -755,6 +819,7 @@ async def _capability_pack_install(ctx: CommandContext) -> None:
     await ctx.send({"event": "ui_notice", "message": (
         f"Installed {installed['name']} at {installed['commit'][:12]}. It's off until you review "
         "what it would run and approve it.")})
+    await _send_extension_panels(ctx)
 
 
 @command("capability_pack_install_registry")
@@ -774,6 +839,7 @@ async def _capability_pack_install_registry(ctx: CommandContext) -> None:
     await ctx.send({"event": "ui_notice", "message": (
         f"Installed {installed['name']} at {installed['commit'][:12]}, the version your organization pins. "
         "It's off until you review what it would run and approve it.")})
+    await _send_extension_panels(ctx)
 
 
 @command("capability_pack_remove")
@@ -789,12 +855,236 @@ async def _capability_pack_remove(ctx: CommandContext) -> None:
         return
     await ctx.send(payload)
     await ctx.send({"event": "ui_notice", "message": "Capability pack removed."})
+    await _send_extension_panels(ctx)
+
+
+async def _send_extension_panels(ctx: CommandContext) -> None:
+    """The open project's panels, sent after anything that may change them (the page closes a panel gone)."""
+    from . import extension_panels
+
+    try:
+        payload = await extension_panels.run_io(extension_panels.listing, ctx.state)
+    except Exception:  # panels are optional; listing them must never end the connection
+        logger.warning("Listing extension panels failed", exc_info=True)
+        payload = {"event": "extension_panels", "enabled": False, "panels": [],
+                   "reason": "Lumi couldn't read the capability packs' panels."}
+    await ctx.send(payload)
+
+
+@command("extension_panels")
+async def _extension_panels(ctx: CommandContext) -> None:
+    """The open project's panels from approved packs (gui/extension_panels.py)."""
+    await _send_extension_panels(ctx)
+
+
+@command("extension_panel_open")
+async def _extension_panel_open(ctx: CommandContext) -> None:
+    """Check the pack again and issue a token that reads only that panel's files."""
+    from . import extension_panels
+
+    request_id = str(ctx.msg.get("request_id") or "")[:64]
+    reply: dict[str, Any] = {"event": "extension_panel_opened", "request_id": request_id}
+    try:
+        reply.update(await extension_panels.run_io(lambda: extension_panels.open_panel(
+            ctx.state, str(ctx.msg.get("pack_id") or ""), str(ctx.msg.get("panel_id") or ""), owner=id(ctx.ws))))
+    except extension_panels.PanelError as exc:
+        reply["error"] = str(exc)
+    except Exception:
+        logger.warning("Opening an extension panel failed", exc_info=True)
+        reply["error"] = "Lumi couldn't open that panel."
+    await ctx.send(reply)
+
+
+@command("extension_panel_close")
+async def _extension_panel_close(ctx: CommandContext) -> None:
+    """Withdraw a closed panel's token, so its files can't be read again."""
+    from . import extension_panels
+
+    token = str(ctx.msg.get("token") or "")
+    grant = extension_panels.grants.get(token)
+    if grant is not None and grant.owner == id(ctx.ws):
+        extension_panels.grants.revoke(token)
+
+
+@command("extension_panel_check")
+async def _extension_panel_check(ctx: CommandContext) -> None:
+    """Before a panel adds text to the message box: its pack is still approved, enabled and unchanged."""
+    from . import extension_panels
+
+    request_id = str(ctx.msg.get("request_id") or "")[:64]
+    reply: dict[str, Any] = {"event": "extension_panel_checked", "request_id": request_id, "ok": True}
+    try:
+        await extension_panels.run_io(extension_panels.check, ctx.state, str(ctx.msg.get("token") or ""),
+                                      id(ctx.ws))
+    except extension_panels.PanelError as exc:
+        reply.update(ok=False, error=str(exc))
+    except Exception:
+        logger.warning("Checking an extension panel failed", exc_info=True)
+        reply.update(ok=False, error="Lumi couldn't check the panel's pack.")
+    await ctx.send(reply)
 
 
 @command("audit_status")
 async def _audit_status(ctx: CommandContext) -> None:
     # Where the audit log is, whether its hash chain verifies, and export health.
     await ctx.send(await _in_executor(ctx.state.audit_status))
+
+
+@command("oversight_status")
+async def _oversight_status(ctx: CommandContext) -> None:
+    """Settings > Privacy & security: what the organization's oversight collects, the queue and your flags."""
+    from .. import oversight
+
+    await ctx.send({"event": "oversight_status", "data": await asyncio.to_thread(oversight.status)})
+
+
+@command("oversight_notice_shown")
+async def _oversight_notice_shown(ctx: CommandContext) -> None:
+    """The person confirmed the oversight notice for this policy (its fingerprint): the message box unlocks.
+
+    The page sends it only from the notice's "I've read this" button (a
+    click the browser reports as the person's), with the notice's text as it
+    showed it. A fingerprint that isn't the policy in force, a missing text
+    or one that isn't that policy's notice, or a policy with nowhere to send
+    records confirms nothing: the page gets the current status back and
+    shows that notice instead. The confirmation is signed with this
+    computer's device key and sent to Lumi Cloud in the background; a
+    signature that can't be made is said, and confirms nothing.
+    """
+    from .. import oversight, voice
+
+    fingerprint = str(ctx.msg.get("fingerprint") or "")
+    shown = ctx.msg.get("notice")
+    signer = getattr(getattr(ctx.state, "cloud", None), "sign_as_device", None)
+    try:
+        await asyncio.to_thread(lambda: oversight.acknowledge(
+            fingerprint, "app", notice=shown if isinstance(shown, str) else None, signer=signer))
+    except oversight.ConfirmationError as exc:
+        await ctx.send({"event": "error", "message": str(exc), "code": oversight.REFUSAL_CODE})
+    await ctx.send({"event": "oversight_status", "data": await asyncio.to_thread(oversight.status)})
+    # Dictation follows the notice (voice.status): the page learns whether it may listen now.
+    settings = getattr(ctx.state, "settings", None)
+    if settings is not None:
+        await ctx.send({"event": "voice_status", "data": await asyncio.to_thread(voice.status, settings)})
+
+
+@command("voice_status")
+async def _voice_status(ctx: CommandContext) -> None:
+    """Which ways of dictating Settings, the policy and the oversight notice allow now (lumi/voice.py)."""
+    from .. import voice
+
+    await ctx.send({"event": "voice_status",
+                    "data": await asyncio.to_thread(voice.status, getattr(ctx.state, "settings", None))})
+
+
+async def _oversight_refusal(ctx: CommandContext, trigger: str = "app") -> str:
+    """Why nothing may reach a model now (Lumi's terms or the organization's notice); '' when it may.
+
+    Also sends the page what refused, so it shows the terms or the notice.
+    """
+    return (await _gate_refusal(ctx, trigger))[0]
+
+
+def gate_status_event(code: str) -> dict:
+    """What the page needs after the gate refused (oversight.gate): the terms, or the oversight notice."""
+    from .. import oversight, terms
+
+    if code == terms.REFUSAL_CODE:
+        return {"event": "terms_status", "data": terms.status()}
+    return {"event": "oversight_status", "data": oversight.status()}
+
+
+async def _gate_refusal(ctx: CommandContext, trigger: str = "app") -> tuple[str, str]:
+    """(refusal, code) from the gate every turn path asks (oversight.gate): Lumi's terms
+    (lumi/terms.py), then the organization's oversight notice. Sends the page the matching status."""
+    from .. import oversight
+
+    refusal, code = await asyncio.to_thread(oversight.gate, trigger)
+    if refusal:
+        await ctx.send(await asyncio.to_thread(gate_status_event, code))
+    return refusal, code
+
+
+@command("terms_status")
+async def _terms_status(ctx: CommandContext) -> None:
+    """Lumi's terms in force and whether this person accepted them (lumi/terms.py)."""
+    from .. import terms
+
+    await ctx.send({"event": "terms_status", "data": await asyncio.to_thread(terms.status)})
+
+
+@command("terms_accept")
+async def _terms_accept(ctx: CommandContext) -> None:
+    """The person accepted the terms the dialog showed (``documents``: {id: version}); the app unlocks.
+
+    The page sends it only from the dialog's Accept button, on a click or key press the browser reports
+    as the person's. A version that isn't the one in force (the terms changed while the dialog was open)
+    accepts nothing: the page gets the current terms back and shows them. Dictation follows too.
+    """
+    from .. import terms, voice
+
+    shown = ctx.msg.get("documents")
+    versions = {str(key): str(value) for key, value in shown.items()} if isinstance(shown, dict) else {}
+    try:
+        accepted = await asyncio.to_thread(terms.accept, versions, "app")
+    except terms.TermsError as exc:
+        # An administrator's policy that can't be used decides first (terms.machine_policy_error).
+        await ctx.send({"event": "error", "code": terms.POLICY_CODE, "message": str(exc)})
+        accepted = False
+    except (OSError, ValueError) as exc:
+        logger.exception("Recording the acceptance of Lumi's terms failed")
+        await ctx.send({"event": "error", "code": terms.REFUSAL_CODE,
+                        "message": f"Lumi couldn't record that you accepted its terms ({exc}). Try again."})
+        accepted = False
+    if not accepted:
+        logger.info("An acceptance of terms that aren't in force was refused: %s", versions)
+    status = await asyncio.to_thread(terms.status)
+    await ctx.send({"event": "terms_status", "data": status})
+    settings = getattr(ctx.state, "settings", None)
+    voice_status = await asyncio.to_thread(voice.status, settings) if accepted and settings is not None else None
+    if voice_status is not None:
+        await ctx.send({"event": "voice_status", "data": voice_status})
+    if accepted:
+        # Every other window of this app unlocks too: the acceptance is this computer user's.
+        for viewer in tuple(getattr(ctx.state, "_navigation_viewers", ())):
+            if viewer is ctx.ws:
+                continue
+            try:
+                await viewer.send_json({"event": "terms_status", "data": status})
+                if voice_status is not None:
+                    await viewer.send_json({"event": "voice_status", "data": voice_status})
+            except Exception:
+                logger.debug("A window closed before it heard the terms were accepted", exc_info=True)
+
+
+@command("legal_document")
+async def _legal_document(ctx: CommandContext) -> None:
+    """One of the texts Lumi ships, to read offline: ``eula``, ``alpha_terms``, ``privacy`` or ``notices``."""
+    from .. import terms
+
+    wanted = str(ctx.msg.get("id") or "")
+
+    def read() -> dict:
+        if wanted == "notices":
+            path = _third_party_notices_path()
+            if not path:
+                return {"id": wanted, "title": "Third-party notices", "format": "text", "text": "",
+                        "error": "Installed copies of Lumi include the third-party notices "
+                                 "(THIRD_PARTY_NOTICES.txt); a copy running from source doesn't."}
+            text = Path(path).read_text(encoding="utf-8", errors="replace")
+            return {"id": wanted, "title": "Third-party notices", "format": "text", "text": text, "path": path}
+        if wanted not in terms.READABLE_DOCUMENTS:
+            raise KeyError(wanted)
+        return {**terms.document(wanted).as_dict(), "format": "markdown", "text": terms.text(wanted)}
+
+    try:
+        data = await asyncio.to_thread(read)
+    except KeyError:
+        data = {"id": wanted, "error": "There's no such document."}
+    except (OSError, ValueError) as exc:
+        logger.exception("Reading a legal document failed")
+        data = {"id": wanted, "error": f"Lumi couldn't read it ({exc})."}
+    await ctx.send({"event": "legal_document", "data": data})
 
 
 def _code_editors_payload(settings: Any = None, **extra: Any) -> dict:
@@ -878,6 +1168,8 @@ async def _schedule_save(ctx: CommandContext) -> None:
     if not isinstance(raw, dict):
         await ctx.send_error("Send the schedule's fields.")
         return
+    if str(raw.get("project") or "").strip():
+        raw = {**raw, "project": _typed_folder(ctx, raw.get("project"))}
     settings = getattr(ctx.state, "settings", None)
     try:
         saved = await _in_executor(lambda: schedules.save(raw, str(ctx.msg.get("id") or ""), settings=settings))
@@ -900,6 +1192,12 @@ async def _schedule_change(ctx: CommandContext) -> None:
         elif action in ("pause", "resume"):
             await _in_executor(lambda: schedules.set_enabled(schedule_id, action == "resume", settings=settings))
         elif action == "run":
+            # Run now is the person's own action in the app, not an unattended
+            # run: it waits for the organization's oversight notice to be
+            # confirmed like the message box does (lumi/oversight.py).
+            refusal = await _oversight_refusal(ctx)
+            if refusal:
+                raise schedules.ScheduleError(refusal)
             # Its own process, like a scheduled run, so a long task never
             # holds this connection and keeps going if the app closes.
             process = await _in_executor(lambda: schedules.start(schedule_id, settings=settings))
@@ -1059,7 +1357,19 @@ async def _evaluation_list(ctx: CommandContext) -> None:
 
 @command("evaluation_start")
 async def _evaluation_start(ctx: CommandContext) -> None:
+    from .settings import DEVELOPER_TOOLS_ENV, developer_tools
+
     msg = ctx.msg
+    refusal = await _oversight_refusal(ctx)
+    if refusal:
+        await ctx.send_error(refusal)
+        return
+    # Lumi's own GLM / DeepSeek evaluations are a developer tool, shown only
+    # when it's turned on (Settings > Model evaluations); so is starting one.
+    if not developer_tools(ctx.state.settings):
+        await ctx.send_error("Model evaluations with Lumi's own models and specs are a developer tool: set "
+                             f"general.developer_tools in settings.json, or {DEVELOPER_TOOLS_ENV}=1, to use them.")
+        return
     try:
         record = ctx.state.evaluations.start(
             model_label=str(msg.get("model") or "glm"),
@@ -1310,9 +1620,13 @@ async def _mcp_disconnect(ctx: CommandContext) -> None:
 
 @command("lsp_list")
 async def _lsp_list(ctx: CommandContext) -> None:
+    trusted = False
+    if ctx.project_path and hasattr(ctx.state, "project_trust"):
+        trusted = ctx.state.project_trust(ctx.project_path).trusted
     await ctx.send(_lsp_list_payload(
         project_path=ctx.project_path,
         settings=ctx.state.settings,
+        trusted=trusted,
     ))
 
 
@@ -1338,11 +1652,22 @@ async def _engram_status(ctx: CommandContext) -> None:
     })
 
 
+async def _engram_refused(ctx: CommandContext) -> bool:
+    """Engram's memory server receives what's recalled or remembered, like a model request: nothing goes
+    while the gate refuses (Lumi's terms, then the organization's notice; oversight.gate). Says why."""
+    refusal, code = await _gate_refusal(ctx)
+    if refusal:
+        await ctx.send({"event": "error", "source": "engram", "message": refusal, "code": code})
+    return bool(refusal)
+
+
 @command("engram_recall")
 async def _engram_recall(ctx: CommandContext) -> None:
     query = ctx.msg.get("query", "")
     engram = ctx.state.engram
     if query and engram.enabled:
+        if await _engram_refused(ctx):
+            return
         memories = await _in_executor(engram.recall, query)
         await ctx.send({"event": "engram_recall", "memories": memories})
     else:
@@ -1354,6 +1679,8 @@ async def _engram_remember(ctx: CommandContext) -> None:
     text = ctx.msg.get("text", "")
     engram = ctx.state.engram
     if text and engram.enabled:
+        if await _engram_refused(ctx):
+            return
         await _in_executor(engram.remember, text)
         await ctx.send({"event": "engram_remembered", "ok": True})
 
@@ -1377,7 +1704,11 @@ async def _rag_index(ctx: CommandContext) -> None:
     from ..engine.rag import CodebaseIndex
 
     if not ctx.state.codebase_index:
-        project_path = ctx.project_path if ctx.state.project else os.getcwd()
+        try:
+            project_path = current_project(ctx.project_path if ctx.state.project else None)
+        except NoProject as exc:
+            await ctx.send({"event": "status_msg", "message": str(exc)})
+            return
         ctx.state.codebase_index = CodebaseIndex(project_path, engram=ctx.state.engram)
     stats = await _in_executor(ctx.state.codebase_index.index, ctx.msg.get("force", False))
     await ctx.send({"event": "rag_indexed", **stats})
@@ -1741,38 +2072,70 @@ async def _get_session_history_page(ctx: CommandContext) -> None:
     })
 
 
+def _workspace_file(project_path: str, raw: str) -> Path | None:
+    """An existing file or folder inside the project, by its absolute or project-relative path."""
+    try:
+        root = Path(project_path).resolve(strict=True)
+        requested = Path(raw)
+        target = (requested if requested.is_absolute() else root / requested).resolve(strict=True)
+        target.relative_to(root)
+    except (OSError, ValueError):
+        return None
+    return target
+
+
 @command("open_workspace_path")
 async def _open_workspace_path(ctx: CommandContext) -> None:
-    """Open an existing project file explicitly selected by the user."""
+    """Open an existing project file explicitly selected by the user.
+
+    A document opens with its own program, as double-clicking it would. A
+    file that opening would run (a program, script, shortcut or installer,
+    lumi/executables.py ``opens_as_program``) doesn't: the page names it and
+    its type and offers to show it in its folder (``reveal_workspace_path``).
+    """
     raw = str(ctx.msg.get("path") or "").strip()
     if not raw:
         await ctx.send({"event": "status_msg", "message": "No file path was provided."})
         return
-    try:
-        root = Path(ctx.project_path).resolve(strict=True)
-        requested = Path(raw)
-        target = (requested if requested.is_absolute() else root / requested).resolve(
-            strict=True
-        )
-        target.relative_to(root)
-    except (OSError, ValueError):
+    target = _workspace_file(ctx.project_path, raw)
+    if target is None:
         await ctx.send({
             "event": "status_msg",
             "message": "That file is unavailable or outside the active project.",
         })
         return
-
+    kind = opens_as_program(target)
     try:
-        if sys.platform == "win32":
-            os.startfile(str(target))  # type: ignore[attr-defined]
-        elif sys.platform == "darwin":
-            subprocess.Popen(["open", str(target)], **background_process_kwargs())
-        else:
-            subprocess.Popen(["xdg-open", str(target)], **background_process_kwargs())
-    except OSError as exc:
+        if not kind:
+            # The opener itself is the system's, never one from the project.
+            open_path(target)
+    except OpensAsProgram as exc:
+        kind = exc.kind
+    except (OSError, ValueError) as exc:
         await ctx.send({"event": "status_msg", "message": f"Could not open file: {exc}"})
         return
+    if kind:
+        await ctx.send({"event": "workspace_path_runs", "path": raw, "name": target.name, "kind": kind})
+        return
     await ctx.send({"event": "status_msg", "message": f"Opened {target.name}"})
+
+
+@command("reveal_workspace_path")
+async def _reveal_workspace_path(ctx: CommandContext) -> None:
+    """Show a project file selected in Explorer, the Finder or the file manager, without opening it."""
+    target = _workspace_file(ctx.project_path, str(ctx.msg.get("path") or "").strip())
+    if target is None:
+        await ctx.send({
+            "event": "status_msg",
+            "message": "That file is unavailable or outside the active project.",
+        })
+        return
+    try:
+        show_in_folder(target)
+    except (OSError, ValueError) as exc:
+        await ctx.send({"event": "status_msg", "message": f"Could not show the file: {exc}"})
+        return
+    await ctx.send({"event": "status_msg", "message": f"Showing {target.name} in its folder"})
 
 
 # ---------------------------------------------------------------------------
@@ -2027,6 +2390,8 @@ async def _cmd_set_evaluator_verdict(ctx: CommandContext) -> None:
 
 @command("select_backend")
 async def _cmd_select_backend(ctx: CommandContext) -> None:
+    if await _block_active_navigation(ctx):
+        return
     backend_type = ctx.msg.get("backend", "")
     model = ctx.msg.get("model", "")
     session_mode = ctx.msg.get("session_mode", "code")
@@ -2053,8 +2418,18 @@ async def _cmd_select_backend(ctx: CommandContext) -> None:
 
         # Pre-warm the model so the user's first message doesn't sit
         # at "thinking" for 60-90s while Ollama cold-loads. Fire and
-        # forget — we don't want to block the connect response.
+        # forget — we don't want to block the connect response. A warm-up
+        # is a model request ("hi", or a tool call), so none is sent while
+        # the gate refuses: Lumi's terms or the organization's notice wait
+        # (oversight.gate); the backends refuse it themselves too (lumi/dlp.py).
         backend_for_warm = ctx.state.backend
+        if backend_for_warm and hasattr(backend_for_warm, "warm_up"):
+            from .. import oversight
+
+            refusal, _code = await asyncio.to_thread(oversight.gate, "app")
+            if refusal:
+                logger.info("Skipped the model warm-up: %s", refusal)
+                backend_for_warm = None
         if backend_for_warm and hasattr(backend_for_warm, "warm_up"):
             async def _emit_warm_event(payload: dict):
                 try:
@@ -2089,6 +2464,9 @@ async def _cmd_select_backend(ctx: CommandContext) -> None:
 
             threading.Thread(target=_warm_in_bg, name="model-warmup", daemon=True).start()
     except Exception as e:
+        # The page shows only the message; keep the traceback for diagnostics
+        # (a missing program once surfaced as a bare "[WinError 2]").
+        logger.exception("Starting %s (%s) failed", backend_type, model or "default model")
         ctx.state.project.current_session = previous_record
         await ctx.send({"event": "error", "message": str(e)})
 
@@ -2096,17 +2474,34 @@ async def _cmd_select_backend(ctx: CommandContext) -> None:
 
 @command("message")
 async def _cmd_message(ctx: CommandContext) -> None:
+    from .swarming import busy as swarm_busy, busy_refusal
+    if swarm_busy(ctx.state):
+        await ctx.send(busy_refusal(ctx.state))
+        return
     text = ctx.msg.get("text", "").strip()
     if not text:
         return
+    # Lumi's terms, then organization oversight: nothing reaches a model before
+    # they're accepted and its notice is confirmed (lumi/terms.py,
+    # lumi/oversight.py); the page's message box is locked too.
+    # A refusal is ``refused`` (refused_turn): the page ends the running state it
+    # showed and gives the text back to the message box.
+    refusal, code = await _gate_refusal(ctx)
+    if refusal:
+        await ctx.send_refusal(refusal, code=code)
+        return
     if not ctx.state.session:
-        await ctx.send({
-            "event": "error",
-            "message": ctx.state.runtime_unavailable_reason(),
-        })
+        await ctx.send_refusal(ctx.state.runtime_unavailable_reason())
         return
     await ctx.runs.enqueue(ctx.msg)
     return
+
+
+@command("swarm")
+async def _swarm(ctx: CommandContext) -> None:
+    """Keep viewer commands bound to their captured saved conversation and run."""
+    from .swarming import command as execute
+    await execute(ctx.state, ctx.send, ctx.msg, chat_busy=bool(ctx.runs and ctx.runs.busy))
 
 
 @command('employee_task')
@@ -2129,6 +2524,14 @@ async def _employee_task(ctx: CommandContext) -> None:
         await ctx.send({'event': 'employee_task_state', 'project': ctx.project_path,
             'session_id': getattr(ctx.state.project.current_session, 'id', ''),
             'request_id': ctx.msg.get('request_id'), 'error': 'Finish or stop the active operation before changing the task.'})
+        return
+    # Advice and setup reach SONN: not before the organization's oversight
+    # notice is confirmed (lumi/oversight.py).
+    refusal = await _oversight_refusal(ctx)
+    if refusal:
+        await ctx.send({'event': 'employee_task_state', 'project': ctx.project_path,
+            'session_id': getattr(ctx.state.project.current_session, 'id', ''),
+            'request_id': ctx.msg.get('request_id'), 'error': refusal})
         return
     await ctx.runs.enqueue(dict(ctx.msg))
 
@@ -2376,6 +2779,10 @@ async def _cmd_mission_dispatch_roadmap(ctx: CommandContext) -> None:
         # dispatched when it was clicked (autonomous_view.js).
         await ctx.send({"event": "error", "message": message, "source": "mission_dispatch"})
 
+    from .swarming import busy as swarm_busy, busy_refusal
+    if swarm_busy(ctx.state):
+        await refuse(busy_refusal(ctx.state, "building this roadmap")["message"])
+        return
     if not ctx.state.project.current_session:
         await refuse("No active mission to dispatch")
         return
@@ -2395,6 +2802,12 @@ async def _cmd_mission_dispatch_roadmap(ctx: CommandContext) -> None:
     # criteria, not just one paragraph. Refined intent stays
     # in mission_state for display.
     intent_text = spec_md or refined
+    # Its steps run in Full-auto; outside it, say so and offer to build this
+    # one roadmap in Full-auto (the page sends it again with the grant).
+    needed = full_auto_needed(ctx.state, "roadmap", ctx.msg)
+    if needed:
+        await ctx.send(needs_full_auto(needed, source="mission_dispatch"))
+        return
 
     def _emit_intent(payload: dict, _ws=ctx.ws, _loop=asyncio.get_running_loop()):
         try:
@@ -2405,7 +2818,7 @@ async def _cmd_mission_dispatch_roadmap(ctx: CommandContext) -> None:
     intent_service = ctx.state.get_intent_service(on_event=_emit_intent)
     try:
         # Followed in the Plan tab like a /plan (mission_phase_changed below).
-        intent_id = intent_service.start_intent(intent_text, viewer=_emit_intent)
+        intent_id = intent_service.start_intent(intent_text, viewer=_emit_intent, trigger="mission")
     except ValueError as exc:
         # Refused, for example by the organization's policy (lumi/policy.py):
         # nothing started and the mission stays in drafting.
@@ -2675,11 +3088,13 @@ async def _cmd_list_project_files(ctx: CommandContext) -> None:
     # capping at a sane upper bound so giant monorepos don't
     # ship multi-megabyte JSON over the websocket.
     request_id = ctx.msg.get("request_id", "")
-    project_path_str = (
-        ctx.state.project.project_path
-        if ctx.state.project and ctx.state.project.project_path
-        else os.getcwd()
-    )
+    try:
+        project_path_str = current_project(
+            ctx.state.project.project_path if ctx.state.project and ctx.state.project.project_path else None)
+    except NoProject:
+        await ctx.send({"event": "project_files", "request_id": request_id, "files": [], "total": 0,
+                        "truncated": False, "project_path": ""})
+        return
     _SKIP_DIRS = {
         ".git", "node_modules", "__pycache__", ".pytest_cache",
         "dist", "build", ".venv", "venv", ".tox", ".idea",
@@ -2805,8 +3220,11 @@ async def _cmd_clear(ctx: CommandContext) -> None:
 
 @command("switch_model")
 async def _cmd_switch_model(ctx: CommandContext) -> None:
-    if ctx.runs.busy:
-        await ctx.send({"event": "model_switch_blocked", "message": "Finish or stop the current run before changing models."})
+    from .swarming import busy as swarm_busy, busy_refusal
+    if ctx.runs.busy or swarm_busy(ctx.state):
+        message = ("Finish or stop the current run before changing models." if ctx.runs.busy
+                   else busy_refusal(ctx.state, "changing this conversation's model")["message"])
+        await ctx.send({"event": "model_switch_blocked", "message": message})
         await ctx.send(ctx.state.get_init_data(refresh_only=True))
         return
     model = ctx.msg.get("model", "")
@@ -2854,6 +3272,9 @@ async def _cmd_switch_model(ctx: CommandContext) -> None:
                 await ctx.send({"event": "settings", "data": ctx.state.settings.get_masked()})
             await ctx.send(ctx.state.get_init_data())
         except Exception as e:
+            # The page shows only the message; keep the traceback for diagnostics
+            # (a missing program once surfaced as a bare "[WinError 2]").
+            logger.exception("Switching to %s (%s) failed", backend_type, model or "default model")
             await ctx.send({"event": "error", "message": str(e)})
             # The selector optimistically shows the model the user picked, so
             # push authoritative state back or the UI keeps advertising a
@@ -2872,6 +3293,8 @@ async def _cmd_switch_model(ctx: CommandContext) -> None:
 
 @command("set_thinking_mode")
 async def _cmd_set_thinking_mode(ctx: CommandContext) -> None:
+    if await _block_active_navigation(ctx):
+        return
     # Per-session thinking-mode toggle (deepseek-v* etc.).
     # Forces a backend rebuild because Ollama options must be stable
     # for the lifetime of an OllamaBackend instance.
@@ -2920,6 +3343,7 @@ async def _cmd_set_thinking_mode(ctx: CommandContext) -> None:
             })
             await ctx.send(ctx.state.get_init_data())
         except Exception as e:
+            logger.exception("Restarting the model with reasoning depth %r failed", mode)
             await ctx.send({"event": "error", "message": str(e)})
 
 
@@ -3093,6 +3517,7 @@ async def _cmd_switch_session(ctx: CommandContext) -> None:
             ctx.state._first_message_sent = record.message_count > 0
 
         except Exception as e:
+            logger.exception("The saved conversation's runtime (%s) failed to start", record.backend_type)
             ctx.state.backend = None
             ctx.state.backend_spec = None
             ctx.state.session = None
@@ -3162,6 +3587,9 @@ async def _cmd_switch_session(ctx: CommandContext) -> None:
 @command("delete_session")
 async def _cmd_delete_session(ctx: CommandContext) -> None:
     session_id = ctx.msg.get("session_id", "")
+    current = ctx.state.project.current_session
+    if current is not None and current.id == session_id and await _block_active_navigation(ctx):
+        return
     ctx.state.project.delete_session(session_id)
     await ctx.send({
         "event": "sessions_updated",
@@ -3266,9 +3694,16 @@ async def _cmd_intent(ctx: CommandContext) -> None:
 
         if name == "intent_start":
             text = (ctx.msg.get("text") or "").strip()
+            refusal, code = await _gate_refusal(ctx, "plan") if text else ("", "")
             if not text:
                 await ctx.send({"event": "error",
                                     "message": "intent text is required"})
+            elif refusal:
+                await ctx.send({"event": "error", "message": refusal, "code": code})
+            elif needed := full_auto_needed(ctx.state, "plan", ctx.msg):
+                # The page's /plan card matches the prefix (app.js _failStartingPlan)
+                # and offers to run this one plan in Full-auto.
+                await ctx.send(needs_full_auto(needed, f"intent_start failed: {needed['message']}"))
             else:
                 try:
                     # The page follows it in the Plan tab; its events go there.
@@ -3518,8 +3953,10 @@ def _update_check_message(info: dict, started: bool) -> str:
         if info.get("managed_by") and "mode" in (info.get("locked") or []):
             return f"Updates are turned off by {info['managed_by']}."
         return "Updates are turned off in Settings > Updates."
+    if info.get("offline"):
+        return f"{info['offline']} To update, install one from a file under Settings > Updates."
     if not started:
-        return "This copy of Lumi doesn't update itself (it runs from source or outside Windows)."
+        return info.get("unavailable") or "This copy of Lumi doesn't update itself (it runs from source or on Linux)."
     message = f"Checking {info.get('describe') or 'for updates'}."
     if pending:
         message += " Your changed update settings apply after Lumi restarts."
@@ -3629,8 +4066,7 @@ async def _cmd_cloud_remote_tasks(ctx: CommandContext) -> None:
     from ..remote_tasks import MODES
 
     enabled = ctx.msg.get("enabled") is True
-    project = os.path.abspath(os.path.expanduser(str(ctx.msg.get("project") or "").strip())) \
-        if str(ctx.msg.get("project") or "").strip() else ""
+    project = _typed_folder(ctx, ctx.msg.get("project"))
     mode = str(ctx.msg.get("mode") or "ask")
 
     def save(client) -> None:
@@ -3655,13 +4091,20 @@ async def _cmd_about_info(ctx: CommandContext) -> None:
     from ..policy import current as current_policy
     from ..update_channels import installed_by
 
+    from .. import terms
+
     policy = current_policy()
     await ctx.send({"event": "about_info", "data": {
         "version": __version__,
-        "license": "MIT",
+        # Lumi is proprietary (LICENSE at the repository root); the page
+        # shows the copyright line with this agreement's name.
+        "license": "Lumi End User License Agreement",
         "notices": _third_party_notices_path(),
         "organization": policy.organization if policy else "",
         "installed_by": installed_by(),
+        # The terms in force, who accepted them (this person, or the
+        # organization's machine policy), and the texts About opens.
+        "terms": await asyncio.to_thread(terms.status),
     }})
 
 
@@ -3685,6 +4128,84 @@ async def _cmd_update_status(ctx: CommandContext) -> None:
     await ctx.send({"event": "update_status", "data": await asyncio.to_thread(update_status)})
 
 
+def _update_file_result(path: str) -> dict:
+    """Settings > Updates > Install from a file: verify it (lumi/update_file.py) and say what happens next."""
+    from ..update_file import UpdateFileError, can_install_here, verify
+
+    text = str(path or "").strip().strip('"')
+    if not text:
+        return {"ok": False, "path": "", "error": "Enter the installer's path, the folder that holds it, or a .zip."}
+    target = os.path.abspath(os.path.expanduser(text))
+    try:
+        update = verify(target)
+    except UpdateFileError as exc:
+        return {"ok": False, "path": target, "error": str(exc)}
+    except Exception as exc:  # a file Lumi can't read is refused, never a crash
+        logger.exception("Verifying an update file failed")
+        return {"ok": False, "path": target, "error": f"The file couldn't be checked: {exc}"}
+    return {"ok": True, "path": target, **update.summary(), "install_problem": can_install_here()}
+
+
+@command("update_file_verify")
+async def _cmd_update_file_verify(ctx: CommandContext) -> None:
+    """Check an offline update bundle as the online updater would, without installing it."""
+    await ctx.send({"event": "update_file", "data": await asyncio.to_thread(
+        _update_file_result, str(ctx.msg.get("path") or ""))})
+
+
+@command("update_file_install")
+async def _cmd_update_file_install(ctx: CommandContext) -> None:
+    """Verify the file again, then hand it to the updater's install flow (Lumi closes)."""
+    from ..update_file import UpdateFileError, install, verify
+
+    path = os.path.abspath(os.path.expanduser(str(ctx.msg.get("path") or "").strip().strip('"')))
+    expected = str(ctx.msg.get("sha256") or "")
+
+    def run() -> dict:
+        try:
+            update = verify(path)
+            if not expected or update.sha256 != expected:
+                raise UpdateFileError("The file changed since it was checked. Check it again before installing.")
+            installer = install(update)
+        except UpdateFileError as exc:
+            return {"ok": False, "path": path, "error": str(exc)}
+        return {"ok": True, "path": path, **update.summary(), "installing": installer}
+
+    await ctx.send({"event": "update_file", "data": await asyncio.to_thread(run)})
+
+
+@command("update_file_dialog")
+async def _cmd_update_file_dialog(ctx: CommandContext) -> None:
+    """The desktop window's file picker for an update file; the page shows it only with a native bridge."""
+    from . import app as _gui_app
+
+    window = getattr(_gui_app, "_webview_window", None)
+    if window is None:
+        await ctx.send({"event": "update_file_picked", "path": "",
+                        "message": "Type the file's path: this window has no file picker."})
+        return
+
+    def pick() -> str:
+        try:
+            import webview
+
+            result = window.create_file_dialog(
+                webview.OPEN_DIALOG, allow_multiple=False,
+                file_types=("Lumi update (*.exe;*.zip)", "All files (*.*)"))
+            return str(result[0]) if result else ""
+        except Exception:
+            logger.warning("The update file picker failed", exc_info=True)
+            return ""
+
+    await ctx.send({"event": "update_file_picked", "path": await asyncio.to_thread(pick)})
+
+
+@command("offline_status")
+async def _cmd_offline_status(ctx: CommandContext) -> None:
+    """Settings > Offline mode: what applies, what it hides and the license."""
+    await ctx.send({"event": "offline_status", "data": await asyncio.to_thread(ctx.state.offline_status)})
+
+
 @command("check_updates")
 async def _cmd_check_updates(ctx: CommandContext) -> None:
     try:
@@ -3706,9 +4227,10 @@ async def _cmd_check_updates(ctx: CommandContext) -> None:
 @command("save_diagnostics")
 async def _cmd_save_diagnostics(ctx: CommandContext) -> None:
     # v0.3.4 — Help → Save diagnostics. Bundles redacted logs
-    # + intent audits + settings into a ZIP under ~/Downloads
-    # so the user can attach to a GitHub issue. No data ever
-    # leaves the machine without an explicit user action.
+    # + intent audits + settings into a ZIP in Downloads (else the
+    # Desktop, else home) for the person to send with a problem
+    # report. No data ever leaves the machine without an explicit
+    # user action.
     try:
         from . import diagnostics
         from .. import __version__ as _ver
@@ -3728,10 +4250,13 @@ async def _cmd_save_diagnostics(ctx: CommandContext) -> None:
             ),
         )
         size_bytes = zip_path.stat().st_size if zip_path.exists() else 0
+        # The one file reveal_diagnostics may show: the page names no path.
+        ctx.state._last_diagnostics_zip = str(zip_path)
         await ctx.send({
             "event": "diagnostics_saved",
             "path": str(zip_path),
             "size_bytes": size_bytes,
+            "can_reveal": True,
         })
     except Exception as exc:
         logger.exception("save_diagnostics failed")
@@ -3740,6 +4265,243 @@ async def _cmd_save_diagnostics(ctx: CommandContext) -> None:
             "message": f"Failed to save diagnostics: {exc}",
         })
 
+
+# ── Feedback (lumi/feedback.py) ──────────────────────────────────────────
+# Preparing, sending and flushing can wait on Lumi Cloud or a DLP service, so
+# each runs as its own task: Stop and everything else the page sends stay live.
+# Any failure still answers the dialog, which would otherwise wait forever.
+
+_FEEDBACK_TASKS: set[asyncio.Task] = set()
+_FEEDBACK_FAILED = "Lumi couldn't send or save the report. Try again, or copy it."
+
+
+def _feedback_backend(ctx: CommandContext) -> dict[str, str]:
+    """The provider type and model in use, for the report's diagnostics (never a key)."""
+    spec = getattr(ctx.state, "backend_spec", None)
+    return {"provider": str(getattr(spec, "backend_type", "") or ""), "model": str(getattr(spec, "model", "") or "")}
+
+
+def _feedback_task(work) -> None:
+    task = asyncio.create_task(work())
+    _FEEDBACK_TASKS.add(task)
+    task.add_done_callback(_FEEDBACK_TASKS.discard)
+
+
+async def _feedback_state(ctx: CommandContext, **extra: Any) -> None:
+    """The dialog's status, with ``extra``; it always answers, so the dialog never waits for one."""
+    from .. import feedback
+
+    try:
+        status = await asyncio.to_thread(feedback.status, ctx.state.cloud, ctx.state.settings)
+    except Exception:
+        logger.exception("The Send feedback dialog's status failed")
+        status = {"busy": _FEEDBACK_FAILED, "reports": [], "waiting": 0}
+    await ctx.send({"event": "feedback_status", "data": {**status, **extra}})
+
+
+async def _feedback_typed_copy(ctx: CommandContext, form: Any) -> str:
+    """Only what the person typed, for a failure where nothing else is safe to offer."""
+    from .. import feedback
+
+    try:
+        return await asyncio.to_thread(feedback.typed_copy, form, ctx.state.settings)
+    except Exception:
+        logger.debug("Couldn't make the feedback copy", exc_info=True)
+        return ""
+
+
+@command("feedback_status")
+async def _cmd_feedback_status(ctx: CommandContext) -> None:
+    """The Send feedback dialog: where reports go, as whom, and what waits on this computer.
+
+    When the dialog opens (``open``), the destination is also asked who reads
+    its reports (``feedback_info``), in the background.
+    """
+    from .. import feedback
+
+    await _feedback_state(ctx)
+    if not ctx.msg.get("open"):
+        return
+
+    async def ask() -> None:
+        try:
+            answer = await asyncio.to_thread(feedback.info, ctx.state.cloud, ctx.state.settings)
+        except Exception:
+            logger.debug("Asking the feedback destination about itself failed", exc_info=True)
+            answer = {}
+        if answer:
+            await ctx.send({"event": "feedback_info", "data": answer})
+
+    _feedback_task(ask)
+
+
+@command("feedback_preview")
+async def _cmd_feedback_preview(ctx: CommandContext) -> None:
+    """The report the form makes, exactly as it would be sent (with diagnostics).
+
+    Checked with the rules on this computer only: the organization's DLP
+    service sees a report only when the person sends it.
+    """
+    from .. import feedback
+
+    form = ctx.msg.get("form")
+    request = ctx.msg.get("request")
+
+    async def run() -> None:
+        try:
+            data = await asyncio.to_thread(feedback.preview, ctx.state.cloud, form, settings=ctx.state.settings,
+                                           **_feedback_backend(ctx))
+        except feedback.FeedbackError as exc:
+            await ctx.send({"event": "feedback_preview", "request": request, "error": exc.as_dict(),
+                            "copy_text": exc.copy})
+            return
+        except Exception:
+            logger.exception("Preparing a feedback report failed")
+            await ctx.send({"event": "feedback_preview", "request": request, "copy_text": "",
+                            "error": {"code": "error", "message": _FEEDBACK_FAILED, "field": ""}})
+            return
+        await ctx.send({"event": "feedback_preview", "request": request, "data": data})
+
+    _feedback_task(run)
+
+
+@command("feedback_send")
+async def _cmd_feedback_send(ctx: CommandContext) -> None:
+    """Send a report, or keep it on this computer to send later; a refusal says why and offers a copy."""
+    from .. import feedback
+
+    form = ctx.msg.get("form")
+    preview_id = str(ctx.msg.get("preview_id") or "")
+
+    async def run() -> None:
+        try:
+            outcome = await asyncio.to_thread(feedback.submit, ctx.state.cloud, form, settings=ctx.state.settings,
+                                              preview_id=preview_id, **_feedback_backend(ctx))
+        except feedback.FeedbackError as exc:
+            await ctx.send({"event": "feedback_result", "ok": False, **exc.as_dict(), "copy_text": exc.copy,
+                            **({"preview": exc.preview} if exc.preview else {})})
+        except Exception:
+            logger.exception("Sending feedback failed")
+            await ctx.send({"event": "feedback_result", "ok": False, "code": "error", "field": "",
+                            "message": _FEEDBACK_FAILED, "copy_text": await _feedback_typed_copy(ctx, form)})
+        else:
+            await ctx.send({"event": "feedback_result", "ok": True, **outcome.as_dict()})
+        await _feedback_state(ctx)
+
+    _feedback_task(run)
+
+
+@command("feedback_flush")
+async def _cmd_feedback_flush(ctx: CommandContext) -> None:
+    """Send now: try every report waiting for the destination shown."""
+    from .. import feedback
+
+    async def run() -> None:
+        try:
+            result = await asyncio.to_thread(feedback.flush, ctx.state.cloud, ctx.state.settings, force=True)
+        except feedback.FeedbackError as exc:
+            result = {"sent": 0, "held": 0, "error": exc.message}
+        except Exception:
+            logger.exception("Sending the waiting feedback failed")
+            result = {"sent": 0, "held": 0, "failed": True}
+        await _feedback_state(ctx, flushed=result)
+
+    _feedback_task(run)
+
+
+@command("feedback_send_held")
+async def _cmd_feedback_send_held(ctx: CommandContext) -> None:
+    """Send a report written before a feedback address was set, to the address and as whom the dialog showed.
+
+    ``as`` is the account the button named ("" for "without an account").
+    """
+    from .. import feedback
+
+    report_id = str(ctx.msg.get("id") or "")
+    shown = str(ctx.msg.get("destination") or "")
+    shown_as = str(ctx.msg.get("as") or "")
+
+    async def run() -> None:
+        try:
+            result = await asyncio.to_thread(feedback.send_held, ctx.state.cloud, ctx.state.settings, report_id,
+                                             shown, shown_as=shown_as)
+        except feedback.FeedbackError as exc:
+            result = {"sent": 0, "held": 0, "error": exc.message}
+        except Exception:
+            logger.exception("Sending a held feedback report failed")
+            result = {"sent": 0, "held": 0, "failed": True}
+        await _feedback_state(ctx, flushed=result)
+
+    _feedback_task(run)
+
+
+@command("feedback_send_without_account")
+async def _cmd_feedback_send_without_account(ctx: CommandContext) -> None:
+    """The person's choice: send a report that waits for their sign-in without their account."""
+    from .. import feedback
+
+    report_id = str(ctx.msg.get("id") or "")
+
+    async def run() -> None:
+        try:
+            result = await asyncio.to_thread(feedback.send_without_account, ctx.state.cloud, ctx.state.settings,
+                                             report_id)
+        except feedback.FeedbackError as exc:
+            result = {"sent": 0, "held": 0, "error": exc.message}
+        except Exception:
+            logger.exception("Sending a feedback report without the account failed")
+            result = {"sent": 0, "held": 0, "failed": True}
+        await _feedback_state(ctx, flushed=result)
+
+    _feedback_task(run)
+
+
+@command("feedback_discard")
+async def _cmd_feedback_discard(ctx: CommandContext) -> None:
+    """Delete reports waiting on this computer: all of them, or the ``ids`` given."""
+    from .. import feedback
+
+    ids = ctx.msg.get("ids")
+    ids = [str(value) for value in ids] if isinstance(ids, list) else None
+    try:
+        discarded = await asyncio.to_thread(feedback.discard, ids)
+    except feedback.FeedbackError as exc:
+        await _feedback_state(ctx, flushed={"sent": 0, "held": 0, "error": exc.message})
+        return
+    await _feedback_state(ctx, discarded=discarded)
+
+
+@command("feedback_copy_held")
+async def _cmd_feedback_copy_held(ctx: CommandContext) -> None:
+    """A waiting report as text, for Copy to clipboard ("" when there's none to give)."""
+    from .. import feedback
+
+    report_id = str(ctx.msg.get("id") or "")
+    try:
+        text = await asyncio.to_thread(feedback.held_copy, report_id)
+    except feedback.FeedbackError:
+        text = ""
+    await ctx.send({"event": "feedback_copy", "id": report_id, "text": text})
+
+
+@command("reveal_diagnostics")
+async def _cmd_reveal_diagnostics(ctx: CommandContext) -> None:
+    """Show the diagnostics ZIP the last save made, selected in its folder.
+
+    Only that file: the page can't name another path to open.
+    """
+    target = str(getattr(ctx.state, "_last_diagnostics_zip", "") or "")
+    if not target or not os.path.isfile(target):
+        await ctx.send({"event": "status_msg", "message": "That diagnostics file isn't there anymore. Save diagnostics again."})
+        return
+    try:
+        # Explorer, the Finder or the file manager by its full path, never
+        # from the project (executables.show_in_folder).
+        show_in_folder(target)
+    except (OSError, ValueError) as exc:
+        await ctx.send({"event": "status_msg", "message": f"Could not show the folder: {exc}"})
+        return
+    await ctx.send({"event": "status_msg", "message": f"Showing {os.path.basename(target)} in its folder"})
 
 
 @command("folder_dialog")
@@ -3930,23 +4692,26 @@ _SOCKET_SETTING_KEYS: dict[str, frozenset[str]] = {
         "harness_enabled", "autonomous_sessions", "fallback_models", "role_models",
     }),
     "appearance": frozenset({"theme", "density", "font_size"}),
-    "local_backends": frozenset({"ollama_host", "ollama_num_ctx", "ollama_keep_alive"}),
+    # Ollama's address is network.ollama_url (Settings › Connections' Ollama card), its only setting.
+    "local_backends": frozenset({"ollama_num_ctx", "ollama_keep_alive"}),
     "network": frozenset({"ollama_url", "exo_url", "sonn_url", "proxy_url", "no_proxy", "system_certificates"}),
     "api_keys": frozenset({"sonn", "openrouter", "kimi", "anthropic", "openai", "otlp", "github", "gitlab", "bitbucket",
                            "azure_devops", "jira", "linear"}),
     "issue_trackers": frozenset({"jira_url", "jira_email"}),
+    "code_hosts": frozenset({"github_hosts", "gitlab_hosts"}),
     "review": frozenset({"agent_changes", "reviewers"}),
     "engram": frozenset({"enabled", "server_url"}),
     "cost_tracking": frozenset({"enabled", "budget_alert_usd", "daily_limit_usd", "turn_limit_usd",
                                 "price_overrides"}),
     "privacy": frozenset({
         "secret_scan", "excluded_paths", "transcript_retention_days",
-        "audit_log", "audit_capture", "audit_retention_days",
+        "audit_log", "audit_capture", "audit_retention_days", "feedback_url",
     }),
     "audit": frozenset({"otlp_endpoint", "otlp_auth_header"}),
     "security": frozenset({"cli_adapters", "computer_use", "chat_gateway", "shell_sandbox", "scheduled_tasks",
-                           "editor_bridge"}),
+                           "editor_bridge", "extension_panels"}),
     "updates": frozenset({"mode", "channel", "pin"}),
+    "offline": frozenset({"enabled", "allowed_hosts"}),
     "onboarding": frozenset({"dismissed"}),
     "model_favorites": frozenset({"models"}),
     "voice": frozenset({"engine", "service", "model", "language"}),
@@ -3982,6 +4747,58 @@ def _socket_mcp_server(value: Any) -> dict[str, Any]:
     return entry
 
 
+# Models that don't chat, as the startup probe leaves them out (AppState.detect_backends).
+_OLLAMA_NON_CHAT = ("embed", "bert", "bge", "nomic")
+
+
+def ollama_address(value: Any) -> str:
+    """An Ollama address to save or test: ``http(s)://host[:port]``, or "" for the default."""
+    from urllib.parse import urlsplit
+
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if "://" not in text:
+        text = "http://" + text
+    parts = urlsplit(text)
+    try:
+        parts.port
+    except ValueError:
+        raise ValueError("Enter a port from 1 to 65535, as in http://127.0.0.1:11434.") from None
+    if parts.scheme not in {"http", "https"} or not parts.hostname:
+        raise ValueError("Enter Ollama's address as http://host:11434, for example http://127.0.0.1:11434.")
+    if parts.username or parts.password:
+        raise ValueError("Ollama's address can't hold a user name or password.")
+    return text.rstrip("/")
+
+
+def probe_ollama(url: str) -> dict[str, Any]:
+    """What an Ollama server at ``url`` offers (Settings > Connections): its chat models, or why not.
+
+    Nothing is saved. ``status`` is ``ready`` (chat models found), ``empty``
+    (Ollama answered with none to chat with) or ``unreachable``.
+    """
+    import httpx
+
+    base = url.rstrip("/")
+    try:
+        response = httpx.get(f"{base}/api/tags", timeout=httpx.Timeout(connect=3.0, read=6.0, write=6.0, pool=6.0))
+        response.raise_for_status()
+        names = [str(row.get("name") or "") for row in response.json().get("models", []) if isinstance(row, dict)]
+    except httpx.HTTPStatusError as exc:
+        return {"status": "unreachable", "url": base,
+                "error": f"{base} answered HTTP {exc.response.status_code}. Is this Ollama's address?"}
+    except (httpx.HTTPError, ValueError, AttributeError):
+        return {"status": "unreachable", "url": base,
+                "error": f"Nothing answered as Ollama at {base}. Start Ollama there, or check the address."}
+    models = [name for name in names if name and not any(word in name.lower() for word in _OLLAMA_NON_CHAT)]
+    if not models:
+        return {"status": "empty", "url": base, "models": [], "model_count": 0,
+                "error": f"Ollama is running at {base} but has no chat models yet. "
+                         "Pull one in a terminal, for example: ollama pull qwen3-coder:30b"}
+    return {"status": "ready", "url": base, "models": models, "model_count": len(models)}
+
+
 def _socket_setting_value(section: Any, key: Any, value: Any) -> Any:
     """Return the value to store for one Settings write, or raise ValueError."""
     if section == "mcp_servers":
@@ -4002,6 +4819,10 @@ def _socket_setting_value(section: Any, key: Any, value: Any) -> Any:
         from ..update_channels import normalize
 
         return normalize(key, value)
+    if section == "offline":
+        from ..offline import validate_setting
+
+        return validate_setting(key, value)
     if (section, key) in {
         ("network", "system_certificates"), ("privacy", "secret_scan"), ("privacy", "audit_log"),
         ("onboarding", "dismissed"),
@@ -4095,6 +4916,20 @@ def _socket_setting_value(section: Any, key: Any, value: Any) -> Any:
         if isinstance(value, bool) or not isinstance(value, (int, float)) or not 0 <= value <= 3650:
             raise ValueError("Enter a number of days from 0 (keep) to 3650.")
         return int(value)
+    elif (section, key) == ("network", "ollama_url"):
+        return ollama_address(value)
+    elif (section, key) == ("local_backends", "ollama_num_ctx"):
+        from ..backends import ollama_num_ctx_setting
+
+        return ollama_num_ctx_setting(value)
+    elif (section, key) == ("local_backends", "ollama_keep_alive"):
+        from ..backends import ollama_keep_alive_setting
+
+        return ollama_keep_alive_setting(value)
+    elif (section, key) == ("privacy", "feedback_url"):
+        from ..feedback import check_address
+
+        return check_address(value)
     elif (section, key) == ("network", "proxy_url"):
         from .. import net
         return net.validate_proxy_url(value if isinstance(value, str) else "")
@@ -4107,6 +4942,10 @@ def _socket_setting_value(section: Any, key: Any, value: Any) -> Any:
         from .. import voice
 
         return voice.validate(key, value)
+    elif section == "code_hosts":
+        from ..net import host_names
+
+        return host_names(value)
     return value
 
 
@@ -4166,12 +5005,22 @@ async def _cmd_update_settings(ctx: CommandContext) -> None:
     if sonn_change:
         ctx.state.sonn_account_revision = getattr(ctx.state, "sonn_account_revision", 0) + 1
         await ctx.send({"event": "sonn_account", "data": None})
+    if section == "privacy" and "feedback_url" in changed:
+        # Reports written for the new feedback address go now rather than at the next round.
+        from .. import feedback
+
+        feedback.wake()
     await ctx.send({"event": "settings", "data": data})
-    if section == "updates":
-        # Settings > Updates says what changes after a restart.
+    if (section == "security" and any(k == "extension_panels" for k, _ in writes)) or section == "offline":
+        # Offline mode keeps panels closed (gui/extension_panels.enabled): an open one closes now.
+        await _send_extension_panels(ctx)
+    if section in {"updates", "offline"}:
+        # Settings > Updates says what changes after a restart, and what offline mode stops now.
         from lumi.updater import status as update_status
 
         await ctx.send({"event": "update_status", "data": await asyncio.to_thread(update_status)})
+    if section == "offline":
+        await ctx.send({"event": "offline_status", "data": await asyncio.to_thread(ctx.state.offline_status)})
     await ctx.send(ctx.state.get_init_data(refresh_only=True))
 
 
@@ -4194,6 +5043,12 @@ async def _cmd_voice_transcribe(ctx: CommandContext) -> None:
 
     request_id = str(ctx.msg.get("request_id") or "")[:64]
     encoded = ctx.msg.get("audio")
+    # A transcription service is a model too: nothing goes to one before the
+    # organization's oversight notice is confirmed (lumi/oversight.py).
+    refusal = await _oversight_refusal(ctx)
+    if refusal:
+        await ctx.send({"event": "voice.error", "request_id": request_id, "message": refusal})
+        return
     try:
         if not isinstance(encoded, str) or len(encoded) > voice.MAX_AUDIO_BYTES * 4 // 3 + 4:
             raise voice.VoiceError("The recording is too long. Dictate in shorter parts.")
@@ -4242,16 +5097,96 @@ async def _cmd_sonn_account(ctx: CommandContext) -> None:
         await ctx.send({"event": "sonn_account", "data": data})
 
 
+def ollama_address_in_use(state: Any, resolve_ollama_url: Callable[[], str]) -> dict[str, str]:
+    """Which Ollama address the app uses, the one Settings saved, and what overrides it.
+
+    ``OLLAMA_HOST`` in Lumi's environment comes before the saved address
+    (network_defaults.resolve_ollama_url), so while it is set, saving an
+    address changes nothing until it's removed and Lumi restarts. The card
+    says so instead of naming the environment's address as the one saved.
+    """
+    return {
+        "in_use": str(getattr(state, "ollama_url", "") or "") or resolve_ollama_url(),
+        "saved": str(state.settings.get("network", "ollama_url", "") or ""),
+        "environment": "OLLAMA_HOST" if str(os.environ.get("OLLAMA_HOST") or "").strip() else "",
+    }
+
+
+async def _ollama_connection(ctx: CommandContext, action: str, resolve_ollama_url: Callable[[], str]) -> dict[str, Any]:
+    """Settings > Connections' Ollama card: Test an address, Save it, or check the one in use.
+
+    Test probes the address typed in the card and saves nothing. Save checks
+    and stores it as ``network.ollama_url`` (a policy can lock it; the audit
+    log records the change), then checks the address the app uses, as status
+    does: the model picker offers its models, and one starts when no model
+    runs yet, so the first-run checklist's "Connect a model" is done only
+    once Ollama answered there. ``address`` says which address that is: the
+    saved one, or ``OLLAMA_HOST`` while it's set (ollama_address_in_use).
+    """
+    from .. import audit, offline
+    from ..policy import current as current_policy
+
+    if action == "save":
+        url = ollama_address(ctx.msg.get("url"))
+        policy = current_policy()
+        if policy and policy.locked("network", "ollama_url"):
+            raise ValueError(f"Ollama's address is managed by {policy.organization} and can't be changed here.")
+        before = str(ctx.state.settings.get("network", "ollama_url", "") or "")
+        settings_data = await asyncio.to_thread(ctx.state.update_setting_value, "network", "ollama_url", url)
+        if before != url:
+            audit.record("settings.change", section="network", keys=["ollama_url"])
+        await ctx.send({"event": "settings", "data": settings_data})
+    address = ollama_address_in_use(ctx.state, resolve_ollama_url)
+    # Test checks the typed address; an empty one means this computer, as saving it would.
+    from ..network_defaults import DEFAULT_OLLAMA_URL
+
+    url = (ollama_address(ctx.msg.get("url")) or DEFAULT_OLLAMA_URL) if action == "test" else address["in_use"]
+    reason = offline.provider_refusal("ollama", url, label="Ollama")
+    if reason:
+        return {"status": "unreachable", "url": url, "error": reason, "saved": action != "test", "action": action,
+                "address": address}
+    data = await asyncio.to_thread(probe_ollama, url)
+    # `saved`: this checked the address Lumi uses (Save, status), not a typed one (Test).
+    data.update(saved=action != "test", action=action, address=address)
+    if action != "test":
+        # The saved address: offer its models, and start one if no model runs yet. Save's
+        # update_setting_value probed every provider again already (apply_settings), so
+        # only a status check probes here. Probing twice made Save take five seconds
+        # where Test takes a fraction of one: each probe waits out any provider that
+        # isn't running (Windows takes two seconds to refuse a connection on this computer).
+        if action != "save":
+            await asyncio.to_thread(ctx.state.detect_backends, force=True)
+        if data["status"] == "ready" and not ctx.state.backend:
+            try:
+                await asyncio.to_thread(ctx.state.ensure_default_runtime_session)
+            except Exception:
+                logger.exception("default runtime session after the Ollama check failed")
+    return data
+
+
 @command("provider_connection")
 async def _cmd_provider_connection(ctx: CommandContext) -> None:
     from ..codex_account import codex_account
     from ..openrouter import OpenRouterBackend
     from ..sonn import SonnBackend
-    from ..network_defaults import resolve_sonn_url
+    from ..network_defaults import resolve_ollama_url, resolve_sonn_url
 
     provider = ctx.msg.get("provider")
     action = ctx.msg.get("action", "status")
     try:
+        # Offline mode (lumi/offline.py): say why before starting Codex's own
+        # program or asking a provider this computer may not reach.
+        from .. import offline
+
+        if offline.enabled() and action in {"status", "login"}:
+            endpoints = {"openrouter": OpenRouterBackend.DEFAULT_BASE_URL, "anthropic": "https://api.anthropic.com",
+                         "openai": "https://api.openai.com/v1",
+                         "sonn": resolve_sonn_url(settings_data=ctx.state.settings.get_all())}
+            labels = {"openrouter": "OpenRouter", "anthropic": "Anthropic", "openai": "OpenAI", "sonn": "SONN"}
+            reason = offline.provider_refusal(str(provider or ""), endpoints.get(str(provider or ""), ""),
+                                              label=labels.get(str(provider or ""), ""))
+            if reason:
+                raise ValueError(reason)
         if provider == "codex":
             if action == "login":
                 if ctx.runs.busy:
@@ -4292,6 +5227,8 @@ async def _cmd_provider_connection(ctx: CommandContext) -> None:
             data = await asyncio.to_thread(backend_class(api_key, backend_class.DEFAULT_MODEL).health)
             data["model_count"] = len(data.get("models") or [])
             await asyncio.to_thread(ctx.state.detect_backends, force=True)
+        elif provider == "ollama" and action in {"test", "save", "status"}:
+            data = await _ollama_connection(ctx, action, resolve_ollama_url)
         elif provider == "sonn" and action == "status":
             api_key, _, _, _ = ctx.state._api_key_details("sonn", "SONN_API_KEY")
             base_url = resolve_sonn_url(settings_data=ctx.state.settings.get_all())
@@ -4302,10 +5239,16 @@ async def _cmd_provider_connection(ctx: CommandContext) -> None:
         else:
             raise ValueError("Unknown provider connection.")
         await ctx.send({"event": "provider_connection", "provider": provider, "data": data})
-        if action == "status":
+        if action in {"status", "save"}:
             await ctx.send(ctx.state.get_init_data(refresh_only=True))
     except Exception as exc:
-        await ctx.send({"event": "provider_connection", "provider": provider, "data": {"error": str(exc)}})
+        from ..codex_account import CodexCliMissing
+
+        data = {"error": str(exc)}
+        if isinstance(exc, CodexCliMissing):
+            # The card says what to install instead of offering a sign-in that can't start.
+            data["missing_cli"] = True
+        await ctx.send({"event": "provider_connection", "provider": provider, "data": data})
 
 # ── Model connections (gateways, Azure, Bedrock, Vertex) ───────────
 
@@ -4482,56 +5425,70 @@ async def _cmd_skill_archive(ctx: CommandContext) -> None:
 # one concern across two files for no reason.
 # ---------------------------------------------------------------------------
 
-def _git_run(*args: str, cwd: str | None = None) -> tuple[int, str]:
-    """Run a git command and return (returncode, stdout).
+def _git_run(*args: str, cwd: str | None = None, hooks: bool = False,
+             trusted: bool | None = None) -> tuple[int, str, str]:
+    """Run a git command for the page; returns (returncode, stdout, stderr).
 
-    `cwd` is required in practice. It used to fall back to the module-level
-    AppState singleton in app.py, which made these helpers untestable and
-    silently tied "which repository" to global state — the caller always knew
-    the project path and now has to say so.
+    `cwd` is required. It used to fall back to the module-level AppState
+    singleton in app.py, which made these helpers untestable and silently
+    tied "which repository" to global state — the caller always knew the
+    project path and now has to say so.
+
+    Git runs through lumi/safe_git.py: the installed Git, none of the
+    programs a repository's settings name, and nothing at all in an
+    untrusted project whose settings name some (GitRefused, which callers
+    turn into a notice). The page asks for the status as soon as a project
+    opens.
     """
-    import subprocess
+    from ..git_support import start_failure_message
+    from ..safe_git import run as git
+
+    if not cwd:
+        return 1, "", "No project folder."
     try:
-        result = subprocess.run(
-            ["git"] + list(args),
-            capture_output=True, text=True, timeout=15,
-            cwd=cwd or os.getcwd(),
-            shell=(sys.platform == "win32"),
-            **background_process_kwargs(),
-        )
-        return result.returncode, (result.stdout + result.stderr).strip()
-    except Exception as e:
-        return 1, str(e)
+        result = git(cwd, *args, hooks=hooks, trusted_project=trusted, timeout=15)
+    except OSError as e:  # no Git installed, or it couldn't start here (a folder that is gone)
+        return 1, "", start_failure_message(e, cwd=cwd)
+    except subprocess.TimeoutExpired:
+        return 1, "", "Git took too long."
+    return result.returncode, result.stdout, result.stderr
 
 
 def _git_status(project_path: str) -> dict:
-    """Get git status for the given project."""
+    """Branch, changed files and recent commits of the project's repository."""
+    from ..safe_git import GitRefused, refusal, status_entries
+
     cwd = project_path
-
-    # Branch
-    rc, branch = _git_run("branch", "--show-current", cwd=cwd)
-    if rc != 0:
-        return {"is_repo": False}
-
-    # Status (porcelain)
-    _, status_raw = _git_run("status", "--porcelain", cwd=cwd)
+    try:
+        reason = refusal(cwd) if cwd else ""
+    except Exception as e:  # Git missing: report it as not a repository
+        logger.debug("git settings check failed: %s", e)
+        reason = ""
+    if reason:
+        return {"is_repo": True, "refused": reason, "branch": "", "changes": [], "change_count": 0,
+                "commits": []}
+    try:
+        rc, branch, _ = _git_run("branch", "--show-current", cwd=cwd)
+        if rc != 0:
+            return {"is_repo": False}
+        # -z: names exactly as they are (spaces, other scripts), one record
+        # each, renames with their old name in the next field.
+        _, status_raw, _ = _git_run("status", "--porcelain=v1", "-z", "--untracked-files=normal", cwd=cwd)
+        _, log_raw, _ = _git_run("log", "--format=%h%x1f%s", "-10", cwd=cwd)
+    except GitRefused as e:  # the settings changed since the check above
+        return {"is_repo": True, "refused": str(e), "branch": "", "changes": [], "change_count": 0,
+                "commits": []}
     changes = []
-    for line in status_raw.split("\n"):
-        line = line.strip()
-        if line:
-            status_code = line[:2].strip()
-            filepath = line[3:]
-            changes.append({"status": status_code, "file": filepath})
-
-    # Recent commits
-    _, log_raw = _git_run("log", "--oneline", "-10", cwd=cwd)
+    for entry in status_entries(status_raw)[1]:
+        change = {"status": (entry["x"] + entry["y"]).strip(), "file": entry["path"]}
+        if "from" in entry:
+            change["from"] = entry["from"]
+        changes.append(change)
     commits = []
-    for line in log_raw.split("\n"):
-        line = line.strip()
+    for line in log_raw.splitlines():
         if line:
-            parts = line.split(" ", 1)
-            commits.append({"hash": parts[0], "message": parts[1] if len(parts) > 1 else ""})
-
+            short, _, subject = line.partition("\x1f")
+            commits.append({"hash": short, "message": subject})
     return {
         "is_repo": True,
         "branch": branch.strip(),
@@ -4542,40 +5499,47 @@ def _git_status(project_path: str) -> dict:
 
 
 def _git_quick(action: str, msg: dict, project_path: str) -> dict:
-    """Execute quick git actions."""
-    cwd = project_path
+    """The Git popover's actions."""
+    from ..safe_git import GitRefused
 
-    if action == "diff":
-        _, output = _git_run("diff", cwd=cwd)
-        return {"output": output}
-    elif action == "diff_staged":
-        _, output = _git_run("diff", "--staged", cwd=cwd)
-        return {"output": output}
-    elif action == "log":
-        count = msg.get("count", 20)
-        _, output = _git_run("log", "--oneline", f"-{count}", cwd=cwd)
-        return {"output": output}
-    elif action == "add":
-        files = msg.get("files", [])
-        if files:
-            rc, output = _git_run("add", *files, cwd=cwd)
+    cwd = project_path
+    try:
+        if action == "diff":
+            _, output, error = _git_run("diff", cwd=cwd)
+            return {"output": (output or error).strip()}
+        elif action == "diff_staged":
+            _, output, error = _git_run("diff", "--staged", cwd=cwd)
+            return {"output": (output or error).strip()}
+        elif action == "log":
+            try:
+                count = max(1, min(int(msg.get("count", 20)), 200))
+            except (TypeError, ValueError):
+                count = 20
+            _, output, error = _git_run("log", "--oneline", f"-{count}", cwd=cwd)
+            return {"output": (output or error).strip()}
+        elif action == "add":
+            files = [str(name) for name in (msg.get("files") or []) if str(name)]
+            # "--": a name that starts with "-" is a file, not an option.
+            rc, output, error = _git_run("add", "--", *files, cwd=cwd) if files else _git_run("add", "-A", cwd=cwd)
+            return {"success": rc == 0, "output": (output + error).strip()}
+        elif action == "commit":
+            message = msg.get("message", "")
+            if not message:
+                return {"success": False, "output": "No commit message"}
+            # Someone asked for this commit: a trusted project's hooks run, as
+            # its own `git commit` would run them (lumi/safe_git.py).
+            rc, output, error = _git_run("commit", "-m", message, cwd=cwd, hooks=True)
+            return {"success": rc == 0, "output": (output + error).strip()}
+        elif action == "stash":
+            rc, output, error = _git_run("stash", cwd=cwd)
+            return {"success": rc == 0, "output": (output + error).strip()}
+        elif action == "stash_pop":
+            rc, output, error = _git_run("stash", "pop", cwd=cwd)
+            return {"success": rc == 0, "output": (output + error).strip()}
         else:
-            rc, output = _git_run("add", "-A", cwd=cwd)
-        return {"success": rc == 0, "output": output}
-    elif action == "commit":
-        message = msg.get("message", "")
-        if not message:
-            return {"success": False, "output": "No commit message"}
-        rc, output = _git_run("commit", "-m", message, cwd=cwd)
-        return {"success": rc == 0, "output": output}
-    elif action == "stash":
-        rc, output = _git_run("stash", cwd=cwd)
-        return {"success": rc == 0, "output": output}
-    elif action == "stash_pop":
-        rc, output = _git_run("stash", "pop", cwd=cwd)
-        return {"success": rc == 0, "output": output}
-    else:
-        return {"success": False, "output": f"Unknown action: {action}"}
+            return {"success": False, "output": f"Unknown action: {action}"}
+    except GitRefused as e:
+        return {"success": False, "output": str(e), "refused": True}
 
 
 # ── Skill list/view payload helpers (v0.6.2a3) ───────────────────────
@@ -4626,12 +5590,15 @@ def _workspace_language_hints(project_path: str, *, max_files: int = 1600) -> se
     return found
 
 
-def _lsp_list_payload(*, project_path: str = "", settings: SettingsManager | None = None) -> dict:
+def _lsp_list_payload(*, project_path: str = "", settings: SettingsManager | None = None,
+                      trusted: bool = False) -> dict:
     """Build the {event: "lsp_list", servers: [...]} status payload.
 
     The servers the ``code_intel`` tool can use (engine/lsp.py): Settings'
     ``lsp_servers``, then well-known servers installed on PATH or matching the
-    project's languages, with whether each is running for this project.
+    project's languages, with whether each is running for this project and
+    where its program comes from (a trusted project's own environment, or
+    PATH).
     """
     from ..engine import lsp
 
@@ -4648,11 +5615,13 @@ def _lsp_list_payload(*, project_path: str = "", settings: SettingsManager | Non
     for spec, enabled in lsp.configured(settings):
         program = spec.command[0]
         configured_programs.add(lsp._program_name(program))
-        available = bool(shutil.which(program) or os.path.isfile(program))
+        found, found_from, notice = lsp.program_source(program, project_path, trusted=trusted)
+        available = bool(found)
         languages = sorted(set(spec.languages.values()))
         status, error = status_of(spec.id, "available" if available else "missing")
         if not enabled:
             status, error = "disabled", ""
+        detail = error or (", ".join(languages) if languages else "Add extensions or languages to use it")
         servers.append({
             "id": spec.id,
             "name": spec.name,
@@ -4661,9 +5630,10 @@ def _lsp_list_payload(*, project_path: str = "", settings: SettingsManager | Non
             "available": available,
             "status": status,
             "source": "configured",
+            "program_source": found_from,
             "languages": languages,
-            "detail": error or (", ".join(languages) if languages
-                                else "Add extensions or languages to use it"),
+            "detail": " ".join(part for part in (detail + (f" · {found_from}" if found_from else ""), notice)
+                               if part),
         })
 
     workspace_langs = _workspace_language_hints(project_path)
@@ -4671,8 +5641,8 @@ def _lsp_list_payload(*, project_path: str = "", settings: SettingsManager | Non
         if lsp._program_name(spec.command[0]) in configured_programs:
             continue
         languages = sorted(set(spec.languages.values()))
-        executable = shutil.which(spec.command[0])
-        if not executable and not workspace_langs.intersection(languages):
+        executable, found_from, notice = lsp.program_source(spec.command[0], project_path, trusted=trusted)
+        if not executable and not workspace_langs.intersection(languages) and not notice:
             continue
         status, error = status_of(spec.id, "available" if executable else "missing")
         servers.append({
@@ -4683,9 +5653,11 @@ def _lsp_list_payload(*, project_path: str = "", settings: SettingsManager | Non
             "available": bool(executable),
             "status": status,
             "source": "detected",
+            "program_source": found_from,
             "languages": languages,
-            "detail": error or (f"Installed: {executable}; starts when the agent asks about this code"
-                                if executable else f"Install {spec.command[0]} to use it"),
+            "detail": " ".join(part for part in (
+                error or (f"Installed ({found_from}): {executable}; starts when the agent asks about this code"
+                          if executable else f"Install {spec.command[0]} to use it"), notice) if part),
         })
 
     servers.sort(key=lambda item: (

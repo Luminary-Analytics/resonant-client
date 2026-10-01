@@ -45,10 +45,16 @@ class LumiSettingsView {
         const text = value => typeof value === 'string' ? value.trim().slice(0, 160) : '';
         const sonn = this._sonnConfigured();
         const connected = sonn && !!account?.user && !account.error;
-        // The local display name (Settings > Profile) first; never a ChatGPT identity.
-        const name = text(this.settings?.general?.display_name) || (connected ? text(account.user) : 'Profile');
+        // The Lumi Cloud account signed in here (lumi/cloud.py), when there is one.
+        const lumi = this._lumiAccount();
+        const displayName = text(this.settings?.general?.display_name);
+        // The local display name (Settings > Profile) first, then the Lumi account's name or email;
+        // never a ChatGPT identity.
+        const name = displayName || (lumi ? text(lumi.name) || text(lumi.email) : '')
+            || (connected ? text(account.user) : 'Profile');
+        const lumiDetail = lumi ? (name === text(lumi.email) ? 'Lumi account' : text(lumi.email)) : '';
         // Until the account is read (the menu opens) nothing is known about it.
-        const detail = !sonn ? 'Settings and connections' : !account ? 'SONN'
+        const detail = !sonn ? (lumiDetail || 'Settings and connections') : !account ? 'SONN'
             : connected ? (account.billing?.enabled ? 'SONN · Prepaid credits' : 'SONN · Billing off') : 'SONN not connected';
         const status = !sonn ? '' : this._sonnAccountPending ? 'Checking SONN account…' : account?.error || (connected
             ? `SONN account: ${text(account.user)}` : 'Connect with your SONN private invitation');
@@ -58,8 +64,8 @@ class LumiSettingsView {
         // only once SONN answers for this person: a key and URL left from SONN
         // Client, or an account that can't be read, never make it a SONN
         // warning. The menu (detail and status) says what SONN's state is.
-        const cornerDetail = connected ? detail : 'Settings and connections';
-        return {name, detail, cornerDetail, status, initials, sonn};
+        const cornerDetail = connected ? detail : (lumiDetail || 'Settings and connections');
+        return {name, detail, cornerDetail, status, initials, sonn, lumi: Boolean(lumi)};
     }
 
     _requestSonnAccount() {
@@ -108,6 +114,9 @@ class LumiSettingsView {
         // SONN's account and credits only for someone who uses SONN.
         const usage = document.getElementById('account-usage');
         if (usage) usage.hidden = !summary.sonn;
+        // Lumi account when signed in; otherwise the offer to sign in.
+        const cloud = document.getElementById('account-cloud');
+        if (cloud) cloud.textContent = summary.lumi ? 'Lumi account' : 'Sign in to Lumi Cloud';
         const menuStatus = document.getElementById('account-menu-status');
         if (menuStatus) menuStatus.hidden = !summary.status;
         const visible = this.settings?.general?.show_companion === true;
@@ -189,7 +198,199 @@ class LumiSettingsView {
         document.getElementById('echo-hide')?.addEventListener('click', () => {
             this._setCompanion(false); trigger.focus();
         });
+        document.getElementById('account-cloud')?.addEventListener('click', () => {
+            if (this._lumiAccount()) { openSettings('lumi_account'); return; }
+            this._closeAccountMenu();
+            this.openCloudWelcome({returnFocus: trigger});
+        });
         this._renderAccountMenu();
+    }
+
+    /** The Lumi Cloud account signed in at the Lumi Cloud this computer uses, or null. */
+    _lumiAccount() {
+        const status = this.cloudStatus;
+        return status?.signed_in && status.account?.email ? status.account : null;
+    }
+
+    /**
+     * Lumi Cloud's status changed (lumi/cloud.py status()): the profile corner,
+     * and the offer to sign in that the first launch makes once
+     * (``first_run_prompt``), after Lumi's terms are accepted and never over
+     * another dialog that's asking for something.
+     */
+    _applyCloudStatus(status) {
+        if (!status) return;
+        this.cloudStatus = status;
+        this._renderAccountMenu();
+        if (this._cloudWelcome) { this._renderCloudWelcome(); return; }
+        const termsOpen = Boolean(this._termsDialog) || Boolean(this.termsStatus?.pending);
+        if (status.first_run_prompt && !termsOpen && !this._cloudWelcomeAnswered) {
+            this.openCloudWelcome({firstRun: true});
+        }
+    }
+
+    _initCloudWelcome() {
+        const dialog = document.getElementById('cloud-welcome');
+        if (!dialog || this._cloudWelcomeReady) return;
+        this._cloudWelcomeReady = true;
+        document.getElementById('cloud-welcome-primary')?.addEventListener('click', () => this._cloudWelcomeAction('primary'));
+        document.getElementById('cloud-welcome-secondary')?.addEventListener('click', () => this._cloudWelcomeAction('secondary'));
+        // One button per way to sign in or create an account (lumi/cloud.py SIGN_IN_METHODS).
+        dialog.querySelectorAll('[data-provider]').forEach(button => button.addEventListener('click', () => {
+            this._cloudWelcomeSignIn(button.dataset.provider);
+        }));
+        dialog.addEventListener('keydown', event => {
+            if (event.key === 'Escape') {
+                event.preventDefault();
+                event.stopPropagation();
+                this._cloudWelcomeAction('secondary');
+                return;
+            }
+            if (event.key !== 'Tab') return;
+            const buttons = this._cloudWelcomeButtons();
+            if (!buttons.length) return;
+            const first = buttons[0], last = buttons[buttons.length - 1];
+            if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+            else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+        });
+    }
+
+    /**
+     * Offer signing in to Lumi Cloud: at first launch (``firstRun``: its other
+     * choice is continuing without an account, and either answer is kept), or
+     * from the profile menu.
+     */
+    openCloudWelcome(options = {}) {
+        this._initCloudWelcome();
+        const dialog = document.getElementById('cloud-welcome');
+        if (!dialog) return;
+        this._cloudWelcome = {firstRun: Boolean(options.firstRun), started: false,
+                              returnFocus: options.returnFocus || document.activeElement};
+        dialog.style.display = 'flex';
+        this._renderCloudWelcome();
+        // The first button shown: Continue with Google, or Cancel while a sign-in is waiting for the browser.
+        this._cloudWelcomeButtons()[0]?.focus();
+    }
+
+    /** The dialog's buttons a person can use now, in order. */
+    _cloudWelcomeButtons() {
+        const dialog = document.getElementById('cloud-welcome');
+        if (!dialog) return [];
+        return [...dialog.querySelectorAll('button')]
+            .filter(button => !button.disabled && !button.hidden && !button.closest('[hidden]'));
+    }
+
+    closeCloudWelcome() {
+        const dialog = document.getElementById('cloud-welcome');
+        const welcome = this._cloudWelcome;
+        this._cloudWelcome = null;
+        if (dialog) dialog.style.display = 'none';
+        const back = welcome?.returnFocus;
+        if (back && back.isConnected && back !== document.body) back.focus();
+        else document.getElementById('user-input')?.focus();
+    }
+
+    /** The first launch's offer is answered: signed in, or continuing without an account. Kept in Settings. */
+    _answerCloudWelcome() {
+        this._cloudWelcomeAnswered = true;
+        if (this.cloudStatus) this.cloudStatus = {...this.cloudStatus, first_run_prompt: false};
+        this.settings ||= {};
+        this.settings.onboarding = {...(this.settings.onboarding || {}), cloud_prompted: true};
+        this.send({command: 'update_settings', section: 'onboarding', key: 'cloud_prompted', value: true});
+    }
+
+    _cloudWelcomeAction(which) {
+        const welcome = this._cloudWelcome;
+        if (!welcome) return;
+        const status = this.cloudStatus || {};
+        if (this._lumiAccount() && welcome.started) {
+            if (!status.signing_in) this.closeCloudWelcome();  // never mid-way through setting up the computer
+            return;
+        }
+        if (status.signing_in) {
+            // Either button, or Escape, while the browser is open: stop waiting for it.
+            this.send({command: 'cloud_cancel'});
+            return;
+        }
+        if (which === 'primary') return;  // only shown once signed in
+        if (welcome.firstRun) this._answerCloudWelcome();
+        this.closeCloudWelcome();
+    }
+
+    /** Sign in, or create the account, the way the person chose: ``provider`` is google, microsoft or email. */
+    _cloudWelcomeSignIn(provider) {
+        const welcome = this._cloudWelcome;
+        if (!welcome || this.cloudStatus?.signing_in) return;
+        welcome.started = true;
+        welcome.sent = true;
+        welcome.provider = provider;
+        // An earlier attempt's error isn't this one's: the next status says how this one went.
+        this.cloudStatus = {...(this.cloudStatus || {}), error: ''};
+        this.send({command: 'cloud_sign_in', url: '', provider});
+        this._renderCloudWelcome();
+    }
+
+    _renderCloudWelcome() {
+        const welcome = this._cloudWelcome;
+        if (!welcome) return;
+        const status = this.cloudStatus || {};
+        const account = this._lumiAccount();
+        // Read before any button hides: a hidden button loses focus to the page at once.
+        const focused = document.activeElement;
+        const set = (id, text, hidden = false) => {
+            const element = document.getElementById(id);
+            if (!element) return;
+            element.textContent = text;
+            element.hidden = hidden || !text;
+        };
+        let host = '';
+        try { host = status.url ? new URL(status.url).host : ''; } catch (_err) { host = ''; }
+        const benefits = document.getElementById('cloud-welcome-benefits');
+        const methods = document.getElementById('cloud-welcome-methods');
+        if (methods) methods.hidden = true;  // shown only while choosing how to sign in (below)
+        const waiting = Boolean(status.signing_in) || (welcome.sent && !account && !status.error);
+        if (status.signing_in) welcome.sent = false;
+        if (account && welcome.started && status.signing_in) {
+            // Signed in; the personal workspace is being set up on this computer (lumi/cloud.py _enroll_personal).
+            set('cloud-welcome-title', 'Setting up your workspace');
+            set('cloud-welcome-text', `Signed in as ${account.email}. Getting this computer ready…`);
+            set('cloud-welcome-error', '');
+            set('cloud-welcome-primary', '', true);
+            set('cloud-welcome-secondary', '', true);
+            set('cloud-welcome-note', '');
+            if (benefits) benefits.hidden = true;
+        } else if (account && welcome.started) {
+            const device = status.device?.id ? status.device : null;
+            set('cloud-welcome-title', 'You’re signed in');
+            set('cloud-welcome-text', `Signed in as ${account.email}.${device
+                ? ` This computer uses ${device.organization_name || 'your workspace'}.` : ''}`);
+            set('cloud-welcome-error', status.notice || '');
+            set('cloud-welcome-primary', 'Start building');
+            set('cloud-welcome-secondary', '', true);
+            set('cloud-welcome-note', 'Manage your account any time from the profile menu.');
+            if (benefits) benefits.hidden = true;
+        } else if (waiting) {
+            const way = {google: 'with Google', microsoft: 'with Microsoft', email: 'with your email'}[welcome.provider] || '';
+            set('cloud-welcome-title', 'Finish signing in in your browser');
+            set('cloud-welcome-text', `Lumi opened ${host || 'Lumi Cloud'} in your browser. Sign in there${way ? ` ${way}` : ''} and approve Lumi; this window continues by itself.`);
+            set('cloud-welcome-error', '');
+            set('cloud-welcome-primary', '', true);
+            set('cloud-welcome-secondary', 'Cancel');
+            set('cloud-welcome-note', 'Signing in can take up to five minutes before Lumi stops waiting.');
+            if (benefits) benefits.hidden = true;
+        } else {
+            set('cloud-welcome-title', welcome.firstRun ? 'Welcome to Lumi' : 'Sign in to Lumi Cloud');
+            set('cloud-welcome-text', 'Sign in or create your free account to set up your workspace.');
+            set('cloud-welcome-error', welcome.started ? (status.error || '') : '');
+            set('cloud-welcome-primary', '', true);
+            set('cloud-welcome-secondary', welcome.firstRun ? 'Continue without an account' : 'Not now');
+            set('cloud-welcome-note', `New to Lumi? Your first sign-in creates your free account${host ? ` at ${host}` : ''}. Every tool, provider and feature in Lumi works without one.`);
+            if (benefits) benefits.hidden = false;
+            if (methods) methods.hidden = false;
+        }
+        // Focus never stays on a button that just disappeared.
+        const buttons = this._cloudWelcomeButtons();
+        if (!focused || focused === document.body || !buttons.includes(focused)) buttons[0]?.focus();
     }
 
     _renderEditorIntegrations() {
@@ -404,10 +605,11 @@ class LumiSettingsView {
         const button = (action, label, extra = '') => `<button type="button" class="btn-sm" data-cloud-action="${action}" ${extra}>${label}</button>`;
         const parts = [];
         if (!s.signed_in && !s.signing_in && !(s.device && s.device.id) && !s.managed_organization) {
-            parts.push(row('For teams and companies that use Lumi Cloud',
-                'A Lumi account applies your organization’s policy on this computer, reports usage to its administrators, '
-                + 'and lets you share conversations and hand work to teammates. You don’t need one: every tool, provider '
-                + 'and feature in Lumi works without it. If your organization gave you a Lumi Cloud address, sign in below.'));
+            parts.push(row('Your Lumi account',
+                'Sign in to set up your free workspace: your skills, prompts and project notes on every computer you sign in on, '
+                + 'and teammates when you’re ready. If your organization uses Lumi Cloud, signing in also applies its policy '
+                + 'here. You don’t need an account: every tool, provider and feature in Lumi works without it. Signing in '
+                + 'creates your account.'));
         }
         if (s.error) parts.push(`<p class="editor-error" role="alert">${esc(s.error)}</p>`);
         if (s.cloud_error) parts.push(`<p class="editor-error" role="alert">${esc(s.cloud_error)}</p>`);
@@ -429,7 +631,7 @@ class LumiSettingsView {
                     : !org.has_seat ? 'You don’t have a seat. Ask an administrator for one.'
                     : device ? `This computer is enrolled in ${esc(device.organization_name)}.`
                     : 'Use it on this computer to apply its policy here.';
-                parts.push(row(esc(org.name), `${esc(org.role)} · ${note}`,
+                parts.push(row(esc(org.name), `${org.personal ? 'Personal workspace' : esc(org.role)} · ${note}`,
                     canEnroll ? button('enroll', 'Use on this computer', `data-org="${esc(org.id)}" aria-label="Use ${esc(org.name)} on this computer"`) : ''));
             }
         } else {

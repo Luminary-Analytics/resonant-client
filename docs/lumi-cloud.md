@@ -1,15 +1,51 @@
 # Lumi Cloud: your account and your organization
 
-Lumi Cloud is where an organization manages Lumi: its members, their seats,
-the computers running Lumi, and the policy those computers enforce. Lumi
-works fully without it. This page covers the app's side, in
-**Settings > Lumi account**. Code: `lumi/cloud.py`.
+Lumi Cloud is where your Lumi account lives: a free personal workspace for
+someone working alone, and for an organization its members, their seats, the
+computers running Lumi, and the policy those computers enforce. Lumi works
+fully without it. This page covers the app's side: the first launch, the
+profile menu and **Settings > Lumi account**. Code: `lumi/cloud.py`.
+
+## At first launch
+
+After you accept Lumi's terms, Lumi offers once to sign in to Lumi Cloud:
+
+- **Continue with Google**, **Continue with Microsoft** or **Continue with
+  email** opens Luminary's Lumi Cloud, `https://cloud.lumi.luminaryanalytics.com`,
+  in your browser, straight at that way of signing in (Lumi adds
+  `provider=google|microsoft|email` to the sign-in address; a Lumi Cloud that
+  doesn't offer it shows its usual page). Signing in there for the first time
+  creates your free account.
+- **Continue without an account** (or Escape) closes it for good. Every tool,
+  provider and feature works without an account. You can sign in later from
+  the profile menu (**Sign in to Lumi Cloud**) or Settings > Lumi account.
+
+Lumi doesn't offer it in offline mode, on a computer whose machine policy
+names a Lumi Cloud (the organization enrolls it), or once you've signed in or
+chosen to continue (`onboarding.cloud_prompted` in `settings.json`).
+
+**Your personal workspace.** When someone who isn't in any organization
+signs in, Lumi Cloud makes them a free one-person workspace, and when it's
+their only organization Lumi uses it on this computer straight away (as
+**Use on this computer** below does). Inviting someone to it later makes it
+a team. If setting up the computer fails, you stay signed in and Lumi says
+so; choose **Use on this computer** in Settings > Lumi account to try again.
+Someone already in an organization chooses which one this computer uses.
+
+Once you're signed in, the profile corner shows your name and email, and the
+profile menu's **Lumi account** opens Settings > Lumi account.
+
+**Which Lumi Cloud.** A machine policy's address comes first, then the one
+saved in Settings (your last sign-in's), then `LUMI_CLOUD_URL` when it's
+set (for example `http://127.0.0.1:8700` when developing against a local
+Lumi Cloud), then Luminary's.
 
 ## Signing in
 
-1. Open **Settings > Lumi account** and enter your organization's Lumi Cloud
-   address (for example `https://cloud.example.com`). If your organization's
-   policy names it, the field is filled in and locked.
+1. Open **Settings > Lumi account**. The address is Luminary's Lumi Cloud
+   unless you change it to your organization's (for example
+   `https://cloud.example.com`). If your organization's policy names it, the
+   field is filled in and locked.
 2. Choose **Sign in with your browser**. Lumi opens your browser. Sign in there
    with your email, GitHub, Google or your company's single sign-on, and
    approve "Sign in to Lumi on this computer".

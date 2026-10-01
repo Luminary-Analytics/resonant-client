@@ -37,10 +37,15 @@ def test_settings_and_socket_commands(tmp_path, monkeypatch):
     from tests.test_connections import _command
 
     settings = SettingsManager(tmp_path / "settings.json")
-    assert settings.get("onboarding") == {"dismissed": False, "first_task_done": False}
+    assert settings.get("onboarding") == {"dismissed": False, "first_task_done": False, "cloud_prompted": False}
     sent = _command(settings, "update_settings", section="onboarding", key="dismissed", value=True)
     assert settings.get("onboarding", "dismissed") is True and sent[0]["event"] == "settings"
     refused = _command(settings, "update_settings", section="onboarding", key="dismissed", value="yes")
+    assert refused[0]["event"] == "error"
+    # Continuing without a Lumi Cloud account answers the first launch's offer (lumi/cloud.py).
+    sent = _command(settings, "update_settings", section="onboarding", key="cloud_prompted", value=True)
+    assert settings.get("onboarding", "cloud_prompted") is True and sent[0]["event"] == "settings"
+    refused = _command(settings, "update_settings", section="onboarding", key="cloud_prompted", value="yes")
     assert refused[0]["event"] == "error"
     # The page can't mark the task done itself; only a finished turn does.
     refused = _command(settings, "update_settings", section="onboarding", key="first_task_done", value=True)

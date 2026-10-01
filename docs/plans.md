@@ -4,7 +4,9 @@
 
 ## Free for individuals (today)
 
-Everything in the Lumi app is free, and there is no account:
+Everything in the Lumi app is free, and no account is required. Signing in
+to Lumi Cloud, which Lumi offers once at first launch, adds a free personal
+workspace ([Lumi Cloud](lumi-cloud.md#at-first-launch)). Free with or without one:
 
 - the agent with every tool, provider and feature in the app;
 - your own API keys (Anthropic, OpenAI, OpenRouter, custom connections), your

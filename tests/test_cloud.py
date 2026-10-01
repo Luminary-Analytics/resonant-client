@@ -55,6 +55,9 @@ class FakeCloud:
         self.policy_version: int | None = None
         self.policy_document: dict = {}
         self.has_seat = True
+        self.subscription_required = False
+        # Acme is the person's personal workspace: Lumi Cloud made it at their first sign-in.
+        self.personal = False
         self.counter = 0
         # Every policy document published, and the oversight acknowledgments received.
         self.published: list[dict] = []
@@ -145,7 +148,8 @@ class FakeCloud:
                 return httpx.Response(401, json={"error": "invalid_token"})
             return httpx.Response(200, json={"user": {"id": "usr_1", "email": "ada@example.com", "name": "Ada"},
                                              "organizations": [{"id": "org_acme", "name": "Acme", "role": "owner",
-                                                                "has_seat": self.has_seat}]})
+                                                                "has_seat": self.has_seat,
+                                                                "personal": self.personal}]})
         if path == "/api/v1/devices":
             body = json.loads(request.content)
             if body.get("enrollment_token"):
@@ -153,6 +157,9 @@ class FakeCloud:
                     return httpx.Response(401, json={"error": "invalid_grant", "error_description": "Bad token."})
                 owner = None
             elif bearer in self.access_tokens:
+                if self.subscription_required:
+                    return httpx.Response(402, json={"error": "subscription_required",
+                                                     "error_description": "Subscribe first."})
                 if not self.has_seat:
                     return httpx.Response(403, json={"error": "no_seat", "error_description": "No seat."})
                 owner = "usr_1"
@@ -218,6 +225,7 @@ def fake(monkeypatch, tmp_path):
     monkeypatch.setattr(policy, "_registry_policy", lambda: None)
     monkeypatch.setattr(policy, "_macos_managed_policy", lambda: None)
     monkeypatch.setattr(policy, "machine_keys", lambda: {})
+    monkeypatch.delenv(cloud.URL_ENV, raising=False)
     usage.set_for_tests(usage.UsageLedger(tmp_path / "usage"))
     policy.load(force=True)
     return FakeCloud()
@@ -258,7 +266,9 @@ def test_signing_in_through_the_browser(fake):
     status = client.status()
     assert status["account"]["email"] == "ada@example.com"
     assert status["account"]["organizations"] == [{"id": "org_acme", "name": "Acme", "role": "owner",
-                                                   "has_seat": True}]
+                                                   "has_seat": True, "personal": False}]
+    # A team's organization is the person's to choose for this computer.
+    assert client.device() == {}
     assert status["url"] == URL
     # The refresh token is a secret: it sits in api_keys, which Settings never shows.
     assert client.settings.get("api_keys", cloud.REFRESH_SECRET).startswith("refresh-")
@@ -290,7 +300,7 @@ def test_cancelling_in_the_browser(fake):
 
 @pytest.mark.parametrize(("address", "problem"), [
     ("http://cloud.example.test", "https"),
-    ("", "Enter the Lumi Cloud address"),
+    ("cloud.example.test", "Enter the Lumi Cloud address"),
     ("https://cloud.example.test/?x=1", "without"),
 ])
 def test_addresses_must_be_https(fake, address, problem):
@@ -637,7 +647,7 @@ def test_the_sign_in_records_the_lumi_cloud_that_issued_it(fake):
     client = _client(fake, opened)
     client.begin_sign_in(URL)
     # A sign-in that doesn't complete changes nothing: not the address, not the account's.
-    assert client.status()["url"] == "" and client.account_url == ""
+    assert client.status()["url"] == cloud.DEFAULT_URL and client.account_url == ""
     client.cancel_sign_in()
     _wait(lambda: not client.status()["signing_in"])
     _sign_in(client, fake)
@@ -945,3 +955,90 @@ def test_a_sign_out_its_lumi_cloud_cant_be_told_about_says_so(fake, tmp_path):
     _sign_in(client, fake)
     assert client.sign_out() == "" and client.status()["notice"] == ""
     audit.set_for_tests(None)
+
+
+# ── First launch ───────────────────────────────────────────────────────────────
+
+
+def test_a_new_install_uses_luminarys_lumi_cloud(fake, monkeypatch):
+    client = _client(fake)
+    assert client.url == cloud.DEFAULT_URL == "https://cloud.lumi.luminaryanalytics.com"
+    # Development against a local Lumi Cloud: LUMI_CLOUD_URL stands in for the default.
+    monkeypatch.setenv(cloud.URL_ENV, "http://127.0.0.1:8700")
+    assert client.url == "http://127.0.0.1:8700"
+    # One saved in Settings (the last sign-in's) comes first.
+    client.settings.update_section("cloud", {"url": URL})
+    assert client.url == URL
+
+
+def test_the_first_launch_offers_signing_in_once(fake):
+    client = _client(fake)
+    assert client.status()["first_run_prompt"] is True
+    # Continuing without an account answers it.
+    client.settings.update_section("onboarding", {"cloud_prompted": True})
+    assert client.status()["first_run_prompt"] is False
+    client.settings.update_section("onboarding", {"cloud_prompted": False})
+    # So does signing in, from the offer or from Settings.
+    _sign_in(client, fake)
+    assert client.settings.get("onboarding", "cloud_prompted") is True
+    client.settings.update_section("onboarding", {"cloud_prompted": False})
+    assert client.status()["first_run_prompt"] is False  # signed in: nothing to offer
+
+
+def test_no_offer_in_offline_mode_or_on_a_managed_computer(fake, tmp_path, monkeypatch):
+    from lumi import offline
+
+    client = _client(fake)
+    offline.set_for_tests(enabled=True)
+    try:
+        assert client.status()["first_run_prompt"] is False
+    finally:
+        offline.set_for_tests(enabled=False)
+    assert client.status()["first_run_prompt"] is True
+    _machine_policy(tmp_path, monkeypatch, {"url": URL, "enrollment_token": "lce_managed"})
+    assert client.status()["first_run_prompt"] is False
+
+
+def test_a_personal_workspace_is_used_on_this_computer_at_once(fake):
+    fake.personal = True
+    client = _client(fake)
+    _sign_in(client, fake)
+    status = client.status()
+    assert status["account"]["organizations"][0]["personal"] is True
+    assert status["device"]["organization_id"] == "org_acme" and status["device"]["how"] == "joined"
+    assert len(fake.devices) == 1 and fake.checkins and not status["error"]
+
+
+def test_a_personal_workspace_without_a_seat_waits_for_settings(fake):
+    fake.personal, fake.has_seat = True, False
+    client = _client(fake)
+    _sign_in(client, fake)
+    assert client.device() == {} and not fake.devices and client.status()["signed_in"]
+
+
+def test_a_failed_enrollment_keeps_the_sign_in_and_says_so(fake):
+    fake.personal, fake.subscription_required = True, True
+    client = _client(fake)
+    _sign_in(client, fake)
+    status = client.status()
+    assert status["signed_in"] and client.device() == {}
+    assert "isn't set up in Acme yet (Subscribe first.)" in status["notice"] and not status["error"]
+
+
+@pytest.mark.parametrize("provider", ["google", "microsoft", "email"])
+def test_the_chosen_way_to_sign_in_goes_to_lumi_cloud(fake, provider):
+    opened: list[str] = []
+    client = _client(fake, opened)
+    client.begin_sign_in(URL, provider)
+    assert parse_qs(urlsplit(opened[0]).query)["provider"] == [provider]
+    client.cancel_sign_in()
+
+
+def test_no_chosen_way_leaves_it_to_lumi_cloud_and_an_unknown_one_is_refused(fake):
+    opened: list[str] = []
+    client = _client(fake, opened)
+    client.begin_sign_in(URL)
+    assert "provider" not in parse_qs(urlsplit(opened[0]).query)
+    client.cancel_sign_in()
+    with pytest.raises(cloud.CloudError, match="Choose email"):
+        client.begin_sign_in(URL, "evil&next=https://attacker.test")

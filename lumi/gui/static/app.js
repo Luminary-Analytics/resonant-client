@@ -4452,6 +4452,8 @@ class LumiApp {
                 this._receiveLegalDocument?.(event.data);
                 break;
             case 'cloud_status':
+                // The profile corner and the first launch's offer to sign in (settings_view.js).
+                this._applyCloudStatus?.(event.data);
                 this.cloudStatus = event.data;
                 if (event.data && !event.data.signing_in && event.data.signed_in) this._cloudUrlDraft = undefined;
                 if (this.currentView === 'settings' && !this.refreshLumiAccount()) this.renderSettingsView();
@@ -4908,6 +4910,9 @@ class LumiApp {
         if (event.oversight) this._applyOversight?.(event.oversight);
         // Lumi's terms: asked for at first launch and when their version changes (terms_view.js).
         if (event.terms) this._applyTerms?.(event.terms);
+        // The Lumi Cloud sign-in: the profile corner names the account, and the first launch offers
+        // signing in once the terms are accepted (settings_view.js).
+        if (event.cloud) this._applyCloudStatus?.(event.cloud);
 
         // Plans still running when this page connected; only the socket's
         // own init lists them. Before the returns below: a plan runs on the

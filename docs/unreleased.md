@@ -13,6 +13,34 @@ in its own dated section. None yet: everything up to
 [Lumi 0.20.0-alpha.1](v0.20.0-alpha.1-release-notes.md) moved to its
 [change record](v0.20.0-alpha.1-change-record.md).
 
+## October 1 Sign in to Lumi Cloud at first launch (source only, not released)
+
+- **The first launch offers signing in to Lumi Cloud.** After Lumi's terms
+  are accepted, a welcome dialog offers **Continue with Google**, **Continue
+  with Microsoft** or **Continue with email** (each opens Lumi Cloud's sign-in
+  at that method, `provider=` on `/oauth/authorize`), or **Continue without an
+  account**; either answer is kept
+  (`onboarding.cloud_prompted`) and it isn't offered again. It's skipped in
+  offline mode, on computers a machine policy points at a Lumi Cloud, and
+  once signed in. Lumi still works fully without an account.
+- **Luminary's Lumi Cloud is the default address,**
+  `https://cloud.lumi.luminaryanalytics.com` (`lumi.cloud.DEFAULT_URL`).
+  `LUMI_CLOUD_URL` stands in for it; a machine policy's address and one
+  saved in Settings still come first. Feedback with no address of its own now
+  goes there too (`lumi/feedback.py destination`). That Lumi Cloud isn't
+  hosted yet: until it is, signing in can't complete and feedback reports
+  wait in their queue.
+- **A personal workspace is used at once.** When the account's only
+  organization is the personal one Lumi Cloud makes at a first sign-in
+  (`"personal": true` in `/api/v1/me`, Lumi Cloud change "Create a personal
+  workspace on first desktop sign-in"), the computer is enrolled in it right
+  after signing in. A failure keeps the sign-in and says so.
+- **The profile corner shows the Lumi account** (name and email) once signed
+  in, and the profile menu has **Sign in to Lumi Cloud** / **Lumi account**.
+  Settings > Lumi account speaks to individuals, not only organizations, and
+  marks the personal workspace.
+- Documented in [Lumi Cloud](lumi-cloud.md#at-first-launch).
+
 ## October 1 The governance service moves to Lumi Cloud (source only, not released)
 
 - **The server-side governance service left this repository.** The

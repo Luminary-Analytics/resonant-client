@@ -56,6 +56,13 @@ of the notice is a record signed with this computer's device key
 (``sign_as_device``) and sent to ``/api/v1/oversight/acknowledgments``.
 Leaving the organization deletes records still queued, and leaving or
 signing out forgets the confirmed notice.
+
+**At first launch** (``status()["first_run_prompt"]``) Lumi offers signing in
+to Luminary's Lumi Cloud (``DEFAULT_URL``) once; the person may continue
+without an account, and nothing in the app needs one. Someone working alone
+gets a free one-person workspace from Lumi Cloud at their first sign-in
+(``"personal"`` in ``/api/v1/me``), and when it's their only organization this
+computer is enrolled in it right away (``_enroll_personal``).
 """
 
 from __future__ import annotations
@@ -64,6 +71,7 @@ import base64
 import hashlib
 import http.server
 import logging
+import os
 import platform
 import secrets
 import socket
@@ -80,7 +88,15 @@ from .executables import open_url
 
 logger = logging.getLogger(__name__)
 
+# The Lumi Cloud a new install signs in to: Luminary's own. A machine policy's address, then one saved in
+# Settings (the last sign-in's), come first; LUMI_CLOUD_URL stands in for this default (a local Lumi Cloud in
+# development, say).
+DEFAULT_URL = "https://cloud.lumi.luminaryanalytics.com"
+URL_ENV = "LUMI_CLOUD_URL"
 CLIENT_ID = "lumi-desktop"
+# How the person chose to sign in, passed to Lumi Cloud's sign-in page as ``provider`` so it goes straight
+# there; Lumi Cloud ignores one it doesn't offer.
+SIGN_IN_METHODS = ("google", "microsoft", "github", "email")
 REFRESH_SECRET = "lumi_cloud_refresh"
 DEVICE_SECRET = "lumi_cloud_device_key"
 SIGN_IN_SECONDS = 300
@@ -280,7 +296,9 @@ def _account_from(me: dict) -> dict:
         "name": str(user.get("name") or ""),
         "organizations": [
             {"id": str(o.get("id") or ""), "name": str(o.get("name") or ""), "role": str(o.get("role") or ""),
-             "has_seat": bool(o.get("has_seat"))}
+             "has_seat": bool(o.get("has_seat")),
+             # A one-person workspace Lumi Cloud made at the person's first sign-in.
+             "personal": bool(o.get("personal"))}
             for o in (me.get("organizations") or []) if isinstance(o, dict)
         ],
         "refreshed_at": _iso(_now()),
@@ -336,12 +354,14 @@ class CloudClient:
 
     @property
     def url(self) -> str:
-        """The Lumi Cloud this computer uses: the machine policy's, else the one saved in Settings.
+        """The Lumi Cloud this computer uses: the machine policy's, else the one saved in Settings, else the default.
 
-        An address with a user name or password is never used or shown: "".
+        The default is ``LUMI_CLOUD_URL`` when set, else ``DEFAULT_URL``. An
+        address with a user name or password is never used or shown: "".
         """
         managed = self.managed()
-        value = str(managed.get("url") or self._section().get("url") or "")
+        value = str(managed.get("url") or self._section().get("url") or os.environ.get(URL_ENV, "").strip()
+                    or DEFAULT_URL)
         return "" if "@" in urlsplit(value).netloc else value
 
     @property
@@ -423,7 +443,23 @@ class CloudClient:
             "cloud_error": state.cloud_error,
             "error": self.last_error,
             "remote_tasks": self.remote_tasks.status() if self.remote_tasks is not None else None,
+            "first_run_prompt": self._first_run_prompt(has_tokens, device, managed),
         }
+
+    def _first_run_prompt(self, has_tokens: bool, device: dict, managed: dict) -> bool:
+        """Whether the app offers signing in at launch: once, to someone with no sign-in or enrollment here.
+
+        Never on a computer a machine policy points at a Lumi Cloud (it
+        enrolls itself, or the organization decides), in offline mode, or
+        after the person signed in or chose to continue without an account
+        (``onboarding.cloud_prompted``).
+        """
+        from . import offline
+
+        onboarding = self.settings.get("onboarding")
+        prompted = isinstance(onboarding, dict) and bool(onboarding.get("cloud_prompted"))
+        return not (prompted or has_tokens or device or self._pending is not None or offline.enabled()
+                    or managed.get("url") or managed.get("organization_id") or managed.get("enrollment_token"))
 
     def _changed(self) -> None:
         if self.on_change:
@@ -470,10 +506,16 @@ class CloudClient:
         return data if isinstance(data, dict) else {}
 
     # ── Signing in ─────────────────────────────────────────────────────────
-    def begin_sign_in(self, url: str = "") -> str:
-        """Open the browser to sign in; finishes in the background. Returns the address opened."""
+    def begin_sign_in(self, url: str = "", provider: str = "") -> str:
+        """Open the browser to sign in; finishes in the background. Returns the address opened.
+
+        ``provider`` (one of ``SIGN_IN_METHODS``, or "" for Lumi Cloud's own
+        choice) is how the person chose to sign in or create their account.
+        """
         from . import offline
 
+        if provider and provider not in SIGN_IN_METHODS:
+            raise CloudError("Choose email, Google, Microsoft or GitHub to sign in.")
         with self._lock:
             target = normalize_url(url or self.url)
             if self.managed().get("url") and target != normalize_url(self.managed()["url"]):
@@ -495,6 +537,7 @@ class CloudClient:
             "response_type": "code", "client_id": CLIENT_ID, "redirect_uri": loopback.redirect_uri,
             "state": state, "code_challenge": _challenge(verifier), "code_challenge_method": "S256",
             "scope": "profile email offline_access devices",
+            **({"provider": provider} if provider else {}),
         })
         threading.Thread(target=self._wait_for_sign_in, args=(pending,), daemon=True,
                          name="lumi-cloud-signin-wait").start()
@@ -520,6 +563,7 @@ class CloudClient:
             if result.get("error"):
                 raise CloudError("Sign-in was cancelled in the browser.")
             self._finish_sign_in(pending, result.get("code", ""))
+            self._enroll_personal()
         except CloudError as exc:
             self.last_error = str(exc)
         except Exception as exc:  # never leave the page waiting forever
@@ -571,6 +615,8 @@ class CloudClient:
             self._access = (access, until, self._generation)
             self._save(url=url, account_url=url, account=account)
             self.last_notice = ""
+            # Signed in: the launch offer has done its job.
+            self.settings.update_section("onboarding", {"cloud_prompted": True})
         self._changed()
         return previous if previous[0] and previous[1] else None
 
@@ -683,6 +729,32 @@ class CloudClient:
         return self.last_notice
 
     # ── Enrolling ──────────────────────────────────────────────────────────
+    def _enroll_personal(self) -> None:
+        """After a sign-in: enroll this computer in the person's personal workspace when it's their only organization.
+
+        Lumi Cloud gives someone working alone a one-person workspace at their
+        first sign-in, so using it here takes no further step. A computer
+        already enrolled or managed by a machine policy, and a person in any
+        other organization, choose in Settings > Lumi account instead. A
+        failure leaves the sign-in as it is and says so (``last_notice``).
+        """
+        if self.device() or self.managed():
+            return
+        account = self._section().get("account")
+        listed = account.get("organizations") if isinstance(account, dict) else None
+        organizations = [o for o in (listed or []) if isinstance(o, dict)]
+        if len(organizations) != 1 or not (organizations[0].get("personal") and organizations[0].get("has_seat")):
+            return
+        workspace = organizations[0]
+        try:
+            self.enroll(str(workspace.get("id") or ""))
+        except CloudError as exc:
+            if self.device():  # enrolled; only the first check-in failed, and the background loop retries it
+                return
+            self.last_notice = (f"You're signed in, but this computer isn't set up in "
+                                f"{workspace.get('name') or 'your workspace'} yet ({exc}). Use it on this computer "
+                                "from Settings > Lumi account.")
+
     def enroll(self, organization_id: str) -> dict:
         """Enroll this computer in one of the signed-in person's organizations, at the Lumi Cloud that signed them in."""
         if self.managed():

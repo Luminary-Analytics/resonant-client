@@ -50,6 +50,31 @@ def test_history_becomes_input_items_with_reasoning_for_the_same_model():
         "user", "function_call", "function_call_output"]
 
 
+def test_a_request_offering_no_tools_after_a_tool_loop_sends_its_conversations_tools_and_lets_none_run():
+    # Plan mode and a team participant's last request offer no tools; the
+    # conversation's own definitions (offered_tools, from its session), which
+    # its history's calls refer to, go out with tool_choice none.
+    backend = OpenAIResponsesBackend("sk", "gpt-5")
+    offered = backend._payload("Find TODOs", [], "", TOOLS, None)
+    assert offered["tool_choice"] == "auto"
+    closing = backend._payload("", _history("gpt-5"), "", [], None, TOOLS)
+    assert closing["tools"] == offered["tools"] and closing["tool_choice"] == "none"
+    assert "parallel_tool_calls" not in closing
+    assert "tools" not in backend._payload("Hi", [], "", [], None, TOOLS)
+
+
+def test_a_backend_never_sends_one_conversations_tools_in_another():
+    # The app reuses one backend for every conversation on the same model.
+    deploy = {"type": "function", "function": {"name": "mcp__projectx__deploy", "description": "Deploy Project X",
+                                               "parameters": {"type": "object", "properties": {}}}}
+    backend = OpenAIResponsesBackend("sk", "gpt-5")
+    backend._payload("Deploy it", [], "Project X", [deploy], None)
+    plan = backend._payload("Plan the next change", _history("gpt-5"), "Project Y", [], None, TOOLS)
+    assert [tool["name"] for tool in plan["tools"]] == ["grep"] and plan["tool_choice"] == "none"
+    alone = backend._payload("Plan the next change", _history("gpt-5"), "Project Y", [], None)
+    assert "tools" not in alone and "tool_choice" not in alone
+
+
 def test_non_reasoning_models_send_no_reasoning_options():
     payload = OpenAIResponsesBackend("sk", "gpt-4.1")._payload("Hi", [], "", [], None)
     assert "reasoning" not in payload and "include" not in payload

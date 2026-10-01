@@ -65,7 +65,8 @@ def test_installing_in_vs_code_uses_its_command_line(monkeypatch):
         calls.append(args)
         return subprocess.CompletedProcess(args, 0, "Extension 'lumi-vscode' was successfully installed.\n", "")
 
-    monkeypatch.setattr(code_editors.shutil, "which", lambda name: f"/bin/{name}" if name != "codium" else None)
+    monkeypatch.setattr(code_editors, "find_program",
+                        lambda name, **kwargs: f"/bin/{name}" if name != "codium" else None)
     monkeypatch.setattr(code_editors.subprocess, "run", run)
     assert "successfully installed" in code_editors.install_vscode("cursor")
     assert calls[0][0] == "/bin/cursor" and calls[0][1] == "--install-extension" and calls[0][3] == "--force"
@@ -90,9 +91,10 @@ def test_jetbrains_tools_run_lumi_editor(monkeypatch):
     assert [tool.get("name") for tool in tools] == ["Send File to Lumi", "Send Selection to Lumi",
                                                    "Ask Lumi About Selection", "Show Lumi's Changes"]
     assert all(item["COMMAND"] == sys.executable for item in options)
-    assert options[1]["PARAMETERS"] == ('-m lumi editor send "$FilePath$" --lines '
+    # -P: the tool runs in the project, whose own modules Python must not import first.
+    assert options[1]["PARAMETERS"] == ('-P -m lumi editor send "$FilePath$" --lines '
                                         "$SelectionStartLine$-$SelectionEndLine$ --source JetBrains")
-    assert options[3]["PARAMETERS"] == "-m lumi editor changes --diff"
+    assert options[3]["PARAMETERS"] == "-P -m lumi editor changes --diff"
     assert [tool.get("showConsoleOnStdOut") for tool in tools] == ["false", "false", "false", "true"]
 
     monkeypatch.setattr(sys, "frozen", True, raising=False)

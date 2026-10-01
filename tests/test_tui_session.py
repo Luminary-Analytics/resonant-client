@@ -182,7 +182,9 @@ def test_a_turn_meets_the_rules_lumi_run_and_the_app_enforce(terminal):
     )
     terminal.lines = ["tidy up"]
 
-    session = terminal.run()  # Bypass, the terminal's default: nothing asks
+    # Bypass: a settings file that names no mode keeps the default earlier
+    # versions saved (gui/settings.py), and the terminal starts in it. Nothing asks.
+    session = terminal.run()
 
     told = terminal.told()
     assert told["org"] == "Blocked by policy: Acme: not from the agent's shell"
@@ -248,7 +250,7 @@ def test_a_prompt_rule_asks_even_in_bypass(terminal):
     terminal.lines = ["ship it"]
     terminal.answers = ["n"]
 
-    terminal.run()
+    terminal.run("--full-auto")
 
     assert terminal.asked == ["bash"]
     assert terminal.told()["deploy"] == "Tool execution denied by user."
@@ -263,7 +265,7 @@ def test_settings_an_organization_locks_reach_the_terminal(terminal):
     terminal.scripts = _calls(("command", "bash", {"command": "echo ran> ran.txt"}))
     terminal.lines = ["run it"]
 
-    session = terminal.run()
+    session = terminal.run("--full-auto")
 
     assert "can't run on this computer: Not here. No command was executed." in terminal.told()["command"]
     assert not (terminal.project / "ran.txt").exists()
@@ -274,27 +276,75 @@ def test_settings_an_organization_locks_reach_the_terminal(terminal):
 
 
 def test_the_organization_policy_decides_the_mode(terminal):
+    terminal.settings(general={"default_permission_mode": "bypass"})
     _policy(permissions={"allowed_modes": ["ask", "auto-edit"]})
     terminal.lines = ["/approve off", "/approve"]
 
     session = terminal.run()
 
-    # Bypass, the default, isn't allowed, so the terminal asks instead.
+    # Bypass, the default in Settings, isn't allowed, so the terminal asks instead.
     assert session.autonomy_tier == "ask"
-    assert "mode ask asks before changes and commands · Acme's policy doesn't allow bypass" in terminal.text
+    assert ("mode ask asks before changes and commands · Acme's policy doesn't allow bypass, the default in Settings"
+            in terminal.text)
     assert "Acme's policy doesn't allow bypass mode; here you can use ask, auto-edit." in terminal.text
     assert "Approval: ON · ask mode" in terminal.text
 
 
 @pytest.mark.parametrize("allowed, args, refusal", [
     (["bypass"], ["--approve"], "Acme's policy doesn't allow ask mode; here you can use bypass."),
-    (["plan"], [], "Acme's policy doesn't allow bypass mode, nor any other mode the terminal has."),
+    (["ask"], ["--full-auto"], "Acme's policy doesn't allow bypass mode; here you can use ask."),
+    (["plan"], [], "Acme's policy doesn't allow auto-edit mode, nor any other mode the terminal has."),
 ])
 def test_a_mode_the_policy_refuses_stops_the_terminal(terminal, allowed, args, refusal):
     _policy(permissions={"allowed_modes": allowed})
 
     assert terminal.run(*args) is None
     assert refusal in terminal.text
+
+
+# ── The mode the terminal starts in ────────────────────────────────────
+
+
+@pytest.mark.parametrize("saved, tier, plan", [
+    (None, "auto-edit", False),         # a new install: Auto-edit, as in the app
+    ("bypass", "full-auto", False),     # an existing install keeps the mode it saved
+    ("ask", "ask", False),
+    ("auto-edit", "auto-edit", False),
+    ("plan", "auto-edit", True),        # Plan: Auto-edit's approvals, plan mode on
+    ("sideways", "ask", False),         # unknown: fails closed, as in the app
+], ids=["new install", "bypass", "ask", "auto-edit", "plan", "unknown"])
+def test_the_terminal_starts_in_the_default_mode_from_settings(terminal, saved, tier, plan):
+    if saved is not None:
+        terminal.settings(general={"default_permission_mode": saved})
+
+    session = terminal.run()
+
+    assert session.autonomy_tier == tier
+    assert ("plan mode is on, as Settings' default is Plan" in terminal.text) is plan
+    if saved is None:
+        written = json.loads((terminal.state / "settings.json").read_text(encoding="utf-8"))
+        assert written["general"]["default_permission_mode"] == "auto-edit"
+
+
+def test_approve_and_full_auto_choose_over_settings(terminal):
+    terminal.settings(general={"default_permission_mode": "auto-edit"})
+    assert terminal.run("--full-auto").autonomy_tier == "full-auto"
+    assert terminal.run("--approve").autonomy_tier == "ask"
+    with pytest.raises(SystemExit):  # one or the other
+        terminal.run("--approve", "--full-auto")
+
+
+def test_a_settings_file_the_terminal_cant_read_is_named_and_kept(terminal, monkeypatch):
+    from lumi.gui import settings as settings_module
+
+    monkeypatch.setattr(settings_module, "_FILE_RETRY_SECONDS", 0)
+    (terminal.state / "settings.json").write_text("{not json", encoding="utf-8")
+
+    session = terminal.run()
+
+    assert "Lumi couldn't read its settings file" in terminal.text
+    assert session.autonomy_tier == "auto-edit"  # a new install's default, meanwhile
+    assert (terminal.state / "settings.json").read_text(encoding="utf-8") == "{not json"
 
 
 def test_an_invalid_policy_stops_the_terminal(terminal):

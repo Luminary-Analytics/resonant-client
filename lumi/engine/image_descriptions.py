@@ -36,18 +36,25 @@ def pending(history: list[dict]) -> list[dict]:
     """Image parts in ``history`` without a description, oldest first.
 
     Returns the dicts themselves, so storing a description updates the history.
+    Images from a message the organization's DLP rules withheld, or will block
+    (lumi/dlp.py), aren't described: that would send them to the vision model.
     """
+    from .. import dlp
+
     found: list[dict] = []
     for turn in history:
         if not isinstance(turn, dict):
             continue
+        images = []
         content = turn.get("content")
         if isinstance(content, list):
-            found.extend(part for part in content
-                         if isinstance(part, dict) and part.get("type") == "image" and _undescribed(part))
+            images.extend(part for part in content
+                          if isinstance(part, dict) and part.get("type") == "image" and _undescribed(part))
         image = turn.get("image")
         if turn.get("role") == "tool_result" and isinstance(image, dict) and _undescribed(image):
-            found.append(image)
+            images.append(image)
+        if images and not dlp.entry_blocked(turn):
+            found.extend(images)
     return found
 
 

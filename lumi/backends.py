@@ -13,7 +13,6 @@ import logging
 import os
 import queue
 import re
-import shutil
 import subprocess
 import threading
 import time
@@ -23,6 +22,9 @@ from typing import Iterator, Tuple
 
 import httpx
 
+from . import dlp, net
+from .secrets_store import server_env
+from .executables import batch_argument_problem, current_project, find_program
 from .protocol import build_tool_system_prompt, parse_dsml_tool_calls, parse_tool_calls
 from .content import content_text, normalize_content, ollama_message_content, text_fallback
 from .capabilities import (
@@ -455,6 +457,7 @@ def _wait_with_cancel(seconds: float, cancel_event) -> bool:
     return False
 
 
+@dlp.guard_backend
 class OllamaBackend:
     """Direct connection to Ollama /api/chat with adaptive tool calling.
 
@@ -470,6 +473,9 @@ class OllamaBackend:
     # capabilities to subsequent requests. This avoids sending dozens of UI,
     # process, REPL, and git schemas through every local-model prefill.
     supports_dynamic_tool_catalog = True
+    # Keeps the supervised request contract (see KimiBackend): with
+    # ``_supervised_single_request`` set, no retry and no generation probe.
+    supervised_requests = True
 
     # Cache of model -> bool (True = supports native tools)
     _tool_support_cache: dict[str, bool] = {}
@@ -783,6 +789,16 @@ class OllamaBackend:
         except Exception as e:
             logger.debug(f"Could not check model info for {self.model}: {e}")
 
+        if getattr(self, "_supervised_single_request", False):
+            # A guarded invocation owns exactly one generation request. A hidden
+            # capability probe would spend outside its immutable request input.
+            # Metadata and the explicit model catalog above remain usable.
+            raise ValueError("Supervised Ollama workers require declared tool capability; generation probes are disabled")
+
+        # The probe below is a model request: nothing is sent until Lumi's terms
+        # are accepted (lumi/terms.py). Only a guarded stream reaches here, which
+        # refused already; this keeps the plain HTTP request from ever skipping it.
+        dlp.refuse_until_terms_accepted()
         # Probe: send a minimal request with a simple tool and check response format
         try:
             opts = dict(self._ollama_options)
@@ -870,7 +886,14 @@ class OllamaBackend:
         return False
 
     def warm_up(self):
-        """Pre-load the model into Ollama's memory so the first request is fast."""
+        """Pre-load the model into Ollama's memory so the first request is fast.
+
+        It's a model request ("hi") like any other: nothing is sent until Lumi's
+        terms are accepted (lumi/terms.py), whoever asks for the warm-up.
+        """
+        if dlp.terms_refusal():
+            logger.info("Didn't warm up %s: Lumi's terms aren't accepted yet", self.model)
+            return
         try:
             # Use EXACT same options as stream() to prevent Ollama from reloading
             opts = dict(self._ollama_options)
@@ -1036,6 +1059,10 @@ class OllamaBackend:
         handled by this context manager — the caller doesn't need
         to wrap in additional `with` blocks.
         """
+        # Supervised swarms reserve one generation request before invocation.
+        # Retrying a rejected/ambiguous transport here would bypass that ledger;
+        # explicit supervisor reconciliation owns any subsequent request.
+        max_retries = 0 if getattr(self, "_supervised_single_request", False) else _OLLAMA_MAX_RETRIES
         attempt = 0
         while True:
             client = httpx.Client(timeout=stream_timeout)
@@ -1051,7 +1078,7 @@ class OllamaBackend:
                     "POST", f"{self.base_url}/api/chat", json=payload,
                 ) as resp:
                     if (resp.status_code in _OLLAMA_RETRYABLE_STATUS
-                            and attempt < _OLLAMA_MAX_RETRIES):
+                            and attempt < max_retries):
                         try:
                             body_preview = resp.read().decode(
                                 "utf-8", errors="replace",
@@ -1105,7 +1132,7 @@ class OllamaBackend:
                 # the read ceiling. Retry it on the same backoff
                 # curve. A timeout AFTER we yielded is the caller's
                 # mid-stream consumption — we're committed; re-raise.
-                if opened_and_yielded or attempt >= _OLLAMA_MAX_RETRIES:
+                if opened_and_yielded or attempt >= max_retries:
                     raise
                 backoff = _OLLAMA_BASE_BACKOFF * (2 ** attempt)
                 logger.warning(
@@ -1462,7 +1489,7 @@ class OllamaBackend:
                             "kind": "ollama_exhausted",
                             "status_code": resp.status_code,
                             "model": self.model,
-                            "attempts": _OLLAMA_MAX_RETRIES + 1,
+                            "attempts": 1 if getattr(self, "_supervised_single_request", False) else _OLLAMA_MAX_RETRIES + 1,
                             "body_preview": err_body[:200],
                         })
                         # v0.6.5 — a transient-5xx exhaustion counts toward
@@ -1676,7 +1703,7 @@ class OllamaBackend:
                 "status_code": 0,
                 "reason": "timeout",
                 "model": self.model,
-                "attempts": _OLLAMA_MAX_RETRIES + 1,
+                "attempts": 1 if getattr(self, "_supervised_single_request", False) else _OLLAMA_MAX_RETRIES + 1,
                 "body_preview": type(e).__name__,
             })
             # v0.6.5 — repeated open-phase timeouts count toward the breaker.
@@ -1773,15 +1800,13 @@ def _codex_configured_cli_path(config: dict | None = None) -> str:
         return ""
 
 
-def resolve_codex_cli_path() -> str:
-    """Resolve the best Codex CLI executable for subscription-backed runs."""
-    config = _load_codex_config()
-    candidates = [
-        os.environ.get("LUMI_CODEX_CLI", "").strip(),
-        os.environ.get("CODEX_CLI_PATH", "").strip(),
-        _codex_configured_cli_path(config),
-        shutil.which("codex") or "",
-    ]
+def _cli_path(candidates: list[str]) -> str:
+    """The first usable CLI among ``candidates``: a full path that exists, or a name on PATH.
+
+    Never a program in Lumi's working folder or a relative path, which would
+    be relative to it (lumi/executables.py). npm installs these CLIs as batch
+    files, which count.
+    """
     seen: set[str] = set()
     for raw in candidates:
         if not raw:
@@ -1791,11 +1816,21 @@ def resolve_codex_cli_path() -> str:
         if key in seen:
             continue
         seen.add(key)
-        if os.path.isfile(expanded):
-            return expanded
-        if shutil.which(expanded):
-            return expanded
+        found = find_program(expanded, scripts=True)
+        if found:
+            return found
     return ""
+
+
+def resolve_codex_cli_path() -> str:
+    """Resolve the best Codex CLI executable for subscription-backed runs."""
+    config = _load_codex_config()
+    return _cli_path([
+        os.environ.get("LUMI_CODEX_CLI", "").strip(),
+        os.environ.get("CODEX_CLI_PATH", "").strip(),
+        _codex_configured_cli_path(config),
+        "codex",
+    ])
 
 
 def _codex_context_blocks(instructions: str) -> str:
@@ -1909,11 +1944,20 @@ _CODEX_PERMISSION_PROFILES = {
 }
 
 
+@dlp.guard_backend
 class KimiBackend:
     """Kimi K3 through Moonshot's OpenAI-compatible streaming API."""
 
     supports_dynamic_tool_catalog = True
     dynamic_tool_catalog_via_history = True
+    # The supervised request contract (engine/execution_guard.py), which Team
+    # participants run under (engine/swarming): with ``_supervised_single_request``
+    # set, one stream() call is one generation. Only a refusal that generated
+    # nothing (a 429, or an overload before any output) is waited out and sent
+    # again; an error says so with ``status_code`` or ``before_output`` so its
+    # outcome is known. Lumi runs every tool call. A subclass that overrides
+    # stream() keeps this contract itself (anthropic_api.py, openai_api.py).
+    supervised_requests = True
     PROVIDER_LABEL = "Kimi"
     RETRY_EVENT_KIND = "kimi_retry"
     supports_remote_cancel = False
@@ -1987,6 +2031,11 @@ class KimiBackend:
     @property
     def capability_profile(self) -> ModelCapabilities:
         return self._capabilities
+
+    @property
+    def uses_sign_in(self) -> bool:
+        """Whether requests carry a token from a sign-in (OAuth, Entra ID) rather than a key."""
+        return getattr(self, "_token_provider", None) is not None
 
     @classmethod
     def list_available_models(
@@ -2395,9 +2444,25 @@ class KimiBackend:
         """Return whether an in-stream provider error is safe to replay."""
         return False
 
+    @staticmethod
+    def _is_transient_overload(message: str) -> bool:
+        """An in-stream error saying the service is busy (NVIDIA NIM: "Service temporarily overloaded")."""
+        normalized = str(message or "").casefold()
+        return any(marker in normalized for marker in (
+            "overload", "temporarily unavailable", "too many requests", "rate limit", "try again later"))
+
     def _http_retry_delay(self, response: httpx.Response, attempt: int) -> float | None:
         """Delay for an already classified HTTP rejection; None stops retrying."""
         return 1.5 * (2 ** attempt)
+
+    @staticmethod
+    def _rate_limit_delay(response: httpx.Response, attempt: int) -> float:
+        """How long a supervised request waits out a 429: Retry-After, else 5, 10, 20 s (1-30 s)."""
+        try:
+            wanted = float(response.headers.get("retry-after", ""))
+        except ValueError:
+            wanted = 5.0 * (2 ** attempt)
+        return max(1.0, min(30.0, wanted))
 
     def stream(
         self,
@@ -2475,8 +2540,18 @@ class KimiBackend:
             ).start()
 
         try:
-            with httpx.Client(timeout=self._timeout, transport=self._transport, **self._tls_options()) as client:
-                for attempt in range(3):
+            # The shared factory, so offline mode refuses a server it doesn't
+            # allow before connecting (lumi/offline.py). This stream serves
+            # every OpenAI-compatible endpoint, on-premises servers included.
+            with httpx.Client(**net.client_options(timeout=self._timeout, transport=self._transport,
+                                                   feature=self.PROVIDER_LABEL, **self._tls_options())) as client:
+                # This inherited stream also serves SONN/OpenRouter/EXO. A
+                # guarded invocation cannot silently start another generation,
+                # but a rate limit (429) refused the request before generating
+                # anything, so only that is waited out and sent again.
+                supervised = getattr(self, "_supervised_single_request", False)
+                attempts = 4 if supervised else 3
+                for attempt in range(attempts):
                     restart_stream = False
                     if cancel_event is not None and cancel_event.is_set():
                         self._cancel_remote_generation(response_id)
@@ -2492,7 +2567,7 @@ class KimiBackend:
                             error_type, message = self._error_details(response)
                             retryable = self._is_retryable_error(
                                 response.status_code, error_type, message
-                            )
+                            ) and (not supervised or response.status_code == 429)
                             logger.warning(
                                 "%s API request failed: status=%d type=%s retryable=%s model=%s",
                                 self.PROVIDER_LABEL,
@@ -2501,7 +2576,9 @@ class KimiBackend:
                                 retryable,
                                 self.model,
                             )
-                            delay = self._http_retry_delay(response, attempt) if retryable and attempt < 2 else None
+                            delay = ((self._rate_limit_delay(response, attempt) if supervised
+                                      else self._http_retry_delay(response, attempt))
+                                     if retryable and attempt < attempts - 1 else None)
                             if delay is not None:
                                 yield (EVENT_BACKEND_STATUS, {
                                     "kind": self.RETRY_EVENT_KIND,
@@ -2518,7 +2595,10 @@ class KimiBackend:
                             yield (EVENT_ERROR, {
                                 "message": self._user_error_message(
                                     response.status_code, error_type, message
-                                )
+                                ),
+                                # A number, safe to keep where provider text isn't
+                                # (the guarded ledger, benchmark records).
+                                "status_code": response.status_code,
                             })
                             return
 
@@ -2579,11 +2659,15 @@ class KimiBackend:
                                     if isinstance(error, dict)
                                     else str(error)
                                 )
-                                if (
-                                    self._is_retryable_stream_error(message)
-                                    and attempt < 2
+                                # Before any model output, a supervised request
+                                # may wait out a busy service: nothing was
+                                # generated, so resending is still one generation.
+                                before_output = not (content_parts or reasoning_parts or tool_calls)
+                                if attempt < attempts - 1 and (
+                                    (self._is_retryable_stream_error(message) and not supervised)
+                                    or (supervised and before_output and self._is_transient_overload(message))
                                 ):
-                                    delay = 1.5 * (2 ** attempt)
+                                    delay = min(30.0, 5.0 * (2 ** attempt)) if supervised else 1.5 * (2 ** attempt)
                                     yield (EVENT_BACKEND_STATUS, {
                                         "kind": self.RETRY_EVENT_KIND,
                                         "status_code": 0,
@@ -2627,6 +2711,12 @@ class KimiBackend:
                                         self._is_retryable_stream_error(message)
                                         and (content_parts or reasoning_parts)
                                     ),
+                                    # The guarded ledger settles this as known
+                                    # only when the provider refused to serve the
+                                    # request (busy, rate limited) before any
+                                    # output; any other error may have come after
+                                    # generation began, so it stays uncertain.
+                                    "before_output": before_output and self._is_transient_overload(message),
                                 })
                                 return
                             if isinstance(event.get("usage"), dict):
@@ -2800,7 +2890,8 @@ class KimiBackend:
                 yield (EVENT_ERROR, {"message": self._timeout_error_message()})
             else:
                 yield (EVENT_ERROR, {
-                    "message": f"{self.PROVIDER_LABEL} API connection failed: {type(exc).__name__}"
+                    "message": net.offline_message(exc)
+                    or f"{self.PROVIDER_LABEL} API connection failed: {type(exc).__name__}"
                 })
         except Exception as exc:
             if stream_state["idle_timed_out"]:
@@ -2814,6 +2905,7 @@ class KimiBackend:
             stream_watcher_done.set()
 
 
+@dlp.guard_backend
 class ExoBackend(KimiBackend):
     """EXO distributed inference through its OpenAI-compatible endpoint."""
 
@@ -3031,7 +3123,13 @@ class ExoBackend(KimiBackend):
         chat-completions path as coding work while keeping generation short.
         If the user submits real work first, ``stream`` cancels this optional
         request immediately so warmup never competes with the task.
+
+        Nothing is sent, and no instance placed, until Lumi's terms are
+        accepted (lumi/terms.py); the guarded stream refuses too.
         """
+        if dlp.terms_refusal():
+            logger.info("Didn't warm up EXO: Lumi's terms aren't accepted yet")
+            return
         with self._warmup_lock:
             if self._warmup_started or self._warmup_cancel_event.is_set():
                 return
@@ -3053,19 +3151,21 @@ class ExoBackend(KimiBackend):
             self._ensure_instance(self._warmup_cancel_event)
             if self._warmup_cancel_event.is_set():
                 return
-            for event_type, data in KimiBackend.stream(
-                self,
-                user_msg="Call resonant_warmup now.",
-                conversation_history=[],
-                instructions=(
-                    "This is a provider warmup. Call resonant_warmup exactly "
-                    "once and do not write prose."
-                ),
-                tools=[warmup_tool],
-                cancel_event=self._warmup_cancel_event,
-            ):
-                if event_type == EVENT_ERROR and not self._warmup_cancel_event.is_set():
-                    logger.debug("EXO warmup ended with provider error: %s", data)
+            # Fixed text, no conversation content: nothing for DLP rules to check.
+            with dlp.permit():
+                for event_type, data in KimiBackend.stream(
+                    self,
+                    user_msg="Call resonant_warmup now.",
+                    conversation_history=[],
+                    instructions=(
+                        "This is a provider warmup. Call resonant_warmup exactly "
+                        "once and do not write prose."
+                    ),
+                    tools=[warmup_tool],
+                    cancel_event=self._warmup_cancel_event,
+                ):
+                    if event_type == EVENT_ERROR and not self._warmup_cancel_event.is_set():
+                        logger.debug("EXO warmup ended with provider error: %s", data)
         except Exception:
             logger.debug("EXO warmup failed", exc_info=True)
 
@@ -3387,8 +3487,13 @@ class ExoBackend(KimiBackend):
         return f"EXO API request failed ({status_code}): {message}"
 
 
+@dlp.guard_backend
 class CodexCliBackend:
     """Subscription/API-auth backed Codex CLI execution."""
+
+    # One turn is the CLI's own tool loop: many model calls and tool calls
+    # Lumi only observes, so it can't keep the supervised request contract.
+    supervised_requests = False
 
     def __init__(
         self,
@@ -3404,7 +3509,8 @@ class CodexCliBackend:
         self.model = model
         self.name = "codex"
         self.handles_tools = True
-        self.cwd = os.path.abspath(cwd or os.getcwd())
+        # The project; in the app never its working folder (the system folder).
+        self.cwd = os.path.abspath(current_project(cwd))
         self.cli_path = cli_path or resolve_codex_cli_path()
         if not self.cli_path:
             raise ValueError(
@@ -3484,9 +3590,10 @@ class CodexCliBackend:
             "--skip-git-repo-check",
             "--model",
             self.model,
-            "-C",
-            self.cwd,
         ]
+        # The project is the process's working folder (cwd=): Codex works
+        # there without -C, and its path never passes through cmd.exe when
+        # codex is an npm batch file.
         from .engine.editor_integrations import cli_arguments
         if self.permission_mode == "bypass":
             cmd.extend(cli_arguments(getattr(self, "_editor_settings", None), "codex"))
@@ -3508,10 +3615,19 @@ class CodexCliBackend:
             instructions=instructions,
             cwd=self.cwd,
         )
+        command = self._command()
+        problem = batch_argument_problem(command[0], command[1:])
+        if problem:
+            yield (EVENT_ERROR, {"message": f"Failed to start Codex CLI: {problem}"})
+            return
         try:
             proc = subprocess.Popen(
-                self._command(),
+                command,
                 cwd=self.cwd,
+                # Lumi starts the CLI: its keys stay, and a launcher script
+                # (npm's codex.cmd runs `node`) finds programs on PATH, never
+                # in the project (secrets_store.server_env).
+                env=server_env(keep_provider_keys=True),
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
@@ -3672,27 +3788,12 @@ def claude_code_model_labels() -> dict[str, str]:
 
 def resolve_claude_cli_path() -> str:
     """Resolve the Claude Code CLI executable for subscription-backed runs."""
-    candidates = [
+    return _cli_path([
         os.environ.get("LUMI_CLAUDE_CLI", "").strip(),
         os.environ.get("CLAUDE_CLI_PATH", "").strip(),
-        shutil.which("claude") or "",
+        "claude",
         str(Path.home() / ".claude" / "local" / "claude"),
-    ]
-    seen: set[str] = set()
-    for raw in candidates:
-        if not raw:
-            continue
-        expanded = os.path.expandvars(os.path.expanduser(raw))
-        key = os.path.normcase(os.path.normpath(expanded))
-        if key in seen:
-            continue
-        seen.add(key)
-        if os.path.isfile(expanded):
-            return expanded
-        resolved = shutil.which(expanded)
-        if resolved:
-            return resolved
-    return ""
+    ])
 
 
 def claude_code_credentials_present() -> bool:
@@ -3702,6 +3803,7 @@ def claude_code_credentials_present() -> bool:
     return (Path.home() / ".claude" / ".credentials.json").is_file()
 
 
+@dlp.guard_backend
 class ClaudeCodeCliBackend:
     """Subscription-backed Claude Code CLI execution.
 
@@ -3710,6 +3812,9 @@ class ClaudeCodeCliBackend:
     own tools (handles_tools=True), authenticated by whatever login the
     user's Claude Code already has — no separate API key needed.
     """
+
+    # Like Codex: the CLI's own tool loop, outside the supervised request contract.
+    supervised_requests = False
 
     def __init__(
         self,
@@ -3724,7 +3829,8 @@ class ClaudeCodeCliBackend:
         self.model = model
         self.name = "claude-code"
         self.handles_tools = True
-        self.cwd = os.path.abspath(cwd or os.getcwd())
+        # The project; in the app never its working folder (the system folder).
+        self.cwd = os.path.abspath(current_project(cwd))
         self.cli_path = cli_path or resolve_claude_cli_path()
         if not self.cli_path:
             raise ValueError(
@@ -3825,10 +3931,19 @@ class ClaudeCodeCliBackend:
             instructions=instructions,
             cwd=self.cwd,
         )
+        command = self._command()
+        problem = batch_argument_problem(command[0], command[1:])
+        if problem:
+            yield (EVENT_ERROR, {"message": f"Failed to start Claude Code CLI: {problem}"})
+            return
         try:
             proc = subprocess.Popen(
-                self._command(),
+                command,
                 cwd=self.cwd,
+                # Lumi starts the CLI: its keys stay, and a launcher script
+                # (npm's claude.cmd runs `node`) finds programs on PATH, never
+                # in the project (secrets_store.server_env).
+                env=server_env(keep_provider_keys=True),
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
@@ -3941,6 +4056,50 @@ class ClaudeCodeCliBackend:
 # ---------------------------------------------------------------------------
 # Factory
 # ---------------------------------------------------------------------------
+
+# The native providers create_backend builds, by name. Connections
+# (``conn-<id>``) are data with their own adapters (lumi/connections.py).
+NATIVE_BACKEND_NAMES = ("ollama", "exo", "kimi", "openrouter", "sonn", "anthropic", "openai", "codex", "claude-code")
+
+
+def native_backend_class(backend_type: str):
+    """The adapter class ``create_backend`` builds for a native provider name, or None."""
+    if backend_type == "ollama":
+        return OllamaBackend
+    if backend_type == "exo":
+        return ExoBackend
+    if backend_type == "kimi":
+        return KimiBackend
+    if backend_type == "codex":
+        return CodexCliBackend
+    if backend_type in ("claude-code", "claude_code"):
+        return ClaudeCodeCliBackend
+    if backend_type == "openrouter":
+        from .openrouter import OpenRouterBackend
+        return OpenRouterBackend
+    if backend_type == "sonn":
+        from .sonn import SonnBackend
+        return SonnBackend
+    if backend_type == "anthropic":
+        from .anthropic_api import AnthropicBackend
+        return AnthropicBackend
+    if backend_type == "openai":
+        from .openai_api import OpenAIResponsesBackend
+        return OpenAIResponsesBackend
+    return None
+
+
+def supervised_native_providers() -> frozenset[str]:
+    """Native providers whose adapters keep the supervised request contract.
+
+    An adapter declares it with ``supervised_requests = True`` (see
+    KimiBackend). Team participants run only on these and on connections
+    whose adapter does (engine/swarming/connections.py); the CLI adapters run
+    their own tool loops and never do.
+    """
+    return frozenset(name for name in NATIVE_BACKEND_NAMES
+                     if getattr(native_backend_class(name), "supervised_requests", False) is True)
+
 
 def create_backend(
     backend_type: str,

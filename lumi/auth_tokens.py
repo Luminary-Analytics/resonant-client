@@ -17,12 +17,13 @@ from __future__ import annotations
 
 import json
 import re
-import shutil
 import ssl
 import subprocess
 import threading
 import time
 from typing import Any
+
+from .executables import find_program
 
 AZURE_OPENAI_SCOPE = "https://cognitiveservices.azure.com/.default"
 _REFRESH_EARLY = 60.0
@@ -35,6 +36,19 @@ _cache: dict[tuple, tuple[str, float]] = {}
 
 class SignInError(RuntimeError):
     """A token couldn't be obtained; the message says what to check."""
+
+
+ENTRA_AUTHORITY = "https://login.microsoftonline.com/"
+
+
+def entra_authority(with_client_id: bool = True) -> str:
+    """Where Entra ID sign-in goes: Microsoft's, or ``AZURE_AUTHORITY_HOST`` for Azure's own sign-in."""
+    import os
+
+    host = "" if with_client_id else os.environ.get("AZURE_AUTHORITY_HOST", "").strip()
+    if not host:
+        return ENTRA_AUTHORITY
+    return host if "://" in host else f"https://{host}/"
 
 
 def _cached(key: tuple) -> str:
@@ -73,10 +87,13 @@ def client_credentials_token(token_url: str, client_id: str, client_secret: str,
     if audience:
         form["audience"] = audience
     try:
-        with httpx.Client(**client_options(timeout=30.0, transport=transport)) as client:
+        with httpx.Client(**client_options(timeout=30.0, transport=transport, feature="signing in")) as client:
             response = client.post(token_url, data=form, headers={"Accept": "application/json"})
     except httpx.HTTPError as exc:
-        raise SignInError(f"The token endpoint didn't answer ({type(exc).__name__}).") from exc
+        from .offline import message_for
+
+        raise SignInError(message_for(exc) or f"The token endpoint didn't answer ({type(exc).__name__}).") \
+            from exc
     try:
         body = response.json()
     except ValueError:
@@ -108,6 +125,13 @@ def entra_token(tenant: str, *, client_id: str = "", client_secret: str = "", sc
     cached = _cached(key)
     if cached:
         return cached
+    # azure-identity and the Azure CLI connect by themselves (the CLI from its
+    # own process), so offline mode checks where they sign in before either runs.
+    from .offline import refusal
+
+    reason = refusal(entra_authority(False), "signing in to Microsoft Entra ID")
+    if reason:
+        raise SignInError(reason)
     last = ""
     try:
         from azure.identity import DefaultAzureCredential  # type: ignore[import-not-found]
@@ -125,17 +149,20 @@ def entra_token(tenant: str, *, client_id: str = "", client_secret: str = "", sc
     # resource URIs so nothing in the arguments can be interpreted.
     if not _RESOURCE.fullmatch(resource):
         raise SignInError("The scope for Azure CLI sign-in should be a single resource URI.")
-    az = shutil.which("az")
+    az = find_program("az", scripts=True)  # the installed one, never from Lumi's working folder
     completed = None
     if az:
         command = [az, "account", "get-access-token", "--resource", resource, "--output", "json"]
         if tenant:
             command += ["--tenant", tenant]
-        from .processes import background_process_kwargs
+        from .processes import background_process_kwargs, decode_output
 
         try:
-            completed = subprocess.run(command, capture_output=True, text=True, timeout=60,
-                                       **background_process_kwargs())
+            # Bytes, decoded after: az runs through cmd.exe, whose messages
+            # come in the console's code page, which a text-mode pipe misread.
+            done = subprocess.run(command, capture_output=True, timeout=60, **background_process_kwargs())
+            completed = subprocess.CompletedProcess(done.args, done.returncode, decode_output(done.stdout),
+                                                    decode_output(done.stderr))
         except (OSError, subprocess.TimeoutExpired):
             completed = None
     if completed is None or completed.returncode != 0:

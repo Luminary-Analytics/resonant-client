@@ -23,7 +23,10 @@ Sign in to your organization's Lumi Cloud under **Settings > Lumi account**.
   than 15 minutes old. **Sync now** under **Settings > Lumi account > Team
   library** syncs at once and shows what's there. The copy lives in Lumi's
   state folder (`team/library.json`), so skills and prompts work offline.
-  Signing out deletes it.
+  Signing out deletes it. The copy names the sign-in it came with (the Lumi
+  Cloud that issued it, and whose it is): after a sign-in at another Lumi
+  Cloud, or as someone else, it isn't offered, to you or the agent, until a
+  sync replaces it.
 - **Skills**: when a request matches a team skill's name, description or
   **Offer it for** words, the agent sees it listed with its version. It
   reads the steps with `skill_view` (`team:<organization>/<name>`) before

@@ -4,6 +4,61 @@ Living catalog of known bugs surfaced during real usage. Each entry has reproduc
 
 > **Convention:** issues are numbered chronologically across all sources (dogfood passes, release pipeline, post-release reports). Numbers are stable — even after a fix lands, the issue number stays in this doc as a historical record.
 
+## Team on Claude on Bedrock: tool choice `none` is unconfirmed (2026-09-30, open)
+
+A team participant's last request offers no tools, so the model answers; on
+the Messages API Lumi then sends the conversation's own tool definitions with
+`tool_choice: {"type": "none"}`, since the API refuses tool calls in a history
+without their definitions (`lumi/anthropic_api.py`). Plan mode after a tool
+loop sends the same. A Claude on Bedrock connection sends the same body.
+AWS's InvokeModel parameters page for Claude lists `auto`, `any` and `tool` as
+tool choices, and Anthropic's API reference documents `none` for the Messages
+API without saying whether Bedrock accepts it. No live Bedrock request has
+been made: the scripted Bedrock server in the tests
+(`tests/api_provider_stub.py`) accepts `none` by assumption. A live Bedrock
+request must confirm it before Team on Claude on Bedrock is called supported.
+If Bedrock refuses it, the participant's last request fails with HTTP 400 (a
+refusal, settled as known), and so does plan mode after a tool loop in a
+Bedrock conversation.
+
+## Claude thinking levels on current models (2026-09-30, open)
+
+A thinking level (low, med, high or max) chosen for a conversation on Claude
+sends a fixed thinking budget (`thinking: {"type": "enabled", "budget_tokens":
+N}`, `lumi/anthropic_api.py`). Anthropic's API reference says Claude Opus 4.7
+and later, Sonnet 5 and later and Fable 5 and later refuse that with HTTP 400:
+they take adaptive thinking with an effort level, and think by default. Only
+Claude Haiku 4.5 among Lumi's listed Claude models still takes a budget. Leave
+the thinking level at its default on the others. A team inherits its
+conversation's level, so its participants would be refused the same way. Found
+while adding Team on Anthropic keys, from the API reference: not seen live, as
+no Anthropic key was used.
+
+## Windows code pages: search results and batch files (2026-09-30, by design)
+
+Lumi decodes what Windows programs print without changing how they run, so
+these two cases read as they would in the person's own terminal:
+
+- **Search results from a file saved in the OEM code page.** `grep` shows
+  each matched line as the file's own text: UTF-8 when the line is, else
+  whichever of the ANSI and OEM code pages it reads better in, and the ANSI
+  one when both read equally well, since Windows programs save text in it
+  (`processes.decode_output(prefer="ansi")`). A line from a file saved in the
+  OEM code page (cp437 or cp850: a DOS-era tool, or `echo ... > file` in a
+  console) that reads as well either way comes back in ANSI characters:
+  "Übersicht" as "šbersicht", "Straße" as "Straáe", and `tree`'s "├───" as
+  "ÃÄÄÄ". `type` in the shell shows it as saved: a command's own output is
+  decoded the other way round, the OEM code page winning a tie.
+- **A batch file saved as UTF-8 that names a non-ASCII path.** cmd.exe reads
+  a batch file in the console's code page (the OEM one), as in the person's
+  own terminal. A `.bat` or `.cmd` saved as UTF-8, or as Notepad's "ANSI",
+  that names "C:\Users\Jöhn Smith\..." fails with "The system cannot find the
+  path specified." unless its first line is `chcp 65001 >nul` or it is saved
+  in the console's code page. Each command runs in its own console, so a
+  `chcp` in one doesn't carry over to the next. Lumi doesn't switch the code
+  page itself: a September 29 review found that doing so broke batch files
+  saved in the console's code page, which work as they are.
+
 ## Desktop views without an entry point (2026-09-25, fixed in source)
 
 v0.14.0 ("conversation-first agent workflow", 8d6d023) removed the Agents pane

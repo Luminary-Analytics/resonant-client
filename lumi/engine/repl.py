@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Optional
 
 from lumi.processes import background_process_kwargs
+from lumi.executables import find_program
 from lumi.secrets_store import child_env
 
 from .tools import ToolResult
@@ -66,7 +67,11 @@ class ReplProcess:
                 "import sys; sys.ps1 = ''; sys.ps2 = ''",
             ]
         else:  # node
-            cmd = ["node", "--interactive"]
+            # The installed Node, never a `node` program from the project.
+            node = find_program("node", exclude=[self.cwd])
+            if not node:
+                raise RuntimeError("node executable not found: install Node.js, or put it on PATH")
+            cmd = [node, "--interactive"]
 
         try:
             self.proc = subprocess.Popen(

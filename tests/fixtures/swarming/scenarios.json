@@ -1,0 +1,73 @@
+{
+  "independent_investigation": {
+    "prompt": "Investigate the independent cache and search URL defects without changing source. Write report.json containing a findings array with exactly two objects. Each must contain id (cache_ttl or repeated_tags), source (the source filename), line (the faulty line number), observed, expected, and a nonempty explanation. Reproduce cache.is_fresh(now_ms=1000, stored_ms=0, ttl_seconds=30); expected true. Reproduce urls.search_url(['red', 'blue']); expected '/search?tag=red&tag=blue'. The observed values must come from the existing code. Keep cache.py and urls.py unchanged.",
+    "classification": "parallel_investigation",
+    "editable": [
+      "report.json"
+    ],
+    "checks": [
+      "preserved_inputs",
+      "cache_finding",
+      "url_finding",
+      "complete_report"
+    ],
+    "seed": {
+      "cache.py": "def is_fresh(now_ms, stored_ms, ttl_seconds):\n    \"\"\"Return whether an entry is inside its lifetime.\"\"\"\n    elapsed_ms = now_ms - stored_ms\n    return elapsed_ms < ttl_seconds\n",
+      "urls.py": "from urllib.parse import urlencode\n\n\ndef search_url(tags):\n    return '/search?' + urlencode({'tag': tags})\n"
+    }
+  },
+  "csv_export": {
+    "prompt": "Implement CSV export in this standard-library WSGI sample. Two independent writer scopes are backend.py and frontend.html; coordinate their shared route contract before integration. backend.export_csv(rows) must return UTF-8 bytes with columns id,name,note and RFC 4180 CSV quoting, including an empty-input header. frontend.html must expose a GET form with action '/export.csv' and an enabled submit button labelled 'Export CSV'. Preserve app.py and rows.json. The existing HTTP server supplies the attachment headers; retain GET /, GET /export.csv, and 404 behavior. No dependencies or external network are needed.",
+    "classification": "two_writer_integration",
+    "editable": [
+      "backend.py",
+      "frontend.html"
+    ],
+    "checks": [
+      "preserved_inputs",
+      "csv_backend_edge_cases",
+      "frontend_export_control",
+      "integrated_http_export"
+    ],
+    "seed": {
+      "backend.py": "def export_csv(rows):\n    raise NotImplementedError('CSV export is not implemented')\n",
+      "frontend.html": "<!doctype html>\n<html lang=\"en\"><title>Contacts</title><body>\n<h1>Contacts</h1><form action=\"/pending\" method=\"get\">\n<button type=\"submit\" disabled>Export CSV</button></form>\n</body></html>\n",
+      "rows.json": "[\n  {\n    \"id\": 1,\n    \"name\": \"Ada, Lovelace\",\n    \"note\": \"Says \\\"hello\\\"\"\n  },\n  {\n    \"id\": 2,\n    \"name\": \"Zoë\",\n    \"note\": \"two\\nlines\"\n  }\n]\n",
+      "app.py": "import json\nfrom pathlib import Path\nfrom backend import export_csv\n\nROOT = Path(__file__).parent\n\n\ndef application(environ, start_response):\n    route = environ['PATH_INFO']\n    if environ['REQUEST_METHOD'] != 'GET':\n        start_response('405 Method Not Allowed', [])\n        return [b'']\n    if route == '/':\n        start_response('200 OK', [('Content-Type', 'text/html; charset=utf-8')])\n        return [(ROOT / 'frontend.html').read_bytes()]\n    if route == '/export.csv':\n        body = export_csv(json.loads((ROOT / 'rows.json').read_text(encoding='utf-8')))\n        start_response('200 OK', [('Content-Type', 'text/csv; charset=utf-8'),\n                                  ('Content-Disposition', 'attachment; filename=\"contacts.csv\"')])\n        return [body]\n    start_response('404 Not Found', [])\n    return [b'Not found']\n"
+    }
+  },
+  "serial_control": {
+    "prompt": "Migrate the tightly coupled summarize(events) pipeline in ledger.py from schema 1 to schema 2. Each input has account, amount (a decimal string with at most two fractional places), and kind ('charge' or 'refund'). Return {'schema': 2, 'totals': [{'account': name, 'net_cents': integer, 'entries': integer}, ...]} sorted by account. Trim account whitespace; reject empty accounts, unknown kinds, negative amounts, nonfinite values, and amounts with more than two fractional places using ValueError. Aggregate exact integer cents; a refund subtracts. Empty input returns schema 2 with an empty totals list. All normalization, aggregation, and rendering share ledger.py: this is the serial-heavy comparison control, with no assumed benefit from adding workers.",
+    "classification": "serial_control",
+    "editable": [
+      "ledger.py"
+    ],
+    "checks": [
+      "preserved_inputs",
+      "schema_and_exact_cents",
+      "empty_input",
+      "invalid_events"
+    ],
+    "seed": {
+      "ledger.py": "def summarize(events):\n    totals = {}\n    for event in events:\n        account = event['account']\n        totals[account] = totals.get(account, 0.0) + float(event['amount'])\n    return {'schema': 1, 'totals': totals}\n"
+    }
+  },
+  "interruption_recovery": {
+    "prompt": "Repair processor.run(state_dir, tasks, interrupt_after_effect=None) for explicit interruption/recovery. tasks is a list of {'id': string, 'value': integer}. Persist each effect as one JSON object per line in effects.jsonl and checkpoint IDs in checkpoint.json. With interrupt_after_effect=1, flush/fsync the first NEW effect then raise processor.Interrupted before updating its checkpoint. A later explicit run must inspect the durable journal, preserve completed work, reconcile the lagging checkpoint, and write only remaining effects. Re-running completed tasks must be idempotent. Reject malformed, duplicate, foreign, or mismatching journal records and unknown checkpoint IDs with ValueError before writing anything. Do not automatically restart on interruption. Use only standard-library files and no network. The injected interruption models a crash boundary; it does not prove process termination or real swarm recovery.",
+    "classification": "interruption_recovery",
+    "editable": [
+      "processor.py"
+    ],
+    "checks": [
+      "preserved_inputs",
+      "interruption_boundary",
+      "explicit_resume_exactly_once",
+      "corrupt_state_fails_closed"
+    ],
+    "seed": {
+      "tasks.json": "[\n  {\n    \"id\": \"a\",\n    \"value\": 4\n  },\n  {\n    \"id\": \"b\",\n    \"value\": 9\n  },\n  {\n    \"id\": \"c\",\n    \"value\": 16\n  }\n]\n",
+      "processor.py": "import json\nimport os\nfrom pathlib import Path\n\n\nclass Interrupted(Exception):\n    pass\n\n\ndef run(state_dir, tasks, interrupt_after_effect=None):\n    root = Path(state_dir)\n    root.mkdir(parents=True, exist_ok=True)\n    checkpoint = root / 'checkpoint.json'\n    completed = json.loads(checkpoint.read_text()) if checkpoint.exists() else []\n    added = 0\n    for task in tasks:\n        if task['id'] in completed:\n            continue\n        with (root / 'effects.jsonl').open('a', encoding='utf-8') as stream:\n            stream.write(json.dumps(task) + '\\n')\n            stream.flush()\n            os.fsync(stream.fileno())\n        added += 1\n        if added == interrupt_after_effect:\n            raise Interrupted('effect durable; checkpoint not written')\n        completed.append(task['id'])\n        checkpoint.write_text(json.dumps(completed), encoding='utf-8')\n"
+    }
+  }
+}
+

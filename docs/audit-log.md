@@ -2,7 +2,8 @@
 
 Lumi keeps a local record of what it and its agent did: each turn, each model
 call's usage, tool calls and results, file changes, approvals, secret
-redactions, settings changes and project trust decisions. The records are
+redactions, data loss prevention findings, settings changes and project trust
+decisions. The records are
 hash-chained, so an edited, removed or reordered record is detected. They can
 also be streamed to an OpenTelemetry collector.
 
@@ -33,20 +34,38 @@ day. `LUMI_STATE_HOME` moves the whole folder.
 | `tool.result` | A tool finishes or is refused | error, denied, elapsed, output by capture level |
 | `file.change` | A successful `file_write`, `file_edit` or `file_replace`, or a Codex file change | path |
 | `approval` | You or a permission hook decides a prompted call, or a trusted project's `lumi-policy.json` `allow` rule runs a call Auto-edit would ask about | tool, `by` (`user`, `hook` or `project_policy`), `decision` |
+| `permission.full_auto_grant` | In the app, you run one plan, roadmap, autonomous session or team the orchestrator runs in Full-auto from a conversation in another mode (its "Run this plan in Full-auto" and similar buttons). The conversation keeps its mode; where the organization doesn't allow Full-auto there is no grant to record | `work` (`plan`, `roadmap`, `autonomous`, `autonomous_resume`, `team`, `team_continue`), the conversation's `mode`; the record's session is that conversation |
 | `privacy.redaction` | The secret scan removed credentials before a request | counts by kind |
+| `dlp.finding` | The organization's [DLP rules](dlp.md) or DLP service flagged, redacted or blocked content in a model request (or in what Lumi sends Engram: `purpose` `memory`) | rule, `action`, content `kind`, `count`, `purpose`, provider, model, `source` (`rule` or `service`); never the matched text. Content already recorded for a session, provider and model isn't recorded again; each block is |
+| `dlp.error` | A model request couldn't be checked, so it was refused (or, for the DLP service with `on_error: allow`, sent with the built-in rules applied), or a backend refused a request that skipped the check | `reason` (`too_large`, `service`, `internal`, `unchecked`), `error` (for `unchecked`, the backend method), `on_error`, purpose, provider, model |
 | `settings.change` | Settings saves a change | section and key names, never values |
+| `policy.file_ignored` | Lumi found a machine policy, signing-key or license file it didn't use: people other than administrators can change it or its folder, or it isn't read on this system ([the file rules](enterprise-policy.md#only-files-only-administrators-can-change-count)). Once per file and reason in each process | `kind` (`policy`, `policy_file`, `profile`, `policy_keys`, `license`, `license_keys`), path, reason |
 | `trust.decision` | A project is trusted, restricted or forgotten | project, decision |
 | `model.fallback` | A request failed and the turn continued with a [fallback model](models.md) | from and to model, reason by capture level |
 | `budget.warning`, `budget.approval`, `budget.block` | A [budget](usage-and-costs.md#budgets) alerts, asks (with the answer) or stops a turn | owner, scope, period, spend, threshold, `decision` |
 | `update.check` | An [update](updates.md) check finishes | `result` (`found`, `none`, `error`), version, feed |
 | `update.deferred`, `update.install` | An update waits for a running agent turn, or its installer starts and Lumi closes | version, feed, `reason` |
+| `update.refused` | Offline mode stops an update's download before it starts, or the update found isn't one the channel or pin takes (macOS) | version, feed, `to_version`, `stage` (`download`, `channel`, `pin`), `reason` |
 | `update.skipped`, `update.postponed`, `update.cancelled` | You skip an update, choose to be reminded later, or close the update window | version, feed |
+| `feedback.sent`, `feedback.queued`, `feedback.held`, `feedback.refused`, `feedback.dropped` | A [feedback](feedback.md) report was acknowledged by Lumi Cloud, waits to be tried again, waits for the person (no address yet, refused, blocked by DLP, expired), wasn't sent or kept, or was removed | `kind`, `size` in bytes, `diagnostics`; `queued` and `attributed` when sent; `reason` otherwise (and Lumi Cloud's `status` when it refused). Never the text, reply-to or install id |
+| `oversight.notice_shown` | The [organization oversight](organization-oversight.md) notice for the policy in force was confirmed: the app's button, a typed yes at an interactive terminal, or a chat of the chat gateway (its button or reply). Model requests may start | organization, surface (`app`, `terminal`, `gateway`), the acknowledgment's id, fingerprint, the notice's SHA-256, computer user, whether it was signed, the chat's session for a chat, `version`, `activity`, `messages`, `security_flags`, `retention_days`, `project_paths`, `unattended`, `enabled` |
+| `oversight.notice_forgotten` | Confirmed oversight notices were forgotten: the computer left the organization or signed out of Lumi Cloud | why |
+| `oversight.unattended_run` | A run with nobody at the screen (a scheduled task or `lumi run` with no terminal, as its environment reports) started under oversight | organization, trigger (`schedule`, `headless`), computer user, whether that user had confirmed the notice, the run's id |
+| `oversight.acknowledgment_refused` | Lumi Cloud refused a confirmation of the notice (a notice its policy didn't produce, a signature that doesn't verify) | the acknowledgment's id, Lumi Cloud's code |
+| `oversight.discarded` | Queued oversight records were deleted unsent (the policy stopped asking, Lumi Cloud refused, or the computer left the organization) | how many, why |
 | `error` | A turn reports an error | code, message by capture level |
+| `team.start`, `team.stop`, `team.complete` | A [team](swarming.md#under-an-organization-policy) starts, you stop it, or it completes | run, provider and model, the workers' provider and model, plan mode, writable folders and check names, rounds, whether it applies changes, objective by capture level; `by` (`owner` or `orchestrator`) |
+| `team.participant.start`, `team.participant.end` | A team worker or orchestrator turn starts or ends | run, attempt, kind (`reader`, `writer`, `coordinator`, `answer`), provider, model, `outcome`, error by capture level |
+| `team.decision` | You or the team's orchestrator decide on a plan, a result, a retry or writers' changes, or the orchestrator hands the team back | `decision`, `by`, the ids concerned, evidence and reason by capture level |
+| `team.integration` | A step on a team's writers' changes ends: combining them, a check or applying | step, outcome, result, candidate, check name, exit code, applied revision |
+| `team.refusal`, `team.request_refused` | The organization's rules or a budget refuse a team's start or a participant's model request | action, or purpose with the participant's provider and model; reason by capture level |
 
 Turns from the chat gateway name their chat as `gateway:<chat id>`, and the
 [terminal UI](terminal-ui.md) names each of its sessions `tui:<id>`. A
 delegated worker's events are recorded once, by the worker's own turn, with
-its `agent` id.
+its `agent` id. A team participant's model requests are recorded by the app
+that runs the team, as `model.usage` with purpose `team` and agent
+`team:<run>:<worker>`, under the conversation that owns the team.
 
 ## Capture levels
 

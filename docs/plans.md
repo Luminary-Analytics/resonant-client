@@ -11,17 +11,32 @@ Everything in the Lumi app is free, and there is no account:
   ChatGPT sign-in for Codex, or models on your own computer (Ollama, EXO);
 - local settings, sessions, notes, audit log and usage records.
 
-What leaves the computer:
+What leaves the computer (the [privacy notice](../lumi/legal/PRIVACY.md) has
+it all):
 
-- Prompts, code and keys go only to the model providers you choose.
-- Luminary Analytics receives only the update check, a download of the
-  update feed. Settings > Updates can turn it off.
-- Nothing else is reported to Luminary Analytics. The app's own records stay
-  on the computer.
+- Prompts and code go to the model providers you choose.
+- The update check, a download of the update feed from Luminary Analytics'
+  update site. Settings > Updates can turn it off.
+- Lumi Cloud, Luminary Analytics' service, receives anything only once you
+  sign in or the computer is enrolled in an organization, and feedback only
+  when you send it. Without those, the app's own records stay on the
+  computer.
 
-Lumi's source is under the MIT license. The installer ships the licenses of its
-third-party components in `THIRD_PARTY_NOTICES.txt`. **Settings > About Lumi**
-shows the version, this summary and where those notices are.
+Lumi is commercial software: © Luminary Analytics, LLC, all rights reserved,
+licensed under the [Lumi End User License Agreement](../lumi/legal/EULA.md)
+(and, for pre-release builds, the
+[Alpha and Beta Test Terms](../lumi/legal/ALPHA-TERMS.md)), which grants free
+individual use during the alpha. The earlier copies published under the MIT
+License remain under it: every commit whose LICENSE file is the MIT License,
+from commit c00f29c (May 15, 2026) on, and the releases built from them
+(v0.6.3a1 through v0.19.1); nothing before c00f29c, such as releases v0.2.0
+through v0.6.2, was MIT (see [LICENSE](../LICENSE)). The Extension SDK is under the
+[Lumi Extension SDK License](../sdk/LICENSE), so others can build and ship
+extensions; the VS Code extension is part of Lumi. The installer ships the
+licenses of its third-party components in `THIRD_PARTY_NOTICES.txt`.
+**Settings > About Lumi** shows the version, this summary, who accepted the
+terms, and opens the terms, the [privacy notice](../lumi/legal/PRIVACY.md)
+and those notices, offline.
 
 ## Teams and organizations (planned)
 

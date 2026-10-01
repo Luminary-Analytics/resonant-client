@@ -12,18 +12,35 @@ name: Build check
 #
 # What this DOES:
 #   - Checks out the PR branch / main commit
-#   - Builds the PyInstaller bundle from packaging/lumi.spec, installing the
+#   - Builds the PyInstaller bundle from packaging/lumi.spec as release.yml's
+#     build job does: a fresh Python without a pip cache, and only the
 #     hash-pinned packaging/requirements-release.txt
 #   - Writes the third-party notices (license gate included) and the CycloneDX
 #     SBOM, and uploads both, so they are exercised before any release
 #   - Runs `lumi.exe --version` to confirm the frozen exe boots
-#   - Builds the MSI (packaging/lumi.wxs), installs it silently on the runner,
-#     checks the installed app, the policy file property and that updates are
-#     left to device management, then uninstalls it
+#   - Builds the MSI (packaging/lumi.wxs) with its license page (Lumi's terms,
+#     rendered by packaging/legal_texts.py), with WiX and its UI extension
+#     installed as the release installs them (packaging/fetch_wix.ps1: each
+#     pinned by SHA-256), installs it silently on the runner, checks the
+#     installed app, the policy file property, the locked %ProgramData%\Lumi it
+#     makes (taking over a folder a person made first), that a policy file
+#     others can change fails closed until the documented icacls recipe locks
+#     it, that updates are left to device management and that the machine
+#     policy's legal.accepted_by_organization accepts Lumi's terms, upgrades it
+#     with a second build that doesn't name POLICYFILE (the PolicyFile value
+#     must stay), then uninstalls it
+#   - Compiles packaging/installer.iss without writing the installer (/O-), so
+#     its [Code] and the license versions it includes fail here, not in a release
+#   - Rehearses release.yml's handover between jobs (the handover-* jobs):
+#     artifacts by ID and checked by digest, and the swap it stops
 #
 # What this does NOT do:
-#   - Sign the bundle (no Authenticode or EdDSA, no secrets needed)
-#   - Wrap it into an Inno Setup installer (saves ~40 sec)
+#   - Sign the bundle (no Authenticode or EdDSA, no secrets needed). The
+#     signing-dry-run job runs release.yml's Authenticode wiring
+#     (.github/actions/authenticode-sign, packaging/check_release_files.ps1)
+#     as a pull request can: without an Azure identity, an OIDC token or a
+#     secret, so nothing is signed
+#   - Write the Inno Setup installer itself (saves ~40 sec)
 #   - Publish anywhere
 #
 # Runtime budget: ~4-5 min. Worth it on every PR.
@@ -36,6 +53,8 @@ on:
       - 'scripts/build_clean.ps1'
       - 'pyproject.toml'
       - '.github/workflows/build-check.yml'
+      - '.github/actions/**'
+      - '.github/workflows/release.yml'
   push:
     branches:
       - main
@@ -44,6 +63,12 @@ on:
       - 'packaging/**'
       - 'scripts/build_clean.ps1'
       - 'pyproject.toml'
+      - '.github/workflows/build-check.yml'
+      - '.github/actions/**'
+      - '.github/workflows/release.yml'
+
+permissions:
+  contents: read
 
 jobs:
   smoke-build:
@@ -52,16 +77,17 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: '3.13'
-          cache: 'pip'
 
       - name: Install the pinned SBOM tools
-        run: python -m pip install --require-hashes -r packaging/tools-requirements.txt
+        run: python -m pip install --disable-pip-version-check --no-cache-dir --require-hashes -r packaging/tools-requirements.txt
 
       - name: Build PyInstaller bundle
         shell: pwsh
@@ -93,13 +119,13 @@ jobs:
           }
 
       - name: Upload bundle manifest
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: lumi-bundle-manifest
           path: dist/bundle-manifest.json
 
       - name: Upload SBOM and third-party notices
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: lumi-supply-chain
           path: |
@@ -208,13 +234,99 @@ jobs:
               }
           }
 
-      # The .NET WiX tool, pinned; NuGet verifies the package signature.
-      - name: Install WiX
-        run: dotnet tool install --global wix --version 5.0.2
-
-      - name: Build the MSI
+      # The EXE installer is built only by the release, but its script compiles here:
+      # [Code] (the license page shown once per version of the terms) and the
+      # license-versions.iss that build_clean.ps1 rendered. /O- writes no installer.
+      - name: Compile the Inno Setup script
         shell: pwsh
-        run: ./packaging/build_msi.ps1
+        run: |
+          $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) {
+              $iscc = (Get-ChildItem "C:\" -Filter "ISCC.exe" -Recurse -ErrorAction SilentlyContinue -Depth 5 | Select-Object -First 1).FullName
+          }
+          if (-not $iscc) { throw "Inno Setup's ISCC.exe isn't on this runner" }
+          $init = Get-Content lumi/__init__.py -Raw
+          if ($init -notmatch '__version__\s*=\s*"([^"]+)"') { throw "No __version__ in lumi/__init__.py" }
+          $version = $Matches[1]
+          Get-Content dist/legal/license-versions.iss
+          & $iscc /O- "/DAppVersion=$version" "packaging/installer.iss"
+          if ($LASTEXITCODE -ne 0) { throw "ISCC couldn't compile packaging/installer.iss (exit $LASTEXITCODE)" }
+          Write-Host "✓ packaging/installer.iss compiles for $version"
+          # A license page rendered for another version (a stable build's has no test terms) stops the compile.
+          $mismatch = & $iscc /O- "/DAppVersion=0.0.1" "packaging/installer.iss" 2>&1 | Out-String
+          if ($LASTEXITCODE -eq 0) { throw "ISCC compiled installer.iss for a version dist\legal wasn't rendered for" }
+          if ($mismatch -notmatch "rendered for another version") { throw "Unexpected ISCC failure: $mismatch" }
+          # That failure was expected: the runner's wrapper exits with the last native exit code otherwise.
+          $global:LASTEXITCODE = 0
+          Write-Host "✓ installer.iss refuses a license page rendered for another version"
+
+      # WiX as the release gets it: the tool and its UI extension from their
+      # NuGet packages, each checked against its pinned SHA-256 and installed
+      # from a folder that holds only that file.
+      - name: Build the MSI
+        id: msi
+        shell: pwsh
+        run: |
+          $wix = ./packaging/fetch_wix.ps1 -Destination (Join-Path $env:RUNNER_TEMP "wix") | Select-Object -Last 1
+          ./packaging/build_msi.ps1 -Wix $wix.Wix -UiExtension $wix.UiExtension
+          "wix=$($wix.Wix)" >> $env:GITHUB_OUTPUT
+          "ui-extension=$($wix.UiExtension)" >> $env:GITHUB_OUTPUT
+
+      # A second build of the same version: a new product code, so installing it is
+      # the major upgrade device management runs (AllowSameVersionUpgrades).
+      - name: Build a second MSI for the upgrade check
+        shell: pwsh
+        run: |
+          ./packaging/build_msi.ps1 -OutDir dist/installer-upgrade `
+              -Wix "${{ steps.msi.outputs.wix }}" -UiExtension "${{ steps.msi.outputs.ui-extension }}"
+
+      # A stable release's package, from the same bundle: its license page holds the
+      # End User License Agreement alone, without the Alpha and Beta Test Terms.
+      - name: Build a stable MSI for the license check
+        shell: pwsh
+        run: |
+          ./packaging/build_msi.ps1 -Version 0.20.0 -OutDir dist/installer-stable `
+              -Wix "${{ steps.msi.outputs.wix }}" -UiExtension "${{ steps.msi.outputs.ui-extension }}"
+
+      # The license page an installation with the MSI's UI shows: WixUI_Minimal's
+      # scrolling text holds the RTF packaging/legal_texts.py rendered, exactly, for the
+      # version built: this development build's with the test terms, a stable one's without.
+      - name: Check the MSIs' license pages
+        shell: pwsh
+        run: |
+          function Get-LicenseText([string]$Msi) {
+              $installer = New-Object -ComObject WindowsInstaller.Installer
+              $database = $installer.GetType().InvokeMember("OpenDatabase", "InvokeMethod", $null, $installer, @($Msi, 0))
+              $query = "SELECT ``Text`` FROM ``Control`` WHERE ``Dialog_`` = 'WelcomeEulaDlg' AND ``Control`` = 'LicenseText'"
+              $view = $database.GetType().InvokeMember("OpenView", "InvokeMethod", $null, $database, @($query))
+              $view.GetType().InvokeMember("Execute", "InvokeMethod", $null, $view, $null) | Out-Null
+              $record = $view.GetType().InvokeMember("Fetch", "InvokeMethod", $null, $view, $null)
+              if (-not $record) { throw "$Msi has no license page (WelcomeEulaDlg's LicenseText)" }
+              return $record.GetType().InvokeMember("StringData", "GetProperty", $null, $record, @(1))
+          }
+          $init = Get-Content lumi/__init__.py -Raw
+          if ($init -notmatch '__version__\s*=\s*"([^"]+)"') { throw "No __version__ in lumi/__init__.py" }
+          $cases = @(
+              @{ Folder = "dist/installer"; Version = $Matches[1]; PreRelease = $true },
+              @{ Folder = "dist/installer-stable"; Version = "0.20.0"; PreRelease = $false }
+          )
+          foreach ($case in $cases) {
+              $msi = (Get-ChildItem "$($case.Folder)/*.msi" | Select-Object -First 1).FullName
+              $expectedDir = Join-Path $env:RUNNER_TEMP "expected-license-$($case.Version)"
+              python packaging/legal_texts.py rtf --out $expectedDir --version $case.Version
+              if ($LASTEXITCODE -ne 0) { throw "legal_texts.py rtf failed for $($case.Version)" }
+              $expected = (Get-Content (Join-Path $expectedDir "license.rtf") -Raw).Replace("`r`n", "`n").TrimEnd()
+              $text = (Get-LicenseText $msi).Replace("`r`n", "`n").TrimEnd()
+              if ($text -ne $expected) {
+                  throw "$msi's license page isn't the text legal_texts.py renders for $($case.Version) ($($text.Length) characters, expected $($expected.Length))"
+              }
+              if ($text.Contains("This pre-release build of Lumi") -ne $case.PreRelease) {
+                  throw "$msi's license page doesn't match a $(if ($case.PreRelease) { 'pre-release' } else { 'stable release' })"
+              }
+              # An MSI reads [name] in this text as a property; legal_texts.py writes brackets as RTF escapes.
+              if ($text.Contains("[") -or $text.Contains("]")) { throw "$msi's license text has a bracket it would read as a property" }
+              Write-Host "✓ Lumi $($case.Version)'s MSI shows exactly the license page rendered for it ($($text.Length) characters of RTF)"
+          }
 
       # The runner is an administrator without UAC prompts, like a device
       # management agent, so this is the silent per-machine install IT runs.
@@ -223,18 +335,47 @@ jobs:
         run: |
           $msi = (Get-ChildItem "dist/installer/*.msi" | Select-Object -First 1).FullName
           if (-not $msi) { throw "No MSI was built" }
+          # A folder made the usual way under ProgramData: it inherits every user's right to add
+          # files, so Lumi mustn't trust a policy in it until it is locked down (below).
           $policyDir = Join-Path $env:ProgramData "LumiMsiCheck"
           New-Item -ItemType Directory -Force -Path $policyDir | Out-Null
           $policy = Join-Path $policyDir "policy.json"
-          '{"schema": "lumi.policy/v1", "organization": "CI", "settings": {"updates.channel": "beta"}}' |
+          '{"schema": "lumi.policy/v1", "organization": "CI", "settings": {"updates.channel": "beta"}, "legal": {"accepted_by_organization": "CI"}}' |
               Set-Content -Encoding utf8 $policy
+          $machineDir = Join-Path $env:ProgramData "Lumi"
+          if (Test-Path $machineDir) { throw "$machineDir exists before the install" }
           $log = Join-Path $env:RUNNER_TEMP "msi-install.log"
-          $install = Start-Process msiexec.exe -Wait -PassThru -ArgumentList @(
-              "/i", "`"$msi`"", "/qn", "/norestart", "/l*v", "`"$log`"", "POLICYFILE=`"$policy`"")
-          if ($install.ExitCode -ne 0) {
-              Get-Content $log -Tail 60
-              throw "msiexec /i exited $($install.ExitCode)"
+
+          # The same version built again (the upgrade check below).
+          $upgrade = (Get-ChildItem "dist/installer-upgrade/*.msi" | Select-Object -First 1).FullName
+          if (-not $upgrade) { throw "No second MSI was built" }
+
+          function Install-Msi([string[]]$Extra, [string]$Package = $msi) {
+              $arguments = @("/i", "`"$Package`"", "/qn", "/norestart", "/l*v", "`"$log`"")
+              if ($Extra) { $arguments += $Extra }
+              $install = Start-Process msiexec.exe -Wait -PassThru -ArgumentList $arguments
+              if ($install.ExitCode -ne 0) {
+                  Get-Content $log -Tail 60
+                  throw "msiexec /i exited $($install.ExitCode)"
+              }
           }
+          function Uninstall-Msi([string]$Package = $msi) {
+              $remove = Start-Process msiexec.exe -Wait -PassThru -ArgumentList @("/x", "`"$Package`"", "/qn", "/norestart")
+              if ($remove.ExitCode -ne 0) { throw "msiexec /x exited $($remove.ExitCode)" }
+          }
+          # %ProgramData%\Lumi, locked: owned by Administrators, SYSTEM and Administrators full
+          # control, Users read and execute, nothing inherited (packaging/lumi.wxs).
+          function Assert-LockedMachineDir {
+              $acl = Get-Acl -LiteralPath $machineDir
+              Write-Host "$machineDir`: $($acl.Sddl)"
+              $owner = $acl.GetOwner([System.Security.Principal.SecurityIdentifier]).Value
+              if ($owner -ne "S-1-5-32-544") { throw "$machineDir is owned by $owner, not Administrators" }
+              if (-not $acl.AreAccessRulesProtected) { throw "$machineDir still inherits from ProgramData" }
+              $aces = ([regex]::Matches($acl.Sddl, '\([^)]*\)') | ForEach-Object { $_.Value }) -join ''
+              if ($aces -ne "(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;0x1200a9;;;BU)") { throw "$machineDir has $($acl.Sddl)" }
+          }
+
+          Install-Msi @("POLICYFILE=`"$policy`"")
           $folder = Join-Path $env:ProgramFiles "Lumi"
           $exe = Join-Path $folder "lumi.exe"
           if (-not (Test-Path $exe)) { throw "lumi.exe wasn't installed to $folder" }
@@ -246,6 +387,46 @@ jobs:
           $value = (Get-ItemProperty $policyKey -ErrorAction SilentlyContinue).PolicyFile
           if ($value -ne $policy) { throw "PolicyFile is '$value', expected '$policy'" }
           Write-Host "✓ Installed per machine with the marker, shortcut and PolicyFile"
+
+          Assert-LockedMachineDir
+          # And Lumi's own check (lumi/admin_files.py) trusts a file an administrator puts there.
+          $probe = Join-Path $machineDir "trust-probe.json"
+          '{}' | Set-Content -Encoding utf8 $probe
+          icacls.exe $probe /setowner '*S-1-5-32-544' /Q
+          if ($LASTEXITCODE -ne 0) { throw "icacls couldn't set the probe's owner" }
+          python -c "import sys; from lumi import admin_files; t = admin_files.check(sys.argv[1], sys.argv[2]); print(t); sys.exit(0 if t.trusted else 1)" $probe $env:ProgramData
+          if ($LASTEXITCODE -ne 0) { throw "Lumi doesn't trust a file in the folder the package made" }
+          Remove-Item -LiteralPath $probe
+          Write-Host "✓ The package made $machineDir locked"
+
+          # The PolicyFile's folder still lets any user add files, so the installed app refuses
+          # model requests (lumi policy exits 1) and says why.
+          $out = Join-Path $env:RUNNER_TEMP "lumi-policy.json"
+          $err = Join-Path $env:RUNNER_TEMP "lumi-policy.err"
+          $run = Start-Process -FilePath $exe -ArgumentList "policy" -Wait -PassThru `
+              -RedirectStandardOutput $out -RedirectStandardError $err
+          if (-not (Get-Content $out -Raw)) { throw "lumi policy printed nothing (exit $($run.ExitCode)): $(Get-Content $err -Raw)" }
+          $status = Get-Content $out -Raw | ConvertFrom-Json
+          Write-Host "lumi policy: exit=$($run.ExitCode) blocked=$($status.blocked)"
+          if ($run.ExitCode -ne 1 -or $status.active) { throw "A policy file others can change must fail closed" }
+          if ($status.error -notlike "Policy file ignored: writable by non-administrators. *LumiMsiCheck*") {
+              throw "Unexpected refusal: $($status.error)"
+          }
+          if ($status.ignored[0].kind -ne "policy_file") { throw "The ignored PolicyFile isn't listed" }
+          Write-Host "✓ A PolicyFile in a folder others can change fails closed and says why"
+
+          # The icacls recipe in docs/enterprise-policy.md locks it; then the policy applies.
+          icacls.exe $policyDir /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' '*S-1-5-32-545:(OI)(CI)RX' /Q
+          if ($LASTEXITCODE -ne 0) { throw "The icacls recipe couldn't set the permissions" }
+          icacls.exe $policyDir /setowner '*S-1-5-32-544' /T /Q
+          if ($LASTEXITCODE -ne 0) { throw "The icacls recipe couldn't set the owner" }
+          $run = Start-Process -FilePath $exe -ArgumentList "policy" -Wait -PassThru `
+              -RedirectStandardOutput $out -RedirectStandardError $err
+          $status = Get-Content $out -Raw | ConvertFrom-Json
+          if ($run.ExitCode -ne 0 -or $status.organization -ne "CI" -or $status.ignored.Count -ne 0) {
+              throw "The locked policy file wasn't applied: $(Get-Content $out -Raw)"
+          }
+          Write-Host "✓ After the icacls recipe, lumi policy reports CI's policy"
 
           # The installed app reads the marker and the policy the MSI pointed at.
           $out = Join-Path $env:RUNNER_TEMP "lumi-updates.json"
@@ -259,10 +440,338 @@ jobs:
           if ($status.channel -ne "beta" -or $status.managed_by -ne "CI") { throw "The policy file named by POLICYFILE wasn't applied" }
           Write-Host "✓ The installed app leaves updates to device management and applies the policy"
 
-          $remove = Start-Process msiexec.exe -Wait -PassThru -ArgumentList @("/x", "`"$msi`"", "/qn", "/norestart")
-          if ($remove.ExitCode -ne 0) { throw "msiexec /x exited $($remove.ExitCode)" }
+          # A machine policy accepts Lumi's terms for everyone on the computer (lumi/terms.py).
+          $out = Join-Path $env:RUNNER_TEMP "lumi-terms.json"
+          $err = Join-Path $env:RUNNER_TEMP "lumi-terms.err"
+          $run = Start-Process -FilePath $exe -ArgumentList "terms" -Wait -PassThru `
+              -RedirectStandardOutput $out -RedirectStandardError $err
+          if ($run.ExitCode -ne 0) { throw "lumi terms exited $($run.ExitCode): $(Get-Content $err -Raw)" }
+          $terms = Get-Content $out -Raw | ConvertFrom-Json
+          Write-Host "lumi terms: pending=$($terms.pending) organization=$($terms.organization) value=$($terms.acceptance_value)"
+          if ($terms.pending -or $terms.organization -ne "CI") { throw "The machine policy's legal.accepted_by_organization didn't accept Lumi's terms" }
+          Write-Host "✓ The machine policy accepts Lumi's terms for the computer's people"
+
+          # Device management upgrades without naming POLICYFILE again: the package
+          # remembers it (packaging/lumi.wxs), so the machine keeps its policy.
+          Install-Msi @() -Package $upgrade
+          $value = (Get-ItemProperty $policyKey -ErrorAction SilentlyContinue).PolicyFile
+          if ($value -ne $policy) { throw "The upgrade dropped PolicyFile: it is '$value', expected '$policy'" }
+          $remembered = (Get-ItemProperty "HKLM:\SOFTWARE\Luminary Analytics\Lumi\Msi" -ErrorAction SilentlyContinue).PolicyFile
+          if ($remembered -ne $policy) { throw "The upgrade didn't remember POLICYFILE: '$remembered'" }
+          $run = Start-Process -FilePath $exe -ArgumentList "terms" -Wait -PassThru `
+              -RedirectStandardOutput $out -RedirectStandardError $err
+          $terms = Get-Content $out -Raw | ConvertFrom-Json
+          if ($run.ExitCode -ne 0 -or $terms.pending -or $terms.organization -ne "CI") {
+              throw "After the upgrade the machine policy no longer accepts Lumi's terms: $(Get-Content $out -Raw)"
+          }
+          Write-Host "✓ An upgrade without POLICYFILE keeps the PolicyFile value and its policy"
+
+          # An administrator stops using the policy file by deleting the value: the next upgrade
+          # (the first build again, over the second) doesn't bring it back from the package's copy.
+          Remove-ItemProperty -Path $policyKey -Name PolicyFile
+          Install-Msi @() -Package $msi
+          if ((Get-ItemProperty $policyKey -ErrorAction SilentlyContinue).PolicyFile) {
+              throw "The upgrade brought back the PolicyFile value an administrator deleted"
+          }
+          if ((Get-ItemProperty "HKLM:\SOFTWARE\Luminary Analytics\Lumi\Msi" -ErrorAction SilentlyContinue).PolicyFile) {
+              throw "The upgrade kept the package's copy of a PolicyFile an administrator deleted"
+          }
+          Write-Host "✓ A deleted PolicyFile value stays deleted across an upgrade, and the copy goes"
+
+          Uninstall-Msi $msi
           if (Test-Path $exe) { throw "lumi.exe is still there after uninstalling" }
           if ((Get-ItemProperty $policyKey -ErrorAction SilentlyContinue).PolicyFile) { throw "The PolicyFile value was left behind" }
+          if ((Get-ItemProperty "HKLM:\SOFTWARE\Luminary Analytics\Lumi\Msi" -ErrorAction SilentlyContinue).PolicyFile) {
+              throw "The remembered POLICYFILE was left behind"
+          }
           if (Test-Path $shortcut) { throw "The Start menu shortcut was left behind" }
+          if (Test-Path $machineDir) { throw "The empty $machineDir was left behind" }
           Write-Host "✓ Uninstalled cleanly"
+
+          # The machine policy folder as a person could have made it before the package came:
+          # owned by Users, who may change it. The package takes it over and locks it.
+          New-Item -ItemType Directory -Path $machineDir | Out-Null
+          icacls.exe $machineDir /grant '*S-1-5-32-545:(OI)(CI)F' /Q
+          if ($LASTEXITCODE -ne 0) { throw "icacls couldn't give Users $machineDir" }
+          icacls.exe $machineDir /setowner '*S-1-5-32-545' /Q
+          if ($LASTEXITCODE -ne 0) { throw "icacls couldn't make Users own $machineDir" }
+          Install-Msi @()
+          Assert-LockedMachineDir
+          Write-Host "✓ The package took over and locked a $machineDir a person had made"
+          Uninstall-Msi
+          if (Test-Path $machineDir) { throw "The empty $machineDir was left behind after the second install" }
+          Write-Host "✓ Uninstalled cleanly again"
           Remove-Item -Recurse -Force $policyDir
+
+  signing-dry-run:
+    # release.yml's Authenticode wiring, run as a pull request can: the same
+    # action (.github/actions/authenticode-sign) and the same check before
+    # publishing (packaging/check_release_files.ps1), with no Azure identity,
+    # no id-token permission and no secret. First signtool and the Artifact
+    # Signing client, found and fetched as the release would, each checked
+    # (signed by Microsoft; the pinned SHA-256). With nothing configured the
+    # Azure sign-in is skipped and says why, the file is left as it was, and
+    # the check lists it, with the SBOM and notices, for publishing. An
+    # Artifact Signing account without a sign-in, signing required with no
+    # signer, and a signtool or dlib of one's own in CI each stop the release
+    # before anything is signed.
+    runs-on: windows-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Find signtool and fetch the Artifact Signing client, and check both
+        shell: pwsh
+        run: ./packaging/sign_windows.ps1 -CheckTools
+
+      - name: Release files to sign
+        id: file
+        shell: pwsh
+        run: |
+          $dist = Join-Path $env:RUNNER_TEMP "dry-run-dist"
+          New-Item -ItemType Directory -Force -Path (Join-Path $dist "installer"), (Join-Path $dist "lumi"), (Join-Path $dist "legal") | Out-Null
+          Set-Content -Path (Join-Path $dist "legal/license.rtf") -Value "{\rtf1 Lumi's terms}"
+          $file = Join-Path $dist "installer/lumi-setup-0.0.0-beta.1.exe"
+          Copy-Item "packaging/winsparkle/WinSparkle-0.9.2/bin/winsparkle-tool.exe" $file
+          Set-Content -Path (Join-Path $dist "lumi-0.0.0-beta.1-sbom.cdx.json") -Value "{}"
+          Set-Content -Path (Join-Path $dist "lumi-0.0.0-beta.1-THIRD_PARTY_NOTICES.txt") -Value "Notices"
+          "dist=$dist" >> $env:GITHUB_OUTPUT
+          "path=$file" >> $env:GITHUB_OUTPUT
+          "sha256=$((Get-FileHash -Algorithm SHA256 $file).Hash)" >> $env:GITHUB_OUTPUT
+
+      - name: Sign as the release does, with nothing configured
+        uses: ./.github/actions/authenticode-sign
+        with:
+          files: ${{ steps.file.outputs.path }}
+
+      - name: Check the files as the release does before publishing
+        id: check
+        shell: pwsh
+        env:
+          WINDOWS_SIGN_RECORD: ${{ runner.temp }}/lumi-authenticode.jsonl
+        run: ./packaging/check_release_files.ps1 -Version 0.0.0-beta.1 -Dist "${{ steps.file.outputs.dist }}"
+
+      - name: The file is as it was, and the check lists it for publishing
+        shell: pwsh
+        env:
+          LISTED: ${{ steps.check.outputs.files }}
+          MSI: ${{ steps.check.outputs.msi }}
+        run: |
+          if ((Get-FileHash -Algorithm SHA256 "${{ steps.file.outputs.path }}").Hash -ne "${{ steps.file.outputs.sha256 }}") {
+              throw "Signing with nothing configured changed the file"
+          }
+          $listed = @($env:LISTED -split "`r?`n" | Where-Object { $_ })
+          $expected = @("installer/lumi-setup-0.0.0-beta.1.exe", "lumi-0.0.0-beta.1-sbom.cdx.json", "lumi-0.0.0-beta.1-THIRD_PARTY_NOTICES.txt")
+          if ($listed.Count -ne 3 -or $env:MSI) { throw "The check listed $($listed -join ', ') and MSI '$env:MSI'" }
+          for ($i = 0; $i -lt 3; $i++) {
+              if (-not $listed[$i].EndsWith("/" + $expected[$i])) { throw "The check listed $($listed[$i]), expected $($expected[$i])" }
+          }
+          Write-Host "OK nothing configured: no Azure sign-in (the reason is logged above), the file is unchanged, and it's listed for publishing"
+
+      - name: Sign as the release does, with an Artifact Signing account but no Azure sign-in
+        id: no-sign-in
+        continue-on-error: true
+        uses: ./.github/actions/authenticode-sign
+        with:
+          files: ${{ steps.file.outputs.path }}
+          artifact-signing-endpoint: https://eus.codesigning.azure.net
+          artifact-signing-account: lumi-dry-run
+          artifact-signing-profile: lumi-dry-run
+          expected-subject: CN=Lumi dry run
+
+      - name: Sign as the release does, required, with nothing configured
+        id: required
+        continue-on-error: true
+        uses: ./.github/actions/authenticode-sign
+        with:
+          files: ${{ steps.file.outputs.path }}
+          required: 'true'
+
+      - name: In CI, a signtool or dlib of one's own is refused
+        shell: pwsh
+        run: |
+          foreach ($name in "WINDOWS_SIGNTOOL", "ARTIFACT_SIGNING_DLIB") {
+              [Environment]::SetEnvironmentVariable($name, (Join-Path $env:SystemRoot "System32\cmd.exe"))
+              try {
+                  ./packaging/sign_windows.ps1 -Files "${{ steps.file.outputs.path }}"
+                  throw "$name wasn't refused"
+              } catch {
+                  if ("$_" -notmatch "only the pinned tools sign") { throw }
+                  Write-Host "OK ${name}: $_"
+              } finally {
+                  [Environment]::SetEnvironmentVariable($name, $null)
+              }
+          }
+
+      - name: Each stopped the release, and nothing was signed
+        shell: pwsh
+        run: |
+          if ("${{ steps.no-sign-in.outcome }}" -ne "failure") { throw "An Artifact Signing account without an Azure sign-in should have failed" }
+          if ("${{ steps.required.outcome }}" -ne "failure") { throw "Signing required with no signer should have failed" }
+          if ((Get-FileHash -Algorithm SHA256 "${{ steps.file.outputs.path }}").Hash -ne "${{ steps.file.outputs.sha256 }}") {
+              throw "A refused signing changed the file"
+          }
+          Write-Host "OK an Artifact Signing account without a sign-in, and required signing without a signer, both fail the release"
+
+  handover-upload:
+    # release.yml's handover from one job to the next, rehearsed with the
+    # attack it stops. `build` (and `macos`) take a digest of the files and
+    # upload them; `release` (and `publish-macos`) download the artifact by the
+    # ID in the job's outputs and check the digest (packaging/tree_digest.py).
+    # Here: an upload on Linux, and a download by ID on Windows that must
+    # match. Then a job deletes the artifact and uploads other files under its
+    # name, as a compromised test dependency in release.yml's `test` could;
+    # after that the download by ID must fail, and the files a download by
+    # name gets must fail the digest.
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      artifact-id: ${{ steps.upload.outputs.artifact-id }}
+      digest: ${{ steps.handover.outputs.digest }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Files to hand over, and their digest
+        id: handover
+        run: |
+          set -euo pipefail
+          mkdir -p handover/lumi/_internal
+          printf 'the bundle\n' > handover/lumi/lumi.exe
+          printf 'a hidden file\n' > handover/lumi/_internal/.hidden
+          printf '{}\n' > handover/lumi-0.0.0-sbom.cdx.json
+          printf 'not handed over\n' > handover/bundle-manifest.json
+          digest="$(python3 packaging/tree_digest.py handover lumi lumi-0.0.0-sbom.cdx.json)"
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+
+      - name: Upload them
+        id: upload
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: lumi-handover-rehearsal
+          path: |
+            handover/lumi/
+            handover/lumi-0.0.0-sbom.cdx.json
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 1
+
+  handover-download:
+    needs: handover-upload
+    runs-on: windows-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.13'
+
+      - name: Fetch them by ID, as release.yml does
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          artifact-ids: ${{ needs.handover-upload.outputs.artifact-id || 'none' }}
+          path: received
+          merge-multiple: true
+
+      - name: Check them as release.yml does
+        shell: pwsh
+        env:
+          HANDOVER_DIGEST: ${{ needs.handover-upload.outputs.digest }}
+        run: |
+          python packaging/tree_digest.py received --expect "$env:HANDOVER_DIGEST"
+          if ($LASTEXITCODE -ne 0) { throw "The files didn't arrive as they were handed over" }
+
+  handover-swap:
+    # What a compromised `test` could do with the run's artifact token.
+    needs: handover-download
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+
+    steps:
+      - name: Other files
+        run: |
+          mkdir -p swapped/lumi
+          printf 'a bundle nobody built\n' > swapped/lumi/lumi.exe
+          printf '{}\n' > swapped/lumi-0.0.0-sbom.cdx.json
+
+      - name: Delete the artifact and upload them under its name
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: lumi-handover-rehearsal
+          path: |
+            swapped/lumi/
+            swapped/lumi-0.0.0-sbom.cdx.json
+          overwrite: true
+          retention-days: 1
+
+  handover-after-swap:
+    needs: [handover-upload, handover-swap]
+    runs-on: windows-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.13'
+
+      - name: Fetch by ID, as release.yml does
+        id: by-id
+        continue-on-error: true
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          artifact-ids: ${{ needs.handover-upload.outputs.artifact-id || 'none' }}
+          path: by-id
+          merge-multiple: true
+
+      - name: Fetch by name, as release.yml did before
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: lumi-handover-rehearsal
+          path: by-name
+
+      - name: Check what the download by name got
+        id: by-name
+        continue-on-error: true
+        shell: pwsh
+        env:
+          HANDOVER_DIGEST: ${{ needs.handover-upload.outputs.digest }}
+        run: |
+          python packaging/tree_digest.py by-name --expect "$env:HANDOVER_DIGEST"
+          if ($LASTEXITCODE -ne 0) { throw "The files fetched by name aren't the ones handed over" }
+
+      - name: The swapped files are never used
+        shell: pwsh
+        run: |
+          if ("${{ steps.by-id.outcome }}" -ne "failure") { throw "The download by ID should have failed: its artifact is gone" }
+          if (Test-Path "by-id/lumi") { throw "The download by ID wrote files" }
+          if ("${{ steps.by-name.outcome }}" -ne "failure") { throw "The swapped files should have failed the digest" }
+          Write-Host "OK the download by ID refused the replaced artifact, and the digest refused what a download by name got"

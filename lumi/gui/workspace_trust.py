@@ -8,7 +8,8 @@ match without asking (engine/policies.py). Cloning a repository shouldn't
 hand it any of these. Until the user trusts a project:
 
 * its instruction files and notes are not loaded, nor is a codebase index
-  summary (a committed ``.lumi/index.json`` would otherwise count as built);
+  summary (the index lives in Lumi's own state folder, and a ``.lumi/index.json``
+  committed to a repository is never read);
 * its policy keeps only ``deny`` and ``prompt`` rules, which can only make
   Lumi more careful;
 * automatic lint and test runs, which execute repository code, are skipped.

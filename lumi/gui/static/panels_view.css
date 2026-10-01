@@ -1,0 +1,110 @@
+/* Panels from capability packs (static/panels_view.js). Theme tokens only, so
+ * the dialog follows the dark and light themes; the panel's own page styles
+ * itself from <html data-lumi-theme>, which Lumi's bridge sets. */
+
+/* Below the app's other dialogs (1000): an approval or another dialog always
+ * shows over a panel, never under it. */
+.extension-panel-overlay { z-index: 990; }
+
+.extension-panel-dialog {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    width: min(760px, calc(100vw - 32px));
+    max-width: none;
+    height: min(640px, calc(100dvh - 64px));
+    overflow: hidden;
+    background: var(--bg-panel, #13152e);
+    color: var(--text, #ebebeb);
+    border: 1px solid var(--border-strong, var(--border, #333));
+    box-shadow: 0 22px 58px rgba(0, 0, 0, .45);
+}
+
+.extension-panel-header {
+    display: flex;
+    flex: none;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+.extension-panel-heading { min-width: 0; }
+
+.extension-panel-heading h2 {
+    margin: 0;
+    font-size: 15px;
+    font-weight: 600;
+    overflow-wrap: anywhere;
+}
+
+.extension-panel-source {
+    margin: 3px 0 0;
+    color: var(--muted, #8b8b92);
+    font-size: 12px;
+    font-weight: 400;
+}
+
+.extension-panel-close { flex: none; min-width: 32px; min-height: 32px; border-radius: 6px; }
+
+.extension-panel-close:focus-visible {
+    outline: 2px solid var(--accent, var(--brand, #ffc24b));
+    outline-offset: 2px;
+}
+
+.extension-panel-frame {
+    flex: 1;
+    width: 100%;
+    min-height: 0;
+    border: 0;
+    background: transparent;
+}
+
+.extension-panel-frame:focus-visible { outline: 2px solid var(--accent, var(--brand, #ffc24b)); outline-offset: -2px; }
+
+/* The panel's own notices ("Panel · <pack>: …"), over the bottom of its
+ * frame, apart from Lumi's notices so one can't pass for the other. */
+.extension-panel-notice {
+    position: absolute;
+    left: 50%;
+    bottom: 14px;
+    transform: translateX(-50%);
+    max-width: min(520px, calc(100% - 32px));
+    margin: 0;
+    padding: 7px 12px;
+    border: 1px dashed var(--border-strong, var(--border, #444));
+    border-radius: 8px;
+    background: var(--bg-surface, #20234a);
+    color: var(--text, #ebebeb);
+    font-size: 12px;
+    overflow-wrap: anywhere;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, .25);
+}
+
+.extension-panel-notice[hidden] { display: none; }
+
+/* Focus lands here only to be moved on; never seen. */
+.extension-panel-sentinel {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+}
+
+/* View > Panels */
+.extension-panel-menu-heading {
+    padding: 4px 9px 2px;
+    color: var(--dim, var(--muted, #8b8b92));
+    font-size: 11px;
+    font-weight: 600;
+}
+
+@media (max-width: 600px) {
+    .extension-panel-overlay { align-items: stretch; }
+    .extension-panel-dialog {
+        width: 100vw;
+        height: 100dvh;
+        border: 0;
+        border-radius: 0;
+    }
+}

@@ -1,16 +1,34 @@
 name: macOS build
 
-# Builds Lumi.app, the DMG and the PKG on Apple silicon with
-# packaging/build_macos.sh, then starts the built app: --version,
-# `lumi updates`, and the GUI server in browser mode with the same HTTP,
-# launch-code and WebSocket probes as build-check.yml on Windows. Then it
-# installs the PKG as device management would and checks that copy: updates
-# left to the MDM, and a policy from managed preferences, a broken one
+# Builds Lumi.app (with Sparkle.framework for its updates), the DMG and the PKG
+# on Apple silicon with packaging/build_macos.sh, then starts the built app:
+#
+#   - --version, `lumi updates`, and the Info.plist Sparkle reads: the update
+#     key and feed must be the ones the binary has, and the bundle version the
+#     form Sparkle compares.
+#   - The GUI server in browser mode, with the HTTP, launch-code and WebSocket
+#     probes build-check.yml runs on Windows. Then, over that WebSocket, what
+#     the updater reports (Sparkle loaded, and the feed it read through Lumi's
+#     delegate), the audit record of Sparkle's first scheduled check, which
+#     fetches that feed, and Check for updates as the button sends it.
+#   - Lumi.app opened as Finder opens it, with no arguments and no terminal:
+#     the GUI with its native window, and a startup log without errors.
+#
+# Then it installs the PKG as device management would and checks that copy:
+# updates left to the MDM, and a policy from managed preferences, a broken one
 # included. Uploads the DMG and PKG so they can be tried.
 #
-# Signing and notarization run only when the repository has the secrets named
-# in docs/macos.md; without them the app is unsigned and the build says so.
-# Nothing is published from here.
+# A second job rehearses release.yml's gh-pages publishing on Windows, for two
+# releases (scripts/rehearse_pages_publish.py): a throwaway EdDSA key, a copy
+# of the gh-pages branch on the runner, and a check of every pushed commit's
+# bytes. Nothing is pushed to GitHub.
+#
+# No signing secret reaches this workflow: pull requests run the workflow
+# file from their own branch, so anything given to them could be read out.
+# Builds here are signed ad hoc, and only release.yml, in the `release`
+# environment, signs and notarizes (docs/release-pipeline.md). A Developer ID
+# certificate is a second update key for Sparkle, so it is kept like the
+# EdDSA key. Nothing is published from here.
 
 on:
   pull_request:
@@ -19,6 +37,8 @@ on:
       - 'packaging/**'
       - 'pyproject.toml'
       - '.github/workflows/build-macos.yml'
+      - '.github/workflows/release.yml'
+      - 'scripts/rehearse_pages_publish.py'
   push:
     branches:
       - main
@@ -26,7 +46,13 @@ on:
       - 'lumi/**'
       - 'packaging/**'
       - 'pyproject.toml'
+      - '.github/workflows/build-macos.yml'
+      - '.github/workflows/release.yml'
+      - 'scripts/rehearse_pages_publish.py'
   workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   macos-build:
@@ -35,10 +61,12 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: '3.13'
           cache: 'pip'
@@ -46,15 +74,66 @@ jobs:
       - name: Install the pinned SBOM tools
         run: python3 -m pip install --require-hashes -r packaging/tools-requirements.txt
 
+      # Signed ad hoc: no Apple secrets here (see the top of this file).
       - name: Build Lumi.app, the DMG and the PKG
-        env:
-          MACOS_SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
-          MACOS_SIGN_P12_BASE64: ${{ secrets.MACOS_SIGN_P12_BASE64 }}
-          MACOS_SIGN_P12_PASSWORD: ${{ secrets.MACOS_SIGN_P12_PASSWORD }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
         run: bash packaging/build_macos.sh --sbom dist/lumi-macos-sbom.cdx.json
+
+      # Lumi's terms (packaging/legal_texts.py): beside the app in the DMG, and on
+      # the PKG's license page, exactly as legal_texts.py renders them for this
+      # version. This is a development build, so the Alpha and Beta Test Terms
+      # come too.
+      - name: Check the DMG's and the PKG's terms
+        run: |
+          set -euo pipefail
+          dmg=$(ls dist/installer/lumi-*.dmg)
+          pkg=$(ls dist/installer/lumi-*.pkg)
+          version=$(python3 -c 'import re,pathlib;print(re.search(r"__version__\s*=\s*\"([^\"]+)\"", pathlib.Path("lumi/__init__.py").read_text()).group(1))')
+          expected="$RUNNER_TEMP/expected-legal"
+          python3 packaging/legal_texts.py rtf --out "$expected" --version "$version"
+          test -f "$expected/alpha-terms.rtf"
+          mount="$RUNNER_TEMP/lumi-dmg"
+          hdiutil attach -nobrowse -readonly -mountpoint "$mount" "$dmg" >/dev/null
+          trap 'hdiutil detach "$mount" >/dev/null 2>&1 || true' EXIT
+          ls "$mount"
+          cmp "$expected/eula.rtf" "$mount/License Agreement.rtf"
+          cmp "$expected/alpha-terms.rtf" "$mount/Alpha and Beta Test Terms.rtf"
+          hdiutil detach "$mount" >/dev/null
+          trap - EXIT
+          echo "✓ The DMG carries exactly the License Agreement and the Alpha and Beta Test Terms rendered for $version"
+          expanded="$RUNNER_TEMP/lumi-pkg"
+          rm -rf "$expanded"
+          pkgutil --expand "$pkg" "$expanded"
+          grep -q 'license file="license.rtf"' "$expanded/Distribution"
+          license=$(find "$expanded/Resources" -name license.rtf | head -1)
+          test -n "$license"
+          cmp "$expected/license.rtf" "$license"
+          echo "✓ The PKG's license page is exactly the one rendered for $version: $license"
+
+      - name: Check what Sparkle reads from the bundle
+        run: |
+          set -euo pipefail
+          app="dist/Lumi.app/Contents/MacOS/lumi"
+          plist="dist/Lumi.app/Contents/Info.plist"
+          sparkle_version=$(sed -n 's/^SPARKLE_VERSION="\(.*\)"$/\1/p' packaging/fetch_sparkle.sh)
+          "$app" --print-pubkey | tee pubkey.txt
+          test "EDDSA_PUBLIC_KEY=$(plutil -extract SUPublicEDKey raw "$plist")" = "$(sed -n 1p pubkey.txt)"
+          test "APPCAST_URL=$(plutil -extract SUFeedURL raw "$plist")" = "$(sed -n 2p pubkey.txt)"
+          grep -qx "APPCAST_URL=https://luminary-analytics.github.io/resonant-client/appcast-macos.xml" pubkey.txt
+          bundle_version=$(plutil -extract CFBundleVersion raw "$plist")
+          case "$bundle_version" in
+            *-*) echo "CFBundleVersion $bundle_version has a dash, and Sparkle ignores what follows one"; exit 1;;
+          esac
+          for key in SUEnableAutomaticChecks SUVerifyUpdateBeforeExtraction SURequireSignedFeed; do
+            test "$(plutil -extract "$key" raw "$plist")" = "true"
+          done
+          test "$(plutil -extract SUAllowsAutomaticUpdates raw "$plist")" = "false"
+          framework="dist/Lumi.app/Contents/Frameworks/Sparkle.framework"
+          test "$(plutil -extract CFBundleShortVersionString raw "$framework/Resources/Info.plist")" = "$sparkle_version"
+          codesign --verify --strict "$framework"
+          notices=$(find dist/Lumi.app -name THIRD_PARTY_NOTICES.txt | head -1)
+          grep -q "Sparkle $sparkle_version" "$notices"
+          echo "✓ Info.plist has the binary's update key and macOS feed; bundle version $bundle_version"
+          echo "✓ Sparkle $sparkle_version is in Lumi.app, signed, with its license in the notices"
 
       - name: Smoke-test the app
         env:
@@ -66,7 +145,7 @@ jobs:
           "$app" --version | tee version.txt
           grep -qE "^lumi [0-9]+\.[0-9]+\.[0-9]+" version.txt
           "$app" updates | tee updates.json
-          python3 -c 'import json; s = json.load(open("updates.json")); assert s["installed_by"] == "" and s["mode"] == "automatic", s'
+          python3 -c 'import json; s = json.load(open("updates.json")); assert s["installed_by"] == "" and s["mode"] == "automatic" and s["platform"] == "macos" and s["feed"].endswith("/appcast-macos.xml"), s'
 
           "$app" gui --browser --port 8975 > gui.log 2>&1 &
           pid=$!
@@ -103,8 +182,123 @@ jobs:
           if [ "$accepted" != "101" ]; then echo "WS returned $accepted, expected 101"; cat gui.log; exit 1; fi
           echo "✓ WS /ws  403 without the token, 101 with it"
 
+          # What Settings > Updates shows, asked over the page's own socket.
+          python3 packaging/smoke_gui.py --port 8975 --token "$token" update_status | tee update_status.json
+          sparkle_version=$(sed -n 's/^SPARKLE_VERSION="\(.*\)"$/\1/p' packaging/fetch_sparkle.sh)
+          SPARKLE_VERSION="$sparkle_version" python3 - <<'PY'
+          import json, os
+          status = json.load(open("update_status.json"))
+          feed = "https://luminary-analytics.github.io/resonant-client/appcast-macos.xml"
+          assert status["available"] and status["engine"] == "sparkle" and status["platform"] == "macos", status
+          assert status["feed"] == feed, status
+          assert status["sparkle"] == {"version": os.environ["SPARKLE_VERSION"], "feed": feed,
+                                       "automatic": True, "stopped": False}, status
+          PY
+          echo "✓ Sparkle loaded in Lumi.app and read its feed URL from Lumi's delegate"
+
+          # Sparkle's first scheduled check reads that feed (which doesn't
+          # exist until the first macOS release, so any result will do).
+          checked=""
+          for i in $(seq 1 60); do
+            if python3 - "$HOME/.lumi/audit" <<'PY'
+          import json, pathlib, sys
+          feed = "https://luminary-analytics.github.io/resonant-client/appcast-macos.xml"
+          for path in sorted(pathlib.Path(sys.argv[1]).glob("*.jsonl")):
+              for line in path.read_text(encoding="utf-8").splitlines():
+                  record = json.loads(line)
+                  if record.get("type") == "update.check" and record["data"].get("feed") == feed:
+                      print("update.check", json.dumps(record["data"], sort_keys=True))
+                      sys.exit(0)
+          sys.exit(1)
+          PY
+            then checked=1; break; fi
+            sleep 1
+          done
+          if [ -z "$checked" ]; then echo "Sparkle made no scheduled check"; cat gui.log; exit 1; fi
+          echo "✓ Sparkle's scheduled check fetched the macOS feed"
+
+          # Check for updates, as the button does: the socket's worker thread
+          # hands Sparkle the check on the main thread, and Sparkle shows its window.
+          python3 packaging/smoke_gui.py --port 8975 --token "$token" check_updates --event status_msg --containing Checking
+          sleep 5
+          screencapture -x "$RUNNER_TEMP/lumi-check-for-updates.png" || true
+          kill -0 "$pid"
+          echo "✓ Check for updates handed Sparkle its check; Lumi is still running"
+
           if grep -E "Traceback|ERROR" gui.log; then echo "--- gui.log ---"; cat gui.log; exit 1; fi
           echo "✓ Startup log clean"
+
+      - name: Open Lumi.app as Finder does
+        run: |
+          set -euo pipefail
+          # No arguments and no terminal: the GUI in its own window, as a
+          # double-click or Sparkle's relaunch starts it (lumi/__main__.py).
+          # LaunchServices starts it in this user's real home; the runner is
+          # thrown away afterwards. Sparkle's saved state goes first, so its
+          # first scheduled check runs here too, on AppKit's event loop.
+          defaults delete com.luminaryanalytics.lumi 2>/dev/null || true
+          open -n dist/Lumi.app
+          pid=""
+          for i in $(seq 1 30); do
+            pid=$(pgrep -f "dist/Lumi.app/Contents/MacOS/lumi" | head -1 || true)
+            if [ -n "$pid" ]; then break; fi
+            sleep 1
+          done
+          if [ -z "$pid" ]; then echo "Lumi.app didn't start"; exit 1; fi
+          trap 'kill $pid 2>/dev/null || true' EXIT
+          log="$HOME/.lumi/logs/lumi-startup.log"
+          served=""
+          for i in $(seq 1 60); do
+            if ! kill -0 "$pid" 2>/dev/null; then echo "Lumi.app quit"; cat "$log" || true; exit 1; fi
+            for port in $(lsof -nP -a -p "$pid" -iTCP -sTCP:LISTEN 2>/dev/null | awk 'NR > 1 { n = split($9, a, ":"); print a[n] }'); do
+              if curl -fsS "http://127.0.0.1:$port/" -o finder.html 2>/dev/null && [ "$(wc -c < finder.html)" -ge 10000 ]; then
+                served="$port"; break
+              fi
+            done
+            if [ -n "$served" ]; then break; fi
+            sleep 1
+          done
+          if [ -z "$served" ]; then echo "Lumi.app served no page"; cat "$log" || true; exit 1; fi
+          echo "✓ Opened from Finder, Lumi serves its page on port $served"
+
+          checked=""
+          for i in $(seq 1 60); do
+            if python3 - "$HOME/.lumi/audit" <<'PY'
+          import json, pathlib, sys
+          feed = "https://luminary-analytics.github.io/resonant-client/appcast-macos.xml"
+          for path in sorted(pathlib.Path(sys.argv[1]).glob("*.jsonl")):
+              for line in path.read_text(encoding="utf-8").splitlines():
+                  record = json.loads(line)
+                  if record.get("type") == "update.check" and record["data"].get("feed") == feed:
+                      print("update.check", json.dumps(record["data"], sort_keys=True))
+                      sys.exit(0)
+          sys.exit(1)
+          PY
+            then checked=1; break; fi
+            sleep 1
+          done
+          if [ -z "$checked" ]; then echo "Sparkle made no scheduled check in the window's event loop"; cat "$log"; exit 1; fi
+          echo "✓ In the desktop window too, Sparkle's scheduled check fetched the macOS feed"
+
+          sleep 3
+          screencapture -x "$RUNNER_TEMP/lumi-opened-from-finder.png" || true
+          kill -0 "$pid"
+          test -f "$log"
+          echo "--- lumi-startup.log ---"; cat "$log"; echo "---"
+          if grep -E "Traceback|ERROR" "$log"; then exit 1; fi
+          # Browser mode says so; the desktop window doesn't.
+          if grep -qE "Open in browser|Opened Lumi in your browser" "$log"; then
+            echo "The native window didn't open; Lumi fell back to the browser"; exit 1
+          fi
+          echo "✓ Still running in its native window; startup log clean"
+
+      - name: Keep the screenshots
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: lumi-macos-screenshots
+          path: ${{ runner.temp }}/lumi-*.png
+          if-no-files-found: ignore
 
       - name: Check the computer-use permission checks
         run: |
@@ -132,7 +326,7 @@ jobs:
           # What a configuration profile delivers: the app's managed preferences.
           prefs="/Library/Managed Preferences/com.luminaryanalytics.lumi.plist"
           trap 'sudo rm -f "$prefs"' EXIT
-          printf '%s' '{"schema": "lumi.policy/v1", "organization": "CI Org", "settings": {"updates.channel": "beta"}}' > ci-policy.json
+          printf '%s' '{"schema": "lumi.policy/v1", "organization": "CI Org", "settings": {"updates.channel": "beta"}, "legal": {"accepted_by_organization": "CI Org"}}' > ci-policy.json
           python3 packaging/policy/make_mobileconfig.py ci-policy.json --plist --out managed.plist
           python3 packaging/policy/make_mobileconfig.py ci-policy.json --out lumi-policy.mobileconfig
           plutil -lint managed.plist lumi-policy.mobileconfig
@@ -141,6 +335,10 @@ jobs:
           "$app" updates | tee managed.json
           python3 -c 'import json; s = json.load(open("managed.json")); assert (s["managed_by"], s["channel"], s["locked"]) == ("CI Org", "beta", ["channel"]), s'
           echo "✓ A policy in managed preferences applies"
+          # A configuration profile is a machine policy: it accepts Lumi's terms for the Mac's people.
+          "$app" terms | tee terms.json
+          python3 -c 'import json; s = json.load(open("terms.json")); assert (s["pending"], s["organization"]) == (False, "CI Org"), s'
+          echo "✓ The profile's legal.accepted_by_organization accepts Lumi's terms"
 
           # A profile whose Policy isn't usable must stop Lumi, not vanish.
           printf '%s' '<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict><key>Policy</key><string></string></dict></plist>' > broken.plist
@@ -150,7 +348,7 @@ jobs:
           echo "✓ A broken profile fails closed"
 
       - name: Upload the DMG, PKG and bundle manifest
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: lumi-macos
           path: |
@@ -158,3 +356,48 @@ jobs:
             dist/installer/*.pkg
             dist/bundle-manifest-macos.json
             dist/lumi-macos-sbom.cdx.json
+
+  publish-dry-run:
+    # release.yml's gh-pages publishing, rehearsed where it runs: on Windows,
+    # with Git as the release jobs set it up, for two releases in a row
+    # (scripts/rehearse_pages_publish.py). Each release's Windows job and
+    # publish-macos job publish, sign with a throwaway key and push with
+    # packaging/push_pages.py to a copy of the branch on the runner; each
+    # pushed commit's blobs, what Pages would serve, must verify. Then a feed
+    # changed after signing must be refused, and a checkout with Git's own
+    # defaults must get every file byte for byte. Nothing is pushed anywhere
+    # else: the checkouts keep no credentials and the token only reads.
+    runs-on: windows-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.13'
+
+      # The step release.yml runs before each gh-pages checkout.
+      - name: Keep Git from changing the Pages site's bytes
+        shell: pwsh
+        run: git config --global core.autocrlf false
+
+      # As the release checks it out (the whole branch: it has one commit).
+      - name: A scratch copy of gh-pages
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: gh-pages
+          path: scratch-pages
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Rehearse two releases' Pages publishing
+        shell: pwsh
+        run: |
+          python scripts/rehearse_pages_publish.py --pages scratch-pages `
+              --work (Join-Path $env:RUNNER_TEMP "pages-rehearsal") --powershell pwsh
+          if ($LASTEXITCODE -ne 0) { throw "The Pages publishing rehearsal failed" }

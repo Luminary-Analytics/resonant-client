@@ -10,13 +10,16 @@ from .paths import state_home
 
 _DEFAULT_OLLAMA_URL = "http://127.0.0.1:11434"
 _DEFAULT_EXO_URL = "http://127.0.0.1:52415/v1"
+# Ollama on this computer: what an empty `network.ollama_url` means without OLLAMA_HOST.
+DEFAULT_OLLAMA_URL = _DEFAULT_OLLAMA_URL
 
 
 def _load_settings(path: Path | None = None) -> dict[str, Any]:
     target = path or state_home() / "settings.json"
     try:
         if target.exists():
-            return json.loads(target.read_text(encoding="utf-8"))
+            # utf-8-sig: a file saved by Notepad or PowerShell can start with a byte-order mark.
+            return json.loads(target.read_text(encoding="utf-8-sig"))
     except (OSError, json.JSONDecodeError):
         pass
     return {}

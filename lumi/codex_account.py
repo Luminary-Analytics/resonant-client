@@ -13,6 +13,25 @@ import subprocess
 import threading
 
 from .backends import resolve_codex_cli_path
+from .executables import find_program
+
+
+class CodexCliMissing(ValueError):
+    """Signing in with ChatGPT needs the Codex CLI, which isn't installed here."""
+
+
+def missing_cli_message() -> str:
+    """What to install before signing in with ChatGPT: the Codex CLI, and Node.js for it.
+
+    Node.js and npm are looked for as Lumi looks for its own programs
+    (lumi/executables.py), never in the working folder; npm is a script.
+    """
+    if find_program("node") and find_program("npm", scripts=True):
+        return ("Signing in with ChatGPT uses the Codex CLI, which isn't installed. In a terminal, run "
+                "npm install -g @openai/codex, then choose Refresh account & models.")
+    return ("Signing in with ChatGPT uses the Codex CLI, which needs Node.js; neither is installed. "
+            "Install Node.js from https://nodejs.org, then in a terminal run npm install -g @openai/codex, "
+            "and choose Refresh account & models.")
 
 
 class CodexAccount:
@@ -44,7 +63,7 @@ class CodexAccount:
             return
         path = resolve_codex_cli_path()
         if not path:
-            raise ValueError("Install Codex CLI to connect your ChatGPT subscription, then refresh.")
+            raise CodexCliMissing(missing_cli_message())
         self.close()
         responses = self._responses = queue.Queue()
         self._process = proc = subprocess.Popen(

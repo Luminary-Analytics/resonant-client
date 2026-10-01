@@ -9,7 +9,6 @@ import json
 import logging
 import os
 import re
-import shutil
 import signal
 import subprocess
 import sys
@@ -20,7 +19,15 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Optional, Sequence
 
-from lumi.processes import background_process_kwargs
+from lumi.executables import current_project, find_program, system_program
+from lumi.processes import (
+    CMD_COMMAND_LIMIT,
+    CMD_TOO_LONG,
+    background_process_kwargs,
+    cmd_too_long,
+    decode_output,
+    utf8_env,
+)
 
 from .truncation import (
     GREP_MAX_LINE_LENGTH,
@@ -897,13 +904,13 @@ AGENT_TOOLS = [
         "type": "function",
         "function": {
             "name": "open_application",
-            "description": "Open a desktop application by name. Cross-platform: uses 'start' on Windows, 'open -a' on macOS, direct exec on Linux.",
+            "description": "Open an installed desktop application by name (the program on PATH or registered with the system, never one in the project). On Windows it also opens a web page (https:), mail (mailto:), a Settings page (ms-settings:) or an app by its id (shell:AppsFolder\\<id>), and a document or folder by its full path; it never opens a file that would run (a program, script, shortcut or installer).",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "name": {
                         "type": "string",
-                        "description": "Application name or path (e.g. 'chrome', 'notepad', 'Firefox', 'code')"
+                        "description": "Application name (e.g. 'chrome', 'notepad', 'Firefox', 'code'), or on Windows one of the addresses or a document path described above"
                     }
                 },
                 "required": ["name"]
@@ -1534,6 +1541,7 @@ def execute_tool(
     exclusions=None,
     sandbox_roots: Sequence[str] = (),
     project_trusted: bool = False,
+    owned_process_group: bool = False,
 ) -> ToolResult:
     """
     Execute a tool and return structured result.
@@ -1638,7 +1646,7 @@ def execute_tool(
     try:
         if name in {"job_start", "job_status", "job_cancel"}:
             from .jobs import jobs
-            root = project_path or os.getcwd()
+            root = current_project(project_path)
             if name == "job_start":
                 data = jobs.start(root, arguments.get("command"), timeout=arguments.get("timeout", 1200),
                                   cancel_event=cancel_event, sandbox_roots=sandbox_roots)
@@ -1649,11 +1657,11 @@ def execute_tool(
             return ToolResult(json.dumps(data), elapsed=time.time()-start, metadata={"job": data})
         if name == "memory_save":
             from .project_memory import ProjectMemory
-            data = ProjectMemory(project_path or os.getcwd()).save(arguments.get('text', ''), source=arguments.get('source', ''), kind=arguments.get('kind', 'decision'), sources=arguments.get('sources', []), memory_id=arguments.get('id', ''))
+            data = ProjectMemory(current_project(project_path)).save(arguments.get('text', ''), source=arguments.get('source', ''), kind=arguments.get('kind', 'decision'), sources=arguments.get('sources', []), memory_id=arguments.get('id', ''))
             return ToolResult(json.dumps(data), metadata={"memory": data})
         if name.startswith("preview_"):
             from .previews import previews
-            root = project_path or os.getcwd()
+            root = current_project(project_path)
             if name == "preview_start":
                 data = previews.start(root, arguments.get("command"), arguments.get("url", ""),
                                       timeout=arguments.get("timeout", 15), cancel_event=cancel_event,
@@ -1667,7 +1675,7 @@ def execute_tool(
             requirement = str(arguments.get("requirement", "")).strip()
             if not requirement or not str(arguments.get("command", "")).strip():
                 return ToolResult("A check needs a command and requirement.", is_error=True)
-            result = _exec_bash({**arguments, "cwd": project_path or os.getcwd()}, start, cancel_event=cancel_event,
+            result = _exec_bash({**arguments, "cwd": current_project(project_path)}, start, cancel_event=cancel_event,
                                 sandbox_roots=sandbox_roots)
             result.metadata["check"] = {"command": arguments["command"], "requirement": requirement,
                 "status": "failed" if result.is_error else "passed", "exit_code": result.metadata.get("exit_code"),
@@ -1687,9 +1695,11 @@ def execute_tool(
         elif name == "file_edit":
             return _exec_file_edit(arguments, start)
         elif name == "glob":
-            return _exec_glob(arguments, start, exclusions=exclusions)
+            return _exec_glob(arguments, start, exclusions=exclusions, project_path=project_path)
         elif name == "grep":
-            return _exec_grep(arguments, start, cancel_event=cancel_event, exclusions=exclusions)
+            return _exec_grep(arguments, start, cancel_event=cancel_event, exclusions=exclusions,
+                              project_path=project_path,
+                              owned_process_group=owned_process_group)
         elif name == "skill_view":
             if str(arguments.get('skill_id', '')).startswith('team:'):
                 from .. import team_library
@@ -1697,7 +1707,7 @@ def execute_tool(
                 return ToolResult(body, metadata={'skill_id': arguments['skill_id'], 'scope': 'team'})
             if str(arguments.get('skill_id', '')).startswith('pack:'):
                 from .capability_packs import CapabilityPackManager
-                manager = CapabilityPackManager(project_path or os.getcwd(), configured=(settings.get('plugins') or {}) if settings else {})
+                manager = CapabilityPackManager(current_project(project_path), configured=(settings.get('plugins') or {}) if settings else {})
                 body = manager.read_skill(arguments['skill_id'])
                 return ToolResult(body, metadata={'skill_id': arguments['skill_id'], 'scope': 'pack'})
             return _exec_skill_view(arguments, start, project_path=project_path)
@@ -1794,19 +1804,19 @@ def execute_tool(
         # Git tools
         elif name == "git_status":
             from .git_tools import exec_git_status
-            return exec_git_status(arguments, start, exclusions=exclusions)
+            return exec_git_status(arguments, start, exclusions=exclusions, trusted=project_trusted)
         elif name == "git_diff":
             from .git_tools import exec_git_diff
-            return exec_git_diff(arguments, start, exclusions=exclusions)
+            return exec_git_diff(arguments, start, exclusions=exclusions, trusted=project_trusted)
         elif name == "git_commit":
             from .git_tools import exec_git_commit
-            return exec_git_commit(arguments, start)
+            return exec_git_commit(arguments, start, trusted=project_trusted)
         elif name == "git_branch_create":
             from .git_tools import exec_git_branch_create
-            return exec_git_branch_create(arguments, start)
+            return exec_git_branch_create(arguments, start, trusted=project_trusted)
         elif name == "git_log":
             from .git_tools import exec_git_log
-            return exec_git_log(arguments, start)
+            return exec_git_log(arguments, start, trusted=project_trusted)
         elif name in ("issue_view", "issue_comment"):
             from . import issue_trackers
 
@@ -1818,7 +1828,11 @@ def execute_tool(
             handler = getattr(github_tools, f"exec_{name}", None)
             if handler is None:
                 return ToolResult(f"Unknown tool: {name}", is_error=True)
-            return handler(arguments, start)
+            trust = github_tools.project_trusted.set(project_trusted)
+            try:
+                return handler(arguments, start)
+            finally:
+                github_tools.project_trusted.reset(trust)
         # REPL tools
         elif name == "repl_python_start":
             from .repl import exec_repl_python_start
@@ -1885,6 +1899,8 @@ def _run_subprocess_with_cancel(
     cwd: str,
     stdin=None,
     cancel_event: Optional[threading.Event] = None,
+    owned_process_group: bool = False,
+    env: Optional[dict[str, str]] = None,
 ):
     def _create_windows_kill_job(process):
         if sys.platform != "win32":
@@ -1952,21 +1968,36 @@ def _run_subprocess_with_cancel(
         except Exception:
             pass
 
-    process_group_args = background_process_kwargs(new_process_group=True)
+    # A managed native worker already owns its process group. Its file-search
+    # child must stay in that group so app restart/Stop can observe and clean
+    # the entire tree. Ordinary tools still get their independent group.
+    process_group_args = background_process_kwargs(new_process_group=not owned_process_group)
     proc = subprocess.Popen(
         cmd,
         shell=shell,
         cwd=cwd,
-        stdin=stdin,
+        # Search children need no input and must never inherit the managed
+        # worker's private host-control pipe (or compete with its reader).
+        stdin=subprocess.DEVNULL if owned_process_group and stdin is None else stdin,
         # The agent's shell runs model-written commands: keep Lumi's own
-        # model keys out of its reach (secrets_store.PROVIDER_KEY_ENV).
-        env=child_env(),
+        # model keys out of its reach (secrets_store.PROVIDER_KEY_ENV). A
+        # caller's ``env`` is built from child_env() too.
+        env=child_env() if env is None else env,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
-        text=text,
+        # Always bytes: a text-mode pipe decodes with the locale's code page
+        # (cp1252 here), and cmd.exe writes the OEM one. One undecodable byte
+        # ("ü" is 0x81) killed the reader thread and lost all of the output.
+        # ``text=True`` callers get it decoded by lumi.processes.decode_output.
+        text=False,
         **process_group_args,
     )
     windows_job = _create_windows_kill_job(proc)
+
+    def _output(stdout, stderr):
+        if not text:
+            return stdout, stderr
+        return decode_output(stdout), decode_output(stderr)
 
     def _terminate_tree():
         if sys.platform == "win32" and windows_job:
@@ -1981,7 +2012,7 @@ def _run_subprocess_with_cancel(
         try:
             if sys.platform == "win32":
                 subprocess.run(
-                    ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+                    [system_program("taskkill"), "/PID", str(proc.pid), "/T", "/F"],
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                     timeout=5,
@@ -1989,11 +2020,17 @@ def _run_subprocess_with_cancel(
                     **background_process_kwargs(),
                 )
             else:
-                os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+                if owned_process_group:
+                    proc.terminate()  # Never signal the shared worker group here.
+                else:
+                    os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
                 try:
                     proc.wait(timeout=0.75)
                 except subprocess.TimeoutExpired:
-                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                    if owned_process_group:
+                        proc.kill()
+                    else:
+                        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
         except Exception:
             try:
                 proc.kill()
@@ -2014,11 +2051,11 @@ def _run_subprocess_with_cancel(
 
     try:
         stdout, stderr = proc.communicate(timeout=timeout)
-        return proc.returncode, stdout, stderr, False
+        return (proc.returncode, *_output(stdout, stderr), False)
     except subprocess.TimeoutExpired:
         _terminate_tree()
         stdout, stderr = proc.communicate()
-        return proc.returncode, stdout, stderr, True
+        return (proc.returncode, *_output(stdout, stderr), True)
     finally:
         process_finished.set()
         if watcher:
@@ -2046,7 +2083,7 @@ def _exec_bash(args: dict, start: float, cancel_event: Optional[threading.Event]
     cmd = args.get("command", "")
     managed_cmd = _normalize_managed_bash_command(cmd)
     timeout = args.get("timeout", 30)
-    cwd = args.get("cwd", os.getcwd())
+    cwd = args.get("cwd") or current_project(None)
 
     # The shell sandbox (engine/os_sandbox.py), when it's on: the command runs
     # inside it, or not at all.
@@ -2074,6 +2111,16 @@ def _exec_bash(args: dict, start: float, cancel_event: Optional[threading.Event]
             metadata={"command": cmd, "not_executed": True, "reason": "windows_multiline_command"},
         )
 
+    if sandboxed is None and cmd_too_long(managed_cmd):
+        # cmd.exe would refuse it too, in these words; say so without starting it.
+        return ToolResult(
+            f"{CMD_TOO_LONG}\n(exit code: 1)\nNo command was executed: cmd.exe takes commands of up to "
+            f"{CMD_COMMAND_LIMIT:,} characters. Write a longer one to a script file in the project, then run that.",
+            is_error=True,
+            elapsed=time.time() - start,
+            metadata={"command": cmd, "exit_code": 1, "not_executed": True, "reason": "windows_command_too_long"},
+        )
+
     try:
         returncode, stdout, stderr, timed_out = _run_subprocess_with_cancel(
             sandboxed or managed_cmd,
@@ -2083,6 +2130,9 @@ def _exec_bash(args: dict, start: float, cancel_event: Optional[threading.Event]
             cwd=cwd,
             stdin=subprocess.DEVNULL,
             cancel_event=cancel_event,
+            # Python children write UTF-8 (utf8_env); decode_output reads
+            # what the rest writes, cmd.exe's OEM code page included.
+            env=utf8_env(child_env()),
         )
         elapsed = time.time() - start
         if cancel_event is not None and cancel_event.is_set():
@@ -2099,7 +2149,8 @@ def _exec_bash(args: dict, start: float, cancel_event: Optional[threading.Event]
                 elapsed=timeout,
                 metadata={"command": cmd, "timed_out": True},
             )
-        output = stdout
+        # Never None: output a command produced is decoded, not dropped.
+        output = stdout or ""
         if stderr:
             output += ("\n" if output else "") + stderr
         if returncode != 0:
@@ -2288,7 +2339,7 @@ def _exec_file_edit(args: dict, start: float) -> ToolResult:
     )
 
 
-def _exec_glob(args: dict, start: float, *, exclusions=None) -> ToolResult:
+def _exec_glob(args: dict, start: float, *, exclusions=None, project_path: str = "") -> ToolResult:
     pattern = args.get("pattern", "")
     base = args.get("path", ".")
     offset = max(0, int(args.get("offset", 0) or 0))
@@ -2326,13 +2377,17 @@ def _exec_glob(args: dict, start: float, *, exclusions=None) -> ToolResult:
             is_error=True,
             elapsed=time.time() - start,
         )
+    root = project_path or base
+    if not _names_lumi_folder(root, base, pattern):
+        # Only Lumi's old codebase index; the person's .lumi files are listed.
+        all_matches = [m for m in all_matches if not _is_old_index(str(m), root)]
     hidden = 0
     if exclusions:
         kept, hidden = exclusions.filter_paths(str(m) for m in all_matches)
         all_matches = [Path(p) for p in kept]
     total = len(all_matches)
     matches = all_matches[offset:offset + limit]
-    result = "\n".join(str(m) for m in matches)
+    result = "\n".join(_project_display_path(str(m), project_path) for m in matches)
     next_offset = offset + len(matches)
     if next_offset < total:
         result += (
@@ -2370,9 +2425,8 @@ def _exec_glob(args: dict, start: float, *, exclusions=None) -> ToolResult:
 _VENDORED_RIPGREP_DIR = Path(__file__).resolve().parent.parent.parent / "packaging" / "ripgrep"
 
 
-@lru_cache(maxsize=1)
-def _ripgrep_executable() -> Optional[str]:
-    """Locate ripgrep once per process. None when it isn't available.
+def _ripgrep_executable(*, trusted_only: bool = False, project: Optional[str] = None) -> Optional[str]:
+    """ripgrep's full path. None when it isn't available.
 
     The bundled copy wins over PATH. A packaged install ships a pinned,
     checksum-verified rg (see packaging/fetch_ripgrep.ps1), and preferring it
@@ -2381,8 +2435,18 @@ def _ripgrep_executable() -> Optional[str]:
     who previously fell back to `findstr` and its far weaker regex dialect.
 
     `sys._MEIPASS` is set only in a PyInstaller bundle; from a source checkout
-    this falls straight through to PATH.
+    this falls through to PATH, never to an `rg` in the project searched or
+    Lumi's working folder (lumi/executables.py).
     """
+    bundled = _bundled_ripgrep(trusted_only=trusted_only)
+    if bundled or trusted_only:
+        return bundled
+    return find_program("rg", exclude=[project])
+
+
+@lru_cache(maxsize=2)
+def _bundled_ripgrep(*, trusted_only: bool = False) -> Optional[str]:
+    """The ripgrep Lumi ships (or a source checkout fetched), looked for once per process."""
     binary = "rg.exe" if sys.platform == "win32" else "rg"
     bundle_dir = getattr(sys, "_MEIPASS", "")
     if bundle_dir:
@@ -2399,14 +2463,155 @@ def _ripgrep_executable() -> Optional[str]:
 
     for candidate in candidates:
         if candidate.exists():
+            if trusted_only and (not candidate.is_file() or candidate.resolve() != candidate.absolute()):
+                continue
             return str(candidate)
-    return shutil.which("rg")
+    return None
 
 
 _GREP_LINE_PATH = re.compile(r"^((?:[A-Za-z]:)?[^:]*):\d+:")
 
 
-def _build_grep_command(pattern: str, path: str, file_glob: str) -> list[str]:
+def _file_name(raw: bytes) -> str:
+    """A path a search tool printed, as the file system names it (UTF-8 on Windows)."""
+    try:
+        return os.fsdecode(raw)
+    except UnicodeDecodeError:
+        return raw.decode("utf-8", errors="replace")
+
+
+def _null_records(data: bytes) -> list[tuple[str, str]]:
+    """``--null`` search output (ripgrep's, or grep's off Windows) as (path, ``:line:text``).
+
+    Each match is its path, a NUL, then the line number and the matched line
+    as the file's own bytes. The path is UTF-8 (ripgrep's on Windows too; the
+    file system's encoding elsewhere); the text is whatever the file holds, on
+    Windows often the ANSI code page. Decoded as one line, a match whose text
+    wasn't UTF-8 had its path read as cp1252 too ("Jöhn" came back as "JÃ¶hn"),
+    so it no longer matched the project or any exclusion rule, and an excluded
+    file's text was shown. So the path is decoded on its own and the text
+    alone as the file's (decode_output, the ANSI code page on a tie). A
+    carriage return inside the text stays in its match, as a space: a line
+    break there started a line with no path, which no exclusion rule matches.
+    A line without a NUL isn't a match and is never shown.
+    """
+    records: list[tuple[str, str]] = []
+    for line in data.split(b"\n"):
+        name, nul, rest = line.partition(b"\0")
+        if not nul:
+            continue
+        number, _, text = rest.partition(b":")
+        text = decode_output(text.removesuffix(b"\r"), prefer="ansi").replace("\n", " ")
+        records.append((_file_name(name), f":{number.decode('ascii', errors='replace')}:{text}"))
+    return records
+
+
+def _path_records(lines: Sequence[str]) -> list[tuple[Optional[str], str]]:
+    """``path:line:text`` lines as (path, ``:line:text``), or (None, line) when no path starts one."""
+    records: list[tuple[Optional[str], str]] = []
+    for line in lines:
+        match = _GREP_LINE_PATH.match(line)
+        records.append((match.group(1), line[match.end(1):]) if match else (None, line))
+    return records
+
+
+def _findstr_lines(data: bytes, root: str) -> list[str]:
+    """findstr's matches as ``path:line:text``, one per match.
+
+    findstr doesn't end a match that is a file's last line when the file has
+    no final newline, so the next file's match follows on the same line. Each
+    match starts with the search root it was given, the rest of the file's
+    path and ``:<line>:``; one match ends where the next such start begins,
+    never at the root's name elsewhere in a line's text. findstr writes the
+    path in the console's code page (the OEM one: "ö" is 0x94) and the text
+    as the file's own bytes, so each is decoded on its own: the path with the
+    code page that spells the root, the text with decode_output. Decoding
+    the whole output first read "Jöhn Smith" wrongly, nothing was split, and
+    an excluded file's match rode along on the line before it.
+    """
+    from lumi.processes import _ansi_code_page, _oem_code_page
+
+    base = root.rstrip("\\/") + os.sep
+    for page in dict.fromkeys((_oem_code_page(), _ansi_code_page(), "utf-8")):
+        try:
+            prefix = base.encode(page)
+        except (UnicodeEncodeError, LookupError):
+            continue
+        starts = list(re.finditer(re.escape(prefix) + rb"([^:\r\n]*):(\d+):", data, re.IGNORECASE))
+        if not starts or data[:starts[0].start()].strip():
+            continue
+        matches = []
+        for index, found in enumerate(starts):
+            end = starts[index + 1].start() if index + 1 < len(starts) else len(data)
+            path = (prefix + found.group(1)).decode(page, errors="replace")
+            # One line per match, as for ripgrep: a carriage return inside
+            # the text would otherwise show as a line with no path.
+            text = decode_output(data[found.end():end], prefer="ansi").rstrip("\n").replace("\n", " ")
+            matches.append(f"{path}:{found.group(2).decode('ascii')}:{text}")
+        return matches
+    # The root isn't spelled in any of those code pages (a character the
+    # console can't write): lines as they come, split before the root.
+    output = decode_output(data).strip()
+    split = re.compile("(?=" + re.escape(base) + r"[^:\n]*:\d+:)", re.IGNORECASE)
+    return [part for line in output.split("\n") if line for part in split.split(line) if part]
+
+
+# The codebase index Lumi used to keep in the project: <project>/.lumi/index.json
+# (.resonant/ before the rebrand). It lives in Lumi's state folder now
+# (engine/rag.py), and an old copy isn't the project's code, so searches skip
+# it. Everything else there is the person's (.lumi/LUMI.md, capability packs,
+# mission roadmaps) and is searched like any other file, and a search that
+# names .lumi itself (its path or pattern) skips nothing.
+_LUMI_FOLDERS = frozenset({".lumi", ".resonant"})
+
+
+def _relative_to(path: str, root: str) -> str | None:
+    """``path`` relative to ``root`` when it is inside it (any case), else None."""
+    if not path or not root:
+        return None
+    try:
+        absolute, base = os.path.abspath(path), os.path.abspath(root)
+        if os.path.normcase(absolute) == os.path.normcase(base):
+            return "."
+        prefix = os.path.normcase(base).rstrip("\\/") + os.sep
+        if not os.path.normcase(absolute).startswith(prefix):
+            return None
+        # relpath keeps the result's own spelling; only the root is dropped.
+        return os.path.relpath(absolute, base)
+    except ValueError:  # another drive
+        return None
+
+
+def _names_lumi_folder(root: str, base: str, *patterns: str) -> bool:
+    """Whether a search names .lumi or .resonant: its folder inside ``root``, or a pattern's part."""
+    relative = _relative_to(base, root)
+    parts = [*(Path(relative).parts if relative not in (None, ".") else ())]
+    for pattern in patterns:
+        parts += [part for part in re.split(r"[\\/]+", pattern or "") if part]
+    return any(part.lower() in _LUMI_FOLDERS for part in parts)
+
+
+def _is_old_index(path: str, root: str) -> bool:
+    """Whether ``path`` is the codebase index Lumi used to keep in the project at ``root``."""
+    relative = _relative_to(path, root)
+    parts = [part.lower() for part in Path(relative).parts] if relative else []
+    return len(parts) == 2 and parts[0] in _LUMI_FOLDERS and parts[1] == "index.json"
+
+
+def _project_display_path(path: str, project_path: str) -> str:
+    """A search result as the agent should see it: relative to the project, as the file is spelled.
+
+    The search root can be spelled in another case than the project (a
+    model's own "c:\\users\\..."). Paths inside the project are shown
+    relative to it, so what's left is the files' own spelling; anything
+    else stays absolute.
+    """
+    relative = _relative_to(path, project_path)
+    return path if relative in (None, ".") else relative
+
+
+def _build_grep_command(pattern: str, path: str, file_glob: str, *, trusted_only: bool = False,
+                        project: Optional[str] = None) -> list[str]:
     """Argv for a recursive content search, best available tool first.
 
     ripgrep is strongly preferred. The fallbacks are correct but weak: Windows
@@ -2420,7 +2625,10 @@ def _build_grep_command(pattern: str, path: str, file_glob: str) -> list[str]:
     security boundary, and a pattern containing a quote would turn this
     read-only tool into arbitrary shell execution.
     """
-    ripgrep = _ripgrep_executable()
+    ripgrep = (_ripgrep_executable(trusted_only=True) if trusted_only
+               else _ripgrep_executable(project=project or path))
+    if trusted_only and not ripgrep:
+        raise FileNotFoundError("Managed search requires the bundled ripgrep binary; PATH executables are not permitted")
     if ripgrep:
         cmd = [
             ripgrep,
@@ -2434,6 +2642,9 @@ def _build_grep_command(pattern: str, path: str, file_glob: str) -> list[str]:
             # no node_modules noise); only the VCS internals are force-excluded.
             "--hidden",
             "--glob", "!.git/",
+            # A NUL after each path: it is UTF-8 and the text is the file's
+            # own bytes, so each is decoded on its own (_null_records).
+            "--null",
         ]
         if file_glob:
             cmd.extend(["--glob", file_glob])
@@ -2442,13 +2653,15 @@ def _build_grep_command(pattern: str, path: str, file_glob: str) -> list[str]:
         cmd.extend(["-e", pattern, "--", path])
         return cmd
 
+    # The fallbacks are the system's own, never a `findstr` or `grep` in the project.
     if sys.platform == "win32":
         target = os.path.join(path, file_glob or "*") if os.path.isdir(path) else path
-        return ["findstr", "/s", "/n", "/r", f"/c:{pattern}", target]
+        return [system_program("findstr"), "/s", "/n", "/r", f"/c:{pattern}", target]
 
     # Extended syntax, so the alternation, `+` and groups models write mean
     # what they do in ripgrep (basic grep treats them as literal characters).
-    cmd = ["grep", "-rnE"]
+    # `--null` (GNU and BSD grep; BSD's -Z means something else) as for ripgrep.
+    cmd = [system_program("grep"), "-rnE", "--null"]
     if file_glob:
         cmd.extend([f"--include={file_glob}"])
     cmd.extend(["--", pattern, path])
@@ -2461,6 +2674,8 @@ def _exec_grep(
     cancel_event: Optional[threading.Event] = None,
     *,
     exclusions=None,
+    owned_process_group: bool = False,
+    project_path: str = "",
 ) -> ToolResult:
     pattern = args.get("pattern", "")
     path = args.get("path", ".")
@@ -2468,7 +2683,8 @@ def _exec_grep(
     offset = max(0, int(args.get("offset", 0) or 0))
     limit = min(200, max(1, int(args.get("limit", 50) or 50)))
 
-    cmd = _build_grep_command(pattern, path, file_glob)
+    cmd = (_build_grep_command(pattern, path, file_glob, trusted_only=True) if owned_process_group
+           else _build_grep_command(pattern, path, file_glob, project=project_path or None))
 
     returncode, stdout, _stderr, timed_out = _run_subprocess_with_cancel(
         cmd,
@@ -2477,6 +2693,7 @@ def _exec_grep(
         timeout=30,
         cwd=os.getcwd(),
         cancel_event=cancel_event,
+        owned_process_group=owned_process_group,
     )
 
     if cancel_event is not None and cancel_event.is_set():
@@ -2495,28 +2712,44 @@ def _exec_grep(
             metadata={"pattern": pattern, "timed_out": True},
         )
 
-    try:
-        output = stdout.decode("utf-8").strip()
-    except (UnicodeDecodeError, AttributeError):
-        try:
-            output = stdout.decode("latin-1").strip()
-        except (UnicodeDecodeError, AttributeError):
-            output = str(stdout).strip()
-
-    lines = output.split("\n") if output else []
+    # Each match as (its file's path, ":line:text"). Matched text is the
+    # file's own bytes, in whatever encoding it has, while each tool writes
+    # the path its own way: ripgrep and grep in UTF-8 before a NUL
+    # (_null_records), findstr in the console's code page (_findstr_lines).
+    raw = stdout if isinstance(stdout, bytes) else str(stdout or "").encode("utf-8")
+    # rg, findstr or grep, by the full path _build_grep_command resolved.
+    searcher = os.path.splitext(os.path.basename(cmd[0]))[0].lower()
+    if searcher in ("rg", "grep"):
+        records: list[tuple[Optional[str], str]] = list(_null_records(raw))
+    elif searcher == "findstr" and os.path.isdir(path):
+        records = _path_records(_findstr_lines(raw, path))
+    else:
+        decoded = decode_output(raw, prefer="ansi").strip()  # files' own text
+        records = _path_records(decoded.split("\n") if decoded else [])
     hidden = 0
-    if exclusions and lines:
-        # Every backend prints path:line:content; a Windows path starts
-        # with a drive letter and colon.
-        kept_lines = []
+    if exclusions and records:
+        # The rules apply to each match's own path, as decoded above.
         excluded = exclusions.checker()
-        for line in lines:
-            match = _GREP_LINE_PATH.match(line)
-            if match and excluded(match.group(1)):
-                hidden += 1
+        kept = [record for record in records if not (record[0] and excluded(record[0]))]
+        hidden = len(records) - len(kept)
+        records = kept
+    old_index = 0
+    lines: list[str] = []
+    if records:
+        # Paths relative to the project, as the files are spelled, and not
+        # Lumi's old codebase index (only ripgrep's .gitignore handling or
+        # nothing at all would skip it otherwise).
+        root = project_path or (path if os.path.isdir(path) else os.path.dirname(path))
+        skip_index = not _names_lumi_folder(root, path, file_glob)
+        for found, rest in records:
+            if found and skip_index and _is_old_index(found, root):
+                old_index += 1
+                continue
+            if found is None:
+                lines.append(rest)
             else:
-                kept_lines.append(line)
-        lines = kept_lines
+                lines.append((_project_display_path(found, project_path) if project_path else found) + rest)
+    output = ""  # only what survived the filters above is ever shown
     count = len(lines)
     # Cap each match line at 500 chars so a single minified-JS hit can't
     # dominate the result list. Then head-truncate the overall match set.
@@ -2542,23 +2775,30 @@ def _exec_grep(
             )
         if any_line_truncated:
             output += "\n[note: some match lines were individually truncated]"
-        if hidden:
-            output += f"\n[{hidden} match{'es' if hidden != 1 else ''} in excluded files not shown (file exclusion rules)]"
     else:
         shown = 0
         next_offset = offset
 
     if not output:
-        # ripgrep honours .gitignore, which is the right default (no
-        # node_modules noise) but makes an empty result ambiguous: the agent
-        # cannot tell "not in this codebase" from "in a file I chose not to
-        # read". Say so, so it can decide rather than conclude.
         output = "(no matches)"
-        if _ripgrep_executable():
-            output += (
-                "\nNote: .gitignore'd files were not searched. "
-                "Re-run with bash `rg --no-ignore ...` to include them."
-            )
+        if searcher not in ("findstr", "grep"):
+            # ripgrep honours .gitignore, which is the right default (no
+            # node_modules noise) but makes an empty result ambiguous: the
+            # agent cannot tell "not in this codebase" from "in a file I
+            # chose not to read". Say so, so it can decide rather than
+            # conclude. The shell can run rg only when it is on PATH; the
+            # copy Lumi ships isn't.
+            output += "\nNote: files your .gitignore excludes were not searched."
+            output += (" Re-run with bash `rg --no-ignore ...` to include them."
+                       if find_program("rg", exclude=[project_path or path])
+                       else " Read one you need with file_read, or find it with glob.")
+    if hidden:
+        output += f"\n[{hidden} match{'es' if hidden != 1 else ''} in excluded files not shown (file exclusion rules)]"
+    if old_index and not count:
+        # Only when nothing else matched: otherwise it would ride along on
+        # every search in a project that still has the old file.
+        output += (f"\n[{old_index} match{'es' if old_index != 1 else ''} in Lumi's old codebase index "
+                   "(.lumi/index.json) not shown; search .lumi to include it]")
 
     elapsed = time.time() - start
     return ToolResult(

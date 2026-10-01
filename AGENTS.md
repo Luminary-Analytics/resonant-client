@@ -39,6 +39,50 @@ host enrollment and actual packaged/learned-benefit qualification remain open.
   `resonant-policy.json`) are still read; do not write new state under them.
   The update feed URL and repository name stay until a bridge release moves
   the feed (see [Unreleased](docs/unreleased.md)).
+- Lumi is proprietary ([LICENSE](LICENSE), the EULA in `lumi/legal/`). The
+  Extension SDK (`sdk/`) is under the Lumi Extension SDK License, which lets
+  developers build and ship extensions for Lumi, and the VS Code extension
+  (`lumi/code_editors/vscode/`) is part of Lumi; the copies published under
+  the MIT License (every commit whose license file is the MIT License, as
+  LICENSE and EULA 5.4 describe them, never by a version or commit range)
+  stay MIT, and releases start at 0.20.0. Never move app
+  code into the SDK. The legal texts are rendered: edit
+  `lumi/legal/templates/` or `lumi/legal/terms.json` (the one file of facts,
+  versions and pins), then run `python packaging/legal_texts.py render`; a
+  release fails while a fact is `[[TO BE PROVIDED: ...]]`. Any change to what
+  a text says needs a new version and a new `sha256` pin, recorded in
+  `packaging/legal-published-pins.json`, whose entries never change (the
+  tests fail otherwise): a new EULA, or new test terms on a pre-release build, asks
+  everyone to accept it again; a new privacy notice or SDK license asks no
+  one. Shipped third-party code keeps its notice in
+  `THIRD_PARTY_NOTICES.txt` (`packaging/third-party-components.json` for
+  anything that isn't a Python package, and for one that ships no license
+  text of its own; the build fails for any part without one), and the
+  copyleft gate stays. Code
+  ported from another project keeps its license notice in the file and gets
+  a components entry with the license text (`packaging/licenses/`), as
+  `engine/truncation.py` does.
+- Lumi's terms gate every model request (`lumi/terms.py`): `oversight.admit`
+  and `oversight.gate` ask them first, so every turn path and every request
+  outside a turn that asks oversight waits for them too, and a refusal
+  carries `terms.REFUSAL_CODE`. Underneath, `dlp.guarded` (every backend
+  request method, even under `dlp.permit`), `dlp.check_request`,
+  `request_purpose.auxiliary_stream` and Lumi's own HTTP model requests
+  (Ollama's warm-up and tool probe) refuse while they wait;
+  `tests/test_dlp.py` lists every use with its gate. Warm-ups are model
+  requests. An acceptance counts for the text it hashed. Acceptance comes
+  only from the person (the app's dialog on a trusted click, a typed yes at
+  an interactive terminal, `lumi terms accept`, `--accept-terms`), from
+  `LUMI_ACCEPT_TERMS` outside the app, or from a machine policy's
+  `legal.accepted_by_organization` from a source only administrators can
+  write (never `LUMI_POLICY_FILE`, a Lumi Cloud policy, settings or a
+  project). While such a machine policy can't be used, the gate answers with
+  its error (`policy_blocked`) before the terms, and no personal acceptance
+  is recorded. A new entry point that reaches a model asks the gate; a message
+  it refuses before a turn starts is `refused` (`ws_commands.refused_turn`),
+  so the page ends its running state and gives the text back. Tests accept
+  the terms in `tests/conftest.py` and test the gate itself in
+  `tests/test_terms.py`.
 - Follow the [harness north star](docs/agentic-harness-north-star.md): correct
   completion, verification, maintainability, and time to a trustworthy result
   come before token efficiency.
@@ -73,7 +117,9 @@ host enrollment and actual packaged/learned-benefit qualification remain open.
   `secrets_store.child_env()`; the CLI backends keep their environment.
   `secret_scan` removes saved key values from tool output before each request.
   Tests and fixtures use `LUMI_KEYCHAIN=off` or an in-memory keyring, never the
-  real credential store.
+  real credential store. They also never register real OS scheduled tasks:
+  `tests/conftest.py` sets `LUMI_OS_SCHEDULER=off`, which subprocesses inherit.
+  A fixture that builds a child environment from scratch must keep it.
 - File exclusions (`engine/exclusions.py`) are enforced at
   `Session._prepare_workspace_tool_args` and inside the listing tools. Any new
   path that reads project files for the model must check `session.exclusions`.
@@ -83,8 +129,30 @@ host enrollment and actual packaged/learned-benefit qualification remain open.
   `security.shell_sandbox` is `"project"`, run through `engine/os_sandbox.py`
   or not at all. A new tool that starts processes for the model must do both.
   See [shell sandbox](docs/shell-sandbox.md).
+- Lumi's own subprocesses never run programs by bare name from the project
+  folder; use the resolver (`lumi/executables.py`): `system_program` for the
+  system's tools, `program`/`find_program` for the rest, `configured_program`
+  for a program the person names in Settings. Never `shutil.which`,
+  `shell=True`, `os.startfile` or `webbrowser` for Lumi's own launches;
+  `tests/test_launch_scan.py` fails on a new one, and a by-design exception
+  needs a reviewed `BY_DESIGN` entry there. Importing `lumi` sets
+  `NoDefaultCurrentDirectoryInExePath` on Windows, and the app never makes a
+  project its working folder: give each command its `cwd`. Commands the
+  model or the person asked for (the agent's shell, checks, jobs, previews,
+  hooks) run in the project by design, with the person's own environment
+  (`secrets_store.child_env`, `executables.person_environment`); servers Lumi
+  starts for itself (MCP, language servers, provider extensions, automatic
+  lint and tests, the CLI agents) get `secrets_store.server_env`, which keeps
+  the hardening. Lumi's own Git goes through `lumi/safe_git.py` (`run`/`argv`),
+  never `program("git")` elsewhere: it switches off repository-configured
+  programs and runs no Git in an untrusted project whose settings name some.
+  A project's own tools (`.venv`, `node_modules/.bin`) only through
+  `executables.project_tool` and only when trusted. Open files with
+  `executables.open_path`, which refuses files that would run
+  (`opens_as_program`); show those with `show_in_folder`.
 - Repository-provided instructions, notes, index summaries, policy `allow`
-  rules, automatic lint/test runs and language servers require project trust
+  rules, automatic lint/test runs, language servers, a project's own tools and
+  Lumi's Git in a repository whose settings name programs require project trust
   (`gui/workspace_trust.py`). Repository content must never grant itself trust.
   Only the app, which knows Recent projects, records trust's first run; other
   surfaces read decisions without creating `trusted_projects.json`.
@@ -98,6 +166,15 @@ host enrollment and actual packaged/learned-benefit qualification remain open.
   values), and check `policy.current()` where a new model, mode, MCP server,
   pack or shell path is chosen. User-writable locations must never replace a
   machine policy, and an invalid policy blocks requests instead of vanishing.
+  Machine policy comes only from admin-writable sources: the HKLM policy key,
+  a configuration profile, and files `admin_files.check` passes (owner and
+  access control list on Windows, root and mode elsewhere, for the file and
+  every folder up to a protected root). Anything else read from the machine
+  folder (`license.json`, `policy-keys.json` off Windows) passes the same
+  check; on Windows signing keys come only from `PolicyKeys`. A file that
+  fails is ignored visibly (`IgnoredFile`, `policy.file_ignored`); an
+  administrator's file in an unsafe place and a `PolicyFile` that can't be
+  read or used fail closed, never falling back to a lower source.
   Build a session's execution policy with
   `engine/policies.project_execution_policy`, or `with_organization_rules`
   for a fallback: a broken `lumi-policy.json` must never cost the
@@ -106,6 +183,20 @@ host enrollment and actual packaged/learned-benefit qualification remain open.
   the audit log (`audit.py`); run new entry points through it rather than
   `_run_turn`. Record content only through `audit.content` (capture levels)
   and paths through `audit.name`; never record setting or key values.
+- Every outgoing model request passes the organization's DLP rules (`dlp.py`)
+  on the exact request, after `secret_scan`: `Session._model_stream` and
+  `request_purpose.auxiliary_stream` apply them, and any other call that
+  sends text to a model checks it with `dlp.check_text`. Send the checked
+  request with `dlp.send` (fixed text under `dlp.permit`): every model backend
+  class is `@dlp.guard_backend`, which refuses other calls while a policy
+  applies, and `tests/test_dlp.py` counts each use of a request method and
+  each model endpoint. Redact only text, never structure: tool arguments stay
+  valid JSON and signed reasoning is left out, not edited. A withheld entry
+  stays out of summaries, image descriptions and Engram. `dlp.*` audit
+  records and block messages name rules, actions, kinds and counts, never the
+  matched text, and Settings shows rule names, never keywords or patterns. A
+  `dlp` section Lumi can't use refuses requests (`policy.blocked_reason`)
+  while the rest of the policy applies. See [DLP](docs/dlp.md).
 - Model calls outside a turn go through `engine/request_purpose.auxiliary_stream`
   with a purpose, so `usage.py` records them. Prices come from `pricing.py`;
   a model without a known price is unpriced (`None`), never $0. Budgets
@@ -113,19 +204,124 @@ host enrollment and actual packaged/learned-benefit qualification remain open.
   loop that calls a model repeatedly must check them too.
 - Updates: `update_channels.py` picks the feed from `updates.mode`, `channel` and
   `pin` (Settings or policy, read at startup); `appcast.xml` keeps its address
-  because every earlier install polls it. Running from source never loads
-  WinSparkle, and an MSI, PKG, deb or rpm install (`lumi-install.json`) never
+  because every earlier install polls it. macOS uses Sparkle (`sparkle.py`,
+  PyObjC, main thread, app only) with the same EdDSA key and its own feeds
+  (`appcast-macos*.xml`); never put macOS items in the Windows feeds. The
+  macOS feeds are signed (`SURequireSignedFeed`, `packaging/feed_signature.py`):
+  whatever writes one signs it again (`packaging/publish_macos.ps1`), and
+  gh-pages must hold exactly the bytes signed: write feeds and pages with
+  LF line ends, keep the site's `.gitattributes` (`* -text`), and publish only
+  through `packaging/push_pages.py`, which verifies the staged blobs. Sparkle's
+  delegate checks each download request as it starts (`download_refusal`),
+  not only the check, and the found version against the channel and pin
+  (`may_proceed`), since one key signs every macOS feed. Running
+  from source never loads WinSparkle or Sparkle, and an MSI, PKG, deb or rpm install (`lumi-install.json`) never
   updates itself. A macOS configuration profile that can't be used fails closed like
   any machine policy (`policy.managed_preferences_policy`).
   Never change `packaging/lumi.wxs`'s UpgradeCode. Publishing a release or
-  feed needs the user's go-ahead.
+  feed needs the user's go-ahead. Signing secrets (EdDSA, Apple, Authenticode)
+  go only to release.yml's jobs in the `release` environment, never to a
+  workflow pull requests run; a Developer ID certificate is an update key too.
+  Authenticode goes through `.github/actions/authenticode-sign` and
+  `packaging/sign_windows.ps1`, which decides and checks (unsigned before;
+  then Valid, timestamped and by `WINDOWS_SIGN_EXPECTED_SUBJECT`). Azure
+  Artifact Signing signs with a short-lived OIDC sign-in: only release.yml's
+  `release` job may have `id-token: write`, and it runs only pinned code
+  (actions by commit, tools by SHA-256, nothing installed at run time). Tests
+  and PyPI installs stay in `test`; what's signed comes only from `build`'s
+  hash-pinned packages, and only tags on main are released. Publish only
+  what `packaging/check_release_files.ps1` lists. A job that signs or
+  publishes takes an artifact only by the ID in a job output, never by name,
+  and checks it with `packaging/tree_digest.py` against the digest the job
+  that made it passed on.
+- Offline mode (`offline.py`, docs/offline.md): every outbound connection Lumi
+  makes goes through the central check, and only this computer and
+  `offline.allowed_hosts` are reachable. Build HTTP clients with
+  `net.client_options(..., feature=...)`, which checks each request and
+  redirect before it connects; where an address leaves Lumi's process (Git,
+  Chrome, WinSparkle, Sparkle, a browser sign-in) call `offline.refusal` or
+  `check_url` first; a provider or tool that reaches the network is refused
+  with the reason (`backend_refusal`, `tool_refusal`), never silently
+  dropped. That refusal comes before DLP (`Session._model_stream`,
+  `should_plan`, `request_purpose`): a request that can't be sent is neither
+  DLP-checked nor recorded. Locality is decided from the name as written, never by resolving
+  it, and only plain host names match allowed hosts. Read the settings
+  through `SettingsManager.get`; when a policy turns it on, only the policy's
+  hosts apply, and a policy that can't be used keeps it on with no allowed
+  hosts. The audit-hook lookup check is a backstop, not the enforcement
+  point. Offline licenses (`license.py`) verify only against built-in or
+  machine-set keys (no key file on Windows) and lock nothing; an update from
+  a file (`update_file.py`) passes the same EdDSA check as WinSparkle's and
+  takes its version from the signed installer, never the unsigned feed.
+  Machine folders on Windows come from the OS (`policy._known_folder`), never
+  from environment variables a person can set.
 - Lumi Cloud (`cloud.py`): the sign-in's refresh token and the device's private
   key live in `api_keys` (`lumi_cloud_refresh`, `lumi_cloud_device_key`), in the
   credential store; status sent to the page never includes them. Check-ins
   send versions, usage counts per model and turn outcome counts
   (`activity.py`), never prompts, code, paths or titles. A downloaded policy applies only when it verifies against machine
   keys, or keys pinned when the person joined, and a joined organization
-  never replaces a machine policy (`policy._with_cloud_policy`).
+  never replaces a machine policy (`policy._with_cloud_policy`). The
+  account's tokens go only to the Lumi Cloud that issued them
+  (`CloudClient.account_url`, recorded when a sign-in completes, never by an
+  enrollment or a lock): refresh, `account_call`, `account_token` and
+  revocation use it, and a computer that now uses another Lumi Cloud counts as
+  signed out there. Read the issuer and the token together
+  (`_credentials`, under `_lock`) and send the token to that issuer, never to
+  an address read again; `account_token(destination, user_id=...)` refuses
+  any other destination or person; a refresh a sign-in or sign-out overtook
+  stores nothing; `_adopt` swaps a completed sign-in in one step and the old
+  one is revoked where it was issued. Device requests (tokens, check-ins,
+  policy downloads, leaving, tasks from chat, oversight) go only to the
+  enrollment's address (`device["url"]`, `device_call`'s `expect`); a
+  computer using another Lumi Cloud counts as enrolled elsewhere, and a
+  machine policy's `cloud.url` that differs ends the old enrollment there
+  and enrolls at the new address. Compare addresses with `same_address`,
+  never as strings. A policy's `settings` never lock `cloud.*` keys other
+  than `cloud.remote_tasks`; Lumi Cloud addresses never carry a user name.
+- Organization oversight (`oversight.py`, `security_flags.py`) is the only
+  path that sends people's turns to Lumi Cloud: off unless the policy's
+  `oversight` section asks (a key or version Lumi doesn't know turns it off,
+  never the policy), only to the Lumi Cloud that policy came from. While it
+  is in force, nothing reaches a model until the person confirmed the
+  notice for that policy on this computer (`oversight.admit`, asked by
+  `Session.run` before each turn and each model request, and
+  `oversight.refusal` at entry points outside a turn: the app's message
+  box, plans, missions, autonomous sessions, Team's `policy_refusal` and
+  `TeamGovernance.refusal`, model comparisons, evaluations, dictation, and
+  requests outside a turn: planning classification, titles, structured
+  repair, `[vision]` checks, skill extraction). A new entry point runs
+  through `Session.run` and refuses before it starts, and a new request
+  outside a turn asks too; `TestEveryPath` fails if code calls the turn
+  loop another way. Confirmation (`oversight.acknowledge`)
+  comes only from a person: the notice's own button, on a trusted click or
+  key press (never a status push, a timer, a painted page, a script's click
+  or a panel, and focus never moves onto it), a typed yes at
+  an interactive terminal, or a gateway chat's button or reply for that
+  chat, always with the notice text it showed. It is a record signed with
+  the device key (`CloudClient.sign_as_device`), kept locally and sent in
+  the background to `/api/v1/oversight/acknowledgments` (from a managed
+  computer with the signed-in person's `Lumi-Account-Token`); a kept record
+  counts only while it verifies with that key and covers the notice in
+  force (fingerprint, the full SHA-256, and the text's SHA-256). Only a
+  surface that sets `Session.oversight_unattended` runs unconfirmed, under
+  the policy's `oversight.unattended` (`record` or `block`): scheduled
+  tasks and `lumi run`, when their environment has no terminal at all
+  (`headless._terminal_attached`); a caller can say someone is there
+  (Run now), never that nobody is. Every record carries its `trigger` and
+  `unattended`. Dictation, Engram writes and `lumi extension check`'s prompt
+  wait for the notice too. Under offline mode, or a policy that can't be
+  used (which keeps offline mode on with no hosts), records and
+  confirmations wait unsent, never deleted, and Settings never says
+  oversight is off for such a policy. Anything shared passes
+  `secret_scan.redact_for_sharing` and then the DLP rules (`dlp.shareable`,
+  which may withhold it) before it is cut; file contents and tool output
+  never leave, and excluded files and their patterns are never named. A flag's `rule` is a label from `security_flags.RULES`, never free
+  text; what someone wrote goes only in the excerpt, which goes only with
+  messages. Session titles go only with messages. Patterns that run on tool
+  output must take linear time. Refusals carry `denied_by` on their
+  `tool.result` for the flags; a new place that refuses a tool call should
+  set it. Tests use fake clients, never a real Lumi Cloud.
 - `lumi run` (`headless.py`) builds its session from the same pieces as the
   app: `engine/policies.project_execution_policy`, `ExclusionRules`, workspace
   trust and policy checks. Keep the two in step, and never let a headless run
@@ -167,6 +363,46 @@ host enrollment and actual packaged/learned-benefit qualification remain open.
   scoped with the project's approved pack hooks, as a chat session gets. A
   runner built without it loads `HookRunner(settings)`. A new place that
   builds a Session for the person must attach their hooks too.
+
+- The Team preview (`engine/swarming/`, `gui/swarming.py`, `services/governance/`,
+  docs/swarming.md) is off by default. A personal team follows an organization
+  policy through `engine/swarming/organization.TeamGovernance`: a
+  `swarming.enabled` lock stops all its new work; each model it runs (the
+  orchestrator's, the workers') passes `model_allowed` at start and before
+  each participant, and each request is checked against its own attempt's
+  grant model; writers need `auto-edit` or `bypass`, and applying checked
+  changes needs `bypass`; the owner's checks pass the guardrails,
+  `check_floor` and the organization's shell rules (a `prompt` refuses), each
+  argument and each command from an argument on too, and a check needing a
+  second person, or a writer team while the shell sandbox is on, is refused.
+  The host's execution guard checks every request against the budgets before
+  reserving it (`RequestRefused` is a known outcome) and records its usage
+  (`team`) under the grant's model; a guarded session neither checks budgets
+  nor records usage itself. A worker process gets its model key only in its
+  start message, starts with an environment without credentials
+  (`process_worker.worker_environment`), gets the app's secret-scan switch and
+  scans for its own credentials. Team events go to the audit log.
+  `service.policy_refusal` still refuses sharing and organization-managed teams
+  under a policy, apart from reading, stopping, revoking and recovery
+  (including `recover`). A new place that starts team participants must check
+  `dispatch_refusal` first and give the runner its governance. Workers get the
+  project's file exclusions (`SwarmRuntime.exclusions_for`), in-process and
+  through the child contract, and refuse hooks. Participants run only on
+  adapters that declare `supervised_requests` (`lumi/backends.py`: one
+  `stream()` is one generation under `_supervised_single_request`, and an
+  error says whether anything was generated, which only a provider's refusal
+  before any output (a rate limit or an overload) establishes; an adapter that
+  overrides `stream()` keeps that itself) and hold a model key, never a
+  sign-in (`engine/swarming/connections.py`; every place that creates or
+  continues a team, shared-work teams and recovery included, checks the key
+  before it creates state or attaches); never Codex or Claude Code, whose own
+  tool loops a team can't scope or count. A worker child keeps its host channel off
+  standard input and output (`process_worker.stdio_pipes`), and code it runs
+  must not rely on an inherited stdin. `@team:<run>` attaches only the
+  conversation's own personal team, read-only, as model-written context with
+  secrets removed (`swarming/chat_context.py`). CI runs `tests/test_swarm_*.py` in
+  `team-tests.yml` (path-filtered, and on every push to main), not in
+  `tests.yml`; a local `python -m pytest -q` still runs them.
 
 ## Working in the codebase
 
@@ -253,6 +489,15 @@ host enrollment and actual packaged/learned-benefit qualification remain open.
 - Never silently use a system/install directory as the project. Respect the
   sandbox and permission modes; writer worktrees must not reset, stash, or merge
   over a dirty user checkout. `working_subdir` may narrow, never broaden, scope.
+- Remove Lumi's worktrees only with `lumi/worktree_removal.py`, never
+  `git worktree remove --force` or `git worktree prune`: Git for Windows follows a
+  junction inside a worktree and deletes its target's files, and prune forgets
+  the person's own worktrees whose folders are away. Delete a team branch only at
+  the commit the team recorded, right after its own worktree and after reading
+  again whether it is checked out, rebased or bisected; keep an ended team's
+  unapplied work until the person discards it, and a folder left with a branch
+  someone committed to until they remove it in the panel; never tell the person
+  to delete one by hand (`engine/swarming/cleanup.py`).
 - Long foreground workers use `job_start`, `job_status`, and `job_cancel`.
   Ordinary shell children are cleaned up at tool completion. Managed jobs are
   project-owned, limited to20minutes, and stopped on client exit; explicit
@@ -294,6 +539,29 @@ host enrollment and actual packaged/learned-benefit qualification remain open.
   Lumi's replies and one line per action, never tool results, after
   `secret_scan` removes saved keys and secret patterns. Keep new event kinds
   out of the copy unless they carry only what the person or Lumi said.
+- Feedback (`feedback.py`, `static/feedback_view.js`, docs/feedback.md) goes
+  to `feedback.destination` (`privacy.feedback_url`, the build's address,
+  else the Lumi Cloud in use) as `POST /api/v1/feedback` with an
+  `Idempotency-Key`, through `net.client_options`, after offline mode (which
+  refuses before anything is prepared; its copy is only what was typed),
+  `secret_scan` with patterns on and `dlp.check_text` (purpose `feedback`,
+  diagnostics as mixed). Drafts use only local rules (`service=False`);
+  Send checks the reviewed report again with the DLP service, and a changed
+  report goes back for review. Only Lumi Cloud's acknowledgment (the key
+  echoed) counts as delivered. A report is bound to its destination when
+  written and goes nowhere else; one written with none waits for
+  `send_held` (as the account its button names). The account token goes
+  only to the Lumi Cloud that issued it, asked for per report
+  (`account_token(url, user_id=writer)`); a 401 refreshes once, then waits
+  for a sign-in. A report written with the account goes only with its
+  writer's account; `send_without_account` is the person's explicit choice.
+  The check at Send re-runs DLP on the text before DLP (`Prepared.source`)
+  and compares; a kept report is checked again only when `_dlp_rules`
+  changed, and then on what was reviewed.
+  `privacy.feedback` and `privacy.feedback_diagnostics` are the
+  organization's switches. The queue's read-modify-writes take the lock every
+  Lumi process takes. Audit records name the kind and size, never the text,
+  reply-to or install id.
 - The team library (`team_library.py`) is the organization's published
   skills and prompts, synced from Lumi Cloud into `team/library.json` and
   deleted on sign-out. Team skills are listed for the agent like pack skills
@@ -328,6 +596,21 @@ host enrollment and actual packaged/learned-benefit qualification remain open.
   Keep the SDK (`sdk/python/lumi_extension`) standard-library only and the
   protocol backward compatible; a breaking change needs a new
   `manifest_version`. Tests start real providers with `sys.executable`.
+- Capability-pack panels (`gui/extension_panels.py`, `static/panels_view.js`,
+  docs/extensions.md#panels) never run in the app's origin: an `<iframe
+  sandbox="allow-scripts">`, never `allow-same-origin`, whose files come only
+  from `/panels/<panel token>/` with their own Content-Security-Policy
+  (`connect-src 'none'`, `sandbox allow-scripts`). Each request checks the
+  pack again and serves only files the approval covered, as approved. The
+  bridge answers only that frame (`event.source`, origin `"null"`): the
+  project name and theme; composer text that is never sent, is checked with
+  the server first, and never starts the message with `!` or `/` or carries
+  an attaching @mention; a notice marked as the pack's. A panel can't close
+  itself (Escape comes over the bridge script's private port), and focus
+  never returns to the composer. Widening the bridge needs a security review.
+  The desktop window refuses bridge calls that aren't plain identifiers
+  (`webview_bridge.checked_bridge_call`); only WebView2 desktop windows open
+  panels.
 - Pack signatures (`engine/pack_signing.py`, `lumi-pack.sig`) are checked
   whenever a pack loads. They name a pack's publisher and never approve it.
   An invalid signature makes the pack unverifiable. Only the organization's
@@ -369,7 +652,7 @@ python -m ruff check .
 python -m pytest -q
 node --check lumi/gui/static/app.js
 node --check lumi/gui/static/settings_view.js
-node --test tests/ui_recovery.test.cjs tests/appearance.test.cjs tests/autonomous_view.test.cjs tests/vscode_extension.test.cjs tests/voice_input.test.cjs
+node --test tests/ui_recovery.test.cjs tests/appearance.test.cjs tests/autonomous_view.test.cjs tests/vscode_extension.test.cjs tests/voice_input.test.cjs tests/extension_panels.test.cjs tests/feedback_view.test.cjs
 git diff --check
 ```
 
@@ -379,12 +662,33 @@ and commit the locks. A shipped package under GPL, AGPL or LGPL needs a
 `license_reviews` entry in `packaging/third-party-components.json`, or exclusion
 under `not_shipped`; the build fails otherwise.
 
-Use `scripts/build_clean.ps1` for Windows release builds. Never clean a running
+Use `scripts/build_clean.ps1` for Windows release builds, run with PowerShell 7
+(`pwsh`); RELEASING.md lists what else a local build needs. Never clean a running
 bundle; use a separate source copy for a candidate build while testing. The
 script's `-ValidateOnly` checks the running-target guard without cleanup. Verify the packaged
 executable, HTTP UI, WebSocket connection, startup logs, and changed packaged
 assets. Stop only fixture processes you started. See [RELEASING.md](RELEASING.md)
 for publishing and update-feed verification.
+
+Git, Python and Node.js are optional on a user's computer. Code that runs
+`git` treats a program that can't start like a failed command and never lets
+it end a session, and says Git isn't installed only when `git_available()`
+says so (`lumi/git_support.py`, through `safe_git.executable`). Shell
+commands the model or the person asked for run in one `cmd.exe /c`
+(`shell=True`, a reviewed `BY_DESIGN` launch) exactly as in their own
+terminal: never switch its code page or wrap it in another cmd.exe, which
+changes what batch files, long commands and quoted paths do. Python children
+get `PYTHONIOENCODING=utf-8` (`processes.utf8_env`), never `PYTHONUTF8`, which
+changes what `open()` reads and writes; `utf8_env` takes the child's
+environment, `secrets_store.child_env()` for anything the project runs, never
+Lumi's own with its provider keys. Output read as text is decoded with
+`processes.decode_output` (per line: UTF-8, else the OEM or ANSI code page;
+OEM wins a tie for commands) or `OutputDecoder` when read in pieces. Search
+tools print a file's path and its text in different encodings: ripgrep and
+grep run with `--null`, and the path and the text are decoded apart before
+exclusion rules see the path. A command with a timeout runs through
+`processes.run_command`, whose timeout ends every process it started and
+which resolves a program named without a path.
 
 ## Documentation and releases
 

@@ -192,7 +192,7 @@ def test_a_file_named_like_the_start_commit_does_not_empty_the_diff(repo):
     # kept diff would be empty.
     start = subprocess.run(["git", "-C", repo, "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
     (pathlib.Path(repo) / start).write_text("named like the commit", encoding="utf-8")
-    kept = model_evals._keep_diff(SimpleNamespace(id="0123456789"), pathlib.Path(repo), start)
+    kept = model_evals._keep_diff(SimpleNamespace(id="0123456789", project=repo), pathlib.Path(repo), start)
     assert kept["changed_files"] == 1
     assert "+named like the commit" in pathlib.Path(kept["diff"]).read_text(encoding="utf-8").splitlines()
 

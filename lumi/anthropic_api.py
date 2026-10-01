@@ -20,7 +20,6 @@ import json
 import logging
 import os
 import re
-import shutil
 import struct
 import subprocess
 import threading
@@ -33,7 +32,7 @@ from typing import Any, Callable, Iterator, Tuple
 
 import httpx
 
-from . import net
+from . import dlp, net
 from .backends import (
     EVENT_BACKEND_STATUS,
     EVENT_DONE,
@@ -46,6 +45,7 @@ from .backends import (
     _wait_with_cancel,
 )
 from .capabilities import ModelCapabilities, infer_model_capabilities
+from .executables import find_program
 
 logger = logging.getLogger(__name__)
 
@@ -393,13 +393,19 @@ def google_access_token() -> str:
             credentials.refresh(google.auth.transport.requests.Request())
             token = credentials.token or ""
         except ImportError:
-            gcloud = shutil.which("gcloud")
+            # The installed gcloud (a batch file on Windows; its arguments are
+            # fixed), never one from Lumi's working folder (lumi/executables.py).
+            gcloud = find_program("gcloud", scripts=True)
             if gcloud:
+                from .processes import decode_output
+
+                # Bytes: gcloud is a batch file on Windows, and a message in
+                # the console's code page failed a text-mode pipe.
                 result = subprocess.run(
                     [gcloud, "auth", "application-default", "print-access-token"],
-                    capture_output=True, text=True, timeout=30,
+                    capture_output=True, timeout=30,
                 )
-                token = result.stdout.strip() if result.returncode == 0 else ""
+                token = decode_output(result.stdout).strip() if result.returncode == 0 else ""
         except Exception as exc:
             raise ValueError(f"Google credentials unavailable: {exc}") from exc
         if not token:
@@ -414,6 +420,7 @@ def google_access_token() -> str:
 # ── Backend ──────────────────────────────────────────────────────────────
 
 
+@dlp.guard_backend
 class AnthropicBackend(KimiBackend):
     """Claude via the Messages API, directly or through Bedrock or Vertex AI."""
 
@@ -426,6 +433,9 @@ class AnthropicBackend(KimiBackend):
     supports_dynamic_tool_catalog = True
     dynamic_tool_catalog_via_history = False
     supports_remote_cancel = False
+    # stream() takes the conversation's own tool definitions (``offered_tools``)
+    # for a request that offers none (engine/session.py).
+    accepts_offered_tools = True
 
     def __init__(
         self,
@@ -515,6 +525,19 @@ class AnthropicBackend(KimiBackend):
     def capability_profile(self) -> ModelCapabilities:
         return self._capabilities
 
+    @property
+    def uses_sign_in(self) -> bool:
+        """Whether requests authenticate with a sign-in rather than a key.
+
+        Vertex AI always uses Google credentials; Bedrock without a Bedrock
+        API key signs each request with the AWS credential chain; a gateway
+        can sign in with OAuth. Team participants use keys only
+        (engine/swarming/connections.py).
+        """
+        if self._token_provider is not None or self.platform == "vertex":
+            return True
+        return self.platform == "bedrock" and not (self.api_key or os.environ.get("AWS_BEARER_TOKEN_BEDROCK", ""))
+
     @classmethod
     def list_available_models(
         cls,
@@ -531,7 +554,8 @@ class AnthropicBackend(KimiBackend):
             return []
         credential = {"Authorization": f"Bearer {token}"} if token else {"x-api-key": api_key}
         try:
-            with httpx.Client(**net.client_options(timeout=timeout, transport=transport, verify=verify)) as client:
+            with httpx.Client(**net.client_options(timeout=timeout, transport=transport, verify=verify,
+                                                   feature="Anthropic")) as client:
                 response = client.get(
                     f"{str(base_url or DEFAULT_BASE_URL).rstrip('/')}/v1/models",
                     params={"limit": 100},
@@ -548,7 +572,8 @@ class AnthropicBackend(KimiBackend):
         if self.platform != "direct":
             self._auth_headers(b"{}", self._endpoint())  # proves credentials resolve
             return {"status": "ready", "backend": self.name, "models": [self.model]}
-        with httpx.Client(**net.client_options(timeout=10.0, transport=self._transport, verify=self._tls)) as client:
+        with httpx.Client(**net.client_options(timeout=10.0, transport=self._transport, verify=self._tls,
+                                               feature=self.PROVIDER_LABEL)) as client:
             response = client.get(f"{self.base_url}/v1/models", params={"limit": 100},
                                   headers=self._request_headers())
         if response.status_code >= 400:
@@ -618,13 +643,25 @@ class AnthropicBackend(KimiBackend):
                 replay[str(turn.get("call_id") or "")] = blocks
         return replay
 
-    def _payload(self, user_msg, conversation_history, instructions, tools, max_tokens) -> dict:
+    def _payload(self, user_msg, conversation_history, instructions, tools, max_tokens, offered_tools=None) -> dict:
         tool_defs = anthropic_tools(tools)
         chat = KimiBackend._messages(
             self, conversation_history, instructions, user_msg,
             declared_tool_names={tool["name"] for tool in tool_defs},
         )
         system, messages = to_anthropic_messages(chat, self._thinking_by_call(conversation_history))
+        tool_choice = None
+        if not tool_defs and offered_tools and any(block.get("type") in {"tool_use", "tool_result"}
+                                                   for message in messages for block in message["content"]):
+            # A request that offers no tools (plan mode, or a team
+            # participant's last request, engine/session.py) in a conversation
+            # whose history holds tool calls: the API refuses those without
+            # their definitions, and a thinking block's signature binds the
+            # tool set. The conversation's own definitions (``offered_tools``,
+            # passed by its session, never remembered here: one backend serves
+            # many conversations) go out, and tool_choice none lets none run.
+            tool_defs = anthropic_tools(offered_tools)
+            tool_choice = {"type": "none"}
         budget = THINKING_BUDGETS.get(self.thinking_mode, 0)
         if budget and self._open_tool_loop_lacks_thinking(messages):
             # The API rejects a tool-use loop whose assistant turn started
@@ -644,6 +681,8 @@ class AnthropicBackend(KimiBackend):
         if tool_defs:
             tool_defs[-1] = {**tool_defs[-1], "cache_control": dict(_EPHEMERAL)}
             payload["tools"] = tool_defs
+        if tool_choice:
+            payload["tool_choice"] = tool_choice
         if budget:
             payload["thinking"] = {"type": "enabled", "budget_tokens": budget}
         last_user = next((m for m in reversed(messages) if m["role"] == "user"), None)
@@ -761,9 +800,10 @@ class AnthropicBackend(KimiBackend):
         tools: list,
         max_tokens: int | None = None,
         cancel_event=None,
+        offered_tools: list | None = None,
     ) -> Iterator[Tuple[str, dict]]:
         try:
-            payload = self._payload(user_msg, conversation_history, instructions, tools, max_tokens)
+            payload = self._payload(user_msg, conversation_history, instructions, tools, max_tokens, offered_tools)
             body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
             url = self._endpoint()
         except ValueError as exc:
@@ -774,9 +814,18 @@ class AnthropicBackend(KimiBackend):
         response_id = ""
         emitted_text = False
         last_status = 0.0
+        # Under a team's supervision (engine/execution_guard.py) one stream()
+        # is one generation (backends.KimiBackend.supervised_requests): only a
+        # refusal that generated nothing, a rate limit or an overload before
+        # any output, is waited out and sent again, and every error says
+        # whether anything was generated. Otherwise overloads and server
+        # errors are retried as before.
+        supervised = getattr(self, "_supervised_single_request", False)
+        attempts = 4 if supervised else 3
+        stopped = False
         try:
             with httpx.Client(**net.client_options(timeout=self._timeout, transport=self._transport,
-                                                   verify=self._tls)) as client:
+                                                   verify=self._tls, feature=self.PROVIDER_LABEL)) as client:
                 attempt = 0
                 while True:
                     if cancel_event is not None and cancel_event.is_set():
@@ -786,12 +835,17 @@ class AnthropicBackend(KimiBackend):
                     with client.stream("POST", url, headers=headers, content=body) as response:
                         if response.status_code >= 400:
                             error_type, message = self._error_details(response)
-                            retryable = self._is_retryable_error(response.status_code, error_type, message)
+                            # Anthropic sheds load with 529 (overloaded_error)
+                            # before it processes a request, like a rate limit.
+                            overloaded = response.status_code == 529 or error_type == "overloaded_error"
+                            retryable = self._is_retryable_error(response.status_code, error_type, message) and (
+                                not supervised or response.status_code == 429 or overloaded)
                             logger.warning("%s request failed: status=%d type=%s retryable=%s model=%s",
                                            self.PROVIDER_LABEL, response.status_code, error_type or "unknown",
                                            retryable, self.model)
-                            if retryable and attempt < 2:
-                                delay = self._http_retry_delay(response, attempt)
+                            if retryable and attempt < attempts - 1:
+                                delay = (self._rate_limit_delay(response, attempt) if supervised
+                                         else self._http_retry_delay(response, attempt))
                                 yield (EVENT_BACKEND_STATUS, {
                                     "kind": self.RETRY_EVENT_KIND, "status_code": response.status_code,
                                     "attempt": attempt + 1, "max": 3, "model": self.model,
@@ -801,8 +855,13 @@ class AnthropicBackend(KimiBackend):
                                     return
                                 attempt += 1
                                 continue
-                            yield (EVENT_ERROR, {"message": self._user_error_message(
-                                response.status_code, error_type, message)})
+                            yield (EVENT_ERROR, {
+                                "message": self._user_error_message(response.status_code, error_type, message),
+                                # A number, safe to keep where provider text isn't (the guarded ledger).
+                                "status_code": response.status_code,
+                                # An overload refused the request before generating anything.
+                                **({"before_output": True} if overloaded else {}),
+                            })
                             return
                         for event in self._events(response):
                             if cancel_event is not None and cancel_event.is_set():
@@ -845,15 +904,29 @@ class AnthropicBackend(KimiBackend):
                             elif kind == "message_delta":
                                 usage.update(event.get("usage") or {})
                             elif kind == "message_stop":
+                                stopped = True
                                 break
                             elif kind == "error":
                                 error = event.get("error") or {}
                                 error_type = str(error.get("type") or "")
                                 message = str(error.get("message") or "Unknown provider error")
-                                transient = error_type in {"overloaded_error", "api_error"} or "throttl" in error_type.lower() \
-                                    or "unavailable" in error_type.lower()
-                                if transient and attempt < 2:
+                                lowered = error_type.lower()
+                                overload = error_type == "overloaded_error" or "throttl" in lowered or "unavailable" in lowered
+                                # Nothing was generated only when the provider refused to
+                                # serve the request (an overload, throttling or a rate
+                                # limit) before any content block (text, thinking or a
+                                # tool call) started. Any other error, an api_error or
+                                # Bedrock's internalServerException included, may have
+                                # come after generation began, so it stays uncertain.
+                                refused = not blocks and (overload or error_type == "rate_limit_error"
+                                                          or self._is_transient_overload(message))
+                                if supervised:
+                                    again = refused
+                                    delay = min(30.0, 5.0 * (2 ** attempt))
+                                else:
+                                    again = overload or error_type == "api_error"
                                     delay = 1.5 * (2 ** attempt)
+                                if again and attempt < attempts - 1:
                                     yield (EVENT_BACKEND_STATUS, {
                                         "kind": self.RETRY_EVENT_KIND, "status_code": 0,
                                         "attempt": attempt + 1, "max": 3, "model": self.model,
@@ -869,16 +942,25 @@ class AnthropicBackend(KimiBackend):
                                     restart = True
                                     break
                                 yield (EVENT_ERROR, {"message": f"{self.PROVIDER_LABEL} generation failed: {message}",
-                                                     "discard_partial_output": False})
+                                                     "discard_partial_output": False,
+                                                     # The guarded ledger settles only such a
+                                                     # refusal as known: nothing was generated.
+                                                     "before_output": refused})
                                 return
                     if restart:
                         continue
                     break
+            if supervised and not stopped:
+                # A stream cut short isn't a complete response: whatever it
+                # held stays uncertain rather than becoming a finished turn.
+                yield (EVENT_ERROR, {"message": f"{self.PROVIDER_LABEL} response ended before it was complete."})
+                return
         except httpx.TimeoutException:
             yield (EVENT_ERROR, {"message": self._timeout_error_message()})
             return
         except httpx.HTTPError as exc:
-            yield (EVENT_ERROR, {"message": f"{self.PROVIDER_LABEL} connection failed: {type(exc).__name__}"})
+            yield (EVENT_ERROR, {"message": net.offline_message(exc)
+                                 or f"{self.PROVIDER_LABEL} connection failed: {type(exc).__name__}"})
             return
         except ValueError as exc:
             yield (EVENT_ERROR, {"message": str(exc)})

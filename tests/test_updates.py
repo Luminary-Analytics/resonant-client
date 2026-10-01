@@ -36,6 +36,13 @@ class FakeWinSparkle:
         return [args for called, args in self.calls if called == name]
 
 
+@pytest.fixture(autouse=True)
+def _windows_feeds(monkeypatch):
+    # These tests describe WinSparkle and the Windows feeds, whichever OS runs
+    # them (CI runs them on macOS too); tests/test_sparkle.py covers macOS.
+    monkeypatch.setattr(update_channels, "platform_name", lambda: "windows")
+
+
 def write_settings(path, **updates):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps({"updates": updates}), encoding="utf-8")
@@ -62,6 +69,20 @@ class TestPreferences:
         assert UpdatePreferences(channel="beta").feed_url == base + "appcast-beta.xml"
         # A pin wins over the channel.
         assert UpdatePreferences(channel="beta", pin="0.20").feed_url == base + "appcast-0.20.xml"
+
+    def test_macos_reads_its_own_feeds_and_the_windows_ones_keep_their_addresses(self):
+        base = update_channels.FEED_BASE
+        assert UpdatePreferences(platform="macos").feed_url == base + "appcast-macos.xml" == updater.MACOS_APPCAST_URL
+        assert UpdatePreferences(platform="macos", channel="beta").feed_url == base + "appcast-macos-beta.xml"
+        assert UpdatePreferences(platform="macos", channel="beta", pin="0.20").feed_url == base + "appcast-macos-0.20.xml"
+        # Linux never updates itself; it names the Windows feeds as before.
+        assert UpdatePreferences(platform="linux").feed_url == base + "appcast.xml" == updater.APPCAST_URL
+
+    def test_the_running_copy_says_whose_feeds_it_reads(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(update_channels, "platform_name", lambda: "macos")
+        prefs = read(tmp_path / "settings.json", SimpleNamespace(policy=None, error=""))
+        assert prefs.platform == "macos" and prefs.feed_url.endswith("/appcast-macos.xml")
+        assert prefs.as_dict()["platform"] == "macos" and prefs == UpdatePreferences()
 
     def test_settings_json_and_its_mistakes(self, tmp_path):
         path = tmp_path / "settings.json"

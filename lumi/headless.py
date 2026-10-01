@@ -16,6 +16,12 @@ budget that needs approval stops the run. The person's ``permission_request``
 hook may approve a call the mode would ask about, but nothing in ``--mode
 ask`` and no call the organization's policy asks a person about.
 
+Lumi's terms (lumi/terms.py) come first: accepted in the app, at a terminal,
+with ``lumi terms accept`` or by the organization's machine policy, or for
+this run with ``--accept-terms`` or ``LUMI_ACCEPT_TERMS`` naming each
+document's version (``eula-1.0``; ``lumi terms`` shows the value). Someone at
+an interactive terminal can type yes instead.
+
 A repository's own instructions, notes and ``lumi-policy.json`` allow rules
 apply only to trusted projects: ones trusted in the desktop app, or this run
 with ``--trust-project``. Only pass it for repositories you trust, since the
@@ -27,7 +33,8 @@ result (``--output jsonl``). Exit codes:
 
 * 0: the task completed (answered, changed files, or no change was needed);
 * 1: the run failed;
-* 2: the command or its configuration is wrong (no model, no key …);
+* 2: the command or its configuration is wrong (no model, no key, Lumi's
+  terms not accepted …);
 * 3: it stopped for a person: it needs input, is incomplete, was refused an
   action it tried (``denied_calls``), hit a budget, the request limit or
   ``--timeout``.
@@ -45,6 +52,12 @@ import uuid
 from typing import Any, Iterable, TextIO
 
 EXIT_OK, EXIT_FAILED, EXIT_USAGE, EXIT_ATTENTION = 0, 1, 2, 3
+# How long a finished run waits, at most, to send its organization oversight records.
+FLUSH_SECONDS = 5.0
+# The line `lumi run` writes to stderr with the organization's oversight
+# notice (lumi/oversight.py); callers that keep stderr (scheduled tasks,
+# model comparisons) tell it apart from errors by this.
+NOTICE_PREFIX = "lumi run: organization oversight: "
 
 # `--mode ask` is read only: nobody can answer a prompt during a run, so it
 # keeps the suggest tier, whose policy refuses changes outright. The
@@ -139,6 +152,10 @@ def scope_session(session: Any, settings: Any, project: str, *, tier: str, trust
 
     status = WorkspaceTrust().status(project)
     trusted = trust_project or status.trusted
+    if trust_project:
+        from .safe_git import trust_for_this_process
+
+        trust_for_this_process(project)  # Lumi's own Git here, too (lumi/safe_git.py)
     # --trust-project trusts whatever the policy says now, unless --policy-digest
     # names the version to trust; otherwise its allow rules must be the version
     # trusted in the app.
@@ -360,8 +377,156 @@ def exit_code(result: dict) -> int:
     return {"completed": EXIT_OK, "failed": EXIT_FAILED}.get(result["status"], EXIT_ATTENTION)
 
 
+def _interactive(stdin: TextIO, stderr: TextIO) -> bool:
+    """Someone at a terminal can read the notice and answer: stdin and stderr are both terminals."""
+    return _is_terminal(stdin) and _is_terminal(stderr)
+
+
+def _is_terminal(stream: Any) -> bool:
+    """Whether ``stream`` is a terminal. Windows says the NUL device is one (``isatty``); there only a
+    console handle counts. A stream with no descriptor of its own is taken at its word."""
+    try:
+        if stream is None or not stream.isatty():
+            return False
+    except (AttributeError, OSError, ValueError):
+        return False
+    if sys.platform != "win32":
+        return True
+    try:
+        descriptor = stream.fileno()
+    except (AttributeError, OSError, ValueError):
+        return True
+    try:
+        import ctypes
+        import msvcrt
+
+        mode = ctypes.c_ulong(0)
+        handle = ctypes.c_void_p(msvcrt.get_osfhandle(descriptor))
+        return bool(ctypes.windll.kernel32.GetConsoleMode(handle, ctypes.byref(mode)))
+    except Exception:
+        return False
+
+
+def _terminal_attached(*streams: Any) -> bool:
+    """Whether a person may be at a terminal: one of ``streams`` is a terminal, or the process has a
+    controlling terminal.
+
+    Organization oversight counts a run as unattended only when neither is so
+    (lumi/oversight.py): the run's environment says whether anyone is there,
+    never what started it.
+    """
+    return any(_is_terminal(stream) for stream in streams) or _controlling_terminal()
+
+
+def _controlling_terminal() -> bool:
+    """POSIX: ``/dev/tty`` opens. Windows: a console window, in an interactive session (not session 0)."""
+    return _windows_console() if sys.platform == "win32" else _posix_tty()
+
+
+def _posix_tty(opener: Any = os.open, closer: Any = os.close) -> bool:
+    try:
+        descriptor = opener("/dev/tty", os.O_RDONLY | getattr(os, "O_NOCTTY", 0))
+    except OSError:
+        return False
+    closer(descriptor)
+    return True
+
+
+def _windows_console() -> bool:
+    try:
+        import ctypes
+
+        kernel32 = ctypes.windll.kernel32
+        if not kernel32.GetConsoleWindow():
+            return False  # a windowless process: Task Scheduler's, or started without a console
+        session = ctypes.c_ulong(0)
+        if kernel32.ProcessIdToSessionId(kernel32.GetCurrentProcessId(), ctypes.byref(session)) and not session.value:
+            return False  # session 0 runs services: nobody sees its consoles
+        return True
+    except Exception:
+        return False
+
+
+def _accept_terms(value: str, *, can_ask: bool, stdin: TextIO, stderr: TextIO) -> int | None:
+    """Lumi's terms before anything is set up to reach a model (lumi/terms.py); None to go on, else an exit code.
+
+    Accepted already (in the app, at a terminal, with ``lumi terms accept``, or by the machine policy),
+    or now: ``--accept-terms`` or ``LUMI_ACCEPT_TERMS`` naming each document's current version, both
+    recorded like any acceptance, or a typed yes from someone at an interactive terminal. Nobody there
+    and nothing named: a usage error that says how to accept them. A wrong value raises TermsError.
+    """
+    from . import terms
+
+    if not terms.pending(use_environment=False):
+        return None
+    environment = os.environ.get(terms.ENVIRONMENT, "").strip()
+    if value or environment:
+        terms.accept_value(value or environment, "flag" if value else "environment")
+        return None
+    if not can_ask:
+        stderr.write(f"lumi run: {terms.refusal('headless')}\n")
+        return EXIT_USAGE
+    waiting = terms.pending()
+    stderr.write("lumi run: before Lumi sends anything to a model, accept its terms:\n")
+    for line in terms.terminal_summary(waiting):
+        stderr.write(f"{line}\n")
+    stderr.write("lumi run: type yes to accept them and start, anything else to stop: ")
+    stderr.flush()
+    try:
+        answer = stdin.readline()
+    except (OSError, ValueError):
+        answer = ""
+    from .oversight import is_yes
+
+    if not is_yes(answer):
+        stderr.write("lumi run: nothing was sent; Lumi's terms weren't accepted.\n")
+        return EXIT_ATTENTION
+    if not terms.accept({doc.id: doc.version for doc in waiting}, "terminal"):
+        stderr.write("lumi run: Lumi's terms changed while you read them; nothing was sent. Run the command again.\n")
+        return EXIT_ATTENTION
+    return None
+
+
+def _confirm_oversight(gate: Any, settings: Any, stdin: TextIO, stderr: TextIO) -> bool:
+    """Ask the person at this terminal to confirm the organization's notice; True once they typed yes."""
+    from . import oversight
+    from .cloud import CloudClient
+
+    stderr.write("lumi run: nothing is sent to a model until you confirm you've read this notice. "
+                 "Type yes to confirm and start, anything else to stop: ")
+    stderr.flush()
+    try:
+        answer = stdin.readline()
+    except (OSError, ValueError):
+        answer = ""
+    if not oversight.is_yes(answer):
+        stderr.write("lumi run: nothing was sent.\n")
+        return False
+    try:
+        confirmed = oversight.acknowledge(gate.fingerprint, "terminal", notice=gate.text,
+                                          signer=CloudClient(settings).sign_as_device)
+    except oversight.ConfirmationError as exc:
+        stderr.write(f"lumi run: {exc}\n")
+        return False
+    if not confirmed:
+        stderr.write("lumi run: the organization's notice changed while you read it; nothing was sent. "
+                     "Run the command again to see the current notice.\n")
+        return False
+    return True
+
+
 def main(argv: list[str] | None = None, *, stdin: TextIO | None = None, stdout: TextIO | None = None,
-         stderr: TextIO | None = None) -> int:
+         stderr: TextIO | None = None, trigger: str = "", attended: bool = False) -> int:
+    """``lumi run``.
+
+    ``trigger`` names what started it for organization oversight
+    (``schedule`` for a scheduled task, which never asks); by default a run
+    with someone at a terminal is ``terminal`` and any other ``headless``.
+    Whether anyone is there comes from the environment: the run is
+    unattended only when none of its standard streams is a terminal and the
+    process has no controlling terminal. ``attended`` (the app's Run now)
+    can only say someone is there: such a run needs the notice confirmed.
+    """
     stdin, stdout, stderr = stdin or sys.stdin, stdout or sys.stdout, stderr or sys.stderr
     parser = argparse.ArgumentParser(prog="lumi run", description="Run one task without a UI and report the result.")
     parser.add_argument("prompt", nargs="?", default="", help="the task, or '-' to read it from stdin")
@@ -385,6 +550,9 @@ def main(argv: list[str] | None = None, *, stdin: TextIO | None = None, stdout: 
     parser.add_argument("--max-requests", type=int, default=0, help="stop after this many model requests")
     parser.add_argument("--timeout", type=float, default=0, help="stop after this many seconds")
     parser.add_argument("--output", choices=("json", "text", "jsonl"), default="json")
+    parser.add_argument("--accept-terms", default="", metavar="VALUE",
+                        help="accept Lumi's terms for this computer user, naming each document's version as "
+                             "`lumi terms` shows it (for example eula-1.0); LUMI_ACCEPT_TERMS does the same")
     args = parser.parse_args(argv)
 
     started = time.time()
@@ -401,10 +569,18 @@ def main(argv: list[str] | None = None, *, stdin: TextIO | None = None, stdout: 
         if args.handoff:
             prompt = _with_handoff(prompt, args.handoff, project)
         settings = SettingsManager()
+        if settings.load_error:
+            # Kept as it is and never written over (gui/settings.py); defaults apply to this run.
+            stderr.write(f"lumi run: {settings.load_error}\n")
         _configure(settings)
         refusal = blocked_reason()
         if refusal:
             raise UsageError(refusal)
+        # Lumi's terms (lumi/terms.py): accepted before anything that could reach a model is set up.
+        stopped = _accept_terms(args.accept_terms, can_ask=trigger != "schedule" and _interactive(stdin, stderr),
+                                stdin=stdin, stderr=stderr)
+        if stopped is not None:
+            return stopped
         provider = (args.provider or str(settings.get("general", "default_backend", "") or "")).strip().lower()
         if not provider:
             raise UsageError("Choose a provider with --provider (or set LUMI_PROVIDER).")
@@ -424,6 +600,53 @@ def main(argv: list[str] | None = None, *, stdin: TextIO | None = None, stdout: 
     except (UsageError, ValueError, OSError) as exc:
         stderr.write(f"lumi run: {exc}\n")
         return EXIT_USAGE
+    # Organization oversight (lumi/oversight.py), before anything starts: the
+    # notice, then a typed yes from someone at an interactive terminal. A run
+    # with nobody at a terminal (a schedule, CI: none of its streams is a
+    # terminal, and no controlling terminal) is unattended: it runs if this
+    # computer user confirmed the notice, or under the policy's
+    # `oversight.unattended` ("record" prints the notice with the output and
+    # records the run; "block" refuses it). Anyone there who can't answer
+    # here (a task piped in) confirms the notice in the app first.
+    from . import oversight
+
+    present = attended or _terminal_attached(stdin, stdout, stderr, sys.__stdin__, sys.__stdout__, sys.__stderr__)
+    can_ask = trigger != "schedule" and _interactive(stdin, stderr)
+    session.oversight_trigger = trigger or ("terminal" if present else "headless")
+    session.oversight_unattended = not present
+    gate = oversight.for_terminal(unattended=not present)
+    notice = gate.notice
+    if notice:
+        stderr.write(f"{NOTICE_PREFIX}{notice}\n")
+    if gate.refusal:
+        stderr.write(f"lumi run: {gate.refusal}\n")
+        return EXIT_USAGE
+    if gate.confirm:
+        if not can_ask:
+            stderr.write(f"lumi run: {oversight.refusal('terminal')}\n")
+            return EXIT_ATTENTION
+        if not _confirm_oversight(gate, settings, stdin, stderr):
+            return EXIT_ATTENTION
+        from .cloud import CloudClient
+
+        # The confirmation unblocks this run now; Lumi Cloud hears of it in the background.
+        threading.Thread(target=oversight.flush, args=(lambda: CloudClient(settings),),
+                         kwargs={"seconds": FLUSH_SECONDS}, daemon=True, name="lumi-run-acknowledgment").start()
+        gate = oversight.for_terminal(unattended=False)
+    shown = {"organization": gate.organization, "notice": gate.text, "trigger": session.oversight_trigger,
+             "unattended": session.oversight_unattended, "acknowledged": gate.acknowledged,
+             "recorded": gate.recorded} if gate.text else None
+    if shown and session.oversight_unattended and gate.recorded:
+        from . import audit
+
+        # Nobody is at the screen: the run's own output and the audit log carry the notice.
+        audit.record("oversight.unattended_run", organization=gate.organization, trigger=session.oversight_trigger,
+                     os_user=oversight.os_user(), acknowledged=gate.acknowledged, run=run_id)
+        if args.output == "text":
+            stdout.write(f"Organization oversight: {gate.text}\n\n")
+        elif args.output == "jsonl":
+            stdout.write(json.dumps({"event": "lumi.oversight", **shown}) + "\n")
+        stdout.flush()
 
     timed_out = threading.Event()
     timer = None
@@ -455,6 +678,9 @@ def main(argv: list[str] | None = None, *, stdin: TextIO | None = None, stdout: 
 
     result = summarize(events, run_id=run_id, provider=provider, model=model, project=project, mode=mode,
                        started=started, timed_out=timed_out.is_set())
+    if shown:
+        # First in the result, so it heads the run's output.
+        result = {"oversight": shown, **result}
     from . import activity
 
     activity.record_turn(events, cancelled=timed_out.is_set())
@@ -466,4 +692,18 @@ def main(argv: list[str] | None = None, *, stdin: TextIO | None = None, stdout: 
         stdout.write("\n")
         stderr.write(f"lumi run: {result['status']} ({result['outcome']}); "
                      f"{result['usage']['calls']} model calls, ${result['usage']['cost_usd']:.4f}\n")
+    if notice:
+        # After the result is out: send this run's oversight records if Lumi
+        # Cloud answers within a few seconds. A request still waiting then is
+        # abandoned (its records stay queued; the app or the next run sends them).
+        try:
+            stdout.flush()
+        except (OSError, ValueError):
+            pass
+        from .cloud import CloudClient
+
+        sender = threading.Thread(target=oversight.flush, args=(lambda: CloudClient(settings),),
+                                  kwargs={"seconds": FLUSH_SECONDS}, daemon=True, name="lumi-run-oversight")
+        sender.start()
+        sender.join(FLUSH_SECONDS)
     return exit_code(result)

@@ -5,21 +5,27 @@ Wraps `git` subprocess calls with structured output so the UI can render
 file lists, diff hunks, commit cards, and log tables instead of raw stdout.
 
 Safety rails (mirroring the project's git policy):
-- NEVER pass --no-verify (do not skip hooks)
+- NEVER pass --no-verify: a commit runs the hooks of a trusted project
 - NEVER pass --amend (always create new commits)
 - NEVER inject Co-Authored-By lines automatically
 - NEVER force-push (push isn't even exposed here)
+
+Git runs through lumi/safe_git.py: the installed Git, none of the programs
+a repository's settings name (hooks only for a trusted project's commit),
+and no Git at all in an untrusted project whose settings name programs,
+which the tools report as an error that says to trust the project.
 """
 
 from __future__ import annotations
 
+import functools
 import subprocess
 import time
 import os
 from pathlib import Path
 from typing import Optional
 
-from lumi.processes import background_process_kwargs
+from lumi.safe_git import GitRefused, run as _safe_git, status_entries
 
 from .tools import ToolResult
 
@@ -27,37 +33,47 @@ from .tools import ToolResult
 # ── Internal helpers ─────────────────────────────────────────────────────
 
 
-def _run_git(args: list[str], cwd: Path | str, *, timeout: float = 30.0) -> tuple[int, str, str]:
-    """Run `git <args>` in `cwd` without a shell. Returns (returncode, stdout, stderr)."""
-    cmd = ["git"] + args
+def _run_git(args: list[str], cwd: Path | str, *, timeout: float = 30.0, trusted: bool | None = None,
+             hooks: bool = False, input: str | None = None) -> tuple[int, str, str]:
+    """Run `git <args>` in `cwd` without a shell. Returns (returncode, stdout, stderr).
+
+    Raises GitRefused (lumi/safe_git.py); the exec_* wrappers report it.
+    """
     try:
-        proc = subprocess.run(
-            cmd,
-            cwd=str(cwd),
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=timeout,
-            shell=False,
-            **background_process_kwargs(),
-        )
+        proc = _safe_git(cwd, *args, trusted_project=trusted, hooks=hooks, input=input, timeout=timeout)
         return proc.returncode, proc.stdout or "", proc.stderr or ""
     except subprocess.TimeoutExpired:
         return -1, "", f"git timed out after {timeout}s"
-    except FileNotFoundError:
-        return -1, "", "git executable not found on PATH"
+    except OSError as exc:
+        from lumi.git_support import start_failure_message
+
+        return -1, "", start_failure_message(exc, cwd=cwd)
 
 
-def _is_git_repo(cwd: Path | str) -> bool:
-    rc, out, _ = _run_git(["rev-parse", "--git-dir"], cwd, timeout=5.0)
+def _reports_refusal(empty: dict):
+    """No Git allowed in this project (lumi/safe_git.py): the result says why, like any Git error."""
+    def wrap(function):
+        @functools.wraps(function)
+        def call(*args, **kwargs):
+            try:
+                return function(*args, **kwargs)
+            except GitRefused as refused:
+                return {**empty, "error": str(refused), "git_refused": True}
+        return call
+    return wrap
+
+
+def _is_git_repo(cwd: Path | str, trusted: bool | None = None) -> bool:
+    rc, out, _ = _run_git(["rev-parse", "--git-dir"], cwd, timeout=5.0, trusted=trusted)
     return rc == 0 and bool(out.strip())
 
 
 # ── Status ──────────────────────────────────────────────────────────────
 
 
-def git_status(cwd: Path | str) -> dict:
+@_reports_refusal({"branch": None, "staged": [], "unstaged": [], "untracked": [], "clean": True, "ahead": 0,
+                   "behind": 0})
+def git_status(cwd: Path | str, *, trusted: bool | None = None) -> dict:
     """
     Returns a structured snapshot of the working tree.
 
@@ -70,12 +86,13 @@ def git_status(cwd: Path | str) -> dict:
         "clean": bool,
     }
     """
-    if not _is_git_repo(cwd):
+    if not _is_git_repo(cwd, trusted):
         return {"error": "not a git repository", "branch": None, "staged": [], "unstaged": [], "untracked": [], "clean": True, "ahead": 0, "behind": 0}
 
+    # -z: names exactly as they are (spaces, other scripts, no quoting).
     rc, out, err = _run_git(
-        ["status", "--porcelain=v1", "-b", "--untracked-files=normal"],
-        cwd,
+        ["status", "--porcelain=v1", "-z", "-b", "--untracked-files=normal"],
+        cwd, trusted=trusted,
     )
     if rc != 0:
         return {"error": err.strip() or "git status failed", "branch": None, "staged": [], "unstaged": [], "untracked": [], "clean": True, "ahead": 0, "behind": 0}
@@ -87,45 +104,38 @@ def git_status(cwd: Path | str) -> dict:
     unstaged: list[dict] = []
     untracked: list[str] = []
 
-    for line in out.splitlines():
-        if not line:
-            continue
-        if line.startswith("##"):
-            # ## main...origin/main [ahead 1, behind 2]
-            head = line[3:].strip()
-            track_part = ""
-            if " [" in head:
-                head, track_part = head.split(" [", 1)
-                track_part = track_part.rstrip("]")
-            if "..." in head:
-                branch = head.split("...", 1)[0].strip()
-            else:
-                branch = head.strip() or None
-            for token in track_part.split(","):
-                token = token.strip()
-                if token.startswith("ahead "):
-                    try:
-                        ahead = int(token[6:])
-                    except ValueError:
-                        pass
-                elif token.startswith("behind "):
-                    try:
-                        behind = int(token[7:])
-                    except ValueError:
-                        pass
-            continue
+    header, entries = status_entries(out)
+    if header is not None:
+        # main...origin/main [ahead 1, behind 2]
+        head = header.strip()
+        track_part = ""
+        if " [" in head:
+            head, track_part = head.split(" [", 1)
+            track_part = track_part.rstrip("]")
+        if "..." in head:
+            branch = head.split("...", 1)[0].strip()
+        else:
+            branch = head.strip() or None
+        for token in track_part.split(","):
+            token = token.strip()
+            if token.startswith("ahead "):
+                try:
+                    ahead = int(token[6:])
+                except ValueError:
+                    pass
+            elif token.startswith("behind "):
+                try:
+                    behind = int(token[7:])
+                except ValueError:
+                    pass
 
-        # Porcelain entries are: XY <path>
-        if len(line) < 4:
-            continue
-        x, y, _sp, rest = line[0], line[1], line[2], line[3:]
-        path = rest.strip().strip('"')
-
+    for entry in entries:
+        x, y, path = entry["x"], entry["y"], entry["path"]
         if x == "?" and y == "?":
             untracked.append(path)
             continue
         if x != " ":
-            staged.append({"path": path, "status": x})
+            staged.append({"path": path, "status": x, **({"from": entry["from"]} if "from" in entry else {})})
         if y != " ":
             unstaged.append({"path": path, "status": y})
 
@@ -144,11 +154,13 @@ def git_status(cwd: Path | str) -> dict:
 # ── Diff ────────────────────────────────────────────────────────────────
 
 
+@_reports_refusal({"files": [], "total_additions": 0, "total_deletions": 0})
 def git_diff(
     cwd: Path | str,
     *,
     staged: bool = False,
     paths: Optional[list[str]] = None,
+    trusted: bool | None = None,
 ) -> dict:
     """
     Returns structured diff for the working tree (or staged area).
@@ -164,7 +176,7 @@ def git_diff(
         "total_deletions": int,
     }
     """
-    if not _is_git_repo(cwd):
+    if not _is_git_repo(cwd, trusted):
         return {"error": "not a git repository", "files": [], "total_additions": 0, "total_deletions": 0}
 
     args = ["diff", "--no-color"]
@@ -174,7 +186,7 @@ def git_diff(
         args.append("--")
         args.extend(paths)
 
-    rc, out, err = _run_git(args, cwd)
+    rc, out, err = _run_git(args, cwd, trusted=trusted)
     if rc != 0:
         return {"error": err.strip() or "git diff failed", "files": [], "total_additions": 0, "total_deletions": 0}
 
@@ -233,11 +245,13 @@ def git_diff(
 # ── Commit ──────────────────────────────────────────────────────────────
 
 
+@_reports_refusal({})
 def git_commit(
     cwd: Path | str,
     message: str,
     *,
     paths: Optional[list[str]] = None,
+    trusted: bool | None = None,
 ) -> dict:
     """
     Stage `paths` (if given) and create a NEW commit. Never amends.
@@ -245,7 +259,7 @@ def git_commit(
     Returns: {"commit_sha": str, "summary": str, "message": str}
     Or:      {"error": str}
     """
-    if not _is_git_repo(cwd):
+    if not _is_git_repo(cwd, trusted):
         return {"error": "not a git repository"}
 
     msg = (message or "").strip()
@@ -253,41 +267,26 @@ def git_commit(
         return {"error": "commit message is required"}
 
     if paths:
-        rc, _, err = _run_git(["add", "--"] + list(paths), cwd)
+        rc, _, err = _run_git(["add", "--"] + list(paths), cwd, trusted=trusted)
         if rc != 0:
             return {"error": f"git add failed: {err.strip()}"}
 
     # Check if there's anything staged
-    rc, staged_out, _ = _run_git(["diff", "--cached", "--name-only"], cwd)
+    rc, staged_out, _ = _run_git(["diff", "--cached", "--name-only"], cwd, trusted=trusted)
     if rc != 0 or not staged_out.strip():
         return {"error": "nothing staged to commit (run with paths= to stage files first)"}
 
     # Use stdin to pass message — no shell quoting issues, supports multi-line.
-    cmd = ["git", "commit", "--file=-"]
-    try:
-        proc = subprocess.run(
-            cmd,
-            cwd=str(cwd),
-            input=msg,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=30.0,
-            shell=False,
-            **background_process_kwargs(),
-        )
-    except subprocess.TimeoutExpired:
-        return {"error": "git commit timed out"}
-    except FileNotFoundError:
-        return {"error": "git executable not found on PATH"}
+    # The commit someone asked the agent for runs a trusted project's hooks.
+    rc, out, err = _run_git(["commit", "--file=-"], cwd, trusted=trusted, hooks=True, input=msg)
+    if rc == -1 and err:
+        return {"error": err}
+    if rc != 0:
+        return {"error": f"git commit failed: {(err or out).strip()}"}
 
-    if proc.returncode != 0:
-        return {"error": f"git commit failed: {(proc.stderr or proc.stdout).strip()}"}
-
-    rc, sha, _ = _run_git(["rev-parse", "HEAD"], cwd)
+    rc, sha, _ = _run_git(["rev-parse", "HEAD"], cwd, trusted=trusted)
     sha = sha.strip() if rc == 0 else ""
-    summary = (proc.stdout or "").strip().splitlines()
+    summary = (out or "").strip().splitlines()
     summary_line = summary[0] if summary else ""
 
     return {
@@ -301,35 +300,39 @@ def git_commit(
 # ── Branch create ──────────────────────────────────────────────────────
 
 
+@_reports_refusal({})
 def git_branch_create(
     cwd: Path | str,
     branch: str,
     *,
     from_ref: str = "HEAD",
+    trusted: bool | None = None,
 ) -> dict:
     """
     Create AND check out a new branch from `from_ref`. Refuses if branch exists.
 
     Returns: {"branch": str, "from_ref": str, "from_sha": str} or {"error": str}
     """
-    if not _is_git_repo(cwd):
+    if not _is_git_repo(cwd, trusted):
         return {"error": "not a git repository"}
 
     branch = (branch or "").strip()
     if not branch:
         return {"error": "branch name is required"}
+    if branch.startswith("-") or str(from_ref).startswith("-"):
+        return {"error": "a branch or ref can't start with '-'"}
 
     # Check existence first (don't surprise-clobber)
-    rc, _, _ = _run_git(["rev-parse", "--verify", "--quiet", f"refs/heads/{branch}"], cwd)
+    rc, _, _ = _run_git(["rev-parse", "--verify", "--quiet", f"refs/heads/{branch}"], cwd, trusted=trusted)
     if rc == 0:
         return {"error": f"branch '{branch}' already exists"}
 
-    rc, sha, _ = _run_git(["rev-parse", from_ref], cwd)
+    rc, sha, _ = _run_git(["rev-parse", "--verify", from_ref], cwd, trusted=trusted)
     if rc != 0:
         return {"error": f"unknown ref: {from_ref}"}
     from_sha = sha.strip()
 
-    rc, _, err = _run_git(["checkout", "-b", branch, from_ref], cwd)
+    rc, _, err = _run_git(["checkout", "-b", branch, from_ref], cwd, trusted=trusted)
     if rc != 0:
         return {"error": f"git checkout -b failed: {err.strip()}"}
 
@@ -339,18 +342,20 @@ def git_branch_create(
 # ── Log ─────────────────────────────────────────────────────────────────
 
 
+@_reports_refusal({"commits": []})
 def git_log(
     cwd: Path | str,
     *,
     limit: int = 20,
     paths: Optional[list[str]] = None,
+    trusted: bool | None = None,
 ) -> dict:
     """
     Returns recent commits.
 
     {"commits": [{"sha", "short_sha", "author_name", "author_email", "date", "subject"}, ...]}
     """
-    if not _is_git_repo(cwd):
+    if not _is_git_repo(cwd, trusted):
         return {"error": "not a git repository", "commits": []}
 
     limit = max(1, min(int(limit or 20), 200))
@@ -360,7 +365,7 @@ def git_log(
         args.append("--")
         args.extend(paths)
 
-    rc, out, err = _run_git(args, cwd)
+    rc, out, err = _run_git(args, cwd, trusted=trusted)
     if rc != 0:
         return {"error": err.strip() or "git log failed", "commits": []}
 
@@ -412,11 +417,12 @@ def _format_status(data: dict) -> str:
     return "\n".join(lines)
 
 
-def _hide_excluded(data: dict, cwd: Path | str, exclusions, *, keys: tuple[str, ...]) -> int:
+def _hide_excluded(data: dict, cwd: Path | str, exclusions, *, keys: tuple[str, ...],
+                   trusted: bool | None = None) -> int:
     """Drop entries for excluded files (engine/exclusions.py); return how many."""
     if not exclusions or data.get("error"):
         return 0
-    rc, out, _ = _run_git(["rev-parse", "--show-toplevel"], cwd)
+    rc, out, _ = _run_git(["rev-parse", "--show-toplevel"], cwd, trusted=trusted)
     top = out.strip() if rc == 0 and out.strip() else str(cwd)
     hidden = 0
     excluded = exclusions.checker()
@@ -440,10 +446,19 @@ def _excluded_note(hidden: int) -> str:
     return f"\n[{hidden} excluded file{plural} not shown (file exclusion rules)]"
 
 
-def exec_git_status(args: dict, start: float, *, exclusions=None) -> ToolResult:
+def _refused(tool: str, refused: GitRefused, start: float) -> ToolResult:
+    """An untrusted project whose Git settings run programs (lumi/safe_git.py)."""
+    return ToolResult(f"{tool}: {refused}", is_error=True, elapsed=time.time() - start,
+                      metadata={"error": str(refused), "git_refused": True})
+
+
+def exec_git_status(args: dict, start: float, *, exclusions=None, trusted: bool | None = None) -> ToolResult:
     cwd = args.get("cwd") or "."
-    data = git_status(cwd)
-    hidden = _hide_excluded(data, cwd, exclusions, keys=("staged", "unstaged", "untracked"))
+    try:
+        data = git_status(cwd, trusted=trusted)
+        hidden = _hide_excluded(data, cwd, exclusions, keys=("staged", "unstaged", "untracked"), trusted=trusted)
+    except GitRefused as refused:
+        return _refused("git status", refused, start)
     return ToolResult(
         output=_format_status(data) + _excluded_note(hidden),
         is_error=bool(data.get("error")),
@@ -463,14 +478,17 @@ def _format_diff(data: dict) -> str:
     return "\n".join(lines)
 
 
-def exec_git_diff(args: dict, start: float, *, exclusions=None) -> ToolResult:
+def exec_git_diff(args: dict, start: float, *, exclusions=None, trusted: bool | None = None) -> ToolResult:
     cwd = args.get("cwd") or "."
     staged = bool(args.get("staged", False))
     paths = args.get("paths")
     if isinstance(paths, str):
         paths = [paths]
-    data = git_diff(cwd, staged=staged, paths=paths)
-    hidden = _hide_excluded(data, cwd, exclusions, keys=("files",))
+    try:
+        data = git_diff(cwd, staged=staged, paths=paths, trusted=trusted)
+        hidden = _hide_excluded(data, cwd, exclusions, keys=("files",), trusted=trusted)
+    except GitRefused as refused:
+        return _refused("git diff", refused, start)
     if hidden:
         data["total_additions"] = sum(int(f.get("additions", 0)) for f in data["files"])
         data["total_deletions"] = sum(int(f.get("deletions", 0)) for f in data["files"])
@@ -482,24 +500,30 @@ def exec_git_diff(args: dict, start: float, *, exclusions=None) -> ToolResult:
     )
 
 
-def exec_git_commit(args: dict, start: float) -> ToolResult:
+def exec_git_commit(args: dict, start: float, *, trusted: bool | None = None) -> ToolResult:
     cwd = args.get("cwd") or "."
     message = args.get("message", "")
     paths = args.get("paths")
     if isinstance(paths, str):
         paths = [paths]
-    data = git_commit(cwd, message, paths=paths)
+    try:
+        data = git_commit(cwd, message, paths=paths, trusted=trusted)
+    except GitRefused as refused:
+        return _refused("git commit", refused, start)
     if data.get("error"):
         return ToolResult(f"git commit: {data['error']}", is_error=True, elapsed=time.time() - start, metadata=data)
     output = f"[{data['short_sha']}] {data['summary']}"
     return ToolResult(output=output, elapsed=time.time() - start, metadata=data)
 
 
-def exec_git_branch_create(args: dict, start: float) -> ToolResult:
+def exec_git_branch_create(args: dict, start: float, *, trusted: bool | None = None) -> ToolResult:
     cwd = args.get("cwd") or "."
     branch = args.get("branch", "")
     from_ref = args.get("from_ref", "HEAD")
-    data = git_branch_create(cwd, branch, from_ref=from_ref)
+    try:
+        data = git_branch_create(cwd, branch, from_ref=from_ref, trusted=trusted)
+    except GitRefused as refused:
+        return _refused("git branch", refused, start)
     if data.get("error"):
         return ToolResult(f"git branch: {data['error']}", is_error=True, elapsed=time.time() - start, metadata=data)
     return ToolResult(
@@ -522,13 +546,16 @@ def _format_log(data: dict) -> str:
     return "\n".join(lines)
 
 
-def exec_git_log(args: dict, start: float) -> ToolResult:
+def exec_git_log(args: dict, start: float, *, trusted: bool | None = None) -> ToolResult:
     cwd = args.get("cwd") or "."
     limit = int(args.get("limit", 20))
     paths = args.get("paths")
     if isinstance(paths, str):
         paths = [paths]
-    data = git_log(cwd, limit=limit, paths=paths)
+    try:
+        data = git_log(cwd, limit=limit, paths=paths, trusted=trusted)
+    except GitRefused as refused:
+        return _refused("git log", refused, start)
     return ToolResult(
         output=_format_log(data),
         is_error=bool(data.get("error")),

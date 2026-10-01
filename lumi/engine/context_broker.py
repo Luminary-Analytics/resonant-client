@@ -10,7 +10,6 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
-from lumi.processes import background_process_kwargs
 from ..paths import project_dirs
 
 
@@ -69,6 +68,9 @@ class ContextBroker:
         self.codebase_index = codebase_index
         self._providers: dict[str, Provider] = {}
         self._pinned: dict[str, ContextItem] = {}
+        # Reads one of this conversation's teams for ``@team:`` (gui/swarming.py);
+        # the app sets it, so other surfaces attach no teams.
+        self.team_reader: Callable[[str], dict[str, str]] | None = None
         self.register("file", self._file)
         self.register("symbol", self._symbol)
         self.register("diff", self._diff)
@@ -80,12 +82,13 @@ class ContextBroker:
         self.register("plan", self._plan)
         self.register("issue", self._issue)
         self.register("handoff", self._handoff)
+        self.register("team", self._team)
 
     def register(self, name: str, provider: Provider) -> None:
         self._providers[str(name).strip().lower()] = provider
 
     # Attachments that stay for the rest of the conversation once mentioned.
-    STICKY = frozenset({"handoff"})
+    STICKY = frozenset({"handoff", "team"})
 
     def recall(self, texts: list[str]) -> None:
         """Attach sticky mentions from earlier messages again, as when a conversation is reopened."""
@@ -187,7 +190,9 @@ class ContextBroker:
         return results
 
     def _diff(self, selector: str) -> ContextItem | None:
-        args = ["git", "diff"]
+        from lumi.safe_git import GitRefused, run as git
+
+        args = ["diff"]
         if selector not in {"working", "workspace", "current", "."}:
             # A selector is a revision; one starting with '-' would be read as
             # an option (for example --output=<file>, which writes a file).
@@ -198,16 +203,22 @@ class ContextBroker:
         if self.exclusions:
             # Only exclude pathspecs: git diffs everything else.
             args.extend(self.exclusions.git_pathspecs())
-        result = subprocess.run(
-            args,
-            cwd=self.project_path,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            check=False,
-            **background_process_kwargs(),
-        )
+        # The installed Git without the programs a repository's settings
+        # name, and none at all in an untrusted project whose settings name
+        # some (lumi/safe_git.py): the attachment then says why. Without Git,
+        # or in a folder that is gone, it says that instead of dropping the
+        # mention silently (git_support.start_failure_message).
+        try:
+            result = git(self.project_path, *args)
+        except GitRefused as refused:
+            return self._item("diff", selector, str(refused), "git-refused")
+        except OSError as exc:
+            from ..git_support import start_failure_message
+
+            return self._item("diff", selector, start_failure_message(exc, "Attaching @diff needs",
+                                                                      cwd=self.project_path), "git")
+        except subprocess.SubprocessError:
+            return None
         if result.returncode != 0:
             return None
         return self._item("diff", selector, result.stdout or "(no changes)", "git")
@@ -302,6 +313,24 @@ class ContextBroker:
             return self._item("handoff", selector, f"Couldn't read hand-off {selector}: {exc}", "error")
         item = self._item("handoff", data["title"], handoff.render(data), source)
         item.id = self._item("handoff", selector, "", "").id  # two hand-offs can share a title
+        self.pin(item)
+        return item
+
+    def _team(self, selector: str) -> ContextItem | None:
+        """A team this conversation ran (engine/swarming/chat_context.py); it stays for the conversation."""
+        from .swarming.models import ScopeDenied
+
+        if self.team_reader is None:
+            return self._item("team", selector, f"Team {selector} can't be attached here.", "error")
+        try:
+            found = self.team_reader(selector)
+        except ScopeDenied:
+            return self._item("team", selector, f"Couldn't attach team {selector}: it isn't one of this "
+                                                "conversation's teams.", "error")
+        except Exception as exc:  # noqa: BLE001 - an unreadable team store must not fail the turn
+            return self._item("team", selector, f"Couldn't attach team {selector}: {type(exc).__name__}.", "error")
+        item = self._item("team", found["label"], found["content"], found["provenance"])
+        item.id = self._item("team", selector, "", "").id  # two teams can share an objective
         self.pin(item)
         return item
 

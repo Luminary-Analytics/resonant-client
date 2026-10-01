@@ -3,15 +3,39 @@ Persistent settings manager for Lumi.
 Reads/writes ~/.lumi/settings.json with section-based access.
 """
 
+import asyncio
 import json
 import logging
+import os
+import stat
+import sys
 import threading
+import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from ..paths import LEGACY_HOME_DIR_NAME, state_home
+from ..secret_scan import SENSITIVE_NAME
 from ..secrets_store import PLACEHOLDER, SecretStore, credential_store_name
 
 logger = logging.getLogger(__name__)
+
+# Another program can hold settings.json for a moment (an antivirus scan, a
+# sync client, another Lumi writing it): reading or writing it is tried
+# again, waiting 0.05 s and twice as long each time, about 1.5 s in all,
+# before Lumi gives up. Never on the event loop, which must not stall: there
+# each step is tried once (_patient).
+_FILE_ATTEMPTS = 6
+_FILE_RETRY_SECONDS = 0.05
+
+# The permission mode a new install starts in: Auto-edit, where file edits
+# inside the project apply without asking and commands and everything else ask
+# (engine/policies.py). New installs started in Full-auto ("bypass") before
+# September 27, 2026. Every earlier first launch wrote that default into
+# settings.json (``_load`` saves the merged defaults), so an existing install
+# keeps the mode its file names; a file without one keeps Full-auto too
+# (``_keep_earlier_permission_mode``).
+DEFAULT_PERMISSION_MODE = "auto-edit"
+EARLIER_DEFAULT_PERMISSION_MODE = "bypass"
 
 DEFAULTS = {
     "general": {
@@ -23,7 +47,7 @@ DEFAULTS = {
         # ("provider:model"), and models for roles ("role provider:model").
         "fallback_models": [],
         "role_models": [],
-        "default_permission_mode": "bypass",
+        "default_permission_mode": DEFAULT_PERMISSION_MODE,
         "theme": "dark",
         "max_model_requests": 0,
         # Sprint workflow (planner / generator / evaluator). Off by default — most
@@ -65,6 +89,14 @@ DEFAULTS = {
         # carry those keys load fine — Python dict tolerance ignores
         # unknown keys; nothing reads them anymore.
     },
+    # Settings > Offline mode (lumi/offline.py): no outbound connections but
+    # this computer and these hosts (names, *.domain, addresses, networks).
+    # An organization's policy can lock either; when it turns offline mode
+    # on, only the hosts it allows apply.
+    "offline": {
+        "enabled": False,
+        "allowed_hosts": [],
+    },
     # Secrets are masked before settings are sent to the frontend.
     "api_keys": {"anthropic": "", "openai": "", "kimi": "", "openrouter": "", "sonn": "", "telegram_bot": "", "otlp": "",
                  "github": "", "gitlab": "", "bitbucket": "", "azure_devops": "", "jira": "", "linear": "", "slack_bot": "", "slack_app": ""},
@@ -72,6 +104,10 @@ DEFAULTS = {
     # with an email it's a Jira Cloud API token, without one a personal access
     # token for Jira Server or Data Center. Linear's key is api_keys.linear.
     "issue_trackers": {"jira_url": "", "jira_email": ""},
+    # GitHub Enterprise Server and self-managed GitLab hosts that may receive the
+    # GitHub or GitLab token, besides github.com and gitlab.com
+    # (engine/github_tools.token_hosts); lockable by policy.
+    "code_hosts": {"github_hosts": [], "gitlab_hosts": []},
     # Agent pull requests wait for these reviewers (engine/review_gate.py); lockable by policy.
     "review": {"agent_changes": False, "reviewers": []},
     # Custom model connections (gateways, Azure, Bedrock, Vertex); see lumi/connections.py.
@@ -115,6 +151,10 @@ DEFAULTS = {
         "max_parallel_readers": 4,
         "max_parallel_writers": 2,
     },
+    "swarming": {
+        "version": 1,
+        "enabled": False,
+    },
     "artifacts": {
         "persist": True,
         "inline_text_limit": 8000,
@@ -136,6 +176,13 @@ DEFAULTS = {
         "audit_log": True,
         "audit_capture": "metadata",
         "audit_retention_days": 365,
+        # Send feedback (lumi/feedback.py): "on" or "off"; diagnostics in it
+        # "allowed" or "never"; and where reports go ("" for the build's
+        # feedback address, else the Lumi Cloud this computer uses). An
+        # organization's policy can lock each.
+        "feedback": "on",
+        "feedback_diagnostics": "allowed",
+        "feedback_url": "",
     },
     # Live OpenTelemetry export of the audit records (OTLP/HTTP JSON). The
     # collector token, if any, is api_keys.otlp.
@@ -151,6 +198,8 @@ DEFAULTS = {
         "chat_gateway": True,     # `lumi gateway` (Telegram)
         "scheduled_tasks": True,  # `lumi schedule`: unattended runs at set times
         "editor_bridge": True,    # VS Code and JetBrains reach Lumi (gui/editor_bridge.py)
+        # Panels from approved capability packs, in a sandboxed frame (gui/extension_panels.py).
+        "extension_panels": True,
         # "project": the agent's commands, jobs and previews run in an OS
         # sandbox that writes only to the project and temporary folders
         # (lumi/engine/os_sandbox.py, macOS and Linux).
@@ -226,7 +275,23 @@ class SettingsManager:
         # Client may share it, and that version would read the placeholder as its key.
         self._secrets = secrets if secrets is not None else SecretStore()
         self._keychain = self._secrets.available and self._path.parent.name != LEGACY_HOME_DIR_NAME
+        # Why settings.json couldn't be read, or "". While it's set, Lumi runs
+        # on defaults and never writes over the file (_save_locked); the app,
+        # the terminal UI and `lumi run` say so.
+        self.load_error = ""
+        # Why the last save didn't reach settings.json, or "" once one does.
+        # Settings and the banner above the message box show it (get_masked).
+        self.save_error = ""
+        # Called with no arguments, without the lock and on the thread that
+        # saved, whenever save_error changes: the app tells the page at once,
+        # whatever saved (AppState._settings_file_changed).
+        self.on_save_error_changed: Callable[[], None] | None = None
         self._load()
+
+    @property
+    def backup_path(self) -> Path:
+        """The copy of settings.json as it was before Lumi last wrote it."""
+        return self._path.with_name(self._path.name + ".bak")
 
     @staticmethod
     def _policy():
@@ -265,6 +330,17 @@ class SettingsManager:
                 return value
             return default
 
+    def stored(self, section: str, key: str, default: Any = None) -> Any:
+        """The value saved in settings.json, whatever an organization policy locks.
+
+        For state Lumi records itself that no policy may stand in for, such as
+        the Lumi Cloud address that issued the sign-in (lumi/cloud.py). Never
+        for ``api_keys``, whose values live in the credential store.
+        """
+        with self._lock:
+            sect = self._data.get(section, DEFAULTS.get(section))
+            return sect.get(key, default) if isinstance(sect, dict) else default
+
     def set(self, section: str, key: str | None, value: Any) -> None:
         """Set a value and persist. set('general', 'theme', 'light') or set('hooks', None, [...])."""
         with self._lock:
@@ -278,7 +354,9 @@ class SettingsManager:
                 if section == "api_keys":
                     value = self._store_secret_locked(key, value)
                 self._data[section][key] = value
-            self._save_locked()
+            changed = self._save_locked()
+        if changed:
+            self._save_error_changed()
 
     def get_all(self) -> dict:
         """Return the full settings dict (deep copy), with policy-locked values applied."""
@@ -302,7 +380,19 @@ class SettingsManager:
                 self._data[section].update(updates)
             else:
                 self._data[section] = updates
-            self._save_locked()
+            changed = self._save_locked()
+        if changed:
+            self._save_error_changed()
+
+    def _save_error_changed(self) -> None:
+        """Tell ``on_save_error_changed`` that a save stopped, or started again, reaching the file."""
+        listener = self.on_save_error_changed
+        if listener is None:
+            return
+        try:
+            listener()
+        except Exception:
+            logger.debug("Couldn't pass on the settings file's state", exc_info=True)
 
     def get_masked(self) -> dict:
         """Return frontend-safe settings data with secret presence metadata."""
@@ -315,6 +405,10 @@ class SettingsManager:
                 data["api_keys"][key] = ""
             meta["api_keys_present"] = present
         meta["secret_storage"] = self.secret_storage()
+        # A settings file Lumi couldn't read: it runs on defaults and saves nothing (_load).
+        meta["load_error"] = self.load_error
+        # A save that didn't reach the file (_save_locked): changes last until Lumi closes.
+        meta["save_error"] = self.save_error
         # What an organization policy manages, for Settings to show and disable.
         from ..policy import load as load_policy
 
@@ -323,6 +417,8 @@ class SettingsManager:
             "active": state.policy is not None,
             "error": state.error,
             "summary": state.policy.summary() if state.policy else None,
+            # Machine files others could have written, which Lumi didn't use: never silently.
+            "ignored": [item.summary() for item in getattr(state, "ignored", ())],
         }
         meta["locked"] = (
             {name: state.policy.organization for name in state.policy.settings} if state.policy else {}
@@ -370,20 +466,78 @@ class SettingsManager:
                 keys[key] = self._store_secret_locked(key, value)
 
     def _load(self) -> None:
-        """Load from disk, merging with defaults for any missing keys."""
+        """Load from disk, merging with defaults for any missing keys.
+
+        Only a missing file is a new install. A file that exists but can't be
+        read or parsed, after the retries a moment's lock needs, is kept as
+        it is: Lumi runs on defaults, says why (``load_error``) and saves
+        nothing over it, since writing defaults there would lose every
+        setting and key it holds.
+        """
         with self._lock:
-            if self._path.exists():
-                try:
-                    self._data = json.loads(self._path.read_text(encoding="utf-8"))
-                except (json.JSONDecodeError, OSError) as exc:
-                    logger.warning(f"Failed to read settings: {exc}")
-                    self._data = {}
-            else:
+            data, error = self._read_locked()
+            if error:
+                self.load_error = error
+                logger.error(error)
                 self._data = {}
+            else:
+                self._data = data if data is not None else {}
+                if data is not None:
+                    self._keep_earlier_permission_mode()
             self._apply_defaults()
             self._migrate()
             self._secure_api_keys_locked()
             self._save_locked()
+
+    def _read_locked(self) -> tuple[dict | None, str]:
+        """The saved settings: (data, ""), (None, "") without a file, or (None, why) when unreadable."""
+        problem = ""
+        wait = _FILE_RETRY_SECONDS
+        for attempt in range(_FILE_ATTEMPTS if _patient() else 1):
+            if attempt:
+                time.sleep(wait)
+                wait *= 2
+            try:
+                # utf-8-sig: Notepad and Windows PowerShell 5.1 can save a byte-order mark.
+                text = self._path.read_text(encoding="utf-8-sig")
+            except FileNotFoundError:
+                return None, ""
+            except UnicodeDecodeError:
+                problem = "it isn't UTF-8 text"
+                continue
+            except OSError as exc:  # held by another program, or not readable at all
+                problem = exc.strerror or str(exc)
+                continue
+            try:
+                data = json.loads(text)
+            except (ValueError, RecursionError) as exc:
+                # Maybe half written by a program that writes in place: try again.
+                problem = f"it isn't valid JSON ({exc})"
+                continue
+            if isinstance(data, dict):
+                return data, ""
+            problem = "it doesn't hold a JSON object"
+            break
+        backup = (f" The settings as Lumi last saved them before that are in {self.backup_path}."
+                  if self.backup_path.is_file() else "")
+        return None, (f"Lumi couldn't read its settings file, {self._path}: {problem}. It's using default "
+                      f"settings for now and won't save any change over that file.{backup} Fix or replace "
+                      "the file, then restart Lumi.")
+
+    def _keep_earlier_permission_mode(self) -> None:
+        """Give a settings file that names no permission mode the earlier default.
+
+        Only a new install starts in Auto-edit. Earlier versions wrote their
+        Full-auto default into settings.json on first launch, so a file without
+        the key, or with an empty one, was written by hand or by another tool,
+        and ran in Full-auto until now. A file that can't be read gets the
+        new default in memory while it's kept as it is (_load).
+        """
+        if not isinstance(self._data, dict):
+            return
+        general = self._data.setdefault("general", {})
+        if isinstance(general, dict) and not str(general.get("default_permission_mode") or "").strip():
+            general["default_permission_mode"] = EARLIER_DEFAULT_PERMISSION_MODE
 
     def _migrate(self) -> None:
         """Retire settings that shipped as defaults and no longer apply.
@@ -424,13 +578,116 @@ class SettingsManager:
                     if key not in self._data[section]:
                         self._data[section][key] = value
 
-    def _save_locked(self) -> None:
-        """Write to disk (caller must hold lock)."""
+    def _save_locked(self) -> bool:
+        """Write to disk (caller must hold lock); True when ``save_error`` changed.
+
+        Never over a file that couldn't be read (``load_error``). The file as
+        it was goes to settings.json.bak first, without its API keys or any
+        other credential (_back_up). Then the new file takes the old one's
+        place in one step, so a crash or a full disk mid-write leaves the old
+        file whole. Windows won't replace a file another program has open
+        (an antivirus scan, a sync client, an editor), whatever it shares, so
+        then, with the backup made, the file is written in place, as Lumi did
+        before. A save that still fails is kept in ``save_error`` for the
+        page to show, never dropped silently.
+        """
+        if self.load_error:
+            logger.warning("Settings weren't saved: settings.json couldn't be read, so it is kept as it is.")
+            return False
+        before = self.save_error
+        # A settings.json that is a link (a dotfiles folder, say) stays one: its target is written.
+        target = Path(os.path.realpath(self._path))
+        temporary = target.with_name(f"{target.name}.{os.getpid()}-{threading.get_ident()}.tmp")
+        content = json.dumps(self._data, indent=2, ensure_ascii=False)
+        patient = _patient()
         try:
-            self._path.parent.mkdir(parents=True, exist_ok=True)
-            self._path.write_text(
-                json.dumps(self._data, indent=2, ensure_ascii=False),
-                encoding="utf-8",
-            )
+            target.parent.mkdir(parents=True, exist_ok=True)
+            temporary.write_text(content, encoding="utf-8")
+            backed_up = False
+            if target.is_file():
+                if sys.platform != "win32":  # keep who may read it (it can hold API keys)
+                    os.chmod(temporary, stat.S_IMODE(target.stat().st_mode))
+                backed_up = self._back_up(target, patient=patient)
+            try:
+                _retry(lambda: os.replace(temporary, target), patient=patient)
+            except OSError:
+                if not backed_up:
+                    raise
+                _retry(lambda: target.write_text(content, encoding="utf-8"), patient=patient)
+            self.save_error = ""
         except OSError as exc:
-            logger.error(f"Failed to save settings: {exc}")
+            reason = exc.strerror or str(exc)
+            self.save_error = (f"Lumi couldn't save its settings to {target}: {reason}. Another program may have "
+                               "the file open. Changes made now last until Lumi closes; close that program, "
+                               "then change the setting again.")
+            logger.error(self.save_error)
+        finally:
+            temporary.unlink(missing_ok=True)
+        return self.save_error != before
+
+    @staticmethod
+    def _back_up(target: Path, *, patient: bool = True) -> bool:
+        """Keep ``target`` as it is now in ``<name>.bak``, without its credentials; True once it's there.
+
+        The copy leaves out every API key and any field named like a
+        credential (``_without_secrets``): the credential store may have just
+        taken them out of settings.json, and a backup must not keep them in
+        plain text. A backup that can't be made doesn't stop the save, which
+        then only replaces the file in one step.
+        """
+        backup = target.with_name(target.name + ".bak")
+        partial = backup.with_name(f"{backup.name}.{os.getpid()}-{threading.get_ident()}.tmp")
+        try:
+            data = json.loads(_retry(lambda: target.read_text(encoding="utf-8-sig"), patient=patient))
+            partial.write_text(json.dumps(_without_secrets(data), indent=2, ensure_ascii=False), encoding="utf-8")
+            if sys.platform != "win32":
+                os.chmod(partial, stat.S_IMODE(target.stat().st_mode))
+            _retry(lambda: os.replace(partial, backup), patient=patient)
+            return True
+        except (OSError, ValueError, RecursionError) as exc:
+            logger.warning(f"Couldn't keep a backup of the settings before saving: {exc}")
+            return False
+        finally:
+            partial.unlink(missing_ok=True)
+
+
+def _without_secrets(data: Any, *, secret: bool = False) -> Any:
+    """``data`` with every credential emptied: API keys and fields named like one (a token, a password).
+
+    A key the OS credential store keeps stays as its placeholder, which
+    holds no secret.
+    """
+    if isinstance(data, dict):
+        return {key: _without_secrets(value, secret=secret or key == "api_keys" or bool(SENSITIVE_NAME.search(str(key))))
+                for key, value in data.items()}
+    if isinstance(data, list):
+        return [_without_secrets(item, secret=secret) for item in data]
+    if secret and isinstance(data, str) and data and data != PLACEHOLDER:
+        return ""
+    return data
+
+
+def _patient() -> bool:
+    """Whether to wait for a file another program holds: not on a thread running an event loop."""
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return True
+    return False
+
+
+def _retry(action: Callable[[], Any], *, patient: bool = True) -> Any:
+    """``action()``, tried again while another program holds the file for a moment; once if not ``patient``."""
+    wait = _FILE_RETRY_SECONDS
+    attempts = _FILE_ATTEMPTS if patient else 1
+    for attempt in range(attempts):
+        try:
+            return action()
+        except FileNotFoundError:
+            raise
+        except OSError:
+            if attempt == attempts - 1:
+                raise
+            time.sleep(wait)
+            wait *= 2
+    return None

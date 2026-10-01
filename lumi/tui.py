@@ -1094,8 +1094,97 @@ def print_banner(backend=None, health_info: dict = None, session: Session = None
         _print(f"    [{C_MUTED}]mode[/{C_MUTED}]     [{C_TEXT}]{mode}[/{C_TEXT}]  "
                f"[{C_DIM}]{_esc(description)}[/{C_DIM}]")
         _print_project_trust(session)
+        # What the organization receives, before the first turn (lumi/oversight.py);
+        # confirm_oversight asks for the typed yes.
+        from .oversight import for_terminal
+
+        shared = for_terminal(unattended=False).notice
+        if shared:
+            _print(f"    [{C_MUTED}]shared[/{C_MUTED}]   [{C_WARN}]{_esc(shared)}[/{C_WARN}]")
     console.print(f"    [{C_MUTED}]help[/{C_MUTED}]     [{C_DIM}]/help · /plan · /model · /backend · /quit[/{C_DIM}]")
     console.print()
+
+
+def confirm_terms() -> bool:
+    """Ask for a typed yes to Lumi's terms before anything reaches a model (lumi/terms.py).
+
+    True when nothing is waiting (accepted in the app, here before, with ``lumi terms accept``, by the
+    organization's machine policy or ``LUMI_ACCEPT_TERMS``) or the person typed yes; the acceptance is
+    recorded. Session.run refuses every turn until then anyway; this is where the person can say yes.
+    """
+    from . import oversight, terms
+
+    waiting = terms.pending()
+    if not waiting:
+        return True
+    console.print()
+    _print(f"  [{C_WARN}]Lumi's terms[/{C_WARN}]  [{C_TEXT}]Accept them before Lumi sends anything to a model:[/{C_TEXT}]")
+    for line in terms.terminal_summary(waiting):
+        _print(f"  [{C_DIM}]{_esc(line.strip())}[/{C_DIM}]")
+    try:
+        answer = pt_prompt(HTML(f'<style fg="#{C_WARN[1:]}">  Type yes to accept them: </style>'))
+    except (EOFError, KeyboardInterrupt):
+        answer = ""
+    if not oversight.is_yes(answer):
+        _print(f"  [{C_DIM}]Nothing was sent; Lumi's terms weren't accepted.[/{C_DIM}]")
+        return False
+    if not terms.accept({doc.id: doc.version for doc in waiting}, "terminal"):
+        _print_refusal("Lumi's terms changed while you read them; nothing was sent.")
+        return False
+    return True
+
+
+def _warm_up(backend, model: str) -> None:
+    """Load ``model`` before the first turn: a model request, so none while the gate refuses (Lumi's terms or
+    the organization's notice, oversight.gate); the backend refuses it itself too (lumi/dlp.py)."""
+    from . import oversight
+
+    if oversight.gate("terminal")[0]:
+        return
+    _print(f"  [{C_DIM}]{G_THINK} Warming up {_esc(model)}[/{C_DIM}]")
+    backend.warm_up()
+
+
+def confirm_oversight(settings) -> bool:
+    """Ask for a typed yes to the organization's oversight notice before anything reaches a model.
+
+    True when nothing needs confirming, or the person typed yes (an
+    acknowledgment from the terminal, signed with this computer's device key
+    and sent to Lumi Cloud in the background; lumi/oversight.py). Session.run
+    refuses every turn until then anyway; this is where the person can say yes.
+    """
+    from . import oversight
+
+    gate = oversight.for_terminal(unattended=False)
+    if not gate.confirm:
+        return True
+    console.print()
+    _print(f"  [{C_WARN}]Organization oversight[/{C_WARN}]  [{C_TEXT}]{_esc(gate.text)}[/{C_TEXT}]")
+    _print(f"  [{C_DIM}]Nothing is sent to a model until you confirm you've read this.[/{C_DIM}]")
+    try:
+        answer = pt_prompt(HTML(f'<style fg="#{C_WARN[1:]}">  Type yes to confirm: </style>'))
+    except (EOFError, KeyboardInterrupt):
+        answer = ""
+    if not oversight.is_yes(answer):
+        _print(f"  [{C_DIM}]Nothing was sent.[/{C_DIM}]")
+        return False
+    client = None
+    if settings is not None:
+        from .cloud import CloudClient
+
+        client = CloudClient(settings)
+    try:
+        confirmed = oversight.acknowledge(gate.fingerprint, "terminal", notice=gate.text,
+                                          signer=client.sign_as_device if client is not None else None)
+    except oversight.ConfirmationError as exc:
+        _print_refusal(str(exc))
+        return False
+    if not confirmed:
+        _print_refusal("The organization's notice changed while you read it; nothing was sent.")
+        return False
+    if client is not None:
+        oversight.start_uploader(client)
+    return True
 
 
 def _print_project_trust(session: Session) -> None:
@@ -1213,8 +1302,9 @@ def _create_backend_from_available(target: str, available: dict):
 
 # The permission modes the terminal runs in, with each one's engine tier, as
 # in the app and the chat gateway. Someone answers here, so Ask asks before
-# changes (in `lumi run`, where nobody can, Ask is read only). The default is
-# Bypass; --approve and `/approve on` choose Ask.
+# changes (in `lumi run`, where nobody can, Ask is read only). It starts in
+# Settings' default permission mode, as the app does (_start_mode); --approve
+# and `/approve on` choose Ask, --full-auto and `/approve off` Bypass.
 MODES = {"ask": "ask", "auto-edit": "auto-edit", "bypass": "full-auto"}
 MODE_DESCRIPTIONS = {
     "ask": "asks before changes and commands",
@@ -1240,6 +1330,34 @@ def _policy_mode(requested: str, *, chosen: bool) -> str:
         usable = f"; here you can use {', '.join(allowed)}" if allowed else ", nor any other mode the terminal has"
         raise ValueError(f"{policy.organization}'s policy doesn't allow {requested} mode{usable}.")
     return allowed[0]
+
+
+def _start_mode(settings, *, approve: bool = False, full_auto: bool = False) -> tuple[str, bool, str]:
+    """The mode the terminal starts in, whether plan mode starts on, and a notice about it.
+
+    --approve (Ask) and --full-auto (Bypass) choose, and a mode the
+    organization's policy doesn't allow is refused (ValueError). Otherwise
+    Settings' default permission mode applies, as the app starts in it
+    (``general.default_permission_mode``): Auto-edit on a new install, or the
+    mode an existing install saved. Plan runs with Auto-edit's approvals and
+    plan mode on (think, show the plan, then act), as the app's Plan does. An
+    unknown saved value fails closed to Ask, and a mode the policy doesn't
+    allow gives way to the first one it allows that the terminal has.
+    """
+    from .gui.settings import DEFAULT_PERMISSION_MODE
+    from .policy import current as current_policy
+
+    if approve or full_auto:
+        return _policy_mode("ask" if approve else "bypass", chosen=True), False, ""
+    saved = str(settings.get("general", "default_permission_mode", "") or "").strip() or DEFAULT_PERMISSION_MODE
+    wanted = saved if saved in MODES or saved == "plan" else "ask"
+    policy = current_policy()
+    if policy is not None and not policy.mode_allowed(wanted):
+        return _policy_mode(wanted if wanted in MODES else "auto-edit", chosen=False), False, \
+            f"{policy.organization}'s policy doesn't allow {wanted}, the default in Settings"
+    if wanted == "plan":
+        return "auto-edit", True, "plan mode is on, as Settings' default is Plan (/plan turns it off)"
+    return wanted, False, ""
 
 
 def _print_refusal(reason: str) -> None:
@@ -1318,6 +1436,12 @@ def run_embedded(session: Session, user_msg: str, images: list = None):
     def on_choice(options):
         """Prompt user for choice selection."""
         return _render_choices(options)
+
+    # Lumi's terms (a new version since the last turn) and a notice
+    # confirmation forgotten meanwhile (the app signed out of Lumi Cloud) are
+    # asked for again before the turn, rather than only refused.
+    if not confirm_terms() or not confirm_oversight(getattr(session, "_settings_ref", None)):
+        return
 
     # Someone is at the terminal, so there is always a prompt. The tier
     # decides which calls ask; in Bypass only a "prompt" rule in the
@@ -1481,13 +1605,28 @@ def _history_path() -> Path:
 
 def main(argv: Optional[list] = None):
     parser = argparse.ArgumentParser(
-        description="Lumi Code Agent — Agentic Coding TUI",
+        description=(
+            "Lumi, the coding agent. Without a command it starts the terminal UI, "
+            "which uses a local Ollama model."
+        ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
-Examples:
-  %(prog)s --backend ollama --model llama3.1:70b   # Use specific Ollama model
-  %(prog)s --ollama-url http://192.168.1.20:11434 # Ollama on LAN
-  %(prog)s --dir ~/projects/myapp                 # Set working directory
+Commands:
+  gui [--browser] [--port N]   Open the desktop app (--browser: in your web browser)
+  run ...                      Run one task without a window; see `run --help`
+  schedule ...                 Run a saved task at set times
+  usage ...                    Summarize or export usage records
+  updates [verify <file>]      Update settings in effect, or check an update file
+  editor ...                   Code editor extensions (VS Code)
+  extension ...                Work on Lumi extension packs
+  license ...                  Offline licenses: show, check or install one
+  gateway ...                  Chat gateway (Telegram, Slack)
+  --version                    Print the version
+
+Terminal UI examples:
+  %(prog)s --model llama3.1:70b                    # Use a specific Ollama model
+  %(prog)s --ollama-url http://192.168.1.20:11434 # Ollama on another computer
+  %(prog)s --dir ~/projects/myapp                 # Set the working directory
 """,
     )
 
@@ -1504,14 +1643,18 @@ Examples:
 
     # Common args
     parser.add_argument("--backend", type=str, choices=["ollama", "auto"], default="auto",
-                        help="Backend (Ollama-only since v0.4.0)")
+                        help="Model provider for the terminal UI (the desktop app offers every provider)")
     parser.add_argument("--model", type=str, default=None)
     parser.add_argument("--ollama-url", type=str, default=None)
     parser.add_argument("--dir", type=str, default=None)
     parser.add_argument("--max-tokens", type=int, default=4096)
-    parser.add_argument("--approve", action="store_true",
-                        help="Ask before changes and commands (Ask mode). Without it the agent runs tools "
-                             "without asking (Bypass), within the guardrails and your organization's policy")
+    modes = parser.add_mutually_exclusive_group()
+    modes.add_argument("--approve", action="store_true",
+                       help="Ask before changes and commands (Ask mode). Without --approve or --full-auto the "
+                            "terminal starts in the default permission mode from Settings (Auto-edit on a new install)")
+    modes.add_argument("--full-auto", action="store_true",
+                       help="Run tools without asking (Bypass, the app's Full-auto), within the guardrails and "
+                            "your organization's policy")
     parser.add_argument("--auto-plan", action="store_true",
                         help="Automatically enable plan mode for complex requests")
 
@@ -1526,7 +1669,6 @@ Examples:
     # First, and applied as `lumi run` applies them (headless._configure):
     # they decide the Ollama address, which modes and models may be used,
     # and what the session enforces. The terminal doesn't start without them.
-    requested_mode = "ask" if args.approve else "bypass"
     try:
         from .gui.settings import SettingsManager
         from .headless import _configure, scope_session
@@ -1538,15 +1680,22 @@ Examples:
         refusal = blocked_reason()
         if refusal:
             raise ValueError(refusal)
-        mode = _policy_mode(requested_mode, chosen=args.approve)
+        mode, start_in_plan, mode_notice = _start_mode(settings, approve=args.approve, full_auto=args.full_auto)
     except ValueError as exc:
         _print_refusal(str(exc))
         return
     except Exception as exc:  # noqa: BLE001 - never run a session without the rules Settings hold
         _print_refusal(f"Lumi couldn't apply its settings: {exc}")
         return
-    mode_notice = "" if mode == requested_mode else \
-        f"{current_policy().organization}'s policy doesn't allow {requested_mode}"
+    if settings.load_error:
+        # Kept as it is and never written over (gui/settings.py); defaults apply meanwhile.
+        _print(f"\n  [{C_WARN}]{G_CROSS} {_esc(settings.load_error)}[/{C_WARN}]")
+    # Lumi's terms (lumi/terms.py), then the organization's oversight notice
+    # (lumi/oversight.py), right after the policy: before anything reaches a
+    # model, the warm-up below included.
+    if not confirm_terms() or not confirm_oversight(settings):
+        console.print(f"  [{C_DIM}]Goodbye[/{C_DIM}]")
+        return
     settings_data = settings.get_all()
 
     # ── Resolve URL and detect Ollama ──
@@ -1562,8 +1711,8 @@ Examples:
         _print(f"    [{C_DIM}]Checked: {_esc(ollama_url)}[/{C_DIM}]")
         console.print()
         console.print(f"  [{C_DIM}]Start Ollama or specify a different URL:[/{C_DIM}]")
-        console.print(f"    [{C_TEXT}]ollama serve  # then re-run resonant[/{C_TEXT}]")
-        console.print(f"    [{C_TEXT}]resonant --ollama-url http://<host>:11434[/{C_TEXT}]")
+        console.print(f"    [{C_TEXT}]ollama serve  # then run lumi again[/{C_TEXT}]")
+        console.print(f"    [{C_TEXT}]lumi --ollama-url http://<host>:11434[/{C_TEXT}]")
         console.print()
         return
 
@@ -1659,8 +1808,7 @@ Examples:
             model = _select_model_interactive(models)
         backend = create_backend("ollama", ollama_info["url"], model=model)
         health_info = backend.health()
-        _print(f"  [{C_DIM}]{G_THINK} Warming up {_esc(model)}[/{C_DIM}]")
-        backend.warm_up()
+        _warm_up(backend, model)
     elif chosen == "claude":
         claude_info = available["claude"]
         model = args.model
@@ -1704,9 +1852,17 @@ Examples:
         _print_refusal(f"The session couldn't be set up: {exc}")
         return
     print_banner(backend=backend, health_info=health_info, session=session, mode=mode, notice=mode_notice)
+    from . import oversight
+
+    if oversight.for_terminal(unattended=False).recorded:
+        from .cloud import CloudClient
+
+        # This terminal's turns go to Lumi Cloud while it runs, as the app's do.
+        oversight.start_uploader(CloudClient(settings))
 
     history = FileHistory(str(_history_path()))
-    plan_mode = False
+    # On when Settings' default permission mode is Plan (_start_mode); /plan toggles it.
+    plan_mode = start_in_plan
     pending_images = []  # List of (image_bytes, media_type) for multimodal
 
     # ── Ctrl+V keybinding for image paste ──
@@ -1814,8 +1970,7 @@ Examples:
                             new_be = create_backend("ollama", be.base_url, model=new_model)
                             session.set_backend(new_be, reset_history=True)  # explicit user command — preserve "conversation cleared" UX
                             health_info = new_be.health()
-                            _print(f"  [{C_DIM}]{G_THINK} Warming up {_esc(new_model)}[/{C_DIM}]")
-                            new_be.warm_up()
+                            _warm_up(new_be, new_model)
                             _print(f"  [{C_OK}]{G_CHECK} Switched to {_esc(f'{new_model} · conversation cleared')}[/{C_OK}]")
                         else:
                             _print(f"  [{C_DIM}]Keeping {_esc(be.model)}[/{C_DIM}]")
@@ -1917,8 +2072,8 @@ Examples:
                 console.print(f"    [{C_TEXT}]/quit[/{C_TEXT}]             [{C_MUTED}]exit[/{C_MUTED}]")
                 console.print()
                 console.print(f"  [{C_BRAND2}]Architecture[/{C_BRAND2}]")
-                console.print(f"    [{C_TEXT}]resonant[/{C_TEXT}]                  [{C_MUTED}]embedded engine + TUI[/{C_MUTED}]")
-                console.print(f"    [{C_TEXT}]resonant-gui[/{C_TEXT}]              [{C_MUTED}]desktop GUI (recommended)[/{C_MUTED}]")
+                console.print(f"    [{C_TEXT}]lumi[/{C_TEXT}]                      [{C_MUTED}]embedded engine + TUI[/{C_MUTED}]")
+                console.print(f"    [{C_TEXT}]lumi gui[/{C_TEXT}]                  [{C_MUTED}]desktop GUI (recommended)[/{C_MUTED}]")
                 console.print()
                 console.print(f"  [{C_BRAND2}]Tips[/{C_BRAND2}]")
                 console.print(f'    [{C_MUTED}]Ask naturally — "Build a REST API with auth"[/{C_MUTED}]')

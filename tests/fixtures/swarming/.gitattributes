@@ -1,0 +1,6 @@
+*.json text eol=lf
+*.py text eol=lf
+# The pack's bytes are pinned by SHA-256 (manifest.json); these two end with a
+# blank line that is part of their pinned content, not a whitespace error.
+scenarios.json -whitespace
+references.json -whitespace

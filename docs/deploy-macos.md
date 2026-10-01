@@ -1,17 +1,21 @@
 # Deploying Lumi on macOS: Jamf Pro, Intune and other device management
 
 Status: source only, not released. CI builds, installs and checks the
-installer package on every change (below). No macOS release has been
-published, and the package is unsigned until a Developer ID Installer
-certificate is configured.
+installer package on every change (below), and the release workflow attaches
+it to each release from the next tag on. No macOS release has been published
+yet, and the package is unsigned until a Developer ID Installer certificate
+is configured.
 
 Lumi builds two macOS packages. Both install `Lumi.app` for Apple silicon on
 macOS 12 or later:
 
 | Package | For | Updates |
 |---|---|---|
-| `lumi-X.Y.Z.dmg` | People installing Lumi themselves: drag it to Applications | The macOS app doesn't update itself yet (see [Lumi on macOS](macos.md)) |
+| `lumi-X.Y.Z.dmg` | People installing Lumi themselves: drag it to Applications | Updates itself with Sparkle, as Settings > Updates or your policy says (see [Lumi on macOS](macos.md#updates)) |
 | `lumi-X.Y.Z.pkg` | Jamf Pro, Intune, other device management, and `installer` | Never updates itself. Deploy the next PKG instead; it upgrades in place. |
+
+To keep copies that people installed from the DMG from updating themselves,
+set `"updates.mode": "off"` in the policy ([Updates](updates.md#for-administrators)).
 
 ## The PKG
 
@@ -42,6 +46,23 @@ sudo installer -pkg lumi-X.Y.Z.pkg -target /
 - **Removing it:**
   `sudo rm -rf /Applications/Lumi.app && sudo pkgutil --forget com.luminaryanalytics.lumi`.
   Each person's settings and sessions in `~/.lumi` stay.
+
+## Lumi's terms
+
+Opened in the Installer app, the PKG shows Lumi's terms on its license page
+(the [End User License Agreement](../lumi/legal/EULA.md), and for a
+pre-release the [Alpha and Beta Test Terms](../lumi/legal/ALPHA-TERMS.md)
+after it) and installs only once the person agrees. `installer -pkg` from the
+command line, as Jamf Pro, Intune and other device management run it, shows
+no license: deploying Lumi to your organization's Macs accepts the agreement
+for the organization, under its agreement with Luminary Analytics.
+
+Lumi still asks each person at first launch unless the policy accepts for
+them: add `"legal": {"accepted_by_organization": "Example Corp"}` to the policy
+in the configuration profile below
+([Lumi's terms for your organization](enterprise-policy.md#lumis-terms-for-your-organization)).
+A configuration profile is a machine policy, so it counts. `lumi terms` on
+the Mac shows the result.
 
 ## Policy through a configuration profile
 
@@ -81,6 +102,25 @@ until they're fixed; it never treats that as "no policy". That covers a
 plist that can't be read, or a `Policy` that is empty, isn't text or a
 dictionary, isn't valid JSON or isn't a valid policy. Preferences without a
 `Policy` key set no policy. Lumi reads the policy when it starts.
+
+macOS writes managed preferences as root. Lumi uses the plist only while root
+owns it and `/Library/Managed Preferences`, and neither is writable by its
+group or others. The same goes for `policy.json`, `policy-keys.json`,
+`license.json` and `license-keys.json` in `/Library/Application Support/Lumi`.
+The `Lumi` folder must be owned by root with mode 755, and the files by root
+with mode 644. Install them with `sudo`, for example
+`sudo install -d -o root -g wheel -m 755 "/Library/Application Support/Lumi"`
+and `sudo install -o root -g wheel -m 644 policy.json "/Library/Application Support/Lumi/"`.
+A file others could have written is ignored and shown in Settings, as
+described in
+[the file rules](enterprise-policy.md#only-files-only-administrators-can-change-count).
+
+`/Library/Application Support` itself is `root:admin` with mode 775, so any
+member of the admin group can remove or rename the `Lumi` folder inside it
+without `sudo`. That can take the organization's files away, but it can't get
+Lumi to trust files of their own: those aren't root's. Admin-group accounts are
+administrators, so give people standard accounts, or deliver the policy
+through a configuration profile.
 
 `packaging/policy/lumi-policy.mobileconfig` is a hand-written example of the
 same profile.

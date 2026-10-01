@@ -1,0 +1,104 @@
+name: Authenticode-sign release files
+description: >-
+  Signs Windows release files with packaging/sign_windows.ps1, which decides how
+  (Azure Artifact Signing, a PFX certificate or a signing command) and checks each
+  signature: Valid, timestamped and by the expected subject, on a file that was
+  unsigned before. For Azure it first signs in with GitHub's OIDC token
+  (azure/login), so no secret is stored; that needs the job's id-token permission,
+  which only release.yml's release job has. With nothing configured, the files stay
+  as they are and a warning says so. Each file is recorded, with its SHA-256, in
+  $RUNNER_TEMP/lumi-authenticode.jsonl, which packaging/check_release_files.ps1
+  checks before anything is published.
+
+inputs:
+  files:
+    description: The files to sign, one per line.
+    required: true
+  azure-client-id:
+    description: The Azure app registration's client ID (the AZURE_CLIENT_ID variable).
+    required: false
+    default: ''
+  azure-tenant-id:
+    description: Its tenant ID (AZURE_TENANT_ID).
+    required: false
+    default: ''
+  azure-subscription-id:
+    description: The subscription that holds the signing account (AZURE_SUBSCRIPTION_ID); empty signs in to the tenant only.
+    required: false
+    default: ''
+  artifact-signing-endpoint:
+    description: The signing account's regional endpoint (ARTIFACT_SIGNING_ENDPOINT), e.g. https://eus.codesigning.azure.net.
+    required: false
+    default: ''
+  artifact-signing-account:
+    description: The Artifact Signing account's name (ARTIFACT_SIGNING_ACCOUNT).
+    required: false
+    default: ''
+  artifact-signing-profile:
+    description: The certificate profile's name (ARTIFACT_SIGNING_PROFILE).
+    required: false
+    default: ''
+  pfx-base64:
+    description: A PFX code-signing certificate, base64 (the WINDOWS_SIGN_PFX_BASE64 secret).
+    required: false
+    default: ''
+  pfx-password:
+    description: Its password (WINDOWS_SIGN_PFX_PASSWORD).
+    required: false
+    default: ''
+  command:
+    description: Another signer's command line, with {file} (WINDOWS_SIGN_COMMAND).
+    required: false
+    default: ''
+  expected-subject:
+    description: >-
+      The subject of the certificate that must sign, exactly as Windows shows it
+      (WINDOWS_SIGN_EXPECTED_SUBJECT); a signer needs it.
+    required: false
+    default: ''
+  required:
+    description: '"true" fails the release when no signer is configured (WINDOWS_SIGNING_REQUIRED).'
+    required: false
+    default: ''
+
+runs:
+  using: composite
+  steps:
+    - name: Why there's no Azure sign-in
+      if: ${{ inputs.azure-client-id == '' || inputs.azure-tenant-id == '' }}
+      shell: pwsh
+      run: >-
+        Write-Output "No Azure sign-in: AZURE_CLIENT_ID and AZURE_TENANT_ID aren't both set here
+        (they are variables of the release environment), so nothing can sign with Azure Artifact Signing.
+        See docs/release-pipeline.md."
+
+    # GitHub's OIDC token for this job (subject repo:<owner>/<repo>:environment:release)
+    # exchanged for a short-lived Azure sign-in; the app registration trusts only that
+    # subject. The action logs out when the job ends.
+    - name: Sign in to Azure with GitHub's OIDC token
+      id: azure
+      if: ${{ inputs.azure-client-id != '' && inputs.azure-tenant-id != '' }}
+      uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+      with:
+        client-id: ${{ inputs.azure-client-id }}
+        tenant-id: ${{ inputs.azure-tenant-id }}
+        subscription-id: ${{ inputs.azure-subscription-id }}
+        allow-no-subscriptions: ${{ inputs.azure-subscription-id == '' }}
+
+    - name: Sign and check
+      shell: pwsh
+      env:
+        FILES_TO_SIGN: ${{ inputs.files }}
+        ARTIFACT_SIGNING_ENDPOINT: ${{ inputs.artifact-signing-endpoint }}
+        ARTIFACT_SIGNING_ACCOUNT: ${{ inputs.artifact-signing-account }}
+        ARTIFACT_SIGNING_PROFILE: ${{ inputs.artifact-signing-profile }}
+        ARTIFACT_SIGNING_SIGNED_IN: ${{ steps.azure.outcome == 'success' }}
+        WINDOWS_SIGN_PFX_BASE64: ${{ inputs.pfx-base64 }}
+        WINDOWS_SIGN_PFX_PASSWORD: ${{ inputs.pfx-password }}
+        WINDOWS_SIGN_COMMAND: ${{ inputs.command }}
+        WINDOWS_SIGN_EXPECTED_SUBJECT: ${{ inputs.expected-subject }}
+        WINDOWS_SIGNING_REQUIRED: ${{ inputs.required }}
+        WINDOWS_SIGN_RECORD: ${{ runner.temp }}/lumi-authenticode.jsonl
+      run: |
+        $files = @($env:FILES_TO_SIGN -split "`r?`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+        & (Join-Path $env:GITHUB_WORKSPACE "packaging/sign_windows.ps1") -Files $files

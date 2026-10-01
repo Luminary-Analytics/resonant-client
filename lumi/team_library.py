@@ -18,7 +18,10 @@ organizations you belong to, and keeps a copy in its state folder
   who wrote and approved it.
 
 Syncing replaces the copy, so an archived item disappears at the next sync,
-and signing out of Lumi Cloud deletes it.
+and signing out of Lumi Cloud deletes it. The copy names the sign-in it came
+with (the Lumi Cloud that issued it and the person): while another sign-in is
+the one in settings (a sign-in at another Lumi Cloud, or as someone else),
+it's never offered, until a sync replaces it.
 """
 
 from __future__ import annotations
@@ -48,14 +51,37 @@ def _path() -> Path:
     return state_home() / CACHE
 
 
+def _sign_in() -> tuple[str, str]:
+    """The Lumi Cloud sign-in in settings.json: (the Lumi Cloud that issued it, the person's id); ("", "") for none."""
+    try:
+        data = json.loads((state_home() / "settings.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return "", ""
+    section = data.get("cloud") if isinstance(data, dict) else None
+    section = section if isinstance(section, dict) else {}
+    account = section.get("account") if isinstance(section.get("account"), dict) else {}
+    return str(section.get("account_url") or ""), str(account.get("user_id") or "")
+
+
 def cached() -> dict:
-    """The last synced copy: {"synced_at": float, "organizations": [...]}, or an empty one."""
+    """The last synced copy: {"synced_at": float, "organizations": [...]}, or an empty one.
+
+    Empty, too, while the copy is another sign-in's than the one in settings
+    (another Lumi Cloud's, or another person's): nothing of it is offered.
+    """
+    from .cloud import same_address
+
+    empty = {"synced_at": 0, "organizations": []}
     try:
         data = json.loads(_path().read_text(encoding="utf-8"))
     except (OSError, ValueError):
-        return {"synced_at": 0, "organizations": []}
-    return data if isinstance(data, dict) and isinstance(data.get("organizations"), list) else {
-        "synced_at": 0, "organizations": []}
+        return empty
+    if not isinstance(data, dict) or not isinstance(data.get("organizations"), list):
+        return empty
+    issuer, person = _sign_in()
+    if not person or data.get("user_id") != person or not same_address(str(data.get("issuer") or ""), issuer):
+        return empty
+    return data
 
 
 def _item(org: dict, raw: Any) -> dict | None:
@@ -93,7 +119,8 @@ def sync(cloud: Any) -> dict:
     from .cloud import CloudError
 
     try:
-        answer = cloud.account_call("GET", "/api/v1/library")
+        # With whose sign-in it came: the copy is offered only while that sign-in is the one in use.
+        credentials, answer = cloud.account_request("GET", "/api/v1/library")
     except CloudError as exc:
         raise LibraryError(str(exc)) from exc
     organizations = []
@@ -104,7 +131,8 @@ def sync(cloud: Any) -> dict:
         entry["items"] = [item for item in (_item(entry, raw) for raw in org.get("items") or []) if item]
         entry["notes"] = [note for note in (_note(entry, raw) for raw in org.get("notes") or []) if note]
         organizations.append(entry)
-    data = {"synced_at": time.time(), "organizations": organizations}
+    data = {"synced_at": time.time(), "organizations": organizations, "issuer": credentials.issuer,
+            "user_id": credentials.user_id}
     with _lock:
         path = _path()
         path.parent.mkdir(parents=True, exist_ok=True)

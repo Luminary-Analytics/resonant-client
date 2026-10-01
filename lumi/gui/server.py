@@ -185,7 +185,12 @@ def launch_gui(
         print(f"  Open in browser (one-time link): {local_access.launch_url(url)}", flush=True)
         print("  Press Ctrl+C to stop.", flush=True)
         try:
-            server_thread.join()
+            # On macOS Sparkle's checks run on this (main) thread's run loop,
+            # so it turns the loop while it waits (lumi/updater.py).
+            from lumi.updater import run_main_loop
+
+            if not run_main_loop(lambda: not server_thread.is_alive()):
+                server_thread.join()
         except KeyboardInterrupt:
             print("\n  Stopped")
 
@@ -265,9 +270,9 @@ def launch_gui(
                     Only the desktop window has this bridge, so browser pages and
                     other local clients cannot mint launch codes.
                     """
-                    import webbrowser
+                    from lumi.executables import open_url
                     try:
-                        return bool(webbrowser.open(local_access.launch_url(url)))
+                        return bool(open_url(local_access.launch_url(url)))
                     except Exception:
                         logger.debug("Could not open the default browser", exc_info=True)
                         return False
@@ -373,17 +378,21 @@ def launch_gui(
             # For example Linux without GTK or Qt, which the packages don't
             # bundle: the app runs in the system browser instead.
             logger.debug("pywebview not available: %s", exc)
-            import webbrowser
-
             import lumi.gui.app as _gui_app
+            from lumi.executables import open_url
 
-            if _without_native_window(_gui_app, lambda: webbrowser.open(local_access.launch_url(url))):
+            if _without_native_window(_gui_app, lambda: open_url(local_access.launch_url(url))):
                 print("  Opened Lumi in your browser.", flush=True)
             _run_in_browser()
 
 
 def main():
     """CLI entry point for lumi-gui."""
+    # The app works in many projects at once and gives each command its
+    # folder, so no project is ever its working folder (lumi/executables.py).
+    from ..executables import leave_working_folder
+
+    leave_working_folder()
     from ..paths import migrate_legacy_home
     migrate_legacy_home()
     parser = argparse.ArgumentParser(
@@ -400,6 +409,11 @@ def main():
     logging.basicConfig(
         level=logging.DEBUG if args.debug else logging.WARNING,
     )
+    # The app asks its person to accept Lumi's terms (or relies on the machine
+    # policy); LUMI_ACCEPT_TERMS is for runs without a UI (lumi/terms.py).
+    from .. import terms
+
+    terms.mark_app_process()
     # Count the app's own crashes for fleet health (lumi/activity.py).
     from .. import activity
 
@@ -438,6 +452,11 @@ def main():
 
         from .app import state as app_state
         start_background(app_state.cloud)
+        # Organization oversight records, when a policy asks for them, go to
+        # Lumi Cloud from their own thread (lumi/oversight.py).
+        from lumi import oversight
+
+        oversight.start_uploader(app_state.cloud)
         # Requests from Slack and Teams, once someone turns them on.
         from lumi.remote_tasks import RemoteTasks
         from lumi.remote_tasks import start as start_remote_tasks
@@ -456,6 +475,15 @@ def main():
         second_approval.set_requester(ApprovalRequester(app_state.cloud))
     except Exception:
         logger.exception("Lumi Cloud check-ins failed to start (non-fatal)")
+
+    # Feedback saved on this computer goes to Lumi Cloud when it can (lumi/feedback.py).
+    try:
+        from lumi import feedback
+
+        from .app import state as app_state
+        feedback.start_background(app_state.cloud, app_state.settings)
+    except Exception:
+        logger.exception("Sending waiting feedback failed to start (non-fatal)")
 
     launch_gui(
         host=args.host,

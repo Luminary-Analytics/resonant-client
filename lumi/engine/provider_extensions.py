@@ -27,7 +27,7 @@ process writes one JSON object per line to stdout and exits:
 Messages are ``{"role": "system" | "user" | "assistant" | "tool", "content": text}``;
 an assistant message may carry ``tool_calls`` and a tool message a
 ``tool_call_id``. Images reach the provider as honest text notices. The
-process gets the environment Lumi gives children (``secrets_store.child_env``)
+process gets the environment of the servers Lumi starts (``secrets_store.server_env``)
 plus the connection's key as ``LUMI_PROVIDER_API_KEY``, when one is saved,
 and ``LUMI_EXTENSION_DATA``, a folder of its own for files it keeps.
 
@@ -54,6 +54,8 @@ import time
 from pathlib import Path
 from typing import Any, Iterator
 
+from .. import dlp
+from ..executables import is_absolute
 from ..backends import EVENT_DONE, EVENT_ERROR, EVENT_TEXT_DELTA, EVENT_TOOL_CALL, _described, _new_call_id
 from ..capabilities import ModelCapabilities
 from ..content import content_text, text_fallback
@@ -112,22 +114,15 @@ def find_program(name: str, path: str | None = None) -> str:
     """The full path of program ``name`` on PATH.
 
     Starting a bare name would let Windows look in Lumi's current folder
-    first, which may be a repository, so only absolute PATH entries count.
+    first, which may be a repository, so only absolute PATH entries outside
+    it count (lumi/executables.py).
     """
-    folders = (os.environ.get("PATH", "") if path is None else path).split(os.pathsep)
-    suffixes = [""]
-    if os.name == "nt":
-        pathext = [ext for ext in (os.environ.get("PATHEXT") or ".COM;.EXE;.BAT;.CMD").split(";") if ext]
-        if not any(name.lower().endswith(ext.lower()) for ext in pathext):
-            suffixes = pathext
-    for folder in folders:
-        if not folder or not os.path.isabs(folder):
-            continue  # a relative entry would resolve against the current folder
-        for suffix in suffixes:
-            candidate = os.path.join(folder, name + suffix)
-            if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
-                return candidate
-    raise ProviderExtensionError(f"{name} isn't installed on this computer (it isn't on PATH).")
+    from .. import executables
+
+    found = executables.find_program(name, scripts=True, path=path)
+    if not found:
+        raise ProviderExtensionError(f"{name} isn't installed on this computer (it isn't on PATH).")
+    return found
 
 
 def command_for(pack: Any, provider: dict) -> list[str]:
@@ -139,9 +134,9 @@ def command_for(pack: Any, provider: dict) -> list[str]:
     if not isinstance(command, list) or not command:
         raise ProviderExtensionError(f"{label} doesn't run on this system.")
     program = str(command[0])
-    if os.path.isabs(program):
+    if is_absolute(program):  # with its drive: a rooted path without one is the working folder's drive
         return [program, *command[1:]]
-    if os.path.dirname(program):
+    if os.path.dirname(program) or (sys.platform == "win32" and ":" in program):
         root = Path(pack.path).resolve()
         resolved = (root / program).resolve()
         if root not in resolved.parents:
@@ -175,7 +170,7 @@ def run(pack: Any, command: list[str], request: dict, *, api_key: str = "",
     from ..paths import state_home
     from ..processes import background_process_kwargs
 
-    env = secrets_store.child_env()
+    env = secrets_store.server_env()
     env["LUMI_EXTENSION_PROTOCOL"] = str(PROTOCOL)
     env["LUMI_EXTENSION_DATA"] = str(data_dir(pack.id))
     # Bytecode caches go outside the pack, so running it doesn't change what was approved.
@@ -299,11 +294,16 @@ def _count(value: Any) -> int:
         return 0
 
 
+@dlp.guard_backend
 class ExtensionBackend:
     """A model connection whose provider is a pack's process (connection type ``extension``)."""
 
     supports_dynamic_tool_catalog = False
     supports_remote_cancel = False
+    # The pack's process answers requests its own way; nothing yet shows that
+    # one stream() is one generation (lumi/backends.py, KimiBackend), so Team
+    # participants don't run on it.
+    supervised_requests = False
 
     def __init__(self, connection: dict, model: str, api_key: str = "", *, settings: Any = None) -> None:
         from ..connections import backend_key

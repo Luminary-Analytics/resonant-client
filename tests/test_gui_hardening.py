@@ -191,11 +191,15 @@ def test_app_state_applies_project_context_and_builds_project_scoped_session(mon
 
     state = app_module.AppState()
     first_namespace = state.engram._namespace
+    working_folder = os.getcwd()
 
     state.apply_project_context(str(project_two), refresh_index=True)
     session = state.build_session(backend=_DummyBackend(name="codex", model="gpt-5"), project_path=str(project_two))
 
-    assert os.path.normpath(os.getcwd()) == os.path.normpath(str(project_two))
+    # A project never becomes the app's working folder, where Windows looks
+    # for programs (lumi/executables.py); its MCP servers run there instead.
+    assert os.getcwd() == working_folder
+    assert state.mcp_manager.working_folder == str(project_two)
     assert os.path.normpath(state.project.project_path) == os.path.normpath(str(project_two))
     assert state.codebase_index.project_path == Path(project_two)
     assert state.engram._namespace != first_namespace
@@ -362,6 +366,9 @@ def test_duplicate_new_session_request_is_idempotent(monkeypatch, tmp_path):
     class ProjectStub:
         project_path = str(tmp_path)
         current_session = None
+
+        def get_recent_projects(self, **kwargs):
+            return []
 
         def __init__(self):
             self.created = 0

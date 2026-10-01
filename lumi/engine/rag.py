@@ -17,7 +17,6 @@ import json
 import logging
 import os
 import re
-import shutil
 import stat
 import subprocess
 import threading
@@ -26,7 +25,7 @@ from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
-from ..paths import project_dir
+from .artifacts import project_state_dir
 
 logger = logging.getLogger(__name__)
 
@@ -149,12 +148,19 @@ class CodebaseIndex:
         self._lock = threading.Lock()
         self._indexing = False
         self._last_full_index: float = 0.0
-        self._index_file = project_dir(self.project_path) / "index.json"
+        # A cache Lumi rebuilds from the project's files, so it lives with the
+        # project's other runtime state in ~/.lumi/projects/<id>, not in the
+        # project (it used to be <project>/.lumi/index.json, which then showed
+        # up in the agent's searches and in `git status`). An old copy there is
+        # neither read nor needed; delete it whenever you like.
+        self._index_file = project_state_dir(self.project_path) / "index.json"
         self._repo_map_cache: dict[tuple, str] = {}
         self._repo_map_generation = 0
         # engine/exclusions.ExclusionRules, set by the app: excluded files are
         # neither indexed nor returned, even from an older cached index.
         self.exclusions = None
+        # Why Git didn't list the files, when Lumi may run none here (lumi/safe_git.py).
+        self.git_refused = ""
 
         # Try loading cached index
         self._load_cache()
@@ -195,6 +201,8 @@ class CodebaseIndex:
 
         try:
             listing, stats["listing"] = self._list_files()
+            if self.git_refused:
+                stats["git_refused"] = self.git_refused
             for rel_path in listing:
                 stats["files_scanned"] += 1
                 if not _indexable(rel_path):
@@ -282,7 +290,11 @@ class CodebaseIndex:
         finally:
             self._indexing = False
             stats["elapsed_ms"] = int((time.time() - start) * 1000)
-            stats["total_files"] = len(self._entries)
+            # The same totals get_stats() reports: the page shows this result
+            # as the index's status ("N files indexed (M lines)").
+            with self._lock:
+                stats["total_files"] = len(self._entries)
+                stats["total_lines"] = sum(entry.lines for entry in self._entries.values())
 
         logger.info(f"Indexed {stats['files_indexed']} files in {stats['elapsed_ms']}ms "
                      f"({stats['total_files']} total)")
@@ -300,15 +312,21 @@ class CodebaseIndex:
 
         The project can be a folder inside a repository (one part of a
         monorepo); ``git ls-files`` then lists that folder, relative to it.
+        In an untrusted project whose Git settings run programs, Lumi runs no
+        Git (lumi/safe_git.py): the folder is walked instead, and
+        ``git_refused`` says why.
         """
-        if _repository_root(self.project_path) is None or not shutil.which("git"):
+        from ..safe_git import GitRefused, run as git
+
+        self.git_refused = ""
+        if _repository_root(self.project_path) is None:
             return None
         try:
-            result = subprocess.run(
-                ["git", "-c", "core.quotepath=off", "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
-                cwd=self.project_path, capture_output=True, timeout=120,
-                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-            )
+            result = git(self.project_path, "-c", "core.quotepath=off", "ls-files", "-z", "--cached", "--others",
+                         "--exclude-standard", text=False, timeout=120)
+        except GitRefused as refused:
+            self.git_refused = str(refused)
+            return None
         except (OSError, subprocess.SubprocessError):
             return None
         if result.returncode != 0:

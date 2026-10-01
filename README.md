@@ -22,6 +22,12 @@ provider selection, or the [documentation index](docs/README.md) for contributor
 guides. [0.19.1](docs/v0.19.1-release-notes.md) fixes Codex live progress and completion evidence;
 [Unreleased](docs/unreleased.md) tracks subsequent changes.
 
+The source checkout also includes an opt-in [Team preview](docs/swarming.md)
+for scoped workers, reviewed file changes and explicit collaboration. Managed
+teams require separate [operator setup](docs/swarming-managed-setup.md).
+This is not a qualified release; the [swarming evidence ledger](docs/swarming-progress.md)
+tracks packaged checks and the remaining live-provider and deployment gates.
+
 Version 0.19.0 adds a bottom-left SONN account menu, local display
 name, and optional Echo companion. Settings opens a dedicated searchable category
 sidebar with focused pages for preferences, connections, and integrations.
@@ -117,7 +123,7 @@ for their context-handoff and verification boundaries.
 - Recommended decision prompts and a non-interrupting Check status control
 - Diagnostics export and cost tracking
 - Standard agentic workflow with tools, MCP integrations, and bounded task delegation
-- Signed Windows update feed with in-app update checks
+- Signed update feeds with in-app update checks (WinSparkle on Windows, Sparkle on macOS)
 
 ### Optional orchestration
 
@@ -143,8 +149,13 @@ IT departments can deploy the MSI package (`lumi-X.Y.Z.msi`) silently per
 machine through Intune, Configuration Manager or Group Policy; see
 [Deploying on Windows](docs/deploy-windows.md).
 
-A macOS build (`Lumi.app` in a DMG, Apple silicon) is built in CI but not yet
-released; see [Lumi on macOS](docs/macos.md).
+A macOS build (`Lumi.app` in a DMG, Apple silicon, macOS 12 or later) is built
+in CI, and the release workflow publishes it beside the Windows installer from
+the next release on. It updates itself with Sparkle from its own feeds, in
+the same format, and reads only a feed signed with the release key. Until
+it's notarized by Apple, macOS asks you to approve it once in
+System Settings › Privacy & Security › **Open Anyway**; see
+[Lumi on macOS](docs/macos.md).
 
 Windows SmartScreen may show "Unrecognized publisher" for the v0.x line. Code
 signing is planned for v1.0.
@@ -315,11 +326,22 @@ There is no automatic cross-provider fallback or role routing in this workflow.
   messages. The model sees `[REDACTED ...]` instead, and the chat notes what was
   removed. Codex and Claude Code read files with their own tools and are not
   scanned.
+- **Your organization's data loss prevention rules**, when its policy has
+  them, check every request before it goes to a model: matches are recorded,
+  redacted in the copy that's sent, or the request is refused with the rule's
+  name. **Settings > Privacy & security** lists the rules. See
+  [data loss prevention](docs/dlp.md).
 - **Corporate networks:** TLS is verified with your operating system's
   certificate store, so a company root certificate works. Set a proxy and hosts
   that bypass it under **Settings > Connections > Network**, or use
   `HTTPS_PROXY`/`NO_PROXY`. Local addresses always connect directly. Proxies that
   need a user name and password aren't supported yet.
+- **Offline mode:** under **Settings > Offline mode** (or your organization's
+  policy) Lumi reaches only this computer and the hosts you allow, such as an
+  on-premises inference server, and refuses everything else at once with the
+  reason. Updates can be installed from a verified file, and an offline
+  license shows under `lumi license status`. See
+  [Offline and air-gapped operation](docs/offline.md).
 - **Save diagnostics** removes your actual key values and masks secrets in the
   bundled `settings.json` before anything is written.
 - **Files Lumi never reads:** gitignore-style patterns under **Settings >
@@ -484,6 +506,15 @@ lumi-smoke variance --spec wordcount --model your-model --n 3
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+Lumi is commercial software: © 2026 Luminary Analytics, all rights reserved,
+licensed under the Lumi End User License Agreement. See [LICENSE](LICENSE).
+Versions 0.6.3 through 0.19.x were published under the MIT License and remain
+under it.
+
+- The [Extension SDK](sdk/) and the [VS Code extension](lumi/code_editors/vscode/)
+  stay under the MIT License, so others can build and ship extensions.
+- Individuals use the app free today (see [Plans](docs/plans.md)). That is a
+  product decision, which the license text doesn't change.
+- Whether this repository stays public hasn't been decided.
 
 Managed previews, named acceptance checks, Kimi effort controls, and sourced project notes are described in [Priority improvements](docs/priority-improvements.md).

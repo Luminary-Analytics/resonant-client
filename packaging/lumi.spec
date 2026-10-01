@@ -87,9 +87,27 @@ datas = [
      "lumi/gui/static"),
     (str(PKG_ROOT / "gui" / "static" / "settings_view.js"),
      "lumi/gui/static"),
+    (str(PKG_ROOT / "gui" / "static" / "swarm_view.js"),
+     "lumi/gui/static"),
+    (str(PKG_ROOT / "gui" / "static" / "swarm_view.css"),
+     "lumi/gui/static"),
+    (str(PKG_ROOT / "gui" / "static" / "collaboration_view.js"),
+     "lumi/gui/static"),
+    (str(PKG_ROOT / "gui" / "static" / "managed_collaboration_view.js"),
+     "lumi/gui/static"),
+    (str(PKG_ROOT / "gui" / "static" / "collaboration_view.css"),
+     "lumi/gui/static"),
     (str(PKG_ROOT / "gui" / "static" / "run_cards.js"),
      "lumi/gui/static"),
     (str(PKG_ROOT / "gui" / "static" / "employee_tasks.js"),
+     "lumi/gui/static"),
+    # Panels from capability packs: the page's view, its styles, and the
+    # bridge script served into each panel's sandboxed frame.
+    (str(PKG_ROOT / "gui" / "static" / "panels_view.js"),
+     "lumi/gui/static"),
+    (str(PKG_ROOT / "gui" / "static" / "panels_view.css"),
+     "lumi/gui/static"),
+    (str(PKG_ROOT / "gui" / "static" / "panel_frame.js"),
      "lumi/gui/static"),
     (str(PKG_ROOT / "gui" / "static" / "local_access.js"),
      "lumi/gui/static"),
@@ -194,6 +212,11 @@ hiddenimports = [
     "PIL",
     "PIL.Image",
     "PIL.ImageGrab",
+    # The computer-use banner's text is FreeType through Pillow
+    # (engine/screen_overlay.py); without these it falls back to GDI's.
+    # bundle-policy.json requires the FreeType extension itself.
+    "PIL.ImageDraw",
+    "PIL.ImageFont",
 
     # pywebview (bundled v0.2.2+) — native desktop frame.
     # webview is the import name; the package is "pywebview" on PyPI.
@@ -255,7 +278,10 @@ excludes += ["Xlib"]
 
 # ---- Native binaries ---------------------------------------------------------
 # WinSparkle.dll for auto-update. Bundled next to lumi.exe so the ctypes
-# loader in lumi/updater.py can find it via sys._MEIPASS.
+# loader in lumi/updater.py can find it via sys._MEIPASS. Its macOS
+# counterpart, Sparkle.framework, isn't collected here: PyInstaller would
+# rewrite and split a framework bundle, so packaging/build_macos.sh copies it
+# whole into Lumi.app/Contents/Frameworks after this spec runs.
 
 WINSPARKLE_DLL = PROJECT_ROOT / "packaging" / "winsparkle" / "WinSparkle-0.9.2" / "x64" / "Release" / "WinSparkle.dll"
 
@@ -352,13 +378,26 @@ coll = COLLECT(
 
 # ---- macOS app bundle ---------------------------------------------------------
 #
-# Built by packaging/build_macos.sh, which also makes the DMG and, when a
-# Developer ID is configured, signs and notarizes it (docs/macos.md). The
-# usage strings are what macOS shows when the agent asks for the microphone
-# (dictation) or to automate other apps (computer use).
+# Built by packaging/build_macos.sh, which also adds Sparkle.framework, makes
+# the DMG and, when a Developer ID is configured, signs and notarizes it
+# (docs/macos.md). The usage strings are what macOS shows when the agent asks
+# for the microphone (dictation) or to automate other apps (computer use).
 if sys.platform == "darwin":
+    import importlib.util
+
     _version = re.search(r'__version__\s*=\s*"([^"]+)"',
                          (PKG_ROOT / "__init__.py").read_text(encoding="utf-8")).group(1)
+    _updater_source = (PKG_ROOT / "updater.py").read_text(encoding="utf-8")
+    # One key signs the Windows installer and the macOS disk image.
+    _eddsa_public_key = re.search(r'^EDDSA_PUBLIC_KEY = "([^"]+)"', _updater_source, re.M).group(1)
+    _macos_feed = re.search(r'^MACOS_APPCAST_URL = "([^"]+)"', _updater_source, re.M).group(1)
+    # Sparkle ignores everything after a dash when it compares versions, so
+    # 0.21.0-beta.1 would equal 0.21.0; the feeds use the same form
+    # (packaging/update_appcast.py).
+    _appcast_spec = importlib.util.spec_from_file_location(
+        "lumi_update_appcast", PROJECT_ROOT / "packaging" / "update_appcast.py")
+    _appcast = importlib.util.module_from_spec(_appcast_spec)
+    _appcast_spec.loader.exec_module(_appcast)
     app = BUNDLE(
         coll,
         name="Lumi.app",
@@ -369,12 +408,27 @@ if sys.platform == "darwin":
             "CFBundleName": "Lumi",
             "CFBundleDisplayName": "Lumi",
             "CFBundleShortVersionString": _version,
-            "CFBundleVersion": _version,
+            "CFBundleVersion": _appcast.macos_bundle_version(_version),
             "LSMinimumSystemVersion": "12.0",
             "NSHighResolutionCapable": True,
             "NSMicrophoneUsageDescription": "Lumi uses the microphone only while you dictate a message.",
             # WebKit refuses the page's speech recognition without this.
             "NSSpeechRecognitionUsageDescription": "Lumi recognizes speech only while you dictate a message.",
             "NSAppleEventsUsageDescription": "Lumi controls other apps only when you let the agent use this computer.",
+            # Sparkle (lumi/sparkle.py). The delegate picks the channel's or
+            # pin's feed; this is the stable one. Settings > Updates decides
+            # whether to check, so Sparkle never asks, and nothing installs
+            # without the person, after the running turn. The disk image's
+            # EdDSA signature is checked before it is mounted, and the feeds
+            # are signed with the same key (packaging/feed_signature.py).
+            "SUPublicEDKey": _eddsa_public_key,
+            "SUFeedURL": _macos_feed,
+            "SUEnableAutomaticChecks": True,
+            "SUScheduledCheckInterval": 86400,
+            "SUAllowsAutomaticUpdates": False,
+            "SUAutomaticallyUpdate": False,
+            "SUEnableSystemProfiling": False,
+            "SUVerifyUpdateBeforeExtraction": True,
+            "SURequireSignedFeed": True,
         },
     )

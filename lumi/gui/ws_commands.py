@@ -175,7 +175,9 @@ async def _in_executor(func, *args):
 
 async def _block_active_navigation(ctx: CommandContext) -> bool:
     """The native chat loop owns one active workspace until its turn ends."""
-    if ctx.runs is None or not ctx.runs.busy:
+    from .swarming import navigation_busy as swarm_busy
+    runs = getattr(ctx, "runs", None)
+    if not swarm_busy(ctx.state) and (runs is None or not runs.busy):
         return False
     await ctx.send({"event": "ui_notice", "message":
                     "Finish or stop the current run before changing projects or sessions. Your work is retained."})
@@ -697,6 +699,7 @@ async def _set_capability_pack_approval(ctx: CommandContext, *, approve: bool) -
             "Capability pack approval revoked. Its hooks and MCP servers are off."
         ),
     })
+    await _send_extension_panels(ctx)
 
 
 @command("capability_pack_approve")
@@ -721,6 +724,7 @@ async def _pack_publisher_change(ctx: CommandContext, change, notice: str) -> No
         return
     await ctx.send(payload)
     await ctx.send({"event": "ui_notice", "message": notice})
+    await _send_extension_panels(ctx)
 
 
 @command("capability_pack_trust_publisher")
@@ -755,6 +759,7 @@ async def _capability_pack_install(ctx: CommandContext) -> None:
     await ctx.send({"event": "ui_notice", "message": (
         f"Installed {installed['name']} at {installed['commit'][:12]}. It's off until you review "
         "what it would run and approve it.")})
+    await _send_extension_panels(ctx)
 
 
 @command("capability_pack_install_registry")
@@ -774,6 +779,7 @@ async def _capability_pack_install_registry(ctx: CommandContext) -> None:
     await ctx.send({"event": "ui_notice", "message": (
         f"Installed {installed['name']} at {installed['commit'][:12]}, the version your organization pins. "
         "It's off until you review what it would run and approve it.")})
+    await _send_extension_panels(ctx)
 
 
 @command("capability_pack_remove")
@@ -789,12 +795,139 @@ async def _capability_pack_remove(ctx: CommandContext) -> None:
         return
     await ctx.send(payload)
     await ctx.send({"event": "ui_notice", "message": "Capability pack removed."})
+    await _send_extension_panels(ctx)
+
+
+async def _send_extension_panels(ctx: CommandContext) -> None:
+    """The open project's panels, sent after anything that may change them (the page closes a panel gone)."""
+    from . import extension_panels
+
+    try:
+        payload = await extension_panels.run_io(extension_panels.listing, ctx.state)
+    except Exception:  # panels are optional; listing them must never end the connection
+        logger.warning("Listing extension panels failed", exc_info=True)
+        payload = {"event": "extension_panels", "enabled": False, "panels": [],
+                   "reason": "Lumi couldn't read the capability packs' panels."}
+    await ctx.send(payload)
+
+
+@command("extension_panels")
+async def _extension_panels(ctx: CommandContext) -> None:
+    """The open project's panels from approved packs (gui/extension_panels.py)."""
+    await _send_extension_panels(ctx)
+
+
+@command("extension_panel_open")
+async def _extension_panel_open(ctx: CommandContext) -> None:
+    """Check the pack again and issue a token that reads only that panel's files."""
+    from . import extension_panels
+
+    request_id = str(ctx.msg.get("request_id") or "")[:64]
+    reply: dict[str, Any] = {"event": "extension_panel_opened", "request_id": request_id}
+    try:
+        reply.update(await extension_panels.run_io(lambda: extension_panels.open_panel(
+            ctx.state, str(ctx.msg.get("pack_id") or ""), str(ctx.msg.get("panel_id") or ""), owner=id(ctx.ws))))
+    except extension_panels.PanelError as exc:
+        reply["error"] = str(exc)
+    except Exception:
+        logger.warning("Opening an extension panel failed", exc_info=True)
+        reply["error"] = "Lumi couldn't open that panel."
+    await ctx.send(reply)
+
+
+@command("extension_panel_close")
+async def _extension_panel_close(ctx: CommandContext) -> None:
+    """Withdraw a closed panel's token, so its files can't be read again."""
+    from . import extension_panels
+
+    token = str(ctx.msg.get("token") or "")
+    grant = extension_panels.grants.get(token)
+    if grant is not None and grant.owner == id(ctx.ws):
+        extension_panels.grants.revoke(token)
+
+
+@command("extension_panel_check")
+async def _extension_panel_check(ctx: CommandContext) -> None:
+    """Before a panel adds text to the message box: its pack is still approved, enabled and unchanged."""
+    from . import extension_panels
+
+    request_id = str(ctx.msg.get("request_id") or "")[:64]
+    reply: dict[str, Any] = {"event": "extension_panel_checked", "request_id": request_id, "ok": True}
+    try:
+        await extension_panels.run_io(extension_panels.check, ctx.state, str(ctx.msg.get("token") or ""),
+                                      id(ctx.ws))
+    except extension_panels.PanelError as exc:
+        reply.update(ok=False, error=str(exc))
+    except Exception:
+        logger.warning("Checking an extension panel failed", exc_info=True)
+        reply.update(ok=False, error="Lumi couldn't check the panel's pack.")
+    await ctx.send(reply)
 
 
 @command("audit_status")
 async def _audit_status(ctx: CommandContext) -> None:
     # Where the audit log is, whether its hash chain verifies, and export health.
     await ctx.send(await _in_executor(ctx.state.audit_status))
+
+
+@command("oversight_status")
+async def _oversight_status(ctx: CommandContext) -> None:
+    """Settings > Privacy & security: what the organization's oversight collects, the queue and your flags."""
+    from .. import oversight
+
+    await ctx.send({"event": "oversight_status", "data": await asyncio.to_thread(oversight.status)})
+
+
+@command("oversight_notice_shown")
+async def _oversight_notice_shown(ctx: CommandContext) -> None:
+    """The person confirmed the oversight notice for this policy (its fingerprint): the message box unlocks.
+
+    The page sends it only from the notice's "I've read this" button (a
+    click the browser reports as the person's), with the notice's text as it
+    showed it. A fingerprint that isn't the policy in force, a missing text
+    or one that isn't that policy's notice, or a policy with nowhere to send
+    records confirms nothing: the page gets the current status back and
+    shows that notice instead. The confirmation is signed with this
+    computer's device key and sent to Lumi Cloud in the background; a
+    signature that can't be made is said, and confirms nothing.
+    """
+    from .. import oversight, voice
+
+    fingerprint = str(ctx.msg.get("fingerprint") or "")
+    shown = ctx.msg.get("notice")
+    signer = getattr(getattr(ctx.state, "cloud", None), "sign_as_device", None)
+    try:
+        await asyncio.to_thread(lambda: oversight.acknowledge(
+            fingerprint, "app", notice=shown if isinstance(shown, str) else None, signer=signer))
+    except oversight.ConfirmationError as exc:
+        await ctx.send({"event": "error", "message": str(exc), "code": oversight.REFUSAL_CODE})
+    await ctx.send({"event": "oversight_status", "data": await asyncio.to_thread(oversight.status)})
+    # Dictation follows the notice (voice.status): the page learns whether it may listen now.
+    settings = getattr(ctx.state, "settings", None)
+    if settings is not None:
+        await ctx.send({"event": "voice_status", "data": await asyncio.to_thread(voice.status, settings)})
+
+
+@command("voice_status")
+async def _voice_status(ctx: CommandContext) -> None:
+    """Which ways of dictating Settings, the policy and the oversight notice allow now (lumi/voice.py)."""
+    from .. import voice
+
+    await ctx.send({"event": "voice_status",
+                    "data": await asyncio.to_thread(voice.status, getattr(ctx.state, "settings", None))})
+
+
+async def _oversight_refusal(ctx: CommandContext, trigger: str = "app") -> str:
+    """Why nothing may reach a model now (the organization's notice isn't confirmed); '' when it may.
+
+    Also sends the page the current oversight status, so it shows the notice.
+    """
+    from .. import oversight
+
+    refusal = await asyncio.to_thread(oversight.refusal, trigger)
+    if refusal:
+        await ctx.send({"event": "oversight_status", "data": await asyncio.to_thread(oversight.status)})
+    return refusal
 
 
 def _code_editors_payload(settings: Any = None, **extra: Any) -> dict:
@@ -900,6 +1033,12 @@ async def _schedule_change(ctx: CommandContext) -> None:
         elif action in ("pause", "resume"):
             await _in_executor(lambda: schedules.set_enabled(schedule_id, action == "resume", settings=settings))
         elif action == "run":
+            # Run now is the person's own action in the app, not an unattended
+            # run: it waits for the organization's oversight notice to be
+            # confirmed like the message box does (lumi/oversight.py).
+            refusal = await _oversight_refusal(ctx)
+            if refusal:
+                raise schedules.ScheduleError(refusal)
             # Its own process, like a scheduled run, so a long task never
             # holds this connection and keeps going if the app closes.
             process = await _in_executor(lambda: schedules.start(schedule_id, settings=settings))
@@ -1060,6 +1199,10 @@ async def _evaluation_list(ctx: CommandContext) -> None:
 @command("evaluation_start")
 async def _evaluation_start(ctx: CommandContext) -> None:
     msg = ctx.msg
+    refusal = await _oversight_refusal(ctx)
+    if refusal:
+        await ctx.send_error(refusal)
+        return
     try:
         record = ctx.state.evaluations.start(
             model_label=str(msg.get("model") or "glm"),
@@ -2027,6 +2170,8 @@ async def _cmd_set_evaluator_verdict(ctx: CommandContext) -> None:
 
 @command("select_backend")
 async def _cmd_select_backend(ctx: CommandContext) -> None:
+    if await _block_active_navigation(ctx):
+        return
     backend_type = ctx.msg.get("backend", "")
     model = ctx.msg.get("model", "")
     session_mode = ctx.msg.get("session_mode", "code")
@@ -2096,8 +2241,18 @@ async def _cmd_select_backend(ctx: CommandContext) -> None:
 
 @command("message")
 async def _cmd_message(ctx: CommandContext) -> None:
+    from .swarming import busy as swarm_busy
+    if swarm_busy(ctx.state):
+        await ctx.send_error("Finish or stop the active team before starting an ordinary chat turn.")
+        return
     text = ctx.msg.get("text", "").strip()
     if not text:
+        return
+    # Organization oversight: nothing reaches a model before its notice is
+    # confirmed (lumi/oversight.py); the page's message box is locked too.
+    refusal = await _oversight_refusal(ctx)
+    if refusal:
+        await ctx.send({"event": "error", "message": refusal, "code": "oversight_notice"})
         return
     if not ctx.state.session:
         await ctx.send({
@@ -2107,6 +2262,13 @@ async def _cmd_message(ctx: CommandContext) -> None:
         return
     await ctx.runs.enqueue(ctx.msg)
     return
+
+
+@command("swarm")
+async def _swarm(ctx: CommandContext) -> None:
+    """Keep viewer commands bound to their captured saved conversation and run."""
+    from .swarming import command as execute
+    await execute(ctx.state, ctx.send, ctx.msg, chat_busy=bool(ctx.runs and ctx.runs.busy))
 
 
 @command('employee_task')
@@ -2129,6 +2291,14 @@ async def _employee_task(ctx: CommandContext) -> None:
         await ctx.send({'event': 'employee_task_state', 'project': ctx.project_path,
             'session_id': getattr(ctx.state.project.current_session, 'id', ''),
             'request_id': ctx.msg.get('request_id'), 'error': 'Finish or stop the active operation before changing the task.'})
+        return
+    # Advice and setup reach SONN: not before the organization's oversight
+    # notice is confirmed (lumi/oversight.py).
+    refusal = await _oversight_refusal(ctx)
+    if refusal:
+        await ctx.send({'event': 'employee_task_state', 'project': ctx.project_path,
+            'session_id': getattr(ctx.state.project.current_session, 'id', ''),
+            'request_id': ctx.msg.get('request_id'), 'error': refusal})
         return
     await ctx.runs.enqueue(dict(ctx.msg))
 
@@ -2376,6 +2546,10 @@ async def _cmd_mission_dispatch_roadmap(ctx: CommandContext) -> None:
         # dispatched when it was clicked (autonomous_view.js).
         await ctx.send({"event": "error", "message": message, "source": "mission_dispatch"})
 
+    from .swarming import busy as swarm_busy
+    if swarm_busy(ctx.state):
+        await refuse("Finish or reconcile the current team before dispatching a roadmap.")
+        return
     if not ctx.state.project.current_session:
         await refuse("No active mission to dispatch")
         return
@@ -2405,7 +2579,7 @@ async def _cmd_mission_dispatch_roadmap(ctx: CommandContext) -> None:
     intent_service = ctx.state.get_intent_service(on_event=_emit_intent)
     try:
         # Followed in the Plan tab like a /plan (mission_phase_changed below).
-        intent_id = intent_service.start_intent(intent_text, viewer=_emit_intent)
+        intent_id = intent_service.start_intent(intent_text, viewer=_emit_intent, trigger="mission")
     except ValueError as exc:
         # Refused, for example by the organization's policy (lumi/policy.py):
         # nothing started and the mission stays in drafting.
@@ -2805,7 +2979,8 @@ async def _cmd_clear(ctx: CommandContext) -> None:
 
 @command("switch_model")
 async def _cmd_switch_model(ctx: CommandContext) -> None:
-    if ctx.runs.busy:
+    from .swarming import busy as swarm_busy
+    if ctx.runs.busy or swarm_busy(ctx.state):
         await ctx.send({"event": "model_switch_blocked", "message": "Finish or stop the current run before changing models."})
         await ctx.send(ctx.state.get_init_data(refresh_only=True))
         return
@@ -2872,6 +3047,8 @@ async def _cmd_switch_model(ctx: CommandContext) -> None:
 
 @command("set_thinking_mode")
 async def _cmd_set_thinking_mode(ctx: CommandContext) -> None:
+    if await _block_active_navigation(ctx):
+        return
     # Per-session thinking-mode toggle (deepseek-v* etc.).
     # Forces a backend rebuild because Ollama options must be stable
     # for the lifetime of an OllamaBackend instance.
@@ -3162,6 +3339,9 @@ async def _cmd_switch_session(ctx: CommandContext) -> None:
 @command("delete_session")
 async def _cmd_delete_session(ctx: CommandContext) -> None:
     session_id = ctx.msg.get("session_id", "")
+    current = ctx.state.project.current_session
+    if current is not None and current.id == session_id and await _block_active_navigation(ctx):
+        return
     ctx.state.project.delete_session(session_id)
     await ctx.send({
         "event": "sessions_updated",
@@ -3266,9 +3446,12 @@ async def _cmd_intent(ctx: CommandContext) -> None:
 
         if name == "intent_start":
             text = (ctx.msg.get("text") or "").strip()
+            refusal = await _oversight_refusal(ctx, "plan") if text else ""
             if not text:
                 await ctx.send({"event": "error",
                                     "message": "intent text is required"})
+            elif refusal:
+                await ctx.send({"event": "error", "message": refusal, "code": "oversight_notice"})
             else:
                 try:
                     # The page follows it in the Plan tab; its events go there.
@@ -3518,8 +3701,10 @@ def _update_check_message(info: dict, started: bool) -> str:
         if info.get("managed_by") and "mode" in (info.get("locked") or []):
             return f"Updates are turned off by {info['managed_by']}."
         return "Updates are turned off in Settings > Updates."
+    if info.get("offline"):
+        return f"{info['offline']} To update, install one from a file under Settings > Updates."
     if not started:
-        return "This copy of Lumi doesn't update itself (it runs from source or outside Windows)."
+        return info.get("unavailable") or "This copy of Lumi doesn't update itself (it runs from source or on Linux)."
     message = f"Checking {info.get('describe') or 'for updates'}."
     if pending:
         message += " Your changed update settings apply after Lumi restarts."
@@ -3658,7 +3843,9 @@ async def _cmd_about_info(ctx: CommandContext) -> None:
     policy = current_policy()
     await ctx.send({"event": "about_info", "data": {
         "version": __version__,
-        "license": "MIT",
+        # Lumi is proprietary (LICENSE at the repository root); the page
+        # shows the copyright line with this agreement's name.
+        "license": "Lumi End User License Agreement",
         "notices": _third_party_notices_path(),
         "organization": policy.organization if policy else "",
         "installed_by": installed_by(),
@@ -3683,6 +3870,84 @@ async def _cmd_update_status(ctx: CommandContext) -> None:
     from lumi.updater import status as update_status
 
     await ctx.send({"event": "update_status", "data": await asyncio.to_thread(update_status)})
+
+
+def _update_file_result(path: str) -> dict:
+    """Settings > Updates > Install from a file: verify it (lumi/update_file.py) and say what happens next."""
+    from ..update_file import UpdateFileError, can_install_here, verify
+
+    text = str(path or "").strip().strip('"')
+    if not text:
+        return {"ok": False, "path": "", "error": "Enter the installer's path, the folder that holds it, or a .zip."}
+    target = os.path.abspath(os.path.expanduser(text))
+    try:
+        update = verify(target)
+    except UpdateFileError as exc:
+        return {"ok": False, "path": target, "error": str(exc)}
+    except Exception as exc:  # a file Lumi can't read is refused, never a crash
+        logger.exception("Verifying an update file failed")
+        return {"ok": False, "path": target, "error": f"The file couldn't be checked: {exc}"}
+    return {"ok": True, "path": target, **update.summary(), "install_problem": can_install_here()}
+
+
+@command("update_file_verify")
+async def _cmd_update_file_verify(ctx: CommandContext) -> None:
+    """Check an offline update bundle as the online updater would, without installing it."""
+    await ctx.send({"event": "update_file", "data": await asyncio.to_thread(
+        _update_file_result, str(ctx.msg.get("path") or ""))})
+
+
+@command("update_file_install")
+async def _cmd_update_file_install(ctx: CommandContext) -> None:
+    """Verify the file again, then hand it to the updater's install flow (Lumi closes)."""
+    from ..update_file import UpdateFileError, install, verify
+
+    path = os.path.abspath(os.path.expanduser(str(ctx.msg.get("path") or "").strip().strip('"')))
+    expected = str(ctx.msg.get("sha256") or "")
+
+    def run() -> dict:
+        try:
+            update = verify(path)
+            if not expected or update.sha256 != expected:
+                raise UpdateFileError("The file changed since it was checked. Check it again before installing.")
+            installer = install(update)
+        except UpdateFileError as exc:
+            return {"ok": False, "path": path, "error": str(exc)}
+        return {"ok": True, "path": path, **update.summary(), "installing": installer}
+
+    await ctx.send({"event": "update_file", "data": await asyncio.to_thread(run)})
+
+
+@command("update_file_dialog")
+async def _cmd_update_file_dialog(ctx: CommandContext) -> None:
+    """The desktop window's file picker for an update file; the page shows it only with a native bridge."""
+    from . import app as _gui_app
+
+    window = getattr(_gui_app, "_webview_window", None)
+    if window is None:
+        await ctx.send({"event": "update_file_picked", "path": "",
+                        "message": "Type the file's path: this window has no file picker."})
+        return
+
+    def pick() -> str:
+        try:
+            import webview
+
+            result = window.create_file_dialog(
+                webview.OPEN_DIALOG, allow_multiple=False,
+                file_types=("Lumi update (*.exe;*.zip)", "All files (*.*)"))
+            return str(result[0]) if result else ""
+        except Exception:
+            logger.warning("The update file picker failed", exc_info=True)
+            return ""
+
+    await ctx.send({"event": "update_file_picked", "path": await asyncio.to_thread(pick)})
+
+
+@command("offline_status")
+async def _cmd_offline_status(ctx: CommandContext) -> None:
+    """Settings > Offline mode: what applies, what it hides and the license."""
+    await ctx.send({"event": "offline_status", "data": await asyncio.to_thread(ctx.state.offline_status)})
 
 
 @command("check_updates")
@@ -3935,6 +4200,7 @@ _SOCKET_SETTING_KEYS: dict[str, frozenset[str]] = {
     "api_keys": frozenset({"sonn", "openrouter", "kimi", "anthropic", "openai", "otlp", "github", "gitlab", "bitbucket",
                            "azure_devops", "jira", "linear"}),
     "issue_trackers": frozenset({"jira_url", "jira_email"}),
+    "code_hosts": frozenset({"github_hosts", "gitlab_hosts"}),
     "review": frozenset({"agent_changes", "reviewers"}),
     "engram": frozenset({"enabled", "server_url"}),
     "cost_tracking": frozenset({"enabled", "budget_alert_usd", "daily_limit_usd", "turn_limit_usd",
@@ -3945,8 +4211,9 @@ _SOCKET_SETTING_KEYS: dict[str, frozenset[str]] = {
     }),
     "audit": frozenset({"otlp_endpoint", "otlp_auth_header"}),
     "security": frozenset({"cli_adapters", "computer_use", "chat_gateway", "shell_sandbox", "scheduled_tasks",
-                           "editor_bridge"}),
+                           "editor_bridge", "extension_panels"}),
     "updates": frozenset({"mode", "channel", "pin"}),
+    "offline": frozenset({"enabled", "allowed_hosts"}),
     "onboarding": frozenset({"dismissed"}),
     "model_favorites": frozenset({"models"}),
     "voice": frozenset({"engine", "service", "model", "language"}),
@@ -4002,6 +4269,10 @@ def _socket_setting_value(section: Any, key: Any, value: Any) -> Any:
         from ..update_channels import normalize
 
         return normalize(key, value)
+    if section == "offline":
+        from ..offline import validate_setting
+
+        return validate_setting(key, value)
     if (section, key) in {
         ("network", "system_certificates"), ("privacy", "secret_scan"), ("privacy", "audit_log"),
         ("onboarding", "dismissed"),
@@ -4107,6 +4378,10 @@ def _socket_setting_value(section: Any, key: Any, value: Any) -> Any:
         from .. import voice
 
         return voice.validate(key, value)
+    elif section == "code_hosts":
+        from ..net import host_names
+
+        return host_names(value)
     return value
 
 
@@ -4167,11 +4442,16 @@ async def _cmd_update_settings(ctx: CommandContext) -> None:
         ctx.state.sonn_account_revision = getattr(ctx.state, "sonn_account_revision", 0) + 1
         await ctx.send({"event": "sonn_account", "data": None})
     await ctx.send({"event": "settings", "data": data})
-    if section == "updates":
-        # Settings > Updates says what changes after a restart.
+    if (section == "security" and any(k == "extension_panels" for k, _ in writes)) or section == "offline":
+        # Offline mode keeps panels closed (gui/extension_panels.enabled): an open one closes now.
+        await _send_extension_panels(ctx)
+    if section in {"updates", "offline"}:
+        # Settings > Updates says what changes after a restart, and what offline mode stops now.
         from lumi.updater import status as update_status
 
         await ctx.send({"event": "update_status", "data": await asyncio.to_thread(update_status)})
+    if section == "offline":
+        await ctx.send({"event": "offline_status", "data": await asyncio.to_thread(ctx.state.offline_status)})
     await ctx.send(ctx.state.get_init_data(refresh_only=True))
 
 
@@ -4194,6 +4474,12 @@ async def _cmd_voice_transcribe(ctx: CommandContext) -> None:
 
     request_id = str(ctx.msg.get("request_id") or "")[:64]
     encoded = ctx.msg.get("audio")
+    # A transcription service is a model too: nothing goes to one before the
+    # organization's oversight notice is confirmed (lumi/oversight.py).
+    refusal = await _oversight_refusal(ctx)
+    if refusal:
+        await ctx.send({"event": "voice.error", "request_id": request_id, "message": refusal})
+        return
     try:
         if not isinstance(encoded, str) or len(encoded) > voice.MAX_AUDIO_BYTES * 4 // 3 + 4:
             raise voice.VoiceError("The recording is too long. Dictate in shorter parts.")
@@ -4252,6 +4538,19 @@ async def _cmd_provider_connection(ctx: CommandContext) -> None:
     provider = ctx.msg.get("provider")
     action = ctx.msg.get("action", "status")
     try:
+        # Offline mode (lumi/offline.py): say why before starting Codex's own
+        # program or asking a provider this computer may not reach.
+        from .. import offline
+
+        if offline.enabled() and action in {"status", "login"}:
+            endpoints = {"openrouter": OpenRouterBackend.DEFAULT_BASE_URL, "anthropic": "https://api.anthropic.com",
+                         "openai": "https://api.openai.com/v1",
+                         "sonn": resolve_sonn_url(settings_data=ctx.state.settings.get_all())}
+            labels = {"openrouter": "OpenRouter", "anthropic": "Anthropic", "openai": "OpenAI", "sonn": "SONN"}
+            reason = offline.provider_refusal(str(provider or ""), endpoints.get(str(provider or ""), ""),
+                                              label=labels.get(str(provider or ""), ""))
+            if reason:
+                raise ValueError(reason)
         if provider == "codex":
             if action == "login":
                 if ctx.runs.busy:

@@ -169,9 +169,13 @@ class MCPConnection:
             if self.config.is_http:
                 if not self.config.url:
                     raise ValueError("HTTP MCP server requires a URL")
+                from .. import net
+
+                # The shared factory: offline mode refuses a server it doesn't allow.
                 self._http_client = httpx.Client(
-                    transport=self._http_transport,
-                    timeout=httpx.Timeout(60.0, connect=3.0),
+                    **net.client_options(timeout=httpx.Timeout(60.0, connect=3.0),
+                                         transport=self._http_transport,
+                                         feature=f"the MCP server {self.config.name}"),
                     follow_redirects=False,
                 )
             else:

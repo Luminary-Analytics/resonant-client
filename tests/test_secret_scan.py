@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import json
+import time
 import zipfile
 from unittest.mock import patch
 
@@ -84,6 +85,48 @@ class TestRedactText:
         redacted, found = secret_scan.redact_text(text, patterns=False, known=[SAVED_KEY, "ollama"])
         assert redacted == "config says [REDACTED saved API key]; dummy key ollama"
         assert found == {"saved API key": 1}
+
+
+JWT = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U"
+
+
+class TestLinearPatterns:
+    """The patterns scan in linear time (each request runs them over whatever a tool
+    read) and still find what the earlier, backtracking ones did."""
+
+    @pytest.mark.parametrize("text, expected", [
+        (f"id-{JWT} end", "id-[REDACTED JSON web token] end"),
+        (f"--{JWT}", "--[REDACTED JSON web token]"),
+        ("-https://u:pass@host/x", "-https://u:[REDACTED password in a URL]@host/x"),
+        ("1.https://u:pass@host/x", "1.https://u:[REDACTED password in a URL]@host/x"),
+        ("+ftp://u:pass@host", "+ftp://u:[REDACTED password in a URL]@host"),
+        # A truncated key before a whole one: all of it, as before.
+        ("-----BEGIN PRIVATE KEY-----\ncut off\n" + PEM, "[REDACTED private key]"),
+        ("-----BEGIN PRIVATE KEY-----\na\n-----BEGIN CERTIFICATE-----\nb\n-----END PRIVATE KEY-----",
+         "[REDACTED private key]"),
+    ])
+    def test_matches_the_earlier_patterns_found(self, text, expected):
+        assert secret_scan.redact_text(text, patterns=True, known=())[0] == expected
+
+    def test_documented_limits(self):
+        # A token's first part can't contain "-eyJ", and a key's body can run over
+        # at most two further BEGIN lines: past that, only the whole key at its end.
+        odd = JWT.replace(".eyJ", "-eyJx.eyJ", 1)
+        assert secret_scan.redact_text(odd, patterns=True, known=())[1] == {}
+        text = "-----BEGIN PRIVATE KEY-----\na\n-----BEGIN X-----\nb\n-----BEGIN Y-----\nc\n" + PEM
+        redacted, found = secret_scan.redact_text(text, patterns=True, known=())
+        assert found == {"private key": 1} and redacted.endswith("-----BEGIN Y-----\nc\n[REDACTED private key]")
+
+    @pytest.mark.parametrize("text", [
+        "-eyJ" * 250_000, "eyJ" + "a-" * 499_999, "1." * 499_999 + "a://", "a." * 500_000,
+        "TOKEN" * 200_000, "-----BEGIN PRIVATE KEY-----\n" * 35_715, "-----BEGIN " * 90_910,
+        "-----BEGIN PRIVATE KEY-----\nAAAA\n-----BEGIN X\n" * 21_740,
+    ], ids=["jwt-like", "jwt first part", "url scheme", "dotted", "env names", "key headers", "begins",
+            "nested begins"])
+    def test_a_megabyte_of_adversarial_text_takes_well_under_a_second(self, text):
+        started = time.perf_counter()
+        secret_scan.redact_text(text, patterns=True, known=())
+        assert time.perf_counter() - started < 1.0
 
 
 class TestScrubHistory:
@@ -227,3 +270,96 @@ class TestDiagnostics:
         assert '"openai": "[in the OS credential store]"' in meta
         assert '"sonn": ""' in meta  # unset stays visibly unset
         assert "http://10.0.0.5:11434" in meta  # ordinary settings stay useful
+
+
+class TestLinearTime:
+    """Tool output is text other people wrote; every pattern must take linear time on it.
+
+    Before, a token start inside a run (a word boundary before ``eyJ`` after each ``-``), a name
+    searched by backtracking (``.env``'s ``[A-Z0-9_]*`` twice) or a key body
+    scanned from every header made 200 KB of such text take seconds.
+    """
+
+    @pytest.mark.parametrize("hostile", [
+        pytest.param("eyJ-" * 50_000, id="token starts"),
+        pytest.param("a." * 100_000, id="dotted run"),
+        pytest.param("PASSWORD" * 25_000, id="keyword run"),
+        pytest.param("-----BEGIN PRIVATE KEY-----\n" * 7_000, id="key headers"),
+        pytest.param("token_" * 33_000, id="name parts"),
+        pytest.param("--password-" * 18_000, id="option parts"),
+        pytest.param("?key=&" * 33_000, id="query parts"),
+        pytest.param("mysql " * 33_000, id="mysql words"),
+        pytest.param("Aa1" * 66_000, id="one long token"),
+        pytest.param("x: " * 66_000, id="colons"),
+    ])
+    def test_200_kb_of_hostile_text(self, hostile):
+        started = time.perf_counter()
+        secret_scan.redact_text(hostile, patterns=True, known=())
+        secret_scan.redact_for_sharing(hostile)
+        elapsed = time.perf_counter() - started
+        assert elapsed < 1.0, f"{elapsed:.2f} s"
+
+
+class TestSharing:
+    """What Lumi shares with an organization (oversight) also loses credentials without a known format."""
+
+    @pytest.mark.parametrize(("text", "secret", "kind"), [
+        ("curl -H 'Authorization: Bearer 0123456789abcdef0123456789abcdef' https://api.example.com",
+         "0123456789abcdef0123456789abcdef", "authorization header"),
+        ('curl -H "Authorization: Basic dXNlcjpwYXNzd29yZA==" https://x.example', "dXNlcjpwYXNzd29yZA==",
+         "authorization header"),
+        ('{"headers": {"Authorization": "Bearer abc.def.ghi"}}', "abc.def.ghi", "authorization header"),
+        ("curl -H 'X-Api-Key: 4f5a6b7c8d9e' https://x.example", "4f5a6b7c8d9e", "secret assignment"),
+        ("curl -H 'Cookie: session=abc123; csrftoken=zzz' https://x.example", "abc123", "cookie"),
+        ("curl 'https://api.example.com/v1/items?api_key=abc123def&page=2'", "abc123def", "secret in a URL"),
+        ("wget 'https://maps.example.com/api?key=AIzaShort1&q=paris'", "AIzaShort1", "secret in a URL"),
+        ("https://s3.example.com/b/o?X-Amz-Signature=deadbeef1234&X-Amz-Date=1", "deadbeef1234", "secret in a URL"),
+        ("https://x.example/cb?code=4/0AY0e-g7&state=xyz", "4/0AY0e-g7", "secret in a URL"),
+        ("mysql -u root -phunter2 appdb", "hunter2", "password or token option"),
+        ("mysqldump -uroot -pS3cr3t! db > out.sql", "S3cr3t!", "password or token option"),
+        ("psql --password=hunter2 -h db", "hunter2", "password or token option"),
+        ("tool --api-key sk_test_abc123 --verbose", "sk_test_abc123", "password or token option"),
+        ('deploy --token "two words" --yes', "two words", "password or token option"),
+        ("curl -u admin:s3cret https://x.example", "s3cret", "password or token option"),
+        ("sshpass -p hunter2 ssh host", "hunter2", "password or token option"),
+        ("PGPASSWORD=hunter2 psql -h db", "hunter2", "secret assignment"),
+        ("cd app && MYSQL_PWD=pw mysql", "pw", "secret assignment"),
+        ("set GITHUB_TOKEN=abc123 && run", "abc123", "secret assignment"),
+        ("db_password = correcthorse", "correcthorse", "secret assignment"),
+        ('config = {"apiKey": "xyz12345"}', "xyz12345", "secret assignment"),
+        ("My password: hunter2, thanks", "hunter2", "secret assignment"),
+        ("git clone https://user:pw@github.com/org/repo", "pw", "password in a URL"),
+        ("echo aB3dE5gH7jK9mN1pQ3sT5vX7zA9cE1gI3kM5oQ7", "aB3dE5gH7jK9mN1pQ3sT5vX7zA9cE1gI3kM5oQ7",
+         "random-looking token"),
+        ("-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA7xQ\nabcDEF", "MIIEowIBAAKCAQEA7xQ", "private key"),
+    ])
+    def test_credentials_in_commands_urls_and_messages(self, text, secret, kind):
+        shared, found = secret_scan.redact_for_sharing(text)
+        assert secret not in shared, shared
+        assert found[kind] >= 1 and f"[REDACTED {kind}]" in shared
+
+    @pytest.mark.parametrize("text", [
+        "git checkout 3f2a9c1e5b7d4a6f8e0c2b4d6f8a0c2e4b6d8f0a",
+        "id 550e8400-e29b-41d4-a716-446655440000",
+        "pytest tests/test_oversight.py::TestNotice::test_nothing_is_recorded_until_the_notice_has_been_confirmed",
+        "cat src/components/HeaderBar/Menu2Items/IndexFileForTheApp9.tsx",
+        "ssh -p 2222 host && mkdir -p build/out && cp -pr a b && mysql -u root -p appdb",
+        "https://example.com/docs?page=2&sort=asc",
+        "PWD=/home/ada OLDPWD=/tmp MAX_TOKENS=4096 TOKENIZERS_PARALLELISM=false",
+        "tool --max-tokens 4096 --num-tokens=100 --bypass-cache x",
+        "if a == b: pass",
+        "max_tokens = 4096",
+        "the tests pass: 10",
+        "echo TestOrganizationPolicy2FactorAuthentication3Times",
+        "import sklearn  # sk-learn",
+    ])
+    def test_ordinary_commands_stay_readable(self, text):
+        assert secret_scan.redact_for_sharing(text) == (text, {})
+
+    def test_known_formats_and_saved_keys_go_whatever_the_scan_setting(self, scan_state):
+        scan_state(keys={"openai": SAVED_KEY})  # the person's scan is off
+        shared, found = secret_scan.redact_for_sharing(f"{SAVED_KEY} and {GITHUB}")
+        assert SAVED_KEY not in shared and GITHUB not in shared
+        assert found == {"saved API key": 1, "GitHub token": 1}
+        # A model request still uses only what the person chose.
+        assert secret_scan.redact_text(GITHUB)[0] == GITHUB

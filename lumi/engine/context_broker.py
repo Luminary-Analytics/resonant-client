@@ -69,6 +69,9 @@ class ContextBroker:
         self.codebase_index = codebase_index
         self._providers: dict[str, Provider] = {}
         self._pinned: dict[str, ContextItem] = {}
+        # Reads one of this conversation's teams for ``@team:`` (gui/swarming.py);
+        # the app sets it, so other surfaces attach no teams.
+        self.team_reader: Callable[[str], dict[str, str]] | None = None
         self.register("file", self._file)
         self.register("symbol", self._symbol)
         self.register("diff", self._diff)
@@ -80,12 +83,13 @@ class ContextBroker:
         self.register("plan", self._plan)
         self.register("issue", self._issue)
         self.register("handoff", self._handoff)
+        self.register("team", self._team)
 
     def register(self, name: str, provider: Provider) -> None:
         self._providers[str(name).strip().lower()] = provider
 
     # Attachments that stay for the rest of the conversation once mentioned.
-    STICKY = frozenset({"handoff"})
+    STICKY = frozenset({"handoff", "team"})
 
     def recall(self, texts: list[str]) -> None:
         """Attach sticky mentions from earlier messages again, as when a conversation is reopened."""
@@ -302,6 +306,24 @@ class ContextBroker:
             return self._item("handoff", selector, f"Couldn't read hand-off {selector}: {exc}", "error")
         item = self._item("handoff", data["title"], handoff.render(data), source)
         item.id = self._item("handoff", selector, "", "").id  # two hand-offs can share a title
+        self.pin(item)
+        return item
+
+    def _team(self, selector: str) -> ContextItem | None:
+        """A team this conversation ran (engine/swarming/chat_context.py); it stays for the conversation."""
+        from .swarming.models import ScopeDenied
+
+        if self.team_reader is None:
+            return self._item("team", selector, f"Team {selector} can't be attached here.", "error")
+        try:
+            found = self.team_reader(selector)
+        except ScopeDenied:
+            return self._item("team", selector, f"Couldn't attach team {selector}: it isn't one of this "
+                                                "conversation's teams.", "error")
+        except Exception as exc:  # noqa: BLE001 - an unreadable team store must not fail the turn
+            return self._item("team", selector, f"Couldn't attach team {selector}: {type(exc).__name__}.", "error")
+        item = self._item("team", found["label"], found["content"], found["provenance"])
+        item.id = self._item("team", selector, "", "").id  # two teams can share an objective
         self.pin(item)
         return item
 

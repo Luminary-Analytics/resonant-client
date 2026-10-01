@@ -3,18 +3,22 @@
 When Lumi moves the mouse and types, the user needs to know at a glance
 that the input is not theirs — otherwise the machine simply appears possessed.
 This draws a soft purple glow around the edges of the monitor being acted on,
-pulsing gently, with a banner reading "Lumi is using the computer".
+pulsing gently, with a banner reading "Lumi is using the computer", and traces
+the real cursor in the same light.
 
 Implemented directly on Win32 through ctypes. The alternatives were a second
 pywebview window (heavy, and transparency support on Windows is patchy) or
 tkinter (explicitly excluded from the bundle). ctypes adds nothing to the
 installer, and `computer_use.py` already drives Win32 the same way.
 
-The glow needs a real alpha ramp, so the window is composited with
+The glow needs a real alpha ramp, so every window is composited with
 `UpdateLayeredWindow` and a premultiplied 32-bit bitmap. The simpler
 `SetLayeredWindowAttributes` colour-key route cannot express partial
 transparency — every pixel is either fully drawn or fully absent — which gives
-a hard border, not a glow.
+a hard border, not a glow. The pixels are computed here: shapes from signed
+distances with analytic antialiasing, and the banner's text by FreeType through
+Pillow, which the desktop tools already depend on. GDI draws the text when
+Pillow is unavailable, so the banner never goes blank.
 
 Three properties matter and each is deliberate:
 
@@ -33,6 +37,7 @@ Three properties matter and each is deliberate:
 import ctypes
 import logging
 import math
+import os
 import queue
 import threading
 import time
@@ -46,6 +51,11 @@ IS_WINDOWS = hasattr(ctypes, "windll")
 
 BANNER_TEXT = "Lumi is using the computer"
 
+# Sizes below are at 100% display scaling. Each monitor's surfaces are drawn at
+# its own DPI, so the indicator keeps its proportions on a high-density screen.
+
+# ── edge glow ────────────────────────────────────────────────────────
+
 # How far the glow reaches inward before it fades to nothing. Generous enough
 # to read as a glow rather than a thick border.
 GLOW_PX = 90
@@ -53,11 +63,55 @@ GLOW_PX = 90
 _EDGE_ALPHA = 190
 # Lumi purple, as (R, G, B).
 _GLOW_RGB = (124, 92, 255)
+# A thin, lighter rim along the very edge gives the glow a defined border, the
+# way a lit bezel reads, rather than a haze with no edge to it.
+_RIM_PX = 2.0
+_RIM_ALPHA = 215
+_RIM_RGB = (156, 132, 255)
+# The glow turns each corner along a superellipse of this exponent. Combining
+# the two edge distances with min() instead meets in a hard diagonal crease.
+_CORNER_EXPONENT = 5.0
+
+# ── banner ───────────────────────────────────────────────────────────
 
 _BANNER_HEIGHT = 36
-_BANNER_PAD_X = 26
-_BANNER_BG = (32, 26, 44)
-_BANNER_FG = (238, 234, 255)
+# From the top of the monitor to the top of the pill.
+_BANNER_TOP = 30
+_BANNER_FONT_PX = 14
+# The product name is set a weight heavier than the rest of the sentence.
+_BANNER_LEAD = "Lumi"
+_BANNER_LEAD_WEIGHT = 650
+_BANNER_TEXT_WEIGHT = 480
+_BANNER_LEAD_RGB = (250, 248, 255)
+_BANNER_TEXT_RGB = (214, 208, 238)
+# A status light at the pill's left end, concentric with its rounded cap.
+_BANNER_DOT_RADIUS = 4.0
+_BANNER_DOT_RGB = (164, 142, 255)
+_BANNER_HALO_PX = 2.6
+_BANNER_HALO_ALPHA = 0.55
+_BANNER_TEXT_GAP = 8.0
+_BANNER_PAD_RIGHT = 17.0
+# Dark, faintly purple glass, lit slightly from above.
+_BANNER_FILL_TOP = (38, 31, 54)
+_BANNER_FILL_BOTTOM = (25, 20, 36)
+_BANNER_FILL_ALPHA = 0.95
+# A hairline just inside the pill's edge keeps it distinct on dark screens.
+_BANNER_EDGE_RGB = (184, 166, 255)
+_BANNER_EDGE_ALPHA_TOP = 0.36
+_BANNER_EDGE_ALPHA_BOTTOM = 0.16
+# (vertical offset, blur sigma, opacity): an ambient shadow and a contact
+# shadow, which lift the pill off a light screen.
+_BANNER_SHADOWS = ((3.0, 7.0, 0.30), (1.0, 1.2, 0.18))
+_BANNER_MARGIN_X = 18
+_BANNER_MARGIN_TOP = 14
+_BANNER_MARGIN_BOTTOM = 26
+# Light text on a dark ground reads thinner than its coverage says; lifting
+# the midtones restores the weight the font was designed with.
+_TEXT_GAMMA = 0.85
+# The banner drops in from this far above as it fades in.
+_BANNER_SLIDE_PX = 6
+
+# ── motion ───────────────────────────────────────────────────────────
 
 # The pulse. Slow and shallow: a fast or deep blink in peripheral vision is
 # genuinely unpleasant to sit next to for a long run.
@@ -66,8 +120,13 @@ _PULSE_MIN = 0.62      # fraction of full intensity at the trough
 _PULSE_MAX = 1.0
 _PULSE_FPS = 25
 # The ring has to keep up with a moving pointer, so the worker ticks at this
-# rate and the glow is recomposited on a subset of those ticks.
+# rate and the glow's opacity is updated on a subset of those ticks.
 _RING_FPS = 60
+# Fades. Short enough that the indicator still arrives with the first action
+# and leaves with the last, long enough not to pop. Restoring after a screen
+# capture skips the fade: the glow must not visibly dip at every screenshot.
+_FADE_IN_S = 0.16
+_FADE_OUT_S = 0.28
 
 # Win32 constants
 _WS_EX_LAYERED = 0x00080000
@@ -87,12 +146,18 @@ _AC_SRC_OVER = 0x00
 _AC_SRC_ALPHA = 0x01
 _BI_RGB = 0
 _DIB_RGB_COLORS = 0
-_DT_CENTER = 0x00000001
-_DT_VCENTER = 0x00000004
 _DT_SINGLELINE = 0x00000020
+_DT_NOPREFIX = 0x00000800
+_DT_CALCRECT = 0x00000400
 _TRANSPARENT_BK = 1
-_DEFAULT_GUI_FONT = 17
+_DEFAULT_CHARSET = 1
+_ANTIALIASED_QUALITY = 4
 _CURSOR_SHOWING = 0x00000001
+_MONITOR_DEFAULTTONEAREST = 2
+_MDT_EFFECTIVE_DPI = 0
+
+_SQRT2 = math.sqrt(2.0)
+_TRANSPARENT = bytes(4)
 
 
 _signatures_declared = False
@@ -145,7 +210,6 @@ def _declare_signatures() -> None:
     user32.GetDC.argtypes = [wintypes.HWND]
     user32.GetDC.restype = wintypes.HDC
     user32.ReleaseDC.argtypes = [wintypes.HWND, wintypes.HDC]
-    user32.FillRect.argtypes = [wintypes.HDC, ctypes.POINTER(wintypes.RECT), wintypes.HBRUSH]
     user32.DrawTextW.argtypes = [
         wintypes.HDC, wintypes.LPCWSTR, ctypes.c_int,
         ctypes.POINTER(wintypes.RECT), ctypes.c_uint,
@@ -166,6 +230,8 @@ def _declare_signatures() -> None:
     user32.TranslateMessage.argtypes = [ctypes.POINTER(wintypes.MSG)]
     user32.DispatchMessageW.argtypes = [ctypes.POINTER(wintypes.MSG)]
     user32.DispatchMessageW.restype = ctypes.c_ssize_t
+    user32.MonitorFromPoint.argtypes = [wintypes.POINT, wintypes.DWORD]
+    user32.MonitorFromPoint.restype = wintypes.HMONITOR
 
     # The one that actually crashed: an undeclared restype defaults to C int,
     # so a module handle above 4 GB is silently truncated and RegisterClassW
@@ -198,10 +264,13 @@ def _declare_signatures() -> None:
     gdi32.SelectObject.restype = wintypes.HGDIOBJ
     gdi32.DeleteObject.argtypes = [wintypes.HGDIOBJ]
     gdi32.DeleteDC.argtypes = [wintypes.HDC]
-    gdi32.CreateSolidBrush.argtypes = [wintypes.COLORREF]
-    gdi32.CreateSolidBrush.restype = wintypes.HBRUSH
-    gdi32.GetStockObject.argtypes = [ctypes.c_int]
-    gdi32.GetStockObject.restype = wintypes.HGDIOBJ
+    gdi32.CreateFontW.argtypes = [
+        ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+        wintypes.DWORD, wintypes.DWORD, wintypes.DWORD, wintypes.DWORD,
+        wintypes.DWORD, wintypes.DWORD, wintypes.DWORD, wintypes.DWORD,
+        wintypes.LPCWSTR,
+    ]
+    gdi32.CreateFontW.restype = wintypes.HFONT
     gdi32.SetBkMode.argtypes = [wintypes.HDC, ctypes.c_int]
     gdi32.SetTextColor.argtypes = [wintypes.HDC, wintypes.COLORREF]
     gdi32.GetObjectW.argtypes = [
@@ -213,6 +282,17 @@ def _declare_signatures() -> None:
         wintypes.LPVOID, wintypes.LPVOID, wintypes.UINT,
     ]
     gdi32.GetDIBits.restype = ctypes.c_int
+    try:
+        # Per-monitor DPI (Windows 8.1+). Without it every monitor is drawn at
+        # 100%, which is also what an older system reports anyway.
+        shcore = ctypes.windll.shcore
+        shcore.GetDpiForMonitor.argtypes = [
+            wintypes.HMONITOR, ctypes.c_int,
+            ctypes.POINTER(ctypes.c_uint), ctypes.POINTER(ctypes.c_uint),
+        ]
+        shcore.GetDpiForMonitor.restype = ctypes.c_long
+    except (AttributeError, OSError):
+        logger.debug("shcore unavailable; drawing the overlay at 100%")
     _signatures_declared = True
 
 
@@ -288,63 +368,441 @@ class _BITMAPINFO(ctypes.Structure):
     ]
 
 
-def _edge_alpha(distance: int) -> int:
-    """Alpha for a pixel `distance` px from the nearest screen edge.
+def _display_scale(x: int, y: int, width: int, height: int) -> float:
+    """The DPI scale of the monitor holding this rectangle; 1.0 is 100%."""
+    if not IS_WINDOWS:
+        return 1.0
+    try:
+        _declare_signatures()
+        monitor = ctypes.windll.user32.MonitorFromPoint(
+            wintypes.POINT(x + width // 2, y + height // 2),
+            _MONITOR_DEFAULTTONEAREST,
+        )
+        dpi_x, dpi_y = ctypes.c_uint(), ctypes.c_uint()
+        if monitor and ctypes.windll.shcore.GetDpiForMonitor(
+            monitor, _MDT_EFFECTIVE_DPI, ctypes.byref(dpi_x), ctypes.byref(dpi_y)
+        ) == 0 and dpi_x.value:
+            return min(4.0, max(1.0, dpi_x.value / 96.0))
+    except Exception:
+        logger.debug("Monitor DPI lookup failed", exc_info=True)
+    return 1.0
+
+
+def _clamp01(value: float) -> float:
+    return 0.0 if value <= 0.0 else 1.0 if value >= 1.0 else value
+
+
+def _coverage(signed_distance: float) -> float:
+    """How much of a pixel a shape covers, from its centre's signed distance.
+
+    A one-pixel box filter: covered a half pixel inside the edge, empty a half
+    pixel outside it. This is what antialiases every shape drawn here.
+    """
+    return _clamp01(0.5 - signed_distance)
+
+
+def _alpha_byte(level: float) -> int:
+    return max(0, min(255, round(255 * level)))
+
+
+# ── edge glow ────────────────────────────────────────────────────────
+
+
+def _corner_distance(horizontal: float, vertical: float) -> float:
+    """Distance in from the lit edges, turning each corner smoothly.
+
+    The distance to the nearer edge alone meets itself along a hard diagonal
+    crease in every corner. A p-norm of the two rounds the contours into a
+    superellipse, brightening the corner only slightly. Once one distance is
+    three times the other the two agree to within a tenth of a percent, which
+    is what lets whole rows of the glow be shared.
+    """
+    if horizontal >= 3.0 * vertical:
+        return vertical
+    if vertical >= 3.0 * horizontal:
+        return horizontal
+    power = _CORNER_EXPONENT
+    return (horizontal ** -power + vertical ** -power) ** (-1.0 / power)
+
+
+def _glow_pixel(distance: float, reach: float, rim: float) -> bytes:
+    """Premultiplied BGRA for a pixel `distance` px in from the lit edge.
 
     Squared falloff rather than linear — a linear ramp reads as a wide flat
     band with a visible cutoff, while the square concentrates the brightness
-    at the edge and lets the tail vanish smoothly.
+    at the edge and lets the tail vanish smoothly. The rim sits over it.
     """
-    if distance >= GLOW_PX:
-        return 0
-    t = 1.0 - (distance / GLOW_PX)
-    return int(_EDGE_ALPHA * t * t)
+    glow = 0.0
+    if distance < reach:
+        t = 1.0 - distance / reach
+        glow = _EDGE_ALPHA / 255.0 * t * t
+    rim_alpha = _RIM_ALPHA / 255.0 * _clamp01(rim + 0.5 - distance)
+    alpha = rim_alpha + glow * (1.0 - rim_alpha)
+    if alpha < 0.5 / 255.0:
+        return _TRANSPARENT
+    # Premultiplied: the compositor expects colour already scaled by alpha,
+    # otherwise the glow washes out to white at the edges.
+    under = glow * (1.0 - rim_alpha)
+    return bytes((
+        round(_RIM_RGB[2] * rim_alpha + _GLOW_RGB[2] * under),
+        round(_RIM_RGB[1] * rim_alpha + _GLOW_RGB[1] * under),
+        round(_RIM_RGB[0] * rim_alpha + _GLOW_RGB[0] * under),
+        round(alpha * 255.0),
+    ))
 
 
-def _build_glow_rows(width: int, height: int) -> bytearray:
+def _build_glow_rows(width: int, height: int, scale: float = 1.0) -> bytes:
     """Premultiplied BGRA for the whole monitor, transparent except the glow.
 
-    Only the alpha ramp varies, and it depends solely on the distance to the
-    nearest edge — so rows repeat. Distinct row patterns are built once and
-    reused, which keeps a 2560x1080 surface well under a frame's worth of work
-    instead of touching 2.7 million pixels individually in Python.
+    A pixel depends only on its distances to the nearest vertical and
+    horizontal edges, so rows repeat. Each distinct row is built once, and
+    within it only the bands near the side edges are computed per pixel; the
+    middle is a single repeated value. That keeps even a 4K surface to tens of
+    thousands of pixel evaluations in Python rather than millions.
     """
-    red, green, blue = _GLOW_RGB
-    stride = width * 4
-    buffer = bytearray(stride * height)
-
-    # A row is fully determined by its vertical distance to the nearest edge.
-    # Anything at or beyond GLOW_PX is entirely transparent.
+    reach = GLOW_PX * scale
+    rim = max(1.0, _RIM_PX * scale)
+    half = width // 2
+    # Rows further than this from the top and bottom are all alike.
+    settle = int(math.ceil(3.0 * reach))
     cache: dict[int, bytes] = {}
 
-    def row_for(vertical: int) -> bytes:
-        cached = cache.get(vertical)
+    def row_for(key: int) -> bytes:
+        cached = cache.get(key)
         if cached is not None:
             return cached
-        row = bytearray(stride)
-        for x in range(width):
-            horizontal = x if x < width - 1 - x else width - 1 - x
-            alpha = _edge_alpha(min(vertical, horizontal))
-            if not alpha:
-                continue
-            offset = x * 4
-            # Premultiplied: the compositor expects colour already scaled by
-            # alpha, otherwise the glow washes out to white at the edges.
-            row[offset] = blue * alpha // 255
-            row[offset + 1] = green * alpha // 255
-            row[offset + 2] = red * alpha // 255
-            row[offset + 3] = alpha
-        packed = bytes(row)
-        cache[vertical] = packed
-        return packed
+        vertical = key + 0.5
+        if vertical < reach:
+            # Past three times the vertical distance the side edges no
+            # longer matter: the row carries the top/bottom value.
+            band = min(half, int(3.0 * vertical) + 1)
+        else:
+            # Only the side ramps are lit; beyond them nothing is.
+            band = min(half, int(1.4 * reach) + 1)
+        pixels = [
+            _glow_pixel(_corner_distance(x + 0.5, vertical), reach, rim)
+            for x in range(band)
+        ]
+        middle = width - 2 * band
+        if middle <= 0:
+            centre = b""
+        elif band == half:
+            # An odd width's single centre pixel, equidistant from both sides.
+            centre = _glow_pixel(_corner_distance(half + 0.5, vertical), reach, rim)
+        else:
+            centre = _glow_pixel(vertical, reach, rim) * middle
+        row = b"".join(pixels) + centre + b"".join(reversed(pixels))
+        cache[key] = row
+        return row
 
+    return b"".join(
+        row_for(min(y, height - 1 - y, settle)) for y in range(height)
+    )
+
+
+# ── banner ───────────────────────────────────────────────────────────
+#
+# A pill at the top of the monitor: shadow, body, hairline and status light
+# drawn from signed distances, the text rasterised separately and laid over.
+
+_TEXT_GAMMA_LUT = [round(255 * (value / 255) ** _TEXT_GAMMA) for value in range(256)]
+_banner_cache: dict[float, tuple[bytes, int, int, int]] = {}
+
+
+def _banner_runs() -> list[tuple[str, int]]:
+    """The banner text as (text, weight) runs: the name, then the sentence."""
+    if BANNER_TEXT.startswith(_BANNER_LEAD + " "):
+        return [
+            (_BANNER_LEAD, _BANNER_LEAD_WEIGHT),
+            (BANNER_TEXT[len(_BANNER_LEAD):], _BANNER_TEXT_WEIGHT),
+        ]
+    return [(BANNER_TEXT, _BANNER_LEAD_WEIGHT)]
+
+
+def _banner_font(size: int, weight: int, points: float):
+    """Segoe UI Variable at this weight, or the nearest face that exists.
+
+    Windows 11 ships Segoe UI Variable with weight and optical-size axes;
+    Windows 10 has the static Segoe UI faces. Pillow's own default face keeps
+    the banner legible where neither exists.
+    """
+    from PIL import ImageFont
+
+    fonts = os.path.join(
+        os.environ.get("WINDIR") or os.environ.get("SystemRoot") or r"C:\Windows",
+        "Fonts",
+    )
+    static = ("seguisb.ttf", "arialbd.ttf") if weight >= 550 else ("segoeui.ttf", "arial.ttf")
+    for name in ("SegUIVar.ttf", *static):
+        path = os.path.join(fonts, name)
+        if not os.path.exists(path):
+            continue
+        try:
+            font = ImageFont.truetype(path, size)
+            if name == "SegUIVar.ttf":
+                values = []
+                for axis in font.get_variation_axes():
+                    label = axis.get("name", b"")
+                    if isinstance(label, bytes):
+                        label = label.decode("ascii", "ignore")
+                    label = str(label).lower()
+                    if label.startswith("weight"):
+                        value = weight
+                    elif "optical" in label:
+                        value = points
+                    else:
+                        value = axis.get("default", axis["minimum"])
+                    values.append(max(axis["minimum"], min(axis["maximum"], value)))
+                font.set_variation_by_axes(values)
+            return font
+        except Exception:
+            logger.debug("Banner font %s unusable", path, exc_info=True)
+    font = ImageFont.load_default(size)
+    if not hasattr(font, "getmetrics"):
+        raise RuntimeError("no scalable font for the banner")
+    return font
+
+
+def _freetype_text_mask(scale: float) -> tuple[bytes, int, int, float, int]:
+    """Coverage of the banner text rendered by FreeType through Pillow."""
+    from PIL import Image, ImageDraw
+
+    size = max(8, round(_BANNER_FONT_PX * scale))
+    # The optical size follows the logical size, not the pixel size: 14 px at
+    # 150% is still 10.5 pt text and should keep its text-sized design.
+    points = _BANNER_FONT_PX * 0.75
+    runs = _banner_runs()
+    fonts = [_banner_font(size, weight, points) for _, weight in runs]
+    ascent = max(font.getmetrics()[0] for font in fonts)
+    descent = max(font.getmetrics()[1] for font in fonts)
+    advances = [font.getlength(text) for (text, _), font in zip(runs, fonts)]
+    width = int(math.ceil(sum(advances))) + 2
+    height = ascent + descent + 2
+    image = Image.new("L", (width, height), 0)
+    draw = ImageDraw.Draw(image)
+    baseline = ascent + 1
+    pen = 1.0
+    split = width
+    for index, ((text, _), font, advance) in enumerate(zip(runs, fonts, advances)):
+        if index == 1:
+            split = int(round(pen))
+        draw.text((pen, baseline), text, fill=255, font=font, anchor="ls")
+        pen += advance
+    image = image.point(_TEXT_GAMMA_LUT)
+    # Centre on the capitals, not the line box: descenders would otherwise pull
+    # the words visibly high in the pill.
+    cap_top = fonts[0].getbbox("H", anchor="ls")[1]
+    return image.tobytes(), width, height, baseline + cap_top / 2.0, split
+
+
+def _gdi_text_mask(scale: float) -> tuple[bytes, int, int, float, int]:
+    """Coverage of the banner text from GDI's greyscale antialiasing.
+
+    The fallback when Pillow is unavailable: white text on a black DIB, whose
+    green channel is then the coverage. One weight, one colour.
+    """
+    _declare_signatures()
+    user32 = ctypes.windll.user32
+    gdi32 = ctypes.windll.gdi32
+    size = max(8, round(_BANNER_FONT_PX * scale))
+    screen_dc = user32.GetDC(None)
+    try:
+        hdc = gdi32.CreateCompatibleDC(screen_dc)
+    finally:
+        user32.ReleaseDC(None, screen_dc)
+    if not hdc:
+        raise OSError("no DC for the banner text")
+    font = gdi32.CreateFontW(
+        -size, 0, 0, 0, 600, 0, 0, 0, _DEFAULT_CHARSET, 0, 0,
+        _ANTIALIASED_QUALITY, 0, "Segoe UI",
+    )
+    old_font = gdi32.SelectObject(hdc, font)
+    bitmap = old_bitmap = None
+    try:
+        flags = _DT_SINGLELINE | _DT_NOPREFIX
+        measured = wintypes.RECT(0, 0, 0, 0)
+        user32.DrawTextW(hdc, BANNER_TEXT, -1, ctypes.byref(measured), flags | _DT_CALCRECT)
+        width, height = measured.right + 2, measured.bottom + 2
+        header = _BITMAPINFOHEADER()
+        header.biSize = ctypes.sizeof(_BITMAPINFOHEADER)
+        header.biWidth = width
+        header.biHeight = -height
+        header.biPlanes = 1
+        header.biBitCount = 32
+        header.biCompression = _BI_RGB
+        bits = ctypes.c_void_p()
+        bitmap = gdi32.CreateDIBSection(
+            hdc, ctypes.byref(header), _DIB_RGB_COLORS, ctypes.byref(bits), None, 0,
+        )
+        if not bitmap or not bits:
+            raise OSError("no DIB for the banner text")
+        old_bitmap = gdi32.SelectObject(hdc, bitmap)
+        gdi32.SetBkMode(hdc, _TRANSPARENT_BK)
+        gdi32.SetTextColor(hdc, 0x00FFFFFF)
+        target = wintypes.RECT(1, 1, width, height)
+        user32.DrawTextW(hdc, BANNER_TEXT, -1, ctypes.byref(target), flags)
+        pixels = ctypes.string_at(bits, width * height * 4)
+        return pixels[1::4], width, height, height / 2.0, width
+    finally:
+        if old_bitmap:
+            gdi32.SelectObject(hdc, old_bitmap)
+        if bitmap:
+            gdi32.DeleteObject(bitmap)
+        gdi32.SelectObject(hdc, old_font)
+        gdi32.DeleteObject(font)
+        gdi32.DeleteDC(hdc)
+
+
+def _banner_text_mask(scale: float) -> tuple[bytes, int, int, float, int]:
+    """(coverage, width, height, centre y, x where the second colour starts)."""
+    try:
+        return _freetype_text_mask(scale)
+    except Exception:
+        logger.debug("FreeType banner text unavailable; using GDI", exc_info=True)
+        return _gdi_text_mask(scale)
+
+
+def _build_banner_frame(scale: float = 1.0) -> tuple[bytes, int, int, int]:
+    """Premultiplied BGRA for the banner pill and its shadow.
+
+    Returns the pixels, the frame's width and height, and the pill's offset
+    from the top of the frame; everything around the pill is its shadow. The
+    pill is the same on every monitor of a given scale, so it is built once.
+    """
+    key = round(scale, 3)
+    cached = _banner_cache.get(key)
+    if cached is not None:
+        return cached
+
+    coverage, text_width, text_height, text_centre, split = _banner_text_mask(scale)
+    pill_height = max(16, round(_BANNER_HEIGHT * scale))
+    radius = pill_height / 2.0
+    dot_radius = _BANNER_DOT_RADIUS * scale
+    text_offset = radius + dot_radius + _BANNER_TEXT_GAP * scale
+    pill_width = int(math.ceil(text_offset + text_width + _BANNER_PAD_RIGHT * scale))
+    margin_x = int(math.ceil(_BANNER_MARGIN_X * scale))
+    margin_top = int(math.ceil(_BANNER_MARGIN_TOP * scale))
+    width = pill_width + 2 * margin_x
+    height = pill_height + margin_top + int(math.ceil(_BANNER_MARGIN_BOTTOM * scale))
+
+    centre_x = margin_x + pill_width / 2.0
+    centre_y = margin_top + pill_height / 2.0
+    straight = pill_width / 2.0 - radius   # half-length of the flat run
+    dot_x = centre_x - straight            # centre of the left cap
+    hairline = max(1.0, scale)
+    halo = _BANNER_HALO_PX * scale
+    halo_reach = dot_radius + 4.0 * halo
+    shadows = [
+        (offset * scale, sigma * scale * _SQRT2, opacity)
+        for offset, sigma, opacity in _BANNER_SHADOWS
+    ]
+    fill_top = [channel / 255.0 for channel in _BANNER_FILL_TOP]
+    fill_bottom = [channel / 255.0 for channel in _BANNER_FILL_BOTTOM]
+    edge = [channel / 255.0 for channel in _BANNER_EDGE_RGB]
+    dot = [channel / 255.0 for channel in _BANNER_DOT_RGB]
+
+    def stadium(px: float, py: float) -> float:
+        """Signed distance to the pill: negative inside."""
+        qx = abs(px - centre_x) - straight
+        qy = abs(py - centre_y)
+        if qx > 0.0:
+            return math.hypot(qx, qy) - radius
+        return qy - radius
+
+    def over(dst, colour, alpha):
+        keep = 1.0 - alpha
+        return [
+            colour[0] * alpha + dst[0] * keep,
+            colour[1] * alpha + dst[1] * keep,
+            colour[2] * alpha + dst[2] * keep,
+            alpha + dst[3] * keep,
+        ]
+
+    def pixel(px: float, py: float, fill, edge_alpha: float, lit: bool) -> bytes:
+        out = [0.0, 0.0, 0.0, 0.0]   # premultiplied RGBA
+        for offset, spread, opacity in shadows:
+            shade = opacity * 0.5 * math.erfc(stadium(px, py - offset) / spread)
+            out = over(out, (0.0, 0.0, 0.0), shade)
+        distance = stadium(px, py)
+        body = _coverage(distance)
+        if body > 0.0:
+            out = over(out, fill, _BANNER_FILL_ALPHA * body)
+            line = body - _coverage(distance + hairline)
+            if line > 0.0:
+                out = over(out, edge, edge_alpha * line)
+        if lit:
+            light = math.hypot(px - dot_x, py - centre_y) - dot_radius
+            if light < halo_reach:
+                glow = max(0.0, light) / halo
+                out = over(out, dot, _BANNER_HALO_ALPHA * math.exp(-glow * glow))
+                out = over(out, dot, _coverage(light))
+        return bytes((
+            round(out[2] * 255), round(out[1] * 255),
+            round(out[0] * 255), round(out[3] * 255),
+        ))
+
+    # Between the status light and the right cap every column is the same, so
+    # it is computed once per row and repeated.
+    flat_start = max(0, int(math.ceil(dot_x + halo_reach - 0.5)))
+    flat_end = int(math.floor(centre_x + straight - 0.5))
+    rows = []
     for y in range(height):
-        vertical = y if y < height - 1 - y else height - 1 - y
-        # Rows past the glow depth still carry the left and right ramps, and
-        # they are all identical — clamping collapses them onto one cached row.
-        row = row_for(min(vertical, GLOW_PX))
-        buffer[y * stride:(y + 1) * stride] = row
-    return buffer
+        py = y + 0.5
+        t = _clamp01((py - margin_top) / pill_height)
+        fill = [top + (bottom - top) * t for top, bottom in zip(fill_top, fill_bottom)]
+        edge_alpha = (
+            _BANNER_EDGE_ALPHA_TOP
+            + (_BANNER_EDGE_ALPHA_BOTTOM - _BANNER_EDGE_ALPHA_TOP) * t
+        )
+        if flat_start <= flat_end:
+            left = [pixel(x + 0.5, py, fill, edge_alpha, True) for x in range(flat_start)]
+            flat = pixel(flat_start + 0.5, py, fill, edge_alpha, False)
+            right = [
+                pixel(x + 0.5, py, fill, edge_alpha, False)
+                for x in range(flat_end + 1, width)
+            ]
+            rows.append(b"".join(left) + flat * (flat_end + 1 - flat_start) + b"".join(right))
+        else:
+            rows.append(b"".join(
+                pixel(x + 0.5, py, fill, edge_alpha, True) for x in range(width)
+            ))
+    frame = bytearray(b"".join(rows))
+
+    # The text, over the pill. Its mask carries a one-pixel pad on the left.
+    origin_x = int(round(margin_x + text_offset)) - 1
+    origin_y = int(round(centre_y - text_centre))
+    lead = _BANNER_LEAD_RGB
+    rest = _BANNER_TEXT_RGB
+    for ty in range(text_height):
+        y = origin_y + ty
+        if not 0 <= y < height:
+            continue
+        for tx in range(text_width):
+            alpha = coverage[ty * text_width + tx]
+            x = origin_x + tx
+            if not alpha or not 0 <= x < width:
+                continue
+            red, green, blue = lead if tx < split else rest
+            offset = (y * width + x) * 4
+            keep = 255 - alpha
+            frame[offset] = (blue * alpha + frame[offset] * keep) // 255
+            frame[offset + 1] = (green * alpha + frame[offset + 1] * keep) // 255
+            frame[offset + 2] = (red * alpha + frame[offset + 2] * keep) // 255
+            frame[offset + 3] = (255 * alpha + frame[offset + 3] * keep) // 255
+
+    result = (bytes(frame), width, height, margin_top)
+    _banner_cache[key] = result
+    return result
+
+
+def _banner_origin(
+    monitor_width: int, frame_width: int, pill_top: int, scale: float = 1.0
+) -> tuple[int, int]:
+    """Where the banner frame goes on its monitor: centred along the top."""
+    return (
+        (monitor_width - frame_width) // 2,
+        round(_BANNER_TOP * scale) - pill_top,
+    )
 
 
 # ── cursor glow ──────────────────────────────────────────────────────
@@ -362,54 +820,94 @@ _CURSOR_ANCHOR = RING_BOX // 2
 _CURSOR_OUTLINE_PX = 1.5
 _CURSOR_GLOW_PX = 8.0
 _CURSOR_ALPHA = 235
-# Click feedback: the ring expands outward and fades. Pre-rendered because
-# re-rasterising on the click path would put Python drawing work between the
-# agent's click and the screenshot that follows it.
-_PULSE_FRAMES = 9
+# The outline's profile starts this far out from the cursor's true contour.
+# The glow used to measure from the centres of every pixel above a faint alpha
+# threshold, which set antialiased edges half a pixel further out than hard
+# ones. This value keeps that overall weight on the standard antialiased
+# cursors (within 1% of their total glow) while the outline stays even.
+_CURSOR_CONTOUR_SHIFT = 0.15
+# Click feedback: the ring expands outward, easing out, and fades.
+# Pre-rendered because re-rasterising on the click path would put Python
+# drawing work between the agent's click and the screenshot that follows it.
+_PULSE_FRAMES = 12
 _PULSE_MAX_RADIUS = 46
 
 
-def _build_ring_frame(radius: float, thickness: float, alpha_scale: float) -> bytearray:
-    """One premultiplied BGRA frame containing a click ripple."""
+def _ring_box_for(
+    scale: float, width: int, height: int, hotspot_x: int, hotspot_y: int
+) -> int:
+    """Window size that holds the cursor's glow and the widest ripple."""
+    ripple = (_PULSE_MAX_RADIUS + 3.0) * scale + 4.0
+    extent = max(width - hotspot_x, height - hotspot_y, hotspot_x, hotspot_y)
+    extent += _CURSOR_GLOW_PX * scale + 2.0
+    box = max(RING_BOX, 2 * int(math.ceil(max(ripple, extent))) + 2)
+    return box + box % 2
+
+
+def _build_ring_frame(
+    radius: float,
+    thickness: float,
+    alpha_scale: float,
+    box: int = RING_BOX,
+    base: Optional[bytearray] = None,
+) -> bytearray:
+    """One premultiplied BGRA frame containing a click ripple.
+
+    With `base`, the ripple is composited over a copy of it rather than drawn
+    on a clear frame. Only the ring's own rows and spans are visited.
+    """
     red, green, blue = _GLOW_RGB
-    size = RING_BOX
-    stride = size * 4
-    buffer = bytearray(stride * size)
-    centre = (size - 1) / 2.0
+    stride = box * 4
+    buffer = bytearray(base) if base is not None else bytearray(stride * box)
+    # Centred on the hot-spot pixel, the anchor of every cursor frame.
+    centre = box // 2
+    half_stroke = thickness / 2
     # A wide stroke gets a proportional feather so it fades like emitted light
     # instead of presenting a crisp progress-ring edge.  The small-thickness
     # path remains useful for the brief click ripple below.
     feather = min(
         max(1.2, thickness * 0.75),
-        max(1.2, radius - thickness / 2 - 2.0),
+        max(1.2, radius - half_stroke - 2.0),
     )
-
-    for y in range(size):
+    outer = radius + half_stroke + feather
+    inner = max(0.0, radius - half_stroke - feather)
+    for y in range(max(0, int(centre - outer) - 1), min(box, int(centre + outer) + 2)):
         dy = y - centre
-        base = y * stride
-        for x in range(size):
-            dx = x - centre
-            distance = math.hypot(dx, dy)
-            edge = abs(distance - radius)
-            half_stroke = thickness / 2
-            if edge > half_stroke + feather:
-                continue
-            if edge <= half_stroke:
-                # Even the brightest part is gently rounded.  This avoids a
-                # visible circular stroke while keeping the cursor-sized hole
-                # in the middle completely transparent.
-                coverage = 0.72 + 0.28 * (1.0 - edge / max(half_stroke, 0.01))
-            else:
-                fade = 1.0 - (edge - half_stroke) / feather
-                coverage = fade * fade
-            alpha = int(_RING_ALPHA * alpha_scale * coverage)
-            if alpha <= 0:
-                continue
-            offset = base + x * 4
-            buffer[offset] = blue * alpha // 255
-            buffer[offset + 1] = green * alpha // 255
-            buffer[offset + 2] = red * alpha // 255
-            buffer[offset + 3] = alpha
+        if abs(dy) > outer:
+            continue
+        span = math.sqrt(outer * outer - dy * dy)
+        hole = math.sqrt(inner * inner - dy * dy) if abs(dy) < inner else 0.0
+        low, high = int(centre - span) - 1, int(centre + span) + 2
+        # Two spans either side of the hole; a row through the hole's edge
+        # (or past it) is a single span.
+        spans = (
+            [(low, int(centre - hole) + 2), (int(centre + hole) - 1, high)]
+            if hole > 2.0 else [(low, high)]
+        )
+        base_offset = y * stride
+        for start, stop in spans:
+            for x in range(max(0, start), min(box, stop)):
+                distance = math.hypot(x - centre, dy)
+                edge = abs(distance - radius)
+                if edge > half_stroke + feather:
+                    continue
+                if edge <= half_stroke:
+                    # Even the brightest part is gently rounded.  This avoids a
+                    # visible circular stroke while keeping the cursor-sized
+                    # hole in the middle completely transparent.
+                    coverage = 0.72 + 0.28 * (1.0 - edge / max(half_stroke, 0.01))
+                else:
+                    fade = 1.0 - (edge - half_stroke) / feather
+                    coverage = fade * fade
+                alpha = int(_RING_ALPHA * alpha_scale * coverage)
+                if alpha <= 0:
+                    continue
+                offset = base_offset + x * 4
+                keep = 255 - alpha
+                buffer[offset] = blue * alpha // 255 + buffer[offset] * keep // 255
+                buffer[offset + 1] = green * alpha // 255 + buffer[offset + 1] * keep // 255
+                buffer[offset + 2] = red * alpha // 255 + buffer[offset + 2] * keep // 255
+                buffer[offset + 3] = alpha + buffer[offset + 3] * keep // 255
     return buffer
 
 
@@ -605,6 +1103,10 @@ def _capture_cursor_mask(cursor_handle: int | None = None):
             gdi32.DeleteObject(icon_info.hbmColor)
 
 
+_NEIGHBOURS_FORWARD = ((-1, -1), (0, -1), (1, -1), (-1, 0))
+_NEIGHBOURS_BACKWARD = ((1, 1), (0, 1), (-1, 1), (1, 0))
+
+
 def _build_cursor_glow_frame(
     mask: bytearray,
     width: int,
@@ -612,66 +1114,127 @@ def _build_cursor_glow_frame(
     hotspot_x: int,
     hotspot_y: int,
     alpha_scale: float = 1.0,
+    box: int = RING_BOX,
+    scale: float = 1.0,
 ) -> bytearray:
-    """Build a tight outline and soft bloom from a native cursor mask."""
+    """Build a tight outline and soft bloom from a native cursor mask.
+
+    Distances are measured to the cursor's antialiased contour rather than to
+    the centres of its edge pixels, so the outline follows the arrow's slopes
+    smoothly instead of stepping with its pixel grid. Each edge pixel's
+    coverage places the contour inside it; a two-pass sweep then carries the
+    nearest edge pixel across the glow's reach.
+    """
     red, green, blue = _GLOW_RGB
-    size = RING_BOX
-    stride = size * 4
-    buffer = bytearray(stride * size)
-    silhouette = bytearray(size * size)
-    origin_x = _CURSOR_ANCHOR - hotspot_x
-    origin_y = _CURSOR_ANCHOR - hotspot_y
+    stride = box * 4
+    buffer = bytearray(stride * box)
+    anchor = box // 2
+    origin_x = anchor - hotspot_x
+    origin_y = anchor - hotspot_y
+    outline_px = _CURSOR_OUTLINE_PX * scale
+    glow_px = _CURSOR_GLOW_PX * scale
+
+    # Work only in the cursor's box plus the glow's reach.
+    apron = int(math.ceil(glow_px)) + 2
+    left = max(0, origin_x - apron)
+    top = max(0, origin_y - apron)
+    right = min(box, origin_x + width + apron)
+    bottom = min(box, origin_y + height + apron)
+    grid_w, grid_h = right - left, bottom - top
+    if grid_w <= 0 or grid_h <= 0:
+        return buffer
+    cells = grid_w * grid_h
+    coverage = [0.0] * cells
     for source_y in range(height):
-        target_y = origin_y + source_y
-        if not 0 <= target_y < size:
+        grid_y = origin_y + source_y - top
+        if not 0 <= grid_y < grid_h:
             continue
         for source_x in range(width):
-            target_x = origin_x + source_x
-            if not 0 <= target_x < size:
-                continue
-            coverage = mask[source_y * width + source_x]
-            if coverage > 24:
-                silhouette[target_y * size + target_x] = coverage
+            grid_x = origin_x + source_x - left
+            if 0 <= grid_x < grid_w:
+                value = mask[source_y * width + source_x]
+                if value:
+                    coverage[grid_y * grid_w + grid_x] = value / 255.0
 
-    edge_points = []
-    for y in range(size):
-        for x in range(size):
-            if not silhouette[y * size + x]:
+    def on_contour(grid_x: int, grid_y: int, inside: bool) -> bool:
+        """Whether a neighbour lies on the other side of the contour."""
+        for ny in (grid_y - 1, grid_y, grid_y + 1):
+            for nx in (grid_x - 1, grid_x, grid_x + 1):
+                neighbour = (
+                    coverage[ny * grid_w + nx]
+                    if 0 <= nx < grid_w and 0 <= ny < grid_h else 0.0
+                )
+                if (neighbour >= 0.5) != inside:
+                    return True
+        return False
+
+    # Edge sites: pixels on either side of the half-coverage contour. A faint
+    # pixel away from the body (a drop shadow's fringe) is not one.
+    site_x: list[int] = []
+    site_y: list[int] = []
+    site_offset: list[float] = []
+    nearest = [-1] * cells
+    distance = [math.inf] * cells
+    for grid_y in range(grid_h):
+        for grid_x in range(grid_w):
+            index = grid_y * grid_w + grid_x
+            value = coverage[index]
+            if value <= 0.0 or not on_contour(grid_x, grid_y, value >= 0.5):
                 continue
-            if any(
-                not (0 <= x + dx < size and 0 <= y + dy < size)
-                or not silhouette[(y + dy) * size + x + dx]
-                for dx, dy in ((-1, 0), (1, 0), (0, -1), (0, 1))
-            ):
-                edge_points.append((x + 0.5, y + 0.5))
-    if not edge_points:
+            # The contour lies (coverage - 0.5) px beyond this pixel's centre.
+            nearest[index] = len(site_x)
+            distance[index] = 0.5 - value
+            site_x.append(grid_x)
+            site_y.append(grid_y)
+            site_offset.append(0.5 - value)
+    if not site_x:
         return buffer
 
-    for y in range(size):
-        base = y * stride
-        py = y + 0.5
-        for x in range(size):
-            px = x + 0.5
-            distance = min(
-                math.hypot(px - edge_x, py - edge_y)
-                for edge_x, edge_y in edge_points
-            )
-            if distance > _CURSOR_GLOW_PX:
-                continue
+    def sweep(rows, columns, neighbours) -> None:
+        for grid_y in rows:
+            for grid_x in columns:
+                index = grid_y * grid_w + grid_x
+                best = distance[index]
+                for dx, dy in neighbours:
+                    nx, ny = grid_x + dx, grid_y + dy
+                    if not (0 <= nx < grid_w and 0 <= ny < grid_h):
+                        continue
+                    site = nearest[ny * grid_w + nx]
+                    if site < 0:
+                        continue
+                    candidate = math.hypot(
+                        grid_x - site_x[site], grid_y - site_y[site]
+                    ) + site_offset[site]
+                    if candidate < best:
+                        best = candidate
+                        distance[index] = candidate
+                        nearest[index] = site
 
-            # Draw only the edge pixels inside the silhouette; the real cursor
-            # covers those. Outside it, a two-pixel purple core hugs the exact
-            # contour and a much fainter bloom falls away independently.
-            inside = bool(silhouette[y * size + x])
-            if inside and distance > 0.75:
-                continue
-            bloom = max(0.0, 1.0 - distance / _CURSOR_GLOW_PX) ** 2.4
-            core = max(0.0, 1.0 - distance / _CURSOR_OUTLINE_PX)
-            coverage = min(1.0, 0.46 * bloom + 0.92 * core)
-            alpha = int(_CURSOR_ALPHA * alpha_scale * coverage)
+    sweep(range(grid_h), range(grid_w), _NEIGHBOURS_FORWARD)
+    sweep(range(grid_h - 1, -1, -1), range(grid_w - 1, -1, -1), _NEIGHBOURS_BACKWARD)
+
+    for grid_y in range(grid_h):
+        base = (top + grid_y) * stride
+        for grid_x in range(grid_w):
+            index = grid_y * grid_w + grid_x
+            if coverage[index] >= 0.5:
+                # Inside the silhouette the real cursor covers the glow; only
+                # its edge pixels keep the core, filling under the cursor's
+                # own antialiasing so the outline meets it without a gap.
+                if distance[index] > 0.0 or nearest[index] < 0:
+                    continue
+                strength = 1.0
+            else:
+                reach = max(0.0, distance[index]) + _CURSOR_CONTOUR_SHIFT
+                if reach >= glow_px:
+                    continue
+                bloom = (1.0 - reach / glow_px) ** 2.4
+                core = max(0.0, 1.0 - reach / outline_px)
+                strength = min(1.0, 0.46 * bloom + 0.92 * core)
+            alpha = int(_CURSOR_ALPHA * alpha_scale * strength)
             if alpha <= 0:
                 continue
-            offset = base + x * 4
+            offset = base + (left + grid_x) * 4
             buffer[offset] = blue * alpha // 255
             buffer[offset + 1] = green * alpha // 255
             buffer[offset + 2] = red * alpha // 255
@@ -700,14 +1263,84 @@ def _composite_frames(base: bytearray, overlay: bytearray) -> bytearray:
     return result
 
 
+def _build_cursor_frames(
+    mask: bytearray,
+    width: int,
+    height: int,
+    hotspot_x: int,
+    hotspot_y: int,
+    scale: float = 1.0,
+) -> tuple[list[bytearray], int, int]:
+    """The idle glow and the click ripple's frames, with their box and anchor.
+
+    Sized by the display's scale, not the cursor's bitmap: applications and
+    pointer-size settings hand Windows cursors of many sizes (64 px bitmaps
+    are common at 100%), and the glow around them should keep one weight.
+    The bitmap only decides how large the window must be to hold it.
+    """
+    box = _ring_box_for(scale, width, height, hotspot_x, hotspot_y)
+    glow = _build_cursor_glow_frame(
+        mask, width, height, hotspot_x, hotspot_y, box=box, scale=scale,
+    )
+    frames = [glow]
+    for step in range(1, _PULSE_FRAMES + 1):
+        progress = step / _PULSE_FRAMES
+        # Ease out: the ring leaves the click point fast and settles as it
+        # fades, the way a ripple on water does.
+        eased = 1.0 - (1.0 - progress) ** 3
+        frames.append(_build_ring_frame(
+            (_RING_RADIUS + (_PULSE_MAX_RADIUS - _RING_RADIUS) * eased) * scale,
+            max(1.4, 4.0 * (1.0 - 0.55 * eased)) * scale,
+            0.9 * (1.0 - progress) ** 1.35,
+            box=box,
+            base=glow,
+        ))
+    return frames, box, box // 2
+
+
+def _create_dib(pixels: bytes, width: int, height: int):
+    """A top-down 32-bit DIB section holding these premultiplied pixels."""
+    user32 = ctypes.windll.user32
+    gdi32 = ctypes.windll.gdi32
+    header = _BITMAPINFOHEADER()
+    header.biSize = ctypes.sizeof(_BITMAPINFOHEADER)
+    header.biWidth = width
+    # Negative height makes it top-down, matching the row order of the pixels.
+    header.biHeight = -height
+    header.biPlanes = 1
+    header.biBitCount = 32
+    header.biCompression = _BI_RGB
+    bits = ctypes.c_void_p()
+    screen_dc = user32.GetDC(None)
+    try:
+        bitmap = gdi32.CreateDIBSection(
+            screen_dc, ctypes.byref(header), _DIB_RGB_COLORS,
+            ctypes.byref(bits), None, 0,
+        )
+    finally:
+        user32.ReleaseDC(None, screen_dc)
+    if not bitmap or not bits:
+        if bitmap:
+            gdi32.DeleteObject(bitmap)
+        return None
+    ctypes.memmove(bits, bytes(pixels), len(pixels))
+    return bitmap
+
+
 class _Overlay:
-    """A single click-through, per-pixel-alpha window covering one monitor."""
+    """Click-through, per-pixel-alpha windows for one monitor.
+
+    Up to three: the edge glow covering the monitor; the banner, in a window
+    of its own so it stays solid while the glow breathes; and, for the overlay
+    that owns it, the cursor glow.
+    """
 
     def __init__(self, *, cursor_indicator: bool = True) -> None:
         self._hwnd = None
         self._wndclass = None
         self._wndproc_ref = None  # must outlive the window
         self._bounds = (0, 0, 0, 0)
+        self._scale = 1.0
         self._hdc_mem = None
         self._hbitmap = None
         self._old_bitmap = None
@@ -718,18 +1351,47 @@ class _Overlay:
         self._shutdown = threading.Event()
         self._shown = False
         self._cursor_indicator = cursor_indicator
-        # Cursor glow — a second window, owned by the same thread for the same
+        self._pulse_started = time.monotonic()
+        # How visible the whole indicator is, 0..1, and the fade moving it.
+        # While `_hiding`, a fade-out is still on screen though the overlay
+        # already counts as hidden.
+        self._fade = 0.0
+        self._fade_from = 0.0
+        self._fade_to = 0.0
+        self._fade_started = 0.0
+        self._fade_duration = 0.0
+        self._hiding = False
+        # The banner pill, a small window of its own.
+        self._banner_hwnd = None
+        self._banner_hdc = None
+        self._banner_bitmap = None
+        self._banner_old_bitmap = None
+        self._banner_frame = (0, 0, 0)   # width, height, pill offset from top
+        self._banner_scale = None
+        # Cursor glow — another window, owned by the same thread for the same
         # reason the first one is: cross-thread window calls deadlock.
         self._ring_hwnd = None
         self._ring_hdc = None
         self._ring_bitmaps: list = []
         self._ring_old_bitmap = None
         self._ring_shown = False
-        self._ring_frame = 0          # 0 = idle ring, 1..N = click pulse
+        self._ring_frame = 0          # 0 = idle glow, 1..N = click pulse
         self._ring_last_pos = None
         self._ring_cursor_handle = None
+        self._ring_box = RING_BOX
+        self._ring_scale = None
 
     # ── window plumbing ──────────────────────────────────────────────
+
+    def _create_layered_window(self, title: str, width: int, height: int):
+        return ctypes.windll.user32.CreateWindowExW(
+            _WS_EX_LAYERED | _WS_EX_TRANSPARENT | _WS_EX_TOPMOST
+            | _WS_EX_TOOLWINDOW | _WS_EX_NOACTIVATE,
+            "LumiComputerUseHalo", title,
+            _WS_POPUP,
+            0, 0, width, height,
+            None, None, ctypes.windll.kernel32.GetModuleHandleW(None), None,
+        )
 
     def _ensure_window(self) -> bool:
         if self._hwnd:
@@ -769,14 +1431,11 @@ class _Overlay:
                 return False
         self._wndclass = wndclass
 
-        self._hwnd = user32.CreateWindowExW(
-            _WS_EX_LAYERED | _WS_EX_TRANSPARENT | _WS_EX_TOPMOST
-            | _WS_EX_TOOLWINDOW | _WS_EX_NOACTIVATE,
-            "LumiComputerUseHalo", "Lumi",
-            _WS_POPUP,
-            0, 0, 10, 10,
-            None, None, wndclass.hInstance, None,
-        )
+        self._hwnd = self._create_layered_window("Lumi", 10, 10)
+        if self._hwnd:
+            # Without a window of its own the banner is simply skipped; the
+            # glow still announces the run.
+            self._banner_hwnd = self._create_layered_window("Lumi banner", 10, 10)
         return bool(self._hwnd)
 
     def _release_surface(self) -> None:
@@ -789,10 +1448,20 @@ class _Overlay:
             gdi32.DeleteObject(self._hbitmap)
         self._hdc_mem = self._hbitmap = self._old_bitmap = None
 
+    def _release_banner(self) -> None:
+        gdi32 = ctypes.windll.gdi32
+        if self._banner_hdc:
+            if self._banner_old_bitmap:
+                gdi32.SelectObject(self._banner_hdc, self._banner_old_bitmap)
+            gdi32.DeleteDC(self._banner_hdc)
+        if self._banner_bitmap:
+            gdi32.DeleteObject(self._banner_bitmap)
+        self._banner_hdc = self._banner_bitmap = self._banner_old_bitmap = None
+
     def _release_ring(self) -> None:
         """Free the ring's DC and its pre-rendered frames.
 
-        Ten DIB sections at 116x116 is not much, but GDI objects are a
+        Thirteen small DIB sections is not much, but GDI objects are a
         per-process quota and leaking them across a long autonomous run is how
         a process ends up unable to create any window at all.
         """
@@ -807,96 +1476,61 @@ class _Overlay:
         self._ring_hdc = self._ring_old_bitmap = None
         self._ring_cursor_handle = None
 
-    def _build_surface(self, width: int, height: int) -> bool:
-        """Render the glow and banner once into a reusable DIB."""
-        gdi32 = ctypes.windll.gdi32
+    def _selected_dc(self, bitmap):
+        """A memory DC with `bitmap` selected, and the bitmap it displaced."""
         user32 = ctypes.windll.user32
-
-        self._release_surface()
-
-        header = _BITMAPINFOHEADER()
-        header.biSize = ctypes.sizeof(_BITMAPINFOHEADER)
-        header.biWidth = width
-        # Negative height makes it top-down, matching the row order below.
-        header.biHeight = -height
-        header.biPlanes = 1
-        header.biBitCount = 32
-        header.biCompression = _BI_RGB
-
-        bits = ctypes.c_void_p()
+        gdi32 = ctypes.windll.gdi32
         screen_dc = user32.GetDC(None)
         try:
-            gdi32.CreateDIBSection.restype = wintypes.HBITMAP
-            hbitmap = gdi32.CreateDIBSection(
-                screen_dc, ctypes.byref(header), _DIB_RGB_COLORS,
-                ctypes.byref(bits), None, 0,
-            )
-            if not hbitmap or not bits:
-                return False
-            hdc_mem = gdi32.CreateCompatibleDC(screen_dc)
+            hdc = gdi32.CreateCompatibleDC(screen_dc)
         finally:
             user32.ReleaseDC(None, screen_dc)
+        if not hdc:
+            return None, None
+        return hdc, gdi32.SelectObject(hdc, bitmap)
 
-        pixels = _build_glow_rows(width, height)
-        ctypes.memmove(bits, bytes(pixels), len(pixels))
-
-        old = gdi32.SelectObject(hdc_mem, hbitmap)
-
-        # Banner, centred along the top edge. Drawn after the glow so it sits
-        # on top of it.
-        text_len = len(BANNER_TEXT)
-        banner_width = min(width - 40, 22 * text_len + _BANNER_PAD_X * 2)
-        banner_left = max(0, (width - banner_width) // 2)
-        banner_top = max(0, GLOW_PX // 3)
-        banner = wintypes.RECT(
-            banner_left, banner_top,
-            banner_left + banner_width, banner_top + _BANNER_HEIGHT,
-        )
-        bg = gdi32.CreateSolidBrush(
-            _BANNER_BG[2] << 16 | _BANNER_BG[1] << 8 | _BANNER_BG[0]
-        )
-        user32.FillRect(hdc_mem, ctypes.byref(banner), bg)
-        gdi32.DeleteObject(bg)
-
-        gdi32.SetBkMode(hdc_mem, _TRANSPARENT_BK)
-        gdi32.SetTextColor(
-            hdc_mem, _BANNER_FG[2] << 16 | _BANNER_FG[1] << 8 | _BANNER_FG[0]
-        )
-        font = gdi32.GetStockObject(_DEFAULT_GUI_FONT)
-        old_font = gdi32.SelectObject(hdc_mem, font)
-        user32.DrawTextW(
-            hdc_mem, BANNER_TEXT, -1, ctypes.byref(banner),
-            _DT_CENTER | _DT_VCENTER | _DT_SINGLELINE,
-        )
-        gdi32.SelectObject(hdc_mem, old_font)
-
-        # GDI text and FillRect write nothing to the alpha channel, so every
-        # pixel they touched is left fully transparent and the banner would be
-        # invisible. Force the banner rectangle opaque afterwards.
-        stride = width * 4
-        buffer = (ctypes.c_ubyte * (stride * height)).from_address(bits.value)
-        for y in range(banner.top, min(banner.bottom, height)):
-            base = y * stride
-            for x in range(banner.left, min(banner.right, width)):
-                buffer[base + x * 4 + 3] = 255
-
+    def _build_surface(self, width: int, height: int) -> bool:
+        """Render the edge glow once into a reusable DIB."""
+        self._release_surface()
+        hbitmap = _create_dib(_build_glow_rows(width, height, self._scale), width, height)
+        if not hbitmap:
+            return False
+        hdc_mem, old = self._selected_dc(hbitmap)
+        if not hdc_mem:
+            ctypes.windll.gdi32.DeleteObject(hbitmap)
+            return False
         self._hdc_mem = hdc_mem
         self._hbitmap = hbitmap
         self._old_bitmap = old
         return True
 
+    def _build_banner_surface(self) -> bool:
+        """Render the banner for the current scale into its own DIB."""
+        self._release_banner()
+        # Recorded even on failure, so a broken font is not retried per show.
+        self._banner_scale = self._scale
+        pixels, width, height, pill_top = _build_banner_frame(self._scale)
+        bitmap = _create_dib(pixels, width, height)
+        if not bitmap:
+            return False
+        hdc, old = self._selected_dc(bitmap)
+        if not hdc:
+            ctypes.windll.gdi32.DeleteObject(bitmap)
+            return False
+        self._banner_hdc = hdc
+        self._banner_bitmap = bitmap
+        self._banner_old_bitmap = old
+        self._banner_frame = (width, height, pill_top)
+        return True
+
     def _composite(self, intensity: float) -> None:
-        """Push the surface to the screen at the given pulse intensity."""
+        """Push the glow surface to the screen at the given opacity."""
         if not (self._hwnd and self._hdc_mem):
             return
         user32 = ctypes.windll.user32
         x, y, width, height = self._bounds
 
-        blend = _BLENDFUNCTION(
-            _AC_SRC_OVER, 0,
-            max(0, min(255, int(255 * intensity))),
-            _AC_SRC_ALPHA,
-        )
+        blend = _BLENDFUNCTION(_AC_SRC_OVER, 0, _alpha_byte(intensity), _AC_SRC_ALPHA)
         size = wintypes.SIZE(width, height)
         source = wintypes.POINT(0, 0)
         dest = wintypes.POINT(x, y)
@@ -906,6 +1540,82 @@ class _Overlay:
             self._hdc_mem, ctypes.byref(source),
             0, ctypes.byref(blend), _ULW_ALPHA,
         )
+
+    def _composite_level(self, intensity: float) -> None:
+        """Change only the glow's overall opacity, keeping its pixels.
+
+        With no source DC the compositor reuses the bitmap it already holds,
+        so the breathing no longer copies a whole monitor's worth of pixels on
+        every pulse frame.
+        """
+        if not (self._hwnd and self._hdc_mem):
+            return
+        blend = _BLENDFUNCTION(_AC_SRC_OVER, 0, _alpha_byte(intensity), _AC_SRC_ALPHA)
+        if not ctypes.windll.user32.UpdateLayeredWindow(
+            self._hwnd, None, None, None, None, None,
+            0, ctypes.byref(blend), _ULW_ALPHA,
+        ):
+            self._composite(intensity)
+
+    def _composite_banner(self) -> None:
+        """Place the banner on its monitor at the current fade."""
+        if not (self._banner_hwnd and self._banner_hdc):
+            return
+        width, height, pill_top = self._banner_frame
+        x, y, monitor_width, _ = self._bounds
+        left, top = _banner_origin(monitor_width, width, pill_top, self._scale)
+        # It drops into place as it fades in, and lifts away as it fades out.
+        slide = round((1.0 - self._fade) * _BANNER_SLIDE_PX * self._scale)
+        blend = _BLENDFUNCTION(_AC_SRC_OVER, 0, _alpha_byte(self._fade), _AC_SRC_ALPHA)
+        size = wintypes.SIZE(width, height)
+        source = wintypes.POINT(0, 0)
+        dest = wintypes.POINT(x + left, y + top - slide)
+        ctypes.windll.user32.UpdateLayeredWindow(
+            self._banner_hwnd, None,
+            ctypes.byref(dest), ctypes.byref(size),
+            self._banner_hdc, ctypes.byref(source),
+            0, ctypes.byref(blend), _ULW_ALPHA,
+        )
+
+    def _raise(self, hwnd) -> None:
+        # Re-assert topmost: another window going full-screen can push it
+        # down, and a glow behind the app it describes is useless. Each call
+        # also puts this window above the previous one, which is how the
+        # banner stays over the glow and the cursor over both.
+        ctypes.windll.user32.SetWindowPos(
+            hwnd, _HWND_TOPMOST, 0, 0, 0, 0,
+            _SWP_NOMOVE | _SWP_NOSIZE | _SWP_NOACTIVATE,
+        )
+
+    # ── fading and breathing ─────────────────────────────────────────
+
+    def _pulse(self, now: float) -> float:
+        """The glow's breathing: a sine eased into [_PULSE_MIN, _PULSE_MAX]."""
+        phase = (now - self._pulse_started) / _PULSE_PERIOD_S
+        wave = (math.sin(phase * 2 * math.pi) + 1.0) / 2.0
+        return _PULSE_MIN + (_PULSE_MAX - _PULSE_MIN) * wave
+
+    def _start_fade(self, target: float, duration: float, now: float) -> None:
+        self._fade_from = self._fade
+        self._fade_to = target
+        self._fade_started = now
+        self._fade_duration = duration
+
+    def _set_fade(self, value: float) -> None:
+        self._fade = self._fade_from = self._fade_to = value
+        self._fade_duration = 0.0
+
+    def _advance_fade(self, now: float) -> bool:
+        """Step a fade in progress; True on every tick that changed the level."""
+        if self._fade_duration <= 0.0:
+            return False
+        progress = (now - self._fade_started) / self._fade_duration
+        if progress >= 1.0:
+            self._set_fade(self._fade_to)
+            return True
+        eased = 1.0 - (1.0 - progress) ** 3
+        self._fade = self._fade_from + (self._fade_to - self._fade_from) * eased
+        return True
 
     # ── owner thread ─────────────────────────────────────────────────
     #
@@ -920,15 +1630,13 @@ class _Overlay:
     # message-based marshalling and the pulse tick comes free.
 
     def _worker(self) -> None:
-        # The loop runs at cursor-tracking speed; the edge glow is recomposited
-        # only every few ticks. Compositing a full-monitor layered surface at
-        # 60 Hz is real GPU and CPU work for a pulse nobody can perceive that
-        # fast, while the ring genuinely needs the rate to not visibly lag the
-        # pointer it is drawing around.
+        # The loop runs at cursor-tracking speed; the glow's opacity changes
+        # only every few ticks, since nobody perceives a slow pulse any faster,
+        # while the ring genuinely needs the rate to not visibly lag the
+        # pointer it is drawing around. Fades run at the full rate.
         frame = 1.0 / _RING_FPS
         glow_every = max(1, round(_RING_FPS / _PULSE_FPS))
         tick = 0
-        started = time.monotonic()
         try:
             if not self._ensure_window():
                 self._ready.set()
@@ -937,12 +1645,16 @@ class _Overlay:
             while not self._shutdown.is_set():
                 self._drain_commands()
                 self._pump_messages()
-                self._tick_ring()
-                if self._shown and tick % glow_every == 0:
-                    phase = (time.monotonic() - started) / _PULSE_PERIOD_S
-                    # Sine eased into [_PULSE_MIN, _PULSE_MAX] — no hard edge.
-                    wave = (math.sin(phase * 2 * math.pi) + 1.0) / 2.0
-                    self._composite(_PULSE_MIN + (_PULSE_MAX - _PULSE_MIN) * wave)
+                now = time.monotonic()
+                fading = self._advance_fade(now)
+                self._tick_ring(force=fading)
+                if self._shown or self._hiding:
+                    if fading or tick % glow_every == 0:
+                        self._composite_level(self._pulse(now) * self._fade)
+                    if fading:
+                        self._composite_banner()
+                if self._hiding and self._fade_duration <= 0.0:
+                    self._hide_windows()
                 tick += 1
                 time.sleep(frame)
         except Exception:
@@ -981,33 +1693,63 @@ class _Overlay:
                     # the hide took effect, not what a caller observed earlier.
                     result["was_shown"] = self._shown
                     result["bounds"] = self._bounds
-                    self._apply_hide()
+                    self._apply_hide(immediate=True)
             except Exception:
                 logger.debug("Halo overlay command failed", exc_info=True)
             finally:
                 if done is not None:
                     done.set()
 
-    def _apply_show(self, x: int, y: int, width: int, height: int) -> None:
+    def _apply_show(
+        self, x: int, y: int, width: int, height: int, fade_in: bool = True
+    ) -> None:
         if self._bounds != (x, y, width, height) or not self._hbitmap:
             self._bounds = (x, y, width, height)
+            self._scale = _display_scale(x, y, width, height)
             if not self._build_surface(width, height):
                 return
+        if self._banner_hwnd and self._banner_scale != self._scale:
+            try:
+                self._build_banner_surface()
+            except Exception:
+                logger.debug("Banner rendering failed", exc_info=True)
+        now = time.monotonic()
+        if fade_in and not self._shown:
+            # From wherever it is: nothing, or a fade-out being reversed.
+            self._start_fade(1.0, _FADE_IN_S, now)
+        else:
+            self._set_fade(1.0)
+        self._hiding = False
         user32 = ctypes.windll.user32
-        self._composite(_PULSE_MAX)
+        # At the pulse's current level, so a restore after a screenshot does
+        # not flash the glow to full before the next pulse tick.
+        self._composite(self._pulse(now) * self._fade)
         user32.ShowWindow(self._hwnd, _SW_SHOWNOACTIVATE)
-        # Re-assert topmost: another window going full-screen can push it
-        # down, and a glow behind the app it describes is useless.
-        user32.SetWindowPos(
-            self._hwnd, _HWND_TOPMOST, 0, 0, 0, 0,
-            _SWP_NOMOVE | _SWP_NOSIZE | _SWP_NOACTIVATE,
-        )
+        self._raise(self._hwnd)
+        if self._banner_hdc:
+            self._composite_banner()
+            user32.ShowWindow(self._banner_hwnd, _SW_SHOWNOACTIVATE)
+            self._raise(self._banner_hwnd)
         self._shown = True
 
-    def _apply_hide(self) -> None:
-        if self._hwnd:
-            ctypes.windll.user32.ShowWindow(self._hwnd, _SW_HIDE)
+    def _apply_hide(self, immediate: bool = False) -> None:
+        """Fade the indicator out, or with `immediate` take it down now."""
+        if not immediate and (self._shown or self._hiding):
+            if self._shown:
+                self._shown = False
+                self._hiding = True
+                self._start_fade(0.0, _FADE_OUT_S, time.monotonic())
+            return
+        self._hide_windows()
+
+    def _hide_windows(self) -> None:
+        user32 = ctypes.windll.user32
+        for hwnd in (self._hwnd, self._banner_hwnd):
+            if hwnd:
+                user32.ShowWindow(hwnd, _SW_HIDE)
         self._shown = False
+        self._hiding = False
+        self._set_fade(0.0)
         self._apply_ring_hide()
 
     # ── cursor glow ──────────────────────────────────────────────────
@@ -1018,14 +1760,7 @@ class _Overlay:
         user32 = ctypes.windll.user32
         gdi32 = ctypes.windll.gdi32
 
-        self._ring_hwnd = user32.CreateWindowExW(
-            _WS_EX_LAYERED | _WS_EX_TRANSPARENT | _WS_EX_TOPMOST
-            | _WS_EX_TOOLWINDOW | _WS_EX_NOACTIVATE,
-            "LumiComputerUseHalo", "Lumi cursor",
-            _WS_POPUP,
-            0, 0, RING_BOX, RING_BOX,
-            None, None, ctypes.windll.kernel32.GetModuleHandleW(None), None,
-        )
+        self._ring_hwnd = self._create_layered_window("Lumi cursor", RING_BOX, RING_BOX)
         if not self._ring_hwnd:
             return False
 
@@ -1044,49 +1779,22 @@ class _Overlay:
         if snapshot is None:
             return False
         handle, mask, width, height, hotspot_x, hotspot_y = snapshot
-        if handle == self._ring_cursor_handle and self._ring_bitmaps:
+        if (handle == self._ring_cursor_handle and self._ring_bitmaps
+                and self._ring_scale == self._scale):
             return True
 
-        cursor_glow = _build_cursor_glow_frame(
-            mask, width, height, hotspot_x, hotspot_y
+        frames, box, _anchor = _build_cursor_frames(
+            mask, width, height, hotspot_x, hotspot_y, self._scale
         )
-        frames = [cursor_glow]
-        for step in range(1, _PULSE_FRAMES + 1):
-            progress = step / _PULSE_FRAMES
-            ripple = _build_ring_frame(
-                _RING_RADIUS + (_PULSE_MAX_RADIUS - _RING_RADIUS) * progress,
-                max(1.4, 4.0 * (1.0 - 0.55 * progress)),
-                0.9 * (1.0 - progress),
-            )
-            frames.append(_composite_frames(cursor_glow, ripple))
-
-        header = _BITMAPINFOHEADER()
-        header.biSize = ctypes.sizeof(_BITMAPINFOHEADER)
-        header.biWidth = RING_BOX
-        header.biHeight = -RING_BOX  # top-down, matching the row order
-        header.biPlanes = 1
-        header.biBitCount = 32
-        header.biCompression = _BI_RGB
-
-        new_bitmaps = []
-        user32 = ctypes.windll.user32
         gdi32 = ctypes.windll.gdi32
-        screen_dc = user32.GetDC(None)
-        try:
-            for pixels in frames:
-                bits = ctypes.c_void_p()
-                bitmap = gdi32.CreateDIBSection(
-                    screen_dc, ctypes.byref(header), _DIB_RGB_COLORS,
-                    ctypes.byref(bits), None, 0,
-                )
-                if not bitmap or not bits:
-                    for pending in new_bitmaps:
-                        gdi32.DeleteObject(pending)
-                    return False
-                ctypes.memmove(bits, bytes(pixels), len(pixels))
-                new_bitmaps.append(bitmap)
-        finally:
-            user32.ReleaseDC(None, screen_dc)
+        new_bitmaps = []
+        for pixels in frames:
+            bitmap = _create_dib(pixels, box, box)
+            if not bitmap:
+                for pending in new_bitmaps:
+                    gdi32.DeleteObject(pending)
+                return False
+            new_bitmaps.append(bitmap)
 
         # Put the stock bitmap back before deleting any currently selected
         # frame. This is mandatory when a link/resize cursor appears mid-run.
@@ -1095,6 +1803,8 @@ class _Overlay:
         for bitmap in self._ring_bitmaps:
             gdi32.DeleteObject(bitmap)
         self._ring_bitmaps = new_bitmaps
+        self._ring_box = box
+        self._ring_scale = self._scale
         self._ring_old_bitmap = None
         self._ring_cursor_handle = handle
         self._ring_last_pos = None
@@ -1112,10 +1822,11 @@ class _Overlay:
         if self._ring_old_bitmap is None:
             self._ring_old_bitmap = previous
 
-        blend = _BLENDFUNCTION(_AC_SRC_OVER, 0, 255, _AC_SRC_ALPHA)
-        size = wintypes.SIZE(RING_BOX, RING_BOX)
+        box = self._ring_box
+        blend = _BLENDFUNCTION(_AC_SRC_OVER, 0, _alpha_byte(self._fade), _AC_SRC_ALPHA)
+        size = wintypes.SIZE(box, box)
         source = wintypes.POINT(0, 0)
-        dest = wintypes.POINT(x - RING_BOX // 2, y - RING_BOX // 2)
+        dest = wintypes.POINT(x - box // 2, y - box // 2)
         user32.UpdateLayeredWindow(
             self._ring_hwnd, None,
             ctypes.byref(dest), ctypes.byref(size),
@@ -1130,16 +1841,15 @@ class _Overlay:
         if cursor_state is None:
             return
         cursor_handle, cursor_x, cursor_y = cursor_state
-        if cursor_handle != self._ring_cursor_handle:
+        # The monitor being driven may have changed, and its scale with it.
+        if (cursor_handle != self._ring_cursor_handle
+                or self._ring_scale != self._scale):
             if not self._rebuild_ring_frames(cursor_handle):
                 return
         user32 = ctypes.windll.user32
         self._composite_ring(cursor_x, cursor_y)
         user32.ShowWindow(self._ring_hwnd, _SW_SHOWNOACTIVATE)
-        user32.SetWindowPos(
-            self._ring_hwnd, _HWND_TOPMOST, 0, 0, 0, 0,
-            _SWP_NOMOVE | _SWP_NOSIZE | _SWP_NOACTIVATE,
-        )
+        self._raise(self._ring_hwnd)
         self._ring_shown = True
 
     def _apply_ring_hide(self) -> None:
@@ -1148,7 +1858,7 @@ class _Overlay:
         self._ring_shown = False
         self._ring_frame = 0
 
-    def _tick_ring(self) -> None:
+    def _tick_ring(self, force: bool = False) -> None:
         """Follow the cursor and advance any click pulse. Runs every frame."""
         if not self._ring_shown:
             return
@@ -1162,9 +1872,9 @@ class _Overlay:
         position = (cursor_x, cursor_y)
         animating = self._ring_frame > 0
         # Redraw only when something changed. A stationary cursor with no pulse
-        # in flight costs nothing, which matters because this runs at 60 Hz for
-        # as long as the agent is working.
-        if position == self._ring_last_pos and not animating:
+        # or fade in flight costs nothing, which matters because this runs at
+        # 60 Hz for as long as the agent is working.
+        if position == self._ring_last_pos and not animating and not force:
             return
         self._ring_last_pos = position
         self._composite_ring(cursor_x, cursor_y)
@@ -1201,12 +1911,16 @@ class _Overlay:
 
     # ── public surface ───────────────────────────────────────────────
 
-    def show(self, x: int, y: int, width: int, height: int) -> bool:
-        # Wait until the border is genuinely visible before returning control
+    def show(
+        self, x: int, y: int, width: int, height: int, fade_in: bool = True
+    ) -> bool:
+        # Wait until the border is genuinely on screen before returning control
         # to the desktop action.  Besides being the honest indicator timing,
         # this lets a second monitor claim a second window instead of racing a
         # still-queued first show and moving that same window away.
-        return self._submit("show", (x, y, width, height), wait=True) is not None
+        return self._submit(
+            "show", (x, y, width, height, fade_in), wait=True
+        ) is not None
 
     def hide(self, wait: bool = False) -> None:
         self._submit("hide", (), wait=wait)
@@ -1427,7 +2141,7 @@ def note_activity(monitor_index: Optional[int] = None, linger: float = LINGER_SE
 
 
 def stop_activity() -> None:
-    """Take the glow down immediately, cancelling any pending linger."""
+    """Take the glow down promptly, cancelling any pending linger."""
     global _activity_timer
     with _activity_lock:
         if _activity_timer is not None:
@@ -1469,7 +2183,8 @@ def hidden_for_capture():
     sits exactly where a window's title bar or toolbar usually is.
 
     Restores only if it was visible to begin with, so a capture never turns
-    the glow on.
+    the glow on. Both the hide and the restore are immediate: a fade either
+    side of every screenshot would make the glow blink through a run.
     """
     global _suppressed
     overlays = _all_instances()
@@ -1492,7 +2207,7 @@ def hidden_for_capture():
         if restore:
             try:
                 for overlay, bounds in restore:
-                    overlay.show(*bounds)
+                    overlay.show(*bounds, fade_in=False)
                 # Re-arm the linger. The pending timer can fire during the
                 # capture — while the glow is already hidden, so its hide is a
                 # no-op — and the restore would then bring the glow back with

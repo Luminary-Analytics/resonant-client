@@ -35,6 +35,7 @@ these services; it is not required for ordinary chat-based coding.
 | Configuration | `gui/settings.py`, `network_defaults.py`, `gui/project_instructions.py` | Settings, endpoint resolution, layered repository instructions |
 | Client security | `engine/exclusions.py`, `gui/workspace_trust.py`, `gui/retention.py` | File exclusion rules, trust for repository content, transcript retention |
 | Organization policy | `policy.py`, `packaging/policy/` | Machine policy sources, signatures, locked settings and allowlists |
+| Data loss prevention | `dlp.py`, `dlp_detectors.py` | The policy's `dlp` rules on every outgoing model request (`Session._model_stream`, `auxiliary_stream`, `dlp.check_text`), and on what goes to Engram: text normalized, then linear-time detectors and checked patterns, flag/redact/block, the optional external service, `dlp.*` audit records. Backends are `@dlp.guard_backend`: while a policy applies they refuse a request that didn't come through `dlp.send` |
 | Audit log | `audit.py`, `file_lock.py` | Hash-chained local records of every turn's events (recorded by `Session.run`), capture levels, OTLP export |
 | Model routing | `engine/model_roles.py`, `capabilities.py` | Role models, fallback chains (`Session._next_fallback`), capability inference with policy overrides |
 | GitHub | `engine/github_tools.py` | Pull request tools over the REST API: read reviews, checks and job logs; open, comment, update. Token from Settings or `GITHUB_TOKEN` |
@@ -42,16 +43,41 @@ these services; it is not required for ordinary chat-based coding.
 | Terminal UI | `tui.py` | `lumi` with no subcommand: Ollama models, a session scoped as `lumi run`'s (`headless.scope_session`) with the person's Settings hooks, approval prompts in the terminal |
 | Usage and prices | `usage.py`, `pricing.py`, `budgets.py`, `gui/costs.py`, `engine/request_purpose.py` | One record per model call (turns in `Session.run`, auxiliary requests in `auxiliary_stream`), price resolution, budgets checked before each model request, daily totals, `lumi usage` |
 | Network and secrets | `net.py`, `secrets_store.py`, `secret_scan.py` | Proxy and OS certificate store, keys in the OS credential store, clean child environments, secrets removed before model requests |
+| Offline mode | `offline.py`, `offline_rules.py`, `net.py` (`client_options`), `license.py`, `update_file.py` | Only this computer and allowed hosts reachable: the check Lumi's HTTP clients run per request (`client_options`), refusals for providers, tools and Lumi's Chrome, a backstop on Python's socket lookups for the rest; a policy that can't be used keeps it on; signed offline licenses; updates installed from a verified file, versioned by the signed installer |
 | Desktop UI | `gui/templates/index.html`, `gui/static/app.js`, `gui/static/styles.css` | Sidebar, composer, model picker, command palette, shell |
 | Settings UI | `gui/static/settings_view.js` | Connection flows, API keys, preferences |
 | Project resources | `engine/previews.py`, `engine/project_memory.py` | Managed preview servers, sourced project notes |
 | Creative editors | `engine/editor_integrations.py`, `engine/mcp.py` | Opt-in bridge profiles, live tool/resource discovery, scene probes, and per-process CLI configuration |
 | Costs and diagnostics | `gui/costs.py`, `gui/diagnostics.py`, `engine/turn_outcomes.py` | Usage/cost display, redacted diagnostics, completion evidence |
 | Durable workers | `engine/agents.py`, `engine/agent_runtime.py`, `engine/worktrees.py` | Worker state, execution, isolated writers |
+| Team preview | `engine/swarming/`, `engine/execution_guard.py`, `gui/swarming.py` | Transactional supervision, captured run ownership, guarded native workers, reviewed integration and explicit collaboration |
 | Context and evidence | `engine/context_broker.py`, `engine/artifacts.py`, `engine/checkpoint_timeline.py`, `engine/flight_recorder.py` | Context attachments, artifacts, rewind, traces |
 | Optional orchestration | `orchestration/`, `gui/autonomous_*.py` | Specialists, plan graphs, autonomous iteration, skills |
 
 Paths in the table are relative to `lumi/`.
+
+The opt-in Team preview owns its graph, request reservations, messages and effect
+receipts in project-owned SQLite state. `SwarmRuntime` captures the session and
+workspace; the deterministic supervisor admits work, while coordinator models
+only propose plans. Native child processes receive scoped contracts and explicit
+models through `BackendSpec`. Writers require isolated worktrees and an exact
+checked candidate before application and separate acceptance. Stop and restart
+retain uncertain requests/effects instead of replaying them. Each run's
+`organization.TeamGovernance` applies an organization policy's model, mode and
+shell rules and the budgets before every participant and every model request
+(the execution guard asks it before reserving a request, in-process or for a
+child), and records the run's usage and audit trail.
+
+Managed teams additionally use the separate `services/governance/` PostgreSQL
+service, authenticated host channels and current policy leases. It enforces
+organization permissions, identity/provisioning, quota and audit requirements;
+host credentials stay in the trusted parent process.
+Personal and managed sharing both require explicit disclosure and independently
+owned receiving work. The GUI sends typed commands and renders observed state;
+it does not own admission. See the [runtime contracts](docs/swarming-contracts.md),
+[managed setup](docs/swarming-managed-setup.md), and [evidence ledger](docs/swarming-progress.md).
+These source paths remain an unreleased preview, with live-model and external
+deployment qualification outstanding.
 
 ## GUI and saved-work flow
 

@@ -256,6 +256,8 @@ class LumiSettingsView {
             }).join('');
             const providerNote = pack.scope === 'project'
                 ? '<p class="editor-help">Lumi uses model providers only from personal packs (in ~/.lumi/packs), so these stay off here.</p>' : '';
+            // Panels run the pack's HTML and scripts in a sandboxed frame (docs/extensions.md#panels).
+            const panels = (pack.ui_panels || []).map(panel => `<li>${esc(panel.title)} · <code>${esc(panel.entry)}</code></li>`).join('');
             const signature = pack.signature || {};
             const signed = {
                 verified: `Signed by ${esc(signature.publisher)} · key <code>${keyId(signature.key_id)}</code> · verified`,
@@ -280,6 +282,7 @@ class LumiSettingsView {
                     ${hooks ? `<h4>Hooks (shell commands)</h4><ul>${hooks}</ul>` : '<p class="editor-help">No hooks.</p>'}
                     ${servers ? `<h4>MCP servers</h4><ul>${servers}</ul>` : '<p class="editor-help">No MCP servers.</p>'}
                     ${providers ? `<h4>Model providers (run for each request to their models)</h4>${providerNote}<ul>${providers}</ul>` : ''}
+                    ${panels ? `<h4>Panels (its pages and scripts, in a sandbox with no network access except WebRTC)</h4><ul>${panels}</ul>` : ''}
                     ${pinned ? `<h4>Repository files its commands run</h4><ul>${pinned}</ul>` : ''}
                     <p class="editor-help">${(pack.agents || []).length} agents · ${(pack.skills || []).length} skills · content digest <code>${esc((pack.digest || '').slice(0, 12))}</code></p>
                 </details>
@@ -323,12 +326,16 @@ class LumiSettingsView {
             ? `Installed from ${installer[0]}; ${installer[1]} updates it.`
             : info.organization ? `Managed by ${esc(info.organization)}.` : '';
         const row = (label, body) => `<div class="settings-row"><div class="settings-row-copy"><span class="settings-row-label">${label}</span><div class="settings-row-hint">${body}</div></div></div>`;
+        // An organization's oversight sends its Lumi Cloud more (lumi/oversight.py); say so here too.
+        const oversight = this.oversightStatus?.configured
+            ? `Your prompts, code and keys go to the model providers you choose. ${esc(this.oversightStatus.notice)} Privacy & security lists exactly what. Luminary Analytics also receives the update check, which you can turn off in Updates.`
+            : 'Your prompts, code and keys go only to the model providers you choose. Luminary Analytics receives only the update check, which you can turn off in Updates.';
         return [
             row(`Lumi ${esc(info.version)}`, `The coding agent by Luminary Analytics. ${managed}`),
             row('Free for individuals', 'The whole agent, every tool, provider and feature in this app, works without an account: with your own API keys, your ChatGPT sign-in, or models on your own computer.'),
-            row('What leaves this computer', 'Your prompts, code and keys go only to the model providers you choose. Luminary Analytics receives only the update check, which you can turn off in Updates.'),
+            row('What leaves this computer', oversight),
             row('For teams and organizations', 'Lumi Cloud adds central policy, members, devices and usage reporting; if your organization uses it, sign in from Lumi account. Without it, organizations set policy on each computer (see docs/enterprise-policy.md).'),
-            row('License', `Lumi’s source is available under the ${esc(info.license)} license.${info.notices ? ` Third-party components and their licenses: <code>${esc(info.notices)}</code>` : ''}`),
+            row('License', `© Luminary Analytics. All rights reserved. Licensed under the ${esc(info.license)}.${info.notices ? ` Third-party components and their licenses: <code>${esc(info.notices)}</code>` : ''}`),
         ].join('');
     }
 
@@ -492,9 +499,12 @@ class LumiSettingsView {
         const managed = installer
             ? ` · installed from ${installer[0]}, so ${installer[1]} updates it`
             : status.managed_by ? ` · managed by ${esc(status.managed_by)}` : '';
-        const checking = status.mode !== 'off' && status.available;
+        // Offline mode keeps the updater from the update site unless it is allowed (lumi/offline.py).
+        const checking = status.mode !== 'off' && status.available && !status.offline;
         const hints = [
-            status.mode !== 'off' && !status.available ? 'This copy of Lumi doesn’t update itself: it runs from source or outside Windows.' : '',
+            status.offline ? `${status.offline} Install updates from a file below.` : '',
+            status.restart_to_check ? 'Update checks start again after Lumi restarts.' : '',
+            status.mode !== 'off' && !status.available && !status.offline && !status.restart_to_check ? (status.unavailable || 'This copy of Lumi doesn’t update itself.') : '',
             ...(status.problems || []),
         ].filter(Boolean).map(text => `<div class="settings-row-hint">${esc(text)}</div>`).join('');
         const lastCheck = status.last_check ? new Date(status.last_check * 1000).toLocaleString() : 'Not yet';
@@ -502,6 +512,103 @@ class LumiSettingsView {
                 <div class="settings-row-value"><button type="button" class="btn-sm" id="update-check"${checking ? '' : ' disabled'}>Check for updates</button></div></div>
             ${checking ? `<div class="settings-row"><div class="settings-row-copy"><span class="settings-row-label">Last checked</span><div class="settings-row-hint">${esc(lastCheck)}</div></div></div>` : ''}
             ${status.pending ? `<div class="settings-row"><div class="settings-row-copy"><span class="settings-row-label">After Lumi restarts</span><div class="settings-row-hint" role="status">${describe(status.pending)}</div></div></div>` : ''}`;
+    }
+
+    /** Settings > Updates > Install an update from a file (lumi/update_file.py). */
+    _renderUpdateFile() {
+        const esc = value => this.escapeHtml(String(value ?? ''));
+        const result = this.updateFileResult;
+        const path = this._updateFilePath ?? result?.path ?? '';
+        const native = typeof pywebview !== 'undefined' && Boolean(pywebview.api);
+        const busy = Boolean(this._updateFileBusy);
+        let outcome = '';
+        if (busy) {
+            outcome = '<div class="settings-row-hint" role="status">Checking…</div>';
+        } else if (result && !result.ok) {
+            outcome = `<p class="editor-error" role="alert">${esc(result.error)}</p>`;
+        } else if (result?.installing) {
+            outcome = `<div class="settings-row-hint" role="status">The installer for Lumi ${esc(result.version)} started. Lumi closes so it can replace its files; approve it when Windows asks.</div>`;
+        } else if (result?.ok) {
+            const size = `${(Number(result.size || 0) / 1048576).toFixed(1)} MB`;
+            const summary = `Lumi ${esc(result.version)} (this copy is ${esc(result.current)}) · signature verified with Lumi’s update key · ${esc(size)} · listed in ${esc(result.feed)}`;
+            outcome = `<div class="settings-row"><div class="settings-row-copy"><span class="settings-row-label">Ready to install</span><div class="settings-row-hint" role="status">${summary}</div>
+                    ${result.install_problem ? `<div class="settings-row-hint">${esc(result.install_problem)}</div>` : ''}</div>
+                    ${result.install_problem ? '' : '<div class="settings-row-value"><button type="button" class="btn-sm" id="update-file-install">Install and restart</button></div>'}</div>`;
+        }
+        return `<div class="settings-row"><div class="settings-row-copy"><label class="settings-row-label" for="update-file-path">Update file</label>
+                <div class="settings-row-hint">For computers without the internet: the installer (lumi-setup-X.Y.Z.exe) and the update feed (appcast.xml) from the update site, side by side in a folder or together in a .zip. Lumi checks the installer’s signature with the key it’s built with, as it does for a downloaded update, and installs only a newer release your update settings would take.</div></div>
+                <div class="settings-row-value settings-update-file"><input id="update-file-path" class="settings-input" type="text" spellcheck="false" autocomplete="off" value="${esc(path)}" placeholder="C:\\Updates\\lumi-setup-0.21.0.exe">
+                ${native ? '<button type="button" class="btn-sm" id="update-file-browse">Browse…</button>' : ''}
+                <button type="button" class="btn-sm" id="update-file-verify"${busy ? ' disabled' : ''}>Check</button></div></div>${outcome}`;
+    }
+
+    _bindUpdateFile() {
+        const field = document.getElementById('update-file-path');
+        if (!field) return;
+        const check = () => {
+            this._updateFilePath = field.value;
+            this._updateFileBusy = true;
+            this.updateFileResult = null;
+            this.send({command: 'update_file_verify', path: field.value});
+            this.refreshUpdateFile();
+        };
+        field.addEventListener('input', () => { this._updateFilePath = field.value; });
+        field.addEventListener('keydown', event => { if (event.key === 'Enter') { event.preventDefault(); check(); } });
+        document.getElementById('update-file-verify')?.addEventListener('click', check);
+        document.getElementById('update-file-browse')?.addEventListener('click', () => this.send({command: 'update_file_dialog'}));
+        document.getElementById('update-file-install')?.addEventListener('click', () => {
+            const result = this.updateFileResult;
+            if (!result?.ok) return;
+            if (!window.confirm(`Install Lumi ${result.version}? Lumi closes so the installer can replace it; your sessions are saved.`)) return;
+            this._updateFileBusy = true;
+            this.send({command: 'update_file_install', path: result.path, sha256: result.sha256});
+            this.refreshUpdateFile();
+        });
+    }
+
+    /** Redraw the update-file section in place, keeping focus in its field. */
+    refreshUpdateFile() {
+        const body = this.settingsBody?.querySelector('[data-settings-section="update_file"] .settings-section-body');
+        if (!body) return false;
+        const focused = document.activeElement?.id;
+        body.innerHTML = this._renderUpdateFile();
+        this._bindUpdateFile();
+        if (focused) document.getElementById(focused)?.focus({preventScroll: true});
+        return true;
+    }
+
+    /** Settings > Offline mode: what applies now (lumi/offline.py), what it hides, and the license. */
+    _renderOfflineStatus() {
+        const status = this.offlineStatus;
+        if (!status) return '<p class="editor-help">Loading…</p>';
+        const esc = value => this.escapeHtml(String(value ?? ''));
+        const row = (label, hint) => `<div class="settings-row"><div class="settings-row-copy"><span class="settings-row-label">${label}</span><div class="settings-row-hint">${hint}</div></div></div>`;
+        const hosts = status.allowed_hosts || [];
+        const state = status.enabled
+            ? `On${status.managed_by ? `, set by ${esc(status.managed_by)}’s policy` : ''}. Lumi reaches this computer${hosts.length ? ` and ${hosts.map(host => `<code>${esc(host)}</code>`).join(', ')}` : ' only'}.`
+            : `Off${status.managed_by ? `, set by ${esc(status.managed_by)}’s policy` : ''}. Lumi connects wherever its features need.`;
+        const parts = [`<div class="settings-row"><div class="settings-row-copy"><span class="settings-row-label">Now</span><div class="settings-row-hint" role="status">${state}</div></div></div>`];
+        for (const problem of status.problems || []) parts.push(`<p class="editor-error" role="alert">${esc(problem)}</p>`);
+        if (status.enabled) {
+            const hidden = status.hidden || [];
+            parts.push(row('Hidden from Models', hidden.length
+                ? `<ul class="settings-offline-list">${hidden.map(item => `<li><strong>${esc(item.label)}</strong>: ${esc(item.reason)}</li>`).join('')}</ul>`
+                : 'Nothing: every provider you’ve set up is on this computer or an allowed host.'));
+            parts.push(row('Updates', status.updates
+                ? `${esc(status.updates)} Install updates from a file under Updates.`
+                : 'The update site is an allowed host, so update checks continue.'));
+        }
+        const license = status.license || {};
+        parts.push(row('Offline license', `<span role="status">${esc(license.describe || '')}</span>${license.valid && license.source ? ` <code>${esc(license.source)}</code>` : ''}`));
+        return parts.join('');
+    }
+
+    /** Redraw the offline status in place; the fields above keep focus. */
+    refreshOfflineStatus() {
+        const body = this.settingsBody?.querySelector('[data-settings-section="offline_status"] .settings-section-body');
+        if (!body) return false;
+        body.innerHTML = this._renderOfflineStatus();
+        return true;
     }
 
     _renderOrgPolicy() {
@@ -532,8 +639,249 @@ class LumiSettingsView {
             ['Shell rules', String(policy.shell_rules || 0)],
             ['MCP servers', `${list(policy.mcp_allowed, 'all')}${policy.mcp_allow_stdio ? '' : ' · command-based servers off'}`],
             ['Capability packs', list(policy.packs_allowed, 'all')],
+            // Oversight this Lumi can't honor is off, and the rest of the policy applies.
+            ['Organization oversight', policy.oversight?.error ? `Off: ${esc(policy.oversight.error)}`
+                : policy.oversight?.enabled ? 'On; see Organization oversight below' : 'Off'],
+            ['Data loss prevention', this._renderDlpRules(policy, esc)],
         ];
         return rows.map(([label, value]) => `<div class="settings-row"><div class="settings-row-copy"><span class="settings-row-label">${label}</span></div><div class="settings-row-value settings-policy-value">${value}</div></div>`).join('');
+    }
+
+    // ── Organization oversight (lumi/oversight.py) ─────────────────────────
+    // While an organization's policy has Lumi share activity, messages or
+    // security flags with its Lumi Cloud, a notice beside the message box
+    // names the organization and what it receives. It can't be dismissed, and
+    // until the person confirms it with the notice's own "I’ve read this"
+    // button the message box is locked: nothing is sent to a model (the
+    // server refuses too). Only that click tells the server which policy's
+    // notice was read (its fingerprint, and the text as shown here). A status
+    // that arrives while the window is minimized or in the background is never
+    // confirmed for them, and focus never moves onto the button by itself, so
+    // a key pressed for the message box can't confirm it.
+
+    _initOversightNotice() {
+        const notice = document.getElementById('oversight-notice');
+        if (!notice || this._oversightNoticeReady) return;
+        this._oversightNoticeReady = true;
+        document.getElementById('oversight-notice-details')?.addEventListener('click', () => this._openOversightSettings());
+        document.getElementById('oversight-notice-confirm')?.addEventListener('click', event => {
+            // Only a person's own click, or Enter or Space on the button, which the
+            // browser reports as trusted: never a click a script made. A panel's
+            // sandboxed frame can't reach this page at all (panels_view.js).
+            if (event?.isTrusted) this._confirmOversightNotice();
+        });
+    }
+
+    _oversightPending(status) {
+        // Only a notice that says something is collected, with somewhere to send
+        // it, locks the message box and asks to be confirmed.
+        return Boolean(status?.configured && status.destination && status.fingerprint
+            && (status.required ?? !status.acknowledged));
+    }
+
+    _applyOversight(status) {
+        if (!status) return;
+        this.oversightStatus = status;
+        const notice = document.getElementById('oversight-notice');
+        const text = document.getElementById('oversight-notice-text');
+        const lock = document.getElementById('oversight-notice-lock');
+        const confirm = document.getElementById('oversight-notice-confirm');
+        const shown = Boolean(status.configured);
+        const pending = this._oversightPending(status);
+        if (notice && text) {
+            // Exactly the server's notice: confirming it covers this text.
+            const noticeText = status.notice_text
+                || [status.notice, status.organization_notice].filter(Boolean).join(' ');
+            const words = shown ? [noticeText, status.reason].filter(Boolean).join(' ') : '';
+            if (text.textContent !== words) text.textContent = words;
+            notice.hidden = !shown;
+            notice.classList.toggle('oversight-notice-inactive', shown && Boolean(status.reason));
+            notice.classList.toggle('oversight-notice-pending', pending);
+            if (lock) lock.hidden = !pending;
+            if (confirm) {
+                const hadFocus = document.activeElement === confirm;
+                confirm.hidden = !pending;
+                // Confirmed: the message box unlocks below and takes the focus the button had.
+                if (hadFocus && !pending) this._oversightFocusAfterConfirm = true;
+            }
+        }
+        this._setOversightLock(pending);
+        if (this.currentView === 'settings') this.renderSettingsView();
+    }
+
+    _setOversightLock(locked) {
+        const was = Boolean(this._oversightLocked);
+        this._oversightLocked = locked;
+        // Nothing may keep listening once the notice locks the message box.
+        if (locked && this._dictation && this._dictation.state !== 'idle') this._dictation.cancel({focus: false});
+        if (locked !== was) {
+            if (typeof this._syncDictationButton === 'function') this._syncDictationButton();
+            // Unlocked: ask again which ways of dictating may listen (lumi/voice.py follows the notice).
+            if (!locked && typeof this.send === 'function') this.send({command: 'voice_status'});
+        }
+        const input = this.userInput || document.getElementById('user-input');
+        const hadFocus = Boolean(input) && document.activeElement === input;
+        for (const id of ['user-input', 'send-btn', 'add-context-btn', 'composer-prompts-btn', 'mic-btn', 'composer-autonomous-btn']) {
+            const control = document.getElementById(id);
+            if (control) control.disabled = locked;
+        }
+        if (input) {
+            input.placeholder = locked ? 'Confirm the notice above to start'
+                : this.isRunning ? 'Write a follow-up for the running agent...' : 'Message Lumi';
+            input.closest?.('.input-wrapper')?.classList.toggle('is-oversight-locked', locked);
+        }
+        if (locked && !was && hadFocus) {
+            // The message box can't keep focus while locked: move it to the notice
+            // itself (not its button), where Tab reaches What’s shared and I’ve read this.
+            document.getElementById('oversight-notice')?.focus();
+        }
+        if (!locked && was && this._oversightFocusAfterConfirm && input) {
+            this._oversightFocusAfterConfirm = false;
+            input.focus();
+        }
+    }
+
+    _confirmOversightNotice() {
+        // Sent only from the button's own click (or Enter/Space on it); the
+        // server checks the fingerprint and text are still the policy in force.
+        const status = this.oversightStatus;
+        if (!this._oversightPending(status)) return;
+        const shown = document.getElementById('oversight-notice-text')?.textContent || '';
+        this.send({command: 'oversight_notice_shown', fingerprint: status.fingerprint,
+            notice: status.notice_text || shown});
+    }
+
+    _openOversightSettings() {
+        this.openSettingsPage('privacy');
+        // The section's first row has an id, so focus survives the redraws
+        // that follow as the page's data arrives (renderSettingsView).
+        const focus = () => {
+            const start = document.getElementById('org-oversight-start');
+            if (!start) return false;
+            start.scrollIntoView({block: 'start'});
+            start.focus();
+            return true;
+        };
+        if (!focus()) setTimeout(focus, 0);
+    }
+
+    _renderOrgOversight() {
+        const s = this.oversightStatus;
+        if (!s) return '<p class="editor-help">Loading…</p>';
+        const esc = value => this.escapeHtml(String(value ?? ''));
+        const when = value => {
+            const date = value ? new Date(value) : null;
+            return date && !Number.isNaN(date.getTime()) ? date.toLocaleString() : '';
+        };
+        const row = (label, hint, role = '', id = '') => `<div class="settings-row"${id ? ` id="${id}" tabindex="-1"` : ''}><div class="settings-row-copy"><span class="settings-row-label">${label}</span><div class="settings-row-hint"${role ? ` role="${role}"` : ''}>${hint}</div></div></div>`;
+        const q = s.queue || {};
+        const counts = [];
+        if (q.pending) counts.push(`${esc(q.pending)} waiting to send`);
+        if (q.uploaded) counts.push(`${esc(q.uploaded)} sent${q.last_upload ? `, last at ${esc(when(q.last_upload))}` : ''}`);
+        if (q.dropped) counts.push(`${esc(q.dropped)} dropped because too many were waiting`);
+        if (q.rejected) counts.push(`${esc(q.rejected)} refused by Lumi Cloud`);
+        if (q.discarded) counts.push(`${esc(q.discarded)} deleted without sending${q.last_discard_reason ? ` (${esc(q.last_discard_reason)})` : ''}`);
+        if (q.expired) counts.push(`${esc(q.expired)} deleted without sending because they waited longer than ${esc(s.organization || 'the organization')} keeps records`);
+        const sending = counts.join(' · ');
+        const problem = q.last_error ? row('Last problem sending', `${esc(q.last_error)}${q.next_attempt ? ` Lumi tries again at ${esc(when(q.next_attempt))}.` : ''}`, 'status') : '';
+        const labels = {
+            destructive_command: 'Destructive command refused', dangerous_command: 'Risky command refused',
+            policy_denied: 'Refused by a rule', excluded_file: 'Excluded file', outside_project: 'Outside the project',
+            approval_denied: 'Approval declined', secret_redacted: 'Secret removed', prompt_injection: 'Possible prompt injection',
+        };
+        const severities = {low: 'Low', medium: 'Medium', high: 'High'};
+        const flags = (s.flags || []).map(flag => {
+            const severity = severities[flag.severity] ? flag.severity : 'low';
+            const session = flag.session || {};
+            // A session's title is shared only with messages, so it may not be here.
+            const where = [session.title, session.project, flag.turn ? `turn ${flag.turn}` : '', when(flag.at)].filter(Boolean).map(esc).join(' · ');
+            return `<li class="oversight-flag"><span class="oversight-severity oversight-severity-${severity}">${severities[severity]}</span>
+                <div class="oversight-flag-copy"><strong>${esc(labels[flag.kind] || flag.kind)}</strong>: ${esc(flag.rule_text || flag.rule)}${flag.tool ? ` · <code>${esc(flag.tool)}</code>` : ''}
+                <div class="settings-row-hint">${where}</div>${flag.excerpt ? `<div class="settings-row-hint oversight-excerpt">${esc(flag.excerpt)}</div>` : ''}</div></li>`;
+        }).join('');
+        const flagList = flags ? `<ul class="oversight-flags">${flags}</ul>` : '<p class="editor-help">None.</p>';
+        if (s.policy_unusable) {
+            // A policy that can't be used isn't one that stopped asking for oversight (as offline mode, which it
+            // keeps on with no hosts, isn't off): never "Off", and what waits here stays, unsent (lumi/oversight.py).
+            const records = Number(q.pending) || 0;
+            const confirmations = Number(s.acknowledgments_waiting) || 0;
+            const waiting = [records ? `${records} record${records === 1 ? '' : 's'}` : '',
+                confirmations ? `${confirmations} confirmation${confirmations === 1 ? '' : 's'} of the notice` : '']
+                .filter(Boolean).join(' and ');
+            const kept = waiting ? ` ${waiting} ${records + confirmations === 1 ? 'waits' : 'wait'} here, unsent, until then.` : '';
+            return `<p class="editor-error" id="org-oversight-start" tabindex="-1" role="status">Your organization’s policy can’t be used, so Lumi can’t tell what it asks to share. ${esc(s.policy_unusable)} Lumi sends no model requests until it’s fixed.${kept}</p>
+                ${flags ? `<h4 class="settings-subheading">Earlier security flags</h4>${flagList}` : ''}`;
+        }
+        if (!s.configured) {
+            // A policy whose oversight section this Lumi can't honor turns it off, and says so.
+            const off = s.policy_error
+                ? `<p class="editor-error" id="org-oversight-start" tabindex="-1" role="status">Off. ${esc(s.policy_error)}</p>`
+                : '<p class="editor-help" id="org-oversight-start" tabindex="-1">Off. No organization policy on this computer asks Lumi to share your activity, messages or security flags.</p>';
+            return `${off}
+                ${sending ? row('Earlier records', sending) : ''}${flags ? `<h4 class="settings-subheading">Earlier security flags</h4>${flagList}` : ''}`;
+        }
+        const list = items => `<ul class="oversight-list">${(items || []).map(item => `<li>${esc(item)}</li>`).join('')}</ul>`;
+        const state = s.reason ? `Nothing is collected: ${esc(s.reason)}`
+            : s.acknowledged ? `On. ${esc(s.notice)}`
+            : 'Lumi sends nothing to a model until you confirm the notice beside the message box with I’ve read this.';
+        // This person's confirmation: when, which notice, and whether Lumi Cloud has it.
+        const ack = s.acknowledgment;
+        let confirmed = '';
+        if (ack) {
+            const upload = ack.upload || {};
+            const surfaces = {app: ' in the app', terminal: ' at a terminal', gateway: ' in a chat'};
+            const clouds = {
+                sent: 'Lumi Cloud has it.',
+                pending: 'It’s waiting to be sent to Lumi Cloud.',
+                refused: 'Lumi Cloud refused it.',
+                not_sent: 'It wasn’t sent to Lumi Cloud.',
+            };
+            const which = ack.current ? 'the notice in force' : 'an earlier notice';
+            const cloud = clouds[upload.state] || 'Lumi Cloud hasn’t answered yet.';
+            const why = upload.error && upload.state !== 'sent' ? ` ${esc(upload.error)}` : '';
+            // Whom it counts for: this person, or this computer when nobody was signed in to Lumi Cloud.
+            const counts = ack.counts_for ? ` ${esc(ack.counts_for)}` : '';
+            // A newer notice waits: whom confirming it would count for.
+            const next = s.required && s.confirms_as && !ack.current ? ` When you confirm the notice in force, ${esc(s.confirms_as.replace(/^It counts/, 'it will count'))}` : '';
+            confirmed = row('Your confirmation', `You confirmed ${which}${surfaces[ack.surface] || ''} on ${esc(when(ack.at))}. ${cloud}${why}${counts}${next}`, 'status', 'org-oversight-confirmation')
+                + (ack.notice ? row('The notice you confirmed', `${esc(ack.notice)} (notice ${esc(ack.fingerprint)})`) : '');
+        } else if (s.required && s.confirms_as) {
+            confirmed = row('Your confirmation', `You haven’t confirmed the notice yet. ${esc(s.confirms_as.replace(/^It counts/, 'It will count'))}`, 'status', 'org-oversight-confirmation');
+        }
+        return `${row(`Managed by ${esc(s.organization)}`, state, 'status', 'org-oversight-start')}
+            ${s.organization_notice ? row(`From ${esc(s.organization)}`, esc(s.organization_notice)) : ''}
+            ${confirmed}
+            <h4 class="settings-subheading">What ${esc(s.organization)} receives</h4>${list(s.shared)}
+            <h4 class="settings-subheading">What it never receives</h4>${list(s.not_shared)}
+            ${s.readers ? row('Who reads messages', esc(s.readers)) : ''}
+            ${s.unattended_runs ? row('Runs with nobody at the screen', esc(s.unattended_runs)) : ''}
+            ${row('How long it’s kept', esc(s.retention))}
+            ${row('Sending', sending || 'Nothing recorded yet.')}${problem}
+            <h4 class="settings-subheading">Your security flags</h4>
+            <p class="editor-help">What Lumi flagged in your turns, as ${esc(s.organization)} sees it${s.settings?.messages === 'off' ? ' (without the excerpts shown here)' : ''}.</p>
+            ${flagList}`;
+    }
+
+    /**
+     * The organization's DLP rules (lumi/dlp.py), read-only: names, actions
+     * and what they check. Keywords and patterns aren't sent to the page, and
+     * nothing here turns a rule off.
+     */
+    _renderDlpRules(policy, esc) {
+        if (policy.dlp_error) {
+            return `<span class="editor-error" role="alert">${esc(policy.dlp_error)} Lumi won’t send model requests until it’s fixed.</span>`;
+        }
+        const dlp = policy.dlp;
+        if (!dlp || (!(dlp.rules || []).length && !dlp.service)) return 'None';
+        const actions = {flag: 'recorded', redact: 'redacted before sending', block: 'blocks the request'};
+        const rules = (dlp.rules || []).map(rule => {
+            const scope = (rule.scope || []).length ? ` · ${esc(rule.scope.join(', ').replace(/_/g, ' '))}` : '';
+            return `<li><code>${esc(rule.name)}</code> ${esc(actions[rule.action] || rule.action)}${scope}</li>`;
+        }).join('');
+        const service = dlp.service
+            ? `<div class="settings-row-hint">Also checked by <code>${esc(dlp.service)}</code>${dlp.service_on_error === 'allow' ? '; if it can’t answer, requests go out with only the rules above' : '; if it can’t answer, nothing is sent'}.</div>`
+            : '';
+        return `${rules ? `<ul class="settings-policy-list">${rules}</ul>` : ''}${service}<div class="settings-row-hint">Applied to everything sent to a model provider. Managed by ${esc(policy.organization)}.</div>`;
     }
 
     _renderModelComparisons() {
@@ -1184,6 +1532,15 @@ class LumiSettingsView {
         const search = dialog.querySelector('input[type=search]');
         const list = dialog.querySelector('.provider-model-list');
         const labels = this._getBackendLabels();
+        // Offline mode hides providers this computer may not reach (lumi/offline.py): say which, and why.
+        const hidden = this.offlineInfo?.enabled ? (this.offlineInfo.hidden || []) : [];
+        if (hidden.length) {
+            const note = document.createElement('div');
+            note.className = 'provider-note provider-offline-note';
+            note.setAttribute('role', 'note');
+            note.innerHTML = `Offline mode hides: <ul>${hidden.map(item => `<li><strong>${this.escapeHtml(item.label)}</strong>: ${this.escapeHtml(item.reason)}</li>`).join('')}</ul>`;
+            list.after(note);
+        }
         const render = () => {
             const favorites = this.settings?.model_favorites?.models || [];
             const query = search.value.trim().toLowerCase();
@@ -1678,7 +2035,7 @@ class LumiSettingsView {
             {id:'voice', title:'Voice', group:'Personal', icon:'mic', description:'Dictate messages instead of typing them.', sections:['voice'], keywords:'dictation dictate speech microphone mic push-to-talk transcription transcribe whisper speech-to-text voice input'},
             {id:'sonn_account', title:'SONN account & credits', group:'Personal', icon:'person', description:'Your authenticated SONN identity and prepaid credit balance.', sections:['sonn_account'], keywords:'billing invitation balance'},
             {id:'cost_tracking', title:'Usage & cost', group:'Personal', icon:'chart', description:'Review tracked model usage and local spending alerts.', sections:['cost_tracking'], keywords:'tokens budget'},
-            {id:'issue_trackers', title:'Issue trackers', group:'Integrations', icon:'book', description:'Read Jira and Linear issues, and comment on them, from a conversation.', sections:['issue_trackers', 'issue_tracker_keys'], keywords:'jira linear atlassian issue ticket story bug github gitlab'},
+            {id:'issue_trackers', title:'Issue trackers', group:'Integrations', icon:'book', description:'Read Jira, Linear, GitHub and GitLab issues, and comment on them, from a conversation.', sections:['issue_trackers', 'code_hosts', 'issue_tracker_keys'], keywords:'jira linear atlassian issue ticket story bug github gitlab enterprise server self-managed hosts token'},
             {id:'provider_connections', title:'Connections', group:'Integrations', icon:'globe', description:'Connect model providers and manage their endpoints and API keys.', sections:['provider_connections','network','api_keys'], keywords:'ChatGPT Codex OpenRouter SONN login authentication proxy certificates TLS keychain'},
             {id:'code_editors', title:'Code editors', group:'Integrations', icon:'plug', description:'Use Lumi from VS Code and JetBrains IDEs: send the selection, see Lumi’s changes.', sections:['code_editors'], keywords:'vs code vscode cursor windsurf vscodium jetbrains intellij pycharm webstorm rider goland ide extension plugin selection diff'},
             {id:'creative_editors', title:'Creative editors', group:'Integrations', icon:'cube', description:'Work with Blender, Unity, and Unreal Engine 5.', sections:['creative_editors']},
@@ -1689,14 +2046,15 @@ class LumiSettingsView {
             {id:'capability_packs', title:'Capability packs', group:'Coding', icon:'cube', description:'Review what a pack would run, then approve or revoke it. Nothing in a pack runs until you approve it.', sections:['capability_packs'], keywords:'plugins extensions trust approve repository pack'},
             {id:'code_review', title:'Code review', group:'Coding', icon:'shield', description:'Have named people review the agent’s pull requests before they merge.', sections:['review'], keywords:'review reviewer approve approval pull request merge request push main master protected branch queue'},
             {id:'scheduled_tasks', title:'Scheduled tasks', group:'Coding', icon:'clock', description:'Run a saved task at set times, even when Lumi is closed.', sections:['scheduled_tasks'], keywords:'schedule cron nightly recurring automation task scheduler launchd unattended'},
-            {id:'privacy', title:'Privacy & security', group:'Security', icon:'shield', description:'Control what Lumi reads, keeps and sends, and which tools it may use.', sections:['org_policy','privacy','file_exclusions','transcripts','audit_log','audit','audit_status','security','shell_sandbox','project_trust'], keywords:'audit log opentelemetry otlp tamper evidence secrets redact scan credentials DLP exclude ignore lumiignore env retention delete trust AGENTS.md policy codex claude computer gateway organization managed group policy MDM sandbox seatbelt bubblewrap bwrap shell commands'},
+            {id:'offline', title:'Offline mode', group:'Security', icon:'globe', description:'Work without the internet: Lumi reaches only this computer and the hosts you allow.', sections:['offline','offline_status'], keywords:'offline air-gapped airgapped air gap disconnected no internet network egress outbound firewall allowlist allowed hosts local models on-premises inference server license seats'},
+            {id:'privacy', title:'Privacy & security', group:'Security', icon:'shield', description:'Control what Lumi reads, keeps and sends, and which tools it may use.', sections:['org_policy','org_oversight','privacy','file_exclusions','transcripts','audit_log','audit','audit_status','security','shell_sandbox','project_trust'], keywords:'audit log opentelemetry otlp tamper evidence secrets redact scan credentials DLP exclude ignore lumiignore env retention delete trust AGENTS.md policy codex claude computer gateway organization managed group policy MDM sandbox seatbelt bubblewrap bwrap shell commands oversight monitoring shared messages activity security flags prompt injection'},
             {id:'local_backends', title:'Ollama runtime', group:'Advanced', icon:'cube', description:'Tune your local model runtime.', sections:['local_backends']},
             {id:'prompt_inspector', title:'Prompt inspector', group:'Advanced', icon:'book', description:'Inspect the instructions used by the active model.', sections:['prompt_inspector']},
             {id:'model_evaluations', title:'Model evaluations', group:'Advanced', icon:'chart', description:'Compare models on your own tasks, and review model quality and runtime diagnostics.', sections:['model_comparisons', 'model_evaluations'], keywords:'compare comparison benchmark evaluate models tasks switch pass rate'},
             {id:'iteration_checkpoints', title:'Checkpoints & recovery', group:'Advanced', icon:'history', description:'Inspect saved iterations and recovery options.', sections:['iteration_checkpoints']},
             {id:'lumi_account', title:'Lumi account', group:'Personal', icon:'person', description:'Sign in to Lumi Cloud and use your organization’s policy on this computer.', sections:['lumi_account'], keywords:'lumi cloud organization team company sign in enroll device computer managed policy seat slack teams microsoft chat tasks remote requests'},
-            {id:'about', title:'About Lumi', group:'Personal', icon:'book', description:'What Lumi is, what it costs and what it sends where.', sections:['about'], keywords:'version license free plan pricing account privacy telemetry notices MIT'},
-            {id:'updates', title:'Updates', group:'Advanced', icon:'history', description:'Choose how Lumi updates itself and which releases it takes.', sections:['updates','update_status'], keywords:'update upgrade version release beta channel pin stable automatic manual off'},
+            {id:'about', title:'About Lumi', group:'Personal', icon:'book', description:'What Lumi is, what it costs and what it sends where.', sections:['about'], keywords:'version license EULA terms copyright free plan pricing account privacy telemetry notices'},
+            {id:'updates', title:'Updates', group:'Advanced', icon:'history', description:'Choose how Lumi updates itself and which releases it takes.', sections:['updates','update_status','update_file'], keywords:'update upgrade version release beta channel pin stable automatic manual off file offline installer bundle air-gapped'},
         ];
     }
 
@@ -1790,11 +2148,12 @@ class LumiSettingsView {
         if (page === 'privacy') {
             this.send({command: 'project_trust_list'});
             this.send({command: 'audit_status'});
+            this.send({command: 'oversight_status'});
         }
         if (page === 'scheduled_tasks') this.send({command: 'schedules_list'});
         if (page === 'code_editors') this.send({command: 'code_editors_list'});
         if (page === 'model_evaluations') this.send({command: 'model_evals_list'});
-        const command = {creative_editors:'editor_list', capability_packs:'capability_pack_list', cost_tracking:'get_costs', model_evaluations:'evaluation_list', iteration_checkpoints:'checkpoint_list', updates:'update_status', about:'about_info', lumi_account:'cloud_status'}[page];
+        const command = {creative_editors:'editor_list', capability_packs:'capability_pack_list', cost_tracking:'get_costs', model_evaluations:'evaluation_list', iteration_checkpoints:'checkpoint_list', updates:'update_status', about:'about_info', lumi_account:'cloud_status', offline:'offline_status'}[page];
         if (command) this.send({command});
     }
 
@@ -1968,9 +2327,9 @@ class LumiSettingsView {
                     { key: 'kimi', label: 'Moonshot API key', type: 'password',
                       hint: 'MOONSHOT_API_KEY is also supported and takes effect when no stored key exists.' },
                     { key: 'github', label: 'GitHub token', type: 'password',
-                      hint: 'Lets the agent read pull request reviews and checks, and open, update and comment on pull requests. GITHUB_TOKEN or GH_TOKEN also work.' },
+                      hint: 'Lets the agent read pull request reviews and checks, and open, update and comment on pull requests. Sent only to github.com and the hosts under Issue trackers > Your code hosts. GITHUB_TOKEN or GH_TOKEN also work.' },
                     { key: 'gitlab', label: 'GitLab token', type: 'password',
-                      hint: 'The same for merge requests on GitLab (api scope). GITLAB_TOKEN also works.' },
+                      hint: 'The same for merge requests on GitLab (api scope), sent only to gitlab.com and the hosts under Issue trackers > Your code hosts. GITLAB_TOKEN also works.' },
                     { key: 'bitbucket', label: 'Bitbucket token', type: 'password',
                       hint: 'An access token, or username:app-password, for Bitbucket Cloud pull requests. BITBUCKET_TOKEN also works.' },
                     { key: 'azure_devops', label: 'Azure DevOps token', type: 'password',
@@ -1980,6 +2339,7 @@ class LumiSettingsView {
                 ]
             },
             { id: 'org_policy', title: 'Organization policy', custom: true },
+            { id: 'org_oversight', title: 'Organization oversight', custom: true },
             {
                 id: 'privacy', title: 'Before each model request',
                 note: 'Commands the agent runs, hooks and MCP servers never receive Lumi’s model keys, and your saved keys are removed from tool output before it reaches a model.',
@@ -2009,6 +2369,8 @@ class LumiSettingsView {
                       hint: 'Saved tasks that run unattended at set times (Settings > Scheduled tasks). Off stops them running and stops new ones being added.' },
                     { key: 'editor_bridge', label: 'Code editors', type: 'toggle', default: true,
                       hint: 'Lets the VS Code extension and JetBrains tools on this computer add files to your message and show what Lumi changed (Settings > Code editors).' },
+                    { key: 'extension_panels', label: 'Panels from capability packs', type: 'toggle', default: true,
+                      hint: 'Pages that approved packs add under View > Panels. Each runs in a sandbox with no network access except WebRTC; it can add text to your message but not send it.' },
                 ]
             },
             {
@@ -2019,6 +2381,16 @@ class LumiSettingsView {
                       hint: 'JIRA_URL also works.' },
                     { key: 'jira_email', label: 'Jira email', type: 'text', placeholder: 'you@example.com',
                       hint: 'For Jira Cloud, the account the API token belongs to. Leave it empty for Jira Server or Data Center.' },
+                ]
+            },
+            {
+                id: 'code_hosts', title: 'Your code hosts',
+                note: 'Lumi sends your GitHub token only to github.com and your GitLab token only to gitlab.com, besides the hosts listed here. An issue link or pull request on any other host is refused, so a link can’t send your token to someone else’s server.',
+                fields: [
+                    { key: 'github_hosts', label: 'GitHub Enterprise Server hosts', type: 'lines', placeholder: 'github.example.com',
+                      hint: 'One host per line. LUMI_GITHUB_HOSTS also works, and in GitHub Actions the server it runs on is included.' },
+                    { key: 'gitlab_hosts', label: 'GitLab hosts', type: 'lines', placeholder: 'gitlab.example.com',
+                      hint: 'Self-managed GitLab, one host per line. LUMI_GITLAB_HOSTS also works, and in GitLab CI the server it runs on is included.' },
                 ]
             },
             {
@@ -2101,6 +2473,18 @@ class LumiSettingsView {
                 ]
             },
             { id: 'update_status', title: 'This installation', custom: true },
+            { id: 'update_file', title: 'Install an update from a file', custom: true },
+            {
+                id: 'offline', title: 'Offline mode',
+                note: 'For air-gapped networks, and organizations that allow no traffic to the internet. Use models on this computer (Ollama, EXO) or your organization’s own inference server.',
+                fields: [
+                    { key: 'enabled', label: 'Offline mode', type: 'toggle', default: false,
+                      hint: 'Lumi connects only to this computer and the hosts below. Cloud models, Codex and Claude Code, Lumi Cloud, update checks and browsing other sites are refused, each with the reason, at once. Commands the agent runs aren’t limited: use your firewall for those.' },
+                    { key: 'allowed_hosts', label: 'Allowed hosts', type: 'lines', placeholder: 'llm.corp.example\n*.models.corp.example\n10.20.0.0/16',
+                      hint: 'One per line: a name, *.domain for every name under it, an address, or a network. This computer (localhost) is always allowed. If you reach them through a proxy, allow the proxy too.' },
+                ]
+            },
+            { id: 'offline_status', title: 'What offline mode does now', custom: true },
             { id: 'about', title: 'About Lumi', custom: true },
             {
                 id: 'engram', title: 'Memory (Engram)',
@@ -2176,12 +2560,18 @@ class LumiSettingsView {
                 bodyHtml = this._renderAuditStatus();
             } else if (section.id === 'update_status') {
                 bodyHtml = this._renderUpdateStatus();
+            } else if (section.id === 'update_file') {
+                bodyHtml = this._renderUpdateFile();
+            } else if (section.id === 'offline_status') {
+                bodyHtml = this._renderOfflineStatus();
             } else if (section.id === 'about') {
                 bodyHtml = this._renderAbout();
             } else if (section.id === 'lumi_account') {
                 bodyHtml = this._renderLumiAccount();
             } else if (section.id === 'org_policy') {
                 bodyHtml = this._renderOrgPolicy();
+            } else if (section.id === 'org_oversight') {
+                bodyHtml = this._renderOrgOversight();
             } else if (section.id === 'file_exclusions') {
                 bodyHtml = this._renderFileExclusions();
             } else if (section.id === 'project_trust') {
@@ -2426,6 +2816,7 @@ class LumiSettingsView {
         });
         document.getElementById('audit-verify')?.addEventListener('click', () => this.send({command: 'audit_status'}));
         this._bindUpdateCheck();
+        this._bindUpdateFile();
         this._bindLumiAccount();
         this._bindScheduledTasks();
         this._bindCodeEditors();

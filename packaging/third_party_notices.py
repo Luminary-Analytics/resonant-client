@@ -162,7 +162,10 @@ def render(packages: list[dict], components: list[dict]) -> str:
         "",
         "Lumi includes the software listed below. Each part remains under its own",
         "license; the license texts that each part ships are reproduced here. Lumi",
-        "itself is licensed as stated in its LICENSE file.",
+        # The bundle doesn't ship the repository's LICENSE, so say it here, as
+        # Settings > About Lumi does.
+        "itself is © Luminary Analytics, all rights reserved, and licensed under",
+        "the Lumi End User License Agreement.",
         "",
         "Contents",
         "",

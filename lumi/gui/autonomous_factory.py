@@ -653,6 +653,7 @@ def make_reflect_runner(
             specialist_backend_resolver=specialist_backend_resolver,
             mcp_manager=mcp_manager,
             hook_runner_for=hook_runner_for,
+            oversight_trigger="mission",
         )
 
         _emit_lifecycle({
@@ -888,6 +889,7 @@ def build_autonomous_mission_hooks(
         intent_id = intent_service.start_intent(
             goal_text,
             planner_specialization=planner_specialization,
+            trigger="mission",
         )
         # Watch BEFORE we hand the handle back to the daemon, so a
         # very-fast intent that completes between dispatch and wait
@@ -940,7 +942,13 @@ def build_autonomous_mission_hooks(
             # extract_skill_from_iter", ...)` actually take effect.
             # Closure-captured imports would be locked to the original
             # binding and immune to the patch.
+            from .. import oversight
             from ..orchestration import skill_mission_extraction as sme
+
+            # Extraction asks a model: not while an organization's oversight
+            # notice waits for the person (lumi/oversight.py).
+            if oversight.refusal("mission"):
+                return
             try:
                 ctx = sme.IterContext(**kwargs)
             except TypeError:

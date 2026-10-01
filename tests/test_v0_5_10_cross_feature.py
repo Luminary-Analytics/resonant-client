@@ -39,7 +39,7 @@ from lumi.gui.roadmap import (
     AcceptanceCriterion,
     Roadmap,
 )
-from lumi.orchestration.acceptance_check import CheckContext
+from lumi.orchestration.acceptance_check import BashRunner, CheckContext
 
 
 # ── Helpers ─────────────────────────────────────────────────────────────
@@ -147,6 +147,15 @@ class TestPauseDuringDecisionPark:
             full_reflect_cadence=full_reflect_cadence,
             tick_pause_seconds=0.0,
         )
+
+        def immediate_bash(command, **_):
+            # This fixture measures decision parking, after the deterministic
+            # prelude. A real Windows shell startup can consume its entire
+            # five-second park deadline before the reflect hook even runs.
+            # Real subprocess behavior has separate acceptance-runner tests.
+            assert command == "true"
+            return 0, "", ""
+
         hooks = DaemonHooks(
             dispatch_item=lambda item: 0,
             wait_for_dispatch=lambda h: DispatchOutcome(success=True, handle=h),
@@ -154,7 +163,7 @@ class TestPauseDuringDecisionPark:
             get_commit_sha=lambda: "abc1234",
             validate_sha=lambda s: True,
             run_full_reflect=reflect_hook,
-            check_context_factory=lambda rm: CheckContext(),
+            check_context_factory=lambda rm: CheckContext(bash_runner=BashRunner(_run=immediate_bash)),
         )
         daemon = AutonomousMissionDaemon(
             config, hooks, on_event=events.append,

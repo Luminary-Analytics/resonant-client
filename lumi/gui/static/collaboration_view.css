@@ -1,0 +1,14 @@
+.swarm-collaboration { border-top: 1px solid var(--border-color, #444); margin-top: 16px; padding-top: 14px; }
+.swarm-collaboration details { margin: 10px 0; }
+.swarm-collaboration summary { cursor: pointer; font-weight: 600; }
+.swarm-collaboration form, .swarm-collaboration-agreement { display: grid; gap: 10px; margin: 12px 0; min-width: 0; }
+.swarm-collaboration label { display: grid; gap: 5px; min-width: 0; }
+.swarm-collaboration fieldset label { display: flex; align-items: center; gap: 7px; }
+.swarm-collaboration input:not([type=checkbox]), .swarm-collaboration textarea, .swarm-collaboration select { width: 100%; min-width: 0; box-sizing: border-box; }
+.swarm-collaboration dl { margin: 0; display: grid; grid-template-columns: minmax(90px, 1fr) minmax(0, 2fr); gap: 7px; }
+.swarm-collaboration dd { margin: 0; overflow-wrap: anywhere; }
+.swarm-collaboration-message { padding: 12px; border: 1px solid var(--border-color, #444); border-radius: 8px; margin: 10px 0; }
+.swarm-collaboration pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 260px; overflow-y: auto; font-family: inherit; }
+.swarm-collaboration [hidden] { display: none !important; }
+.swarm-collaboration :focus-visible { outline: 2px solid var(--accent, #8cb4ff); outline-offset: 3px; }
+@media (max-width: 480px) { .swarm-collaboration dl { grid-template-columns: 1fr; } .swarm-collaboration dd { margin-bottom: 6px; } }

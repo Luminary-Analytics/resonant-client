@@ -52,6 +52,7 @@ from ..connections import (
     discover_models as discover_connection_models,
     find_connection,
     list_connections,
+    offline_refusal as connection_offline_refusal,
     secret_setting as connection_secret_setting,
 )
 from ..sonn import SonnBackend
@@ -190,6 +191,8 @@ class AppState:
     def __init__(self):
         self._harness_prompts = None
         self.available_backends: dict = {}
+        # Providers offline mode hides from the model picker, with why (lumi/offline.py).
+        self.offline_hidden_backends: dict = {}
         self.backend = None
         self.backend_spec: Optional[BackendSpec] = None
         self.session: Optional[Session] = None
@@ -730,6 +733,7 @@ class AppState:
         from ..engine.artifacts import ArtifactStore
         from ..engine.checkpoint_timeline import SessionCheckpointStore
         from ..engine.context_broker import ContextBroker
+        from .swarming import chat_context as _swarm_chat_context
         from ..engine.flight_recorder import FlightRecorder
         from ..engine.model_roles import ModelRoleRouter
         from ..engine.worktrees import WorktreeManager
@@ -793,6 +797,9 @@ class AppState:
         )
         session.flight_recorder = flight_recorder
         session.context_broker = context_broker
+        # ``@team:<run>`` attaches one of this conversation's teams (gui/swarming.py).
+        context_broker.team_reader = lambda run_id, workspace=target_path: _swarm_chat_context(
+            self, workspace, getattr(self.project.current_session, "id", "") or "", run_id)
         session.model_role_router = role_router
         session.fallback_provider = lambda path=target_path: self._fallback_chain(path)
         # Director Mode was retired in favor of the standard agent loop. Clear
@@ -1127,10 +1134,23 @@ class AppState:
         self.refresh_network_defaults()
         ollama_url = self.ollama_url
         available: dict = {}
+        # Offline mode (lumi/offline.py): providers this computer may not
+        # reach aren't probed or offered; the model picker says why.
+        from .. import offline
+
+        hidden: dict[str, dict] = {}
+
+        def offline_hidden(provider: str, label: str, url: str = "") -> bool:
+            reason = offline.provider_refusal(provider, url, label=label)
+            if reason:
+                hidden[provider] = {"label": label, "reason": reason}
+            return bool(reason)
 
         # Short connect timeout so an unreachable host doesn't block
         # startup — the wizard handles the unreachable case explicitly.
         _timeout = httpx.Timeout(connect=2.0, read=4.0, write=4.0, pool=4.0)
+        ollama_blocked = offline_hidden("ollama", "Ollama", ollama_url)
+        exo_blocked = offline_hidden("exo", "EXO", self.exo_url)
 
         # Ollama and EXO are probed concurrently. Run in sequence they add up:
         # with both hosts down — a laptop away from the desk, an inference box
@@ -1139,6 +1159,8 @@ class AppState:
         # switch. Six and a half seconds of a dead interface reads as "nothing
         # is loading", which is exactly how it was reported.
         def _probe_ollama():
+            if ollama_blocked:
+                return None
             try:
                 resp = httpx.get(f"{ollama_url}/api/tags", timeout=_timeout)
                 resp.raise_for_status()
@@ -1155,12 +1177,16 @@ class AppState:
             return None
 
         def _probe_exo():
+            if exo_blocked:
+                return {"models": [], "downloaded_models": [], "running_models": []}
             try:
                 return ExoBackend.discover_models(base_url=self.exo_url, timeout=4.0)
             except Exception:
                 return {"models": [], "downloaded_models": [], "running_models": []}
 
         router_key, router_source, router_env, router_setting = self._api_key_details("openrouter", "OPENROUTER_API_KEY")
+        if router_key and offline_hidden("openrouter", "OpenRouter", OpenRouterBackend.DEFAULT_BASE_URL):
+            router_key = ""
         def _probe_router():
             if not router_key:
                 return []
@@ -1171,6 +1197,8 @@ class AppState:
 
         sonn_key, sonn_source, sonn_env, sonn_setting = self._api_key_details("sonn", "SONN_API_KEY")
         sonn_url = resolve_sonn_url(settings_data=self.settings.get_all())
+        if sonn_key and sonn_url and offline_hidden("sonn", "SONN", sonn_url):
+            sonn_key = ""
         def _probe_sonn():
             if not sonn_key or not sonn_url:
                 return []
@@ -1181,9 +1209,19 @@ class AppState:
 
         anthropic_key, anthropic_source, anthropic_env, anthropic_setting = self._api_key_details(
             "anthropic", "ANTHROPIC_API_KEY")
+        if anthropic_key and offline_hidden("anthropic", "Anthropic", AnthropicBackend.DEFAULT_BASE_URL):
+            anthropic_key = ""
         openai_key, openai_source, openai_env, openai_setting = self._api_key_details(
             "openai", "OPENAI_API_KEY")
-        connections = list_connections(self.settings)
+        if openai_key and offline_hidden("openai", "OpenAI", OpenAIResponsesBackend.DEFAULT_BASE_URL):
+            openai_key = ""
+        connections = []
+        for connection in list_connections(self.settings):
+            reason = connection_offline_refusal(connection)
+            if reason:
+                hidden[connection_backend_key(connection["id"])] = {"label": connection["name"], "reason": reason}
+            else:
+                connections.append(connection)
 
         def _probe_connection(connection):
             key = str(self.settings.get("api_keys", connection_secret_setting(connection["id"]), "") or "")
@@ -1257,7 +1295,7 @@ class AppState:
         # approvals, exclusions and secret scan; Settings or policy can hide them.
         cli_allowed = self.cli_adapters_allowed()
         codex_cli = resolve_codex_cli_path() if cli_allowed else None
-        if codex_cli:
+        if codex_cli and not offline_hidden("codex", "ChatGPT / Codex"):
             available["codex"] = {
                 "models": CodexCliBackend.list_available_models(),
                 "model_labels": codex_cli_model_labels(),
@@ -1265,7 +1303,7 @@ class AppState:
             }
 
         claude_cli = resolve_claude_cli_path() if cli_allowed else None
-        if claude_cli:
+        if claude_cli and not offline_hidden("claude-code", "Claude Code"):
             available["claude-code"] = {
                 "models": ClaudeCodeCliBackend.list_available_models(),
                 "model_labels": claude_code_model_labels(),
@@ -1275,6 +1313,9 @@ class AppState:
         kimi_key, kimi_source, kimi_env, kimi_setting = self._api_key_details(
             "kimi", "MOONSHOT_API_KEY"
         )
+        if kimi_key and offline_hidden("kimi", "Kimi API",
+                                       os.environ.get("MOONSHOT_BASE_URL", KimiBackend.DEFAULT_BASE_URL)):
+            kimi_key = ""
         if kimi_key:
             available["kimi"] = {
                 "url": os.environ.get("MOONSHOT_BASE_URL", KimiBackend.DEFAULT_BASE_URL),
@@ -1312,6 +1353,7 @@ class AppState:
             available["codex"]["models"] = [row.get("model") or row["id"] for row in rows]
             available["codex"]["model_labels"] = {row.get("model") or row["id"]: row.get("displayName") or row["id"] for row in rows}
         self.available_backends = available
+        self.offline_hidden_backends = hidden
         self._last_backend_probe = time.time()
         return available
 
@@ -2137,6 +2179,11 @@ class AppState:
         self.base_engram.set_mcp_manager(self.mcp_manager)
         self.apply_project_context(self.project.project_path, refresh_index=True)
         self.refresh_network_defaults()
+        if section == "offline":
+            # WinSparkle connects from native code: offline mode stops it at once (lumi/updater.py).
+            from .. import updater
+
+            updater.apply_offline_mode()
         # Settings may have changed a provider URL — must re-probe.
         self.detect_backends(force=True)
 
@@ -2275,6 +2322,11 @@ class AppState:
     def _cloud_changed(self, status: dict) -> None:
         """Lumi Cloud's status changed (a sign-in, an enrollment, a check-in)."""
         self._push_ws_event({"event": "cloud_status", "data": status})
+        # Signing out or leaving forgets the oversight notice's confirmation
+        # (lumi/oversight.py): the page shows the notice, and locks, at once.
+        from .. import oversight
+
+        self._push_ws_event({"event": "oversight_status", "data": oversight.status()})
         marker = (status.get("policy_version"), status.get("policy_source"))
         if marker == getattr(self, "_cloud_policy_marker", None):
             return
@@ -2282,9 +2334,15 @@ class AppState:
         try:
             self.apply_policy_change()
             self._push_ws_event({"event": "settings", "data": self.settings.get_masked()})
+            # The init refresh carries the oversight notice for the new policy.
             self._push_ws_event(self.get_init_data(refresh_only=True))
         except Exception:
             logger.exception("Applying the new organization policy failed")
+        # Queued oversight records go now, or are deleted if the policy stopped
+        # asking, even while sending backs off after a failure.
+        from .. import oversight
+
+        oversight.wake(urgent=True)
 
     def apply_policy_change(self) -> None:
         """Apply a different organization policy (from Lumi Cloud) to the running app.
@@ -2294,6 +2352,9 @@ class AppState:
         the open session's file exclusions.
         """
         self.refresh_network_defaults()
+        from .. import updater
+
+        updater.apply_offline_mode()  # a policy that turns offline mode on stops WinSparkle too
         self.apply_permission_mode(self.permission_mode, session=self.session)
         if self.codebase_index is not None:
             self.codebase_index.exclusions = self.exclusions_for(self.project.project_path)
@@ -2355,6 +2416,18 @@ class AppState:
     def audit_status(self) -> dict:
         """The audit log's location, chain verification and export health."""
         return {"event": "audit_status", **audit.audit_log().status()}
+
+    def offline_status(self) -> dict:
+        """Settings > Offline mode: what applies now, what it hides, updates and the license."""
+        from .. import license as lumi_license, offline, updater
+
+        config = offline.current()
+        hidden = [{"provider": key, **info} for key, info in getattr(self, "offline_hidden_backends", {}).items()]
+        lumi_license.load(force=True)  # a license installed since Lumi started shows at once
+        license_info = lumi_license.status()
+        return {**config.as_dict(), "hidden": hidden if config.enabled else [],
+                "updates": updater.status().get("offline", ""),
+                "license": {**license_info, "describe": lumi_license.describe(license_info)}}
 
     def update_setting_value(
         self,
@@ -2421,11 +2494,21 @@ class AppState:
             if profile is not None and hasattr(profile, "to_dict"):
                 model_capabilities = profile.to_dict()
 
+        from .. import offline
+
+        offline_config = offline.current()
         return {
             "event": "init",
             "runtime_loading": bool(getattr(self, "_discovery_pending", False)),
             "refresh_only": refresh_only,
             "backends": backends_info,
+            # What offline mode hides from the model picker, and why.
+            "offline": {
+                "enabled": offline_config.enabled,
+                "managed_by": offline_config.managed_by,
+                "hidden": [{"provider": key, **info} for key, info in
+                           (getattr(self, "offline_hidden_backends", {}).items() if offline_config.enabled else ())],
+            },
             "current_backend": current_backend,
             "current_model": current_model,
             "handles_tools": handles_tools,
@@ -2474,10 +2557,32 @@ class AppState:
             # Includes running + complete + paused + failed, sorted
             # newest-first by autonomous_started_at.
             "autonomous_missions": _list_autonomous_missions(self),
+            # What the organization's oversight collects, for the notice
+            # beside the message box (lumi/oversight.py). The page shows
+            # it before anything is recorded.
+            "oversight": _oversight_status(),
         }
 
 
+def _oversight_status() -> dict:
+    from .. import oversight
+
+    return oversight.status()
+
+
 state = AppState()
+
+
+def configure_managed_startup(managed_desktop) -> None:
+    """Inject an operator-validated parent helper before GUI ownership discovery.
+
+    There is deliberately no WebSocket/configuration endpoint for this function.
+    The startup caller owns the private helper; browser responses use its safe
+    projection and cannot replace identities or switch existing personal runs.
+    """
+    if getattr(state, "_swarm_desktop", None) is not None or getattr(state, "_swarm_managed", None) is not None:
+        raise ValueError("Managed configuration must be supplied before GUI startup")
+    state._swarm_managed = managed_desktop
 
 
 async def _discover_for_navigation(target_state):
@@ -2668,6 +2773,22 @@ def _make_autonomous_event_forwarder(
 
 async def _process_chat_message(ws: WebSocket, msg: dict[str, Any]) -> None:
     """Run one serialized chat turn without blocking the WS receive loop."""
+    from .swarming import busy as swarm_busy
+    if swarm_busy(state):
+        await ws.send_json({"event": "error", "message": "Finish or stop the active team before starting another operation."})
+        return
+    # Organization oversight (lumi/oversight.py): nothing reaches a model, and
+    # nothing is saved or titled, before the person confirms the notice. Every
+    # queued or steered message (and employee task) passes here; Session.run
+    # refuses as well.
+    from .. import oversight
+
+    if msg.get('command') == 'employee_task' or str(msg.get("text") or "").strip():
+        refusal = await asyncio.to_thread(oversight.refusal, "app")
+        if refusal:
+            await ws.send_json({"event": "oversight_status", "data": await asyncio.to_thread(oversight.status)})
+            await ws.send_json({"event": "error", "message": refusal, "code": oversight.REFUSAL_CODE})
+            return
     if msg.get('command') == 'employee_task':
         from .employee_tasks import command as task_command
         await task_command(state, ws.send_json, msg)
@@ -2851,7 +2972,8 @@ async def websocket_endpoint(ws: WebSocket):
                         "message": state.runtime_unavailable_reason(),
                     })
                     continue
-                if runs.busy:
+                from .swarming import busy as swarm_busy
+                if runs.busy or swarm_busy(state):
                     await ws.send_json({
                         "event": "error",
                         "message": "Finish or stop the active run before restarting an agent.",
@@ -2912,6 +3034,11 @@ async def websocket_endpoint(ws: WebSocket):
                 # session is flagged with mission_state, which gates the
                 # spec-extraction scan and drives the header badge.
                 # See docs/long-running-agents.md (Phase 1).
+                from .swarming import busy as swarm_busy
+                if swarm_busy(state):
+                    await ws.send_json({"event": "error", "message":
+                                        "Finish or reconcile the current team before starting a mission."})
+                    continue
                 feature = (msg.get("feature") or "").strip()
                 if not feature:
                     await ws.send_json({"event": "error",
@@ -3402,6 +3529,9 @@ async def websocket_endpoint(ws: WebSocket):
         state._navigation_viewers.discard(ws)
         if getattr(state, "_ws_ref", None) is ws:
             state._ws_ref = None
+        # The page is gone, and with it any panel it showed.
+        from .extension_panels import grants as panel_grants
+        panel_grants.revoke_owner(id(ws))
 
 
 _STREAM_DELTA_COALESCE_SECONDS = 0.012
@@ -3493,6 +3623,10 @@ async def _run_session_streaming(
     active_record = getattr(state.project, "current_session", None)
     # Audit records of this run name the saved conversation.
     session.audit_session_id = str(getattr(active_record, "id", "") or "")
+    # Organization oversight shares what the person typed, not a wrapper
+    # the model gets around it (lumi/oversight.py).
+    if event_source is None and display_user_msg and display_user_msg != user_msg:
+        session.display_prompt = display_user_msg
     # So do its checkpoints, which its Timeline lists.
     state.bind_conversation_checkpoints(session)
     if event_source is None:
@@ -3916,6 +4050,12 @@ async def editor_endpoint(request):
     return await handle(request, state)
 
 
+async def extension_panel_endpoint(request):
+    """A file of an open capability-pack panel, for its sandboxed frame (gui/extension_panels.py)."""
+    from .extension_panels import serve
+    return await serve(request, state, bridge_file=_STATIC_DIR / "panel_frame.js")
+
+
 async def ui_state_endpoint(request):
     from starlette.responses import JSONResponse
     from .ui_state import ui_state
@@ -3947,8 +4087,23 @@ async def ui_state_endpoint(request):
 @asynccontextmanager
 async def _app_lifespan(app):
     try:
+        from .swarming import discover as discover_swarm_ownership
+        try:
+            await asyncio.to_thread(discover_swarm_ownership, state)
+        except Exception:
+            # The Team preview is optional: its discovery must never keep the
+            # app from starting. Without it, new team work stays refused
+            # (gui/swarming.py) until a restart discovers ownership again.
+            logger.exception("Team ownership discovery failed at startup")
+            state._swarm_discovery_failed = True
         yield
     finally:
+        swarm_desktop = getattr(state, "_swarm_desktop", None)
+        if swarm_desktop is not None:
+            await asyncio.to_thread(swarm_desktop.close)
+        swarm_managed = getattr(state, "_swarm_managed", None)
+        if swarm_managed is not None:
+            await asyncio.to_thread(swarm_managed.close)
         from ..engine.previews import previews
         from ..codex_account import codex_account
         await asyncio.to_thread(codex_account.close)
@@ -3962,6 +4117,8 @@ app = Starlette(
         Route("/api/access", access_endpoint, methods=['GET', 'POST']),
         Route("/api/ui-state", ui_state_endpoint, methods=['GET', 'POST']),
         Route("/api/editor/{action}", editor_endpoint, methods=['GET', 'POST']),
+        # Checked by its own panel tokens, which only this app's socket issues.
+        Route("/panels/{token}/{path:path}", extension_panel_endpoint, methods=['GET', 'HEAD']),
         WebSocketRoute("/ws", websocket_endpoint),
         Mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static"),
     ],

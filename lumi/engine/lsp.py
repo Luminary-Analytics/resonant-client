@@ -269,7 +269,7 @@ class LanguageServer:
         return self._process is not None and self._process.poll() is None
 
     def _start(self) -> None:
-        from ..processes import background_process_kwargs, windows_kill_job
+        from ..processes import background_process_kwargs, popen_in_kill_job
         from ..secrets_store import child_env
 
         self.state, self.error = "starting", ""
@@ -277,16 +277,15 @@ class LanguageServer:
         with self._published:
             self._diagnostics.clear()
         try:
-            self._process = subprocess.Popen(
-                self.launch, cwd=self.root, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            # In its job before it runs, so what a launcher that exits at once
+            # started is still stopped with it. Best effort: a server the job
+            # can't take runs without one.
+            self._process, self._job = popen_in_kill_job(
+                self.launch, best_effort=True, cwd=self.root, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE, env=child_env(), **background_process_kwargs(new_process_group=True))
         except OSError as exc:
             self._fail(f"{self.spec.name} didn't start: {exc}")
             raise LspError(self.error) from exc
-        try:
-            self._job = windows_kill_job(self._process)
-        except OSError:
-            self._job = None
         threading.Thread(target=self._read, daemon=True, name=f"lsp-{self.spec.id}").start()
         stderr_reader = threading.Thread(target=self._drain_stderr, daemon=True, name=f"lsp-{self.spec.id}-err")
         stderr_reader.start()

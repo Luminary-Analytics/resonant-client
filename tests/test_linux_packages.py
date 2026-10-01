@@ -86,7 +86,8 @@ def test_the_deb_installs_lumi_under_opt_for_the_package_manager(bundle, tmp_pat
         desktop = data.extractfile("./usr/share/applications/lumi.desktop").read().decode()
         assert "Exec=/usr/bin/lumi gui\n" in desktop and "Icon=lumi\n" in desktop
         assert "./usr/share/icons/hicolor/512x512/apps/lumi.png" in entries
-        assert "MIT" in data.extractfile("./usr/share/doc/lumi/copyright").read().decode()
+        notice = data.extractfile("./usr/share/doc/lumi/copyright").read().decode()
+        assert "License: proprietary\n" in notice and "Lumi End User License Agreement" in notice
         assert {member.mtime for member in data.getmembers()} == {1790000000}
         # Every parent directory is in the archive, before what it holds.
         names = list(entries)
@@ -108,6 +109,7 @@ def test_the_rpm_spec_packages_the_staged_root_as_is(bundle, tmp_path):
                                 "--spec", str(tmp_path / "lumi.spec")]) == 0
     spec_text = (tmp_path / "lumi.spec").read_text(encoding="utf-8")
     assert "Version:        0.20.0~rc1" in spec_text and "AutoReqProv:    no" in spec_text
+    assert "License:        Proprietary\n" in spec_text
     # strip would cut off the archive PyInstaller appends to its executable.
     assert "%global __os_install_post %{nil}" in spec_text and "%global debug_package %{nil}" in spec_text
     assert f"cp -a {root.resolve().as_posix()}/. %{{buildroot}}/" in spec_text

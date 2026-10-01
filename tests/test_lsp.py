@@ -10,8 +10,10 @@ from pathlib import Path
 
 import pytest
 
+from lumi import processes
 from lumi.engine import lsp
 from lumi.engine.exclusions import ExclusionRules
+from tests.quick_launcher import assign_jobs_late, quick_launcher, sleeper_ended
 
 FAKE = str(Path(__file__).with_name("fake_lsp_server.py"))
 
@@ -184,6 +186,28 @@ def test_a_server_that_fails_is_reported_and_not_restarted_at_once(project, monk
         ask(project, action="symbols", path="app.py")
     monkeypatch.setattr(lsp, "RETRY_SECONDS", 0)
     assert ask(project, action="symbols", path="app.py")[1]["count"] == 3
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows job objects")
+def test_a_server_that_exits_at_once_is_stopped_with_what_it_started(project, tmp_path, monkeypatch):
+    # The job object used to be assigned after the server started. A launcher
+    # that had exited by then was left out of it with what it had started,
+    # which stopping the failed server then missed.
+    assign_jobs_late(monkeypatch)
+    argv, pid_file = quick_launcher(tmp_path)
+    with pytest.raises(lsp.LspError, match="didn't start"):
+        ask(project, Settings({"fake": {"command": argv, "extensions": [".py"]}}), action="symbols", path="app.py")
+    assert sleeper_ended(pid_file)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows job objects")
+def test_a_server_its_job_object_refused_still_runs(project, monkeypatch):
+    def refuse(process, **kwargs):
+        raise OSError("no job object")
+
+    monkeypatch.setattr(processes, "windows_kill_job", refuse)
+    assert ask(project, action="symbols", path="app.py")[1]["count"] == 3
+    assert lsp.servers.server_for(project, os.path.join(project, "app.py"), fake_settings())._job is None
 
 
 def test_servers_are_kept_stopped_when_idle_and_restarted(project):

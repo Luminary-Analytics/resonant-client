@@ -42,6 +42,12 @@ def schedule_title_refinement(state, ws, record, prompt: str) -> None:
 
     async def refine():
         try:
+            from .. import oversight
+
+            # No title request while an organization's oversight notice waits
+            # for the person (a policy can arrive during the turn).
+            if await asyncio.to_thread(oversight.refusal, "app"):
+                return
             title = await asyncio.wait_for(
                 asyncio.to_thread(generate_session_title, backend, prompt, cancel, usage_context=usage_context),
                 timeout=TITLE_TIMEOUT_SECONDS,

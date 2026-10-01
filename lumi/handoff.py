@@ -49,8 +49,12 @@ def _git(project_path: str, *args: str) -> str:
     from .processes import background_process_kwargs
 
     try:
+        # No input: an inherited stdin can be a private protocol pipe (a swarm
+        # worker's host channel), and on Windows git blocks querying a pipe
+        # handle while the parent has a read pending on it.
         result = subprocess.run(["git", *args], cwd=project_path, capture_output=True, text=True, encoding="utf-8",
-                                errors="replace", timeout=10, check=False, **background_process_kwargs())
+                                errors="replace", timeout=10, check=False, stdin=subprocess.DEVNULL,
+                                **background_process_kwargs())
     except (OSError, subprocess.SubprocessError):
         return ""
     return result.stdout.strip() if result.returncode == 0 else ""

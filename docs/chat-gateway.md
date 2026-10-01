@@ -55,6 +55,17 @@ A request that arrives while another is running waits its turn: requests run
 one at a time on the computer. An approval nobody answers in time is refused,
 and the agent is told it wasn't done.
 
+If the organization's policy turns on [organization
+oversight](organization-oversight.md), a chat's requests don't run until
+someone in that chat confirms the organization's notice. A request from a
+chat that hasn't is answered with the notice (naming the organization and
+what it receives) and an **I've read this** button; pressing it, or replying
+`I've read this` once the notice arrived, confirms it for that chat and that
+policy, and the chat then sends its request again. Each confirmation is a
+record signed with the computer's device key and sent to Lumi Cloud. A
+policy that collects more is confirmed again; **status** repeats the
+notice.
+
 ## Telegram
 
 1. Create a bot with [@BotFather](https://t.me/BotFather) and copy its token.

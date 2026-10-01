@@ -20,6 +20,10 @@
          10+) / SF Mono (macOS) / Consolas. -->
     <link rel="stylesheet" href="/static/fonts.css?v={{ asset_version }}">
     <link rel="stylesheet" href="/static/styles.css?v={{ asset_version }}">
+    <link rel="stylesheet" href="/static/swarm_view.css?v={{ asset_version }}">
+    <link rel="stylesheet" href="/static/collaboration_view.css?v={{ asset_version }}">
+    <link rel="stylesheet" href="/static/panels_view.css?v={{ asset_version }}">
+    <!-- Syntax highlighting theme -->
     <!-- Syntax highlighting theme (dark); styles.css recolors it for the light theme -->
     <link rel="stylesheet" href="/static/vendor/github-dark-dimmed.min.css?v={{ asset_version }}">
     <!-- Not deferred: resolves "Match system" before the first paint. -->
@@ -320,6 +324,8 @@
                              See docs/long-running-agents.md (Phase 1 UI). -->
                         <div id="chat-header" class="chat-header">
                             <div id="chat-session-title" class="chat-session-title">Lumi</div>
+                            <button type="button" id="swarm-team-button" class="swarm-team-button"
+                                    aria-haspopup="dialog" title="Inspect and manage this session’s team">Team</button>
                             <button type="button" id="employee-task-button" class="mission-toggle" hidden
                                     aria-haspopup="dialog">Employee task</button>
                             <!-- v0.3.3 — surface the active project path so misconfigurations
@@ -392,6 +398,27 @@
                              user pressed send, leaving only a model name and a
                              contradictory error. -->
                         <div id="runtime-banner" class="runtime-banner" hidden role="status" aria-live="polite"></div>
+                        <!-- Organization oversight (lumi/oversight.py): while an
+                             organization's policy has Lumi share activity,
+                             messages or security flags, this names the
+                             organization and what it receives. It can't be
+                             dismissed, and until the person confirms it with
+                             "I've read this" the message box is locked and
+                             nothing is sent to a model (settings_view.js). -->
+                        <section id="oversight-notice" class="oversight-notice" aria-labelledby="oversight-notice-title" tabindex="-1" hidden>
+                            <svg class="oversight-notice-icon" width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                                <path d="M8 1 2 3v5c0 4 3 6 6 7 3-1 6-3 6-7V3z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/>
+                                <path d="M5 8.2c1.6-1.9 4.4-1.9 6 0-1.6 1.9-4.4 1.9-6 0z" stroke="currentColor" stroke-width="1.1" stroke-linejoin="round"/>
+                                <circle cx="8" cy="8.2" r=".9" fill="currentColor"/>
+                            </svg>
+                            <h2 id="oversight-notice-title" class="sr-only">Organization oversight</h2>
+                            <div class="oversight-notice-body" role="status">
+                                <p id="oversight-notice-text" class="oversight-notice-text"></p>
+                                <p id="oversight-notice-lock" class="oversight-notice-lock" hidden>Lumi won’t send anything to a model until you confirm you’ve read this.</p>
+                            </div>
+                            <button type="button" id="oversight-notice-details" class="oversight-notice-details" aria-describedby="oversight-notice-text">What’s shared</button>
+                            <button type="button" id="oversight-notice-confirm" class="oversight-notice-confirm" aria-describedby="oversight-notice-text oversight-notice-lock" hidden>I’ve read this</button>
+                        </section>
                         <div id="composer-queue" class="composer-queue" hidden></div>
                         <div class="input-wrapper">
                             <div class="input-top">
@@ -797,8 +824,12 @@
     <script src="/static/autonomous_view.js?v={{ asset_version }}"></script>
     <script src="/static/settings_view.js?v={{ asset_version }}"></script>
     <script src="/static/voice_input.js?v={{ asset_version }}"></script>
+    <script src="/static/swarm_view.js?v={{ asset_version }}"></script>
+    <script src="/static/collaboration_view.js?v={{ asset_version }}"></script>
+    <script src="/static/managed_collaboration_view.js?v={{ asset_version }}"></script>
     <script src="/static/run_cards.js?v={{ asset_version }}"></script>
     <script src="/static/employee_tasks.js?v={{ asset_version }}"></script>
+    <script src="/static/panels_view.js?v={{ asset_version }}"></script>
     <div class="window-resize-edge window-resize-top" data-resize-edge="top" aria-hidden="true"></div>
     <div class="window-resize-edge window-resize-right" data-resize-edge="right" aria-hidden="true"></div>
     <div class="window-resize-edge window-resize-bottom" data-resize-edge="bottom" aria-hidden="true"></div>

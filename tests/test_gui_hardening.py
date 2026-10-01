@@ -363,6 +363,9 @@ def test_duplicate_new_session_request_is_idempotent(monkeypatch, tmp_path):
         project_path = str(tmp_path)
         current_session = None
 
+        def get_recent_projects(self, **kwargs):
+            return []
+
         def __init__(self):
             self.created = 0
 

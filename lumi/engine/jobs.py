@@ -17,7 +17,7 @@ import time
 import uuid
 
 from lumi.engine import os_sandbox
-from lumi.processes import background_process_kwargs, close_windows_job, windows_kill_job
+from lumi.processes import background_process_kwargs, close_windows_job, popen_in_kill_job
 from lumi.secrets_store import child_env
 
 
@@ -50,16 +50,11 @@ class JobManager:
             # Inside the shell sandbox when it's on (engine/os_sandbox.py); refused
             # when it's on and can't run here.
             launch = os_sandbox.prepare_argv(argv, roots=sandbox_roots or [root], cwd=root)
-            process = subprocess.Popen(launch, cwd=root, stdin=subprocess.DEVNULL, env=child_env(),
+            # Joins its job before it runs, so a quick command can't exit
+            # first and fail to start; a job that can't take it raises.
+            process, job = popen_in_kill_job(launch, cwd=root, stdin=subprocess.DEVNULL, env=child_env(),
                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                 **background_process_kwargs(new_process_group=True))
-            try:
-                job = windows_kill_job(process)
-            except OSError:
-                process.kill()
-                process.wait()
-                process.stdout.close()
-                raise
             handle = uuid.uuid4().hex[:12]
             item = dict(id=handle, project=root, command=list(argv), process=process,
                         job=job, logs=deque(maxlen=64), state='running', exit_code=None,

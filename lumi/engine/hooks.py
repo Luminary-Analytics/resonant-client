@@ -30,8 +30,8 @@ from typing import Callable, Iterable, Optional
 from lumi.processes import (
     background_process_kwargs,
     close_windows_job,
+    popen_in_kill_job,
     terminate_windows_job,
-    windows_kill_job,
 )
 from lumi.secrets_store import child_env
 
@@ -238,8 +238,14 @@ def _run_command(
     exits on its own; and writing the event to standard input isn't timed
     at all. A hung hook held the turn until it finished.
     """
-    process = subprocess.Popen(
+    # The shell joins its job before it runs, so one that exits at once still
+    # leaves in the job whatever it started. Not kill-on-close, so a program a
+    # hook leaves running on purpose after it finishes keeps running. Best
+    # effort: without a job, _stop_tree falls back to taskkill.
+    process, job = popen_in_kill_job(
         command,
+        kill_on_close=False,
+        best_effort=True,
         shell=True,
         stdin=subprocess.PIPE if stdin_text is not None else None,
         stdout=subprocess.PIPE,
@@ -250,12 +256,6 @@ def _run_command(
         cwd=cwd,
         **background_process_kwargs(new_process_group=True),
     )
-    try:
-        # Not kill-on-close, so a program a hook leaves running on purpose
-        # after it finishes keeps running.
-        job = windows_kill_job(process, kill_on_close=False)
-    except Exception:
-        job = None  # _stop_tree falls back to taskkill
     lock = threading.Lock()
     state = {"finished": False, "expired": False}
 

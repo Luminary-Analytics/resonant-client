@@ -12,6 +12,7 @@ rather than only the reported result.
 from __future__ import annotations
 
 import json
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -21,6 +22,7 @@ import pytest
 from lumi.engine.hooks import GATE_HOOK_TYPES, HookDefinition, HookRunner, HookType
 from lumi.engine.sandbox import PathSandbox
 from lumi.engine.session import Session
+from tests.quick_launcher import assign_jobs_late, quick_launcher, sleeper_ended
 from tests.streaming_stub import (
     StreamingBackend,
     done,
@@ -155,7 +157,7 @@ def test_the_timeout_stops_the_program_the_hook_started(tmp_path, monkeypatch, j
         def no_job(process, **kwargs):
             raise OSError("no job object")
 
-        monkeypatch.setattr("lumi.engine.hooks.windows_kill_job", no_job)
+        monkeypatch.setattr("lumi.processes.windows_kill_job", no_job)
     pid_file = tmp_path / "hook.pid"
     runner = _runner(HookDefinition(
         hook_type=HookType.PRE_TOOL_USE,
@@ -173,6 +175,29 @@ def test_the_timeout_stops_the_program_the_hook_started(tmp_path, monkeypatch, j
     while _still_running(psutil, pid) and time.monotonic() < deadline:
         time.sleep(0.1)
     assert not _still_running(psutil, pid)
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows job objects")
+def test_the_timeout_stops_what_a_quick_hook_left_holding_its_output(tmp_path, monkeypatch):
+    # The shell and its Python exit at once, leaving a program that holds the
+    # output, so the hook runs until its timeout, when its job stops that
+    # program. The job used to be assigned after the shell started: a shell
+    # that had exited by then was left out of it, taskkill /T had no parent to
+    # find the program from, and the program outlived the hook.
+    assign_jobs_late(monkeypatch)
+    argv, pid_file = quick_launcher(tmp_path, holds_output=True)
+    runner = _runner(HookDefinition(
+        hook_type=HookType.PRE_TOOL_USE,
+        command=subprocess.list2cmdline(argv),
+        timeout_seconds=3,
+    ))
+
+    started = time.monotonic()
+    result = runner.run_hooks(HookType.PRE_TOOL_USE, {"project_path": str(tmp_path)}, tool_name="bash")
+
+    assert time.monotonic() - started < _RETURNS_WITHIN
+    assert result.decision == "deny" and "timed out" in result.reason
+    assert sleeper_ended(pid_file)
 
 
 def test_a_program_a_hook_leaves_running_on_purpose_keeps_running(tmp_path):
